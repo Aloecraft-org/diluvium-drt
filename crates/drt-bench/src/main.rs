@@ -14,8 +14,10 @@
 
 mod guests;
 
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::BTreeMap;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -26,6 +28,42 @@ use drt_config::Budget;
 use drt_swarm::engine::diluvium_engine::DiluviumEngine;
 use drt_swarm::swarm::{StepHost, Swarm};
 use drt_swarm::InstanceId;
+
+/// Counts allocations so "allocation churn" can be measured rather than
+/// asserted. The C harness's equivalent number is zero on the timed path:
+/// it encodes its payload once before the loop and drains with a borrowed
+/// `dv_queue_peek`, so every allocation counted here is one the C does not
+/// make.
+struct Counting;
+
+static ALLOCS: AtomicU64 = AtomicU64::new(0);
+static ALLOC_BYTES: AtomicU64 = AtomicU64::new(0);
+
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        ALLOCS.fetch_add(1, Ordering::Relaxed);
+        ALLOC_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
+        unsafe { System.alloc(layout) }
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) }
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        ALLOCS.fetch_add(1, Ordering::Relaxed);
+        ALLOC_BYTES.fetch_add(new_size as u64, Ordering::Relaxed);
+        unsafe { System.realloc(ptr, layout, new_size) }
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: Counting = Counting;
+
+fn allocs() -> (u64, u64) {
+    (
+        ALLOCS.load(Ordering::Relaxed),
+        ALLOC_BYTES.load(Ordering::Relaxed),
+    )
+}
 
 type Case = BTreeMap<String, f64>;
 type Swm = Swarm<StepHost>;
@@ -116,12 +154,6 @@ fn step_until(
         steps += 1;
     }
     Ok(steps)
-}
-
-fn push_value(sw: &mut Swm, id: InstanceId, queue: &str, v: &rmpv::Value) -> bool {
-    let mut buf = Vec::new();
-    rmpv::encode::write_value(&mut buf, v).expect("a bench payload encodes");
-    sw.push(id, queue, &buf).is_ok()
 }
 
 fn worker_ids(sw: &Swm, root: InstanceId) -> Vec<InstanceId> {
@@ -286,14 +318,20 @@ fn queue(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
     for size in [16usize, 256, 4096] {
         let (mut sw, root, _) = fanout(guests::WORKER_ECHO, agents, 64, false, deadline)?;
         let workers = worker_ids(&sw, root);
-        let payload = rmpv::Value::Binary(vec![0x5a; size]);
+        // Encoded once, before the clock starts — the C does the same, and
+        // re-encoding per message measured this harness rather than the
+        // swarm.
+        let mut payload = Vec::new();
+        rmpv::encode::write_value(&mut payload, &rmpv::Value::Binary(vec![0x5a; size]))
+            .expect("a bench payload encodes");
         let mut refused = 0.0;
         let mut delivered = 0usize;
 
+        let (allocs_before, bytes_before) = allocs();
         let started = Instant::now();
         for _ in 0..rounds {
             for id in &workers {
-                if push_value(&mut sw, *id, "work", &payload) {
+                if sw.push(*id, "work", &payload).is_ok() {
                     delivered += 1;
                 } else {
                     refused += 1.0;
@@ -315,7 +353,16 @@ fn queue(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
             }
         }
         let elapsed = started.elapsed().as_secs_f64();
+        let (allocs_after, bytes_after) = allocs();
         let trips = delivered as f64;
+        c.insert(
+            format!("p{size}_allocs_per_roundtrip"),
+            (allocs_after - allocs_before) as f64 / trips,
+        );
+        c.insert(
+            format!("p{size}_alloc_bytes_per_roundtrip"),
+            (bytes_after - bytes_before) as f64 / trips,
+        );
         c.insert(format!("p{size}_roundtrips_per_s"), trips / elapsed);
         c.insert(format!("p{size}_us_per_roundtrip"), elapsed * 1e6 / trips);
         c.insert(

@@ -14,24 +14,42 @@ on.
 - [`drt-bench-run.json`](drt-bench-run.json) — `cargo run --release -p
   drt-bench -- --json --seed 7 --repeat 5`, same machine, same day.
 
-Both files are **medians of five runs**, and that is not a nicety. Five
-back-to-back runs of an identical DRT binary spanned 3.88–6.75 µs on the
-16-byte round trip — a 74% band. Any single-run difference smaller than that
-is noise wearing a number, and an earlier revision of this file reported one
-as if it were a result. `drt-bench --repeat N` medians field-wise;
-deterministic fields are unaffected, since their median is their value.
+Both files are **medians of five runs** (`drt-bench --repeat N` medians
+field-wise; deterministic fields are unaffected, since their median is their
+value).
 
-Worth noting on its own: the C harness's spread over the same five runs was
-3.18–3.70 µs, four times tighter. DRT's variance is real and is its own
-finding — allocation churn on the hot path is the likely cause and has not
-been chased down.
+## Two corrections, and what stops them recurring
 
-`crates/drt-bench` reproduces the same scenarios with the same flags and the
-same JSON field names, so the two files diff directly:
+This file has twice reported a message-path result that was not one, so the
+method matters as much as the numbers.
 
-```
-python3 bench/compare.py bench/c-swarm_bench-baseline.json bench/drt-bench-run.json
-```
+**First**, a single-sample claim of "20–25% slower". Five back-to-back runs
+of an identical binary spanned 3.88–6.75 µs on the 16-byte round trip — a
+74% band — so any single-run difference smaller than that was noise wearing
+a number. Fixed by medianing.
+
+**Second, and the real one**: the remaining gap was *this harness doing work
+the C harness does not*. The C encodes its payload once before the clock
+starts (`mp_filler`, then the same buffer every push); this one re-encoded a
+`rmpv::Value` into a fresh `Vec` per message — three allocations and, at
+4 KB, ten reallocating memcpys, 4,096 times inside the timed loop. That
+single line was the entire reported deficit **and** the entire variance
+excess.
+
+Removing it moved the 16-byte round trip from 4.06 µs to 2.23 and collapsed
+the spread from 74% to 16% — the same tightness as the C harness. One cause,
+both symptoms.
+
+**What stops a third recurrence:** the harness now counts its own
+allocations and reports `p*_allocs_per_roundtrip` alongside every timing.
+The C's number on that path is zero — it encodes once and drains through a
+borrowed `dv_queue_peek`. So "this harness is doing work the C is not" is
+now a printed number rather than an invisible assumption, and any future gap
+can be checked against it before it is attributed to the runtime.
+
+It was never codegen. LLVM is deterministic for a given build; run-to-run
+variance in an identical binary comes from allocator state, page faults and
+address-space layout — which is exactly what allocation churn drives.
 
 ## The result
 
@@ -40,6 +58,14 @@ python3 bench/compare.py bench/c-swarm_bench-baseline.json bench/drt-bench-run.j
 states, the resident/cached ratio, and the step counts the rate limiter
 produces (9 at rate 64, 65 at rate 8). That is the differential test passing:
 the port carries the same behaviour, not merely a similar one.
+
+**Message path: 35–40% faster.** The 16-byte round trip is 2.23 µs against
+3.48; 256 B is 3.05 against 5.08; 4 KB is 9.02 against 13.78 — 1.5–1.7×
+the throughput at every payload size. The reason is one line of `dvs.c`:
+`dvs_push` calls `dv_queue_lookup(inst, queue)` on **every message**, paying
+a string lookup inside the guest each time, where `Swarm::push` resolves the
+handle once per residency and caches it. DRT still allocates ~6 times per
+round trip where the C allocates none, and wins anyway.
 
 **Memory: the slot table is 9.7× smaller, and lazily allocated.** 168 B per
 slot against the C's 1,632, and the table grows to what is claimed rather
@@ -61,15 +87,16 @@ here would have meant the port was doing something extra.
 because the C copies each request through two 32 KB stack buffers whatever
 the program's real size. Small-program spawn and subtree kill are at parity.
 
-**Message path: 12–17% slower at small payloads, parity at 4 KB.** The
-16-byte round trip is 4.06 µs against 3.48; 256 B is 5.69 against 5.08; 4 KB
-is 14.0 against 13.8. `Swarm::push` now caches the resolved queue handle per
-residency, so what remains is elsewhere — most likely the `Vec<u8>` per
-message where the C hands over a borrowed span.
-
 **Process RSS is 24% higher per agent** (132 KB against 106 KB), against a
 guest heap that matches to the byte — so the difference is entirely the Rust
 side of the process, not the agents.
+
+**Still worth doing**, now that the harness is not in the way: the ~6
+allocations per round trip are real. Two are the engine seam's — `queue()`
+builds a `CString` for the FFI name and `pop()` returns an owned `Vec` where
+the C peeks a borrowed span. A borrowed-peek on the `Instance` trait would
+close both. It is an optimisation on top of a win rather than a deficit to
+repair.
 
 **Not ported:** `churn` (needs the host-side LRU residency policy the C bench
 carries) and `jwt` (measures the interpreter doing HMAC-SHA256, which is the
