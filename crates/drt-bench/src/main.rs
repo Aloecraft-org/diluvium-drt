@@ -58,6 +58,14 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static ALLOCATOR: Counting = Counting;
 
+/// RSS at process start, captured before any scenario runs.
+///
+/// `rss_bytes_per_agent` read from a whole-suite run is contaminated: by
+/// the time `density` runs, earlier scenarios have left pages resident, and
+/// the figure silently absorbs them. Reporting the delta from this baseline
+/// alongside the absolute total makes the contamination visible instead.
+static RSS_BASELINE: AtomicU64 = AtomicU64::new(0);
+
 fn allocs() -> (u64, u64) {
     (
         ALLOCS.load(Ordering::Relaxed),
@@ -213,6 +221,7 @@ fn density(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
     // process total is what a capacity plan actually pays anyway.
     let _ = rss_before;
     let rss_total = rss_bytes();
+    let rss_baseline = RSS_BASELINE.load(Ordering::Relaxed) as f64;
 
     let started = Instant::now();
     let mut hibernated: f64 = 0.0;
@@ -246,6 +255,13 @@ fn density(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
     c.insert("supervisor_bytes".into(), supervisor_bytes);
     c.insert("rss_bytes_total".into(), rss_total);
     c.insert("rss_bytes_per_agent".into(), rss_total / n as f64);
+    // What *this* scenario added, which is the figure that means something
+    // when the suite has been running for a while.
+    c.insert("rss_baseline_bytes".into(), rss_baseline);
+    c.insert(
+        "rss_bytes_over_baseline_per_agent".into(),
+        (rss_total - rss_baseline).max(0.0) / n as f64,
+    );
     c.insert("hibernated".into(), hibernated);
     c.insert("cached_bytes_per_agent".into(), cached_each);
     c.insert(
@@ -500,6 +516,7 @@ fn median_of(runs: Vec<Case>) -> Case {
 
 fn main() -> ExitCode {
     let a = Args::parse();
+    RSS_BASELINE.store(rss_bytes() as u64, Ordering::Relaxed);
     let deadline = Duration::from_secs_f64(a.deadline);
     let scenarios: Vec<(&str, Scenario)> = vec![
         ("density", density),

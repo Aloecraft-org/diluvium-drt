@@ -34,3 +34,27 @@ jobs:
         run: cargo test --workspace
       - name: Build without default features
         run: cargo build --workspace --no-default-features
+
+  fidelity:
+    # The benchmark's *deterministic* fields, checked against the committed
+    # baseline. Timings deliberately are not: doc/Benchmarks.md's doctrine is
+    # that a shared runner varies by more than most regressions worth
+    # catching, so a wall-clock assertion fails when the runner is busy
+    # rather than when something is wrong. Bytes, counts, the step counts the
+    # rate limiter produces, and allocations on the hot path are all
+    # reproducible — a difference in those is a fidelity bug in the port.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run the benchmark
+        run: cargo run --release -p drt-bench -- --json --seed 7 > /tmp/drt-bench.json
+      - name: Deterministic fields match the baseline
+        run: python3 bench/check-fidelity.py bench/c-swarm_bench-baseline.json /tmp/drt-bench.json
+      - name: Keep the run for inspection
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drt-bench-run
+          path: /tmp/drt-bench.json

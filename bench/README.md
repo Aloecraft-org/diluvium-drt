@@ -18,10 +18,13 @@ Both files are **medians of five runs** (`drt-bench --repeat N` medians
 field-wise; deterministic fields are unaffected, since their median is their
 value).
 
-## Two corrections, and what stops them recurring
+## Corrections, and what stops them recurring
 
-This file has twice reported a message-path result that was not one, so the
-method matters as much as the numbers.
+This file has three times reported a figure that was an artefact of how it
+was measured rather than a property of the runtime, so the method matters as
+much as the numbers. All three were the same mistake in different clothes:
+**the harness doing something the C harness does not, and the difference
+being invisible.**
 
 **First**, a single-sample claim of "20–25% slower". Five back-to-back runs
 of an identical binary spanned 3.88–6.75 µs on the 16-byte round trip — a
@@ -47,9 +50,21 @@ borrowed `dv_queue_peek`. So "this harness is doing work the C is not" is
 now a printed number rather than an invisible assumption, and any future gap
 can be checked against it before it is attributed to the runtime.
 
+**Third**, the memory figure — read from a contaminated run and conflating
+fixed cost with per-agent cost. See the memory section below. The harness now
+records an RSS baseline at process start.
+
 It was never codegen. LLVM is deterministic for a given build; run-to-run
 variance in an identical binary comes from allocator state, page faults and
 address-space layout — which is exactly what allocation churn drives.
+
+**And what is now checked automatically:** `bench/check-fidelity.py` asserts
+the deterministic fields against the committed baseline, and CI runs it on
+every push. Timings deliberately are not asserted — a wall-clock check on a
+shared runner fails when the runner is busy rather than when something is
+wrong. Bytes, counts, the step counts the rate limiter produces, and
+allocations per round trip all reproduce, so those are the ones that break
+the build.
 
 ## The result
 
@@ -87,9 +102,28 @@ here would have meant the port was doing something extra.
 because the C copies each request through two 32 KB stack buffers whatever
 the program's real size. Small-program spawn and subtree kill are at parity.
 
-**Process RSS is 24% higher per agent** (132 KB against 106 KB), against a
-guest heap that matches to the byte — so the difference is entirely the Rust
-side of the process, not the agents.
+**Memory: per-agent slightly *lower*, with a fixed process cost that
+amortises away.** Measured at four agent counts and fitted, both harnesses
+run alone:
+
+| | fixed process cost | per-agent, beyond the guest heap |
+|---|---|---|
+| C (`dvs.c`) | 0.72 MiB | 17.7 KiB |
+| DRT | 3.75 MiB | **16.6 KiB** |
+
+The guest heap itself is identical to the byte (84.7 KiB/agent), so this is
+the runtime's own overhead on each side. DRT carries about 3 MB more fixed —
+a larger binary, the allocator's arenas — and about 1 KiB *less* per agent.
+Total RSS therefore crosses over as a deployment grows: 21% higher at 128
+agents, 5% at 512, **1.9% at 1,024**, and closing. For a swarm, which is a
+thing you run at scale, the fixed part is the part that stops mattering.
+
+An earlier revision of this file reported "24% higher per agent", which was
+wrong twice: the figure was read from a whole-suite run where earlier
+scenarios had left pages resident, and it conflated the fixed cost with the
+per-agent one. The harness now captures RSS at process start and reports
+`rss_bytes_over_baseline_per_agent` beside the absolute total, so the
+contamination is visible rather than silent.
 
 **Still worth doing**, now that the harness is not in the way: the ~6
 allocations per round trip are real. Two are the engine seam's — `queue()`
@@ -110,11 +144,18 @@ same C core on both sides and so cannot distinguish the swarm layers).
 |---|---|---|
 | `slim` (default) | 1.13 MiB | engine, swarm, `time`, `fs` |
 | `full` | 3.53 MiB | the above plus `sql` (SQLite bundled) and `ssh` (russh) |
+| `full`, system SQLite | 2.54 MiB | the same, linking `libsqlite3` instead |
 
-`sql` bundles SQLite rather than linking a system one on purpose — cap1's
-claim is that one binary carries the runtime, and a connector that needs a
-library to have been installed first is the two-binary cliff wearing another
-hat. It costs ~1.8 MiB, which is why `sql` is in `full` and not `slim`.
+**Bundling SQLite costs 0.99 MiB, measured.** The alternative is what
+`diluvium-host` does: `dhost_sql.c` includes `<sqlite3.h>` and links the
+system library, which is why cap1's container runs `apk add sqlite`. It
+bundles here because cap1's claim is that one binary carries the runtime,
+and a connector that needs a library installed first is the two-binary cliff
+wearing another hat. A megabyte is the price of that claim; flipping it is
+one line in `connectors/sql/Cargo.toml` if a deployment would rather pay the
+dependency instead.
+
+`slim` stays at 1.13 MiB either way — `sql` is in `full`.
 
 ## What is actually comparable
 
