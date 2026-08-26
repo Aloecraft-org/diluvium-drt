@@ -57,6 +57,15 @@ struct Args {
     /// Wall-clock cap per scenario before it is called stalled.
     #[arg(long, default_value_t = 120.0)]
     deadline: f64,
+    /// Run each scenario this many times and report the field-wise median.
+    ///
+    /// Single samples do not resolve the message path on a shared runner:
+    /// the 16-byte round trip was measured spanning 3.88-6.75 us across five
+    /// back-to-back runs of an identical binary, so any difference smaller
+    /// than that band is noise wearing a number. Deterministic fields are
+    /// unaffected — their median is their value.
+    #[arg(long, default_value_t = 1)]
+    repeat: usize,
 }
 
 /// A scenario that stopped making progress. Not a slow machine — a stall.
@@ -167,7 +176,11 @@ fn density(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
         .instance_mut(root)
         .map(|i| i.usage().bytes_now as f64)
         .unwrap_or(0.0);
-    let rss_per_agent = (rss_bytes() - rss_before).max(0.0) / n as f64;
+    // Absolute, not a delta: on the second and later repetitions the pages
+    // are already resident, so a delta reads zero and its median lies. The
+    // process total is what a capacity plan actually pays anyway.
+    let _ = rss_before;
+    let rss_total = rss_bytes();
 
     let started = Instant::now();
     let mut hibernated: f64 = 0.0;
@@ -199,7 +212,8 @@ fn density(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
     c.insert("resident_bytes_per_agent".into(), per_agent);
     c.insert("resident_peak_per_agent".into(), resident_peak / n as f64);
     c.insert("supervisor_bytes".into(), supervisor_bytes);
-    c.insert("rss_bytes_per_agent".into(), rss_per_agent);
+    c.insert("rss_bytes_total".into(), rss_total);
+    c.insert("rss_bytes_per_agent".into(), rss_total / n as f64);
     c.insert("hibernated".into(), hibernated);
     c.insert("cached_bytes_per_agent".into(), cached_each);
     c.insert(
@@ -306,7 +320,9 @@ fn queue(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
         c.insert(format!("p{size}_us_per_roundtrip"), elapsed * 1e6 / trips);
         c.insert(
             format!("p{size}_MiB_per_s"),
-            (trips * size as f64) / elapsed / (1024.0 * 1024.0),
+            // Both directions: the payload goes in and the echo comes back,
+            // which is what the C harness counts.
+            (trips * size as f64 * 2.0) / elapsed / (1024.0 * 1024.0),
         );
         c.insert(format!("p{size}_refused_pushes"), refused);
     }
@@ -417,6 +433,24 @@ fn scaled(a: &Args, base: usize) -> usize {
     ((base as f64 * a.scale).round() as usize).max(1)
 }
 
+/// Field-wise median over repeated runs. A field absent from some runs
+/// takes the median of the runs that carry it.
+fn median_of(runs: Vec<Case>) -> Case {
+    let mut merged: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    for run in runs {
+        for (k, v) in run {
+            merged.entry(k).or_default().push(v);
+        }
+    }
+    merged
+        .into_iter()
+        .map(|(k, mut vs)| {
+            vs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            (k, vs[vs.len() / 2])
+        })
+        .collect()
+}
+
 fn main() -> ExitCode {
     let a = Args::parse();
     let deadline = Duration::from_secs_f64(a.deadline);
@@ -438,7 +472,18 @@ fn main() -> ExitCode {
         if !a.json {
             eprintln!("== {name}");
         }
-        match run(&a, deadline) {
+        let mut runs = Vec::with_capacity(a.repeat.max(1));
+        let mut stalled = None;
+        for _ in 0..a.repeat.max(1) {
+            match run(&a, deadline) {
+                Ok(case) => runs.push(case),
+                Err(e) => {
+                    stalled = Some(e);
+                    break;
+                }
+            }
+        }
+        match stalled.map_or_else(|| Ok(median_of(runs)), Err) {
             Ok(case) => {
                 if !a.json {
                     for (k, v) in &case {
@@ -460,6 +505,7 @@ fn main() -> ExitCode {
             "scale": a.scale,
             "seed": a.seed,
             "counted": a.count,
+            "repeat": a.repeat,
             "cases": cases,
         });
         println!("{}", serde_json::to_string_pretty(&out).unwrap());

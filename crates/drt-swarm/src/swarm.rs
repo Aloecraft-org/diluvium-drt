@@ -32,7 +32,9 @@ use std::sync::Arc;
 use drt_caps::{CapSet, Effect, Grant, Principal};
 use drt_config::Budget;
 
-use crate::engine::{Engine, Instance, LoadSpec, ProgramBytes, PushOutcome, RestoreSpec};
+use crate::engine::{
+    Engine, Instance, LoadSpec, ProgramBytes, PushOutcome, QueueHandle, RestoreSpec,
+};
 use crate::InstanceId;
 
 /// The capability that gates `system/lifecycle`.
@@ -156,6 +158,12 @@ struct Slot {
     pending: Vec<Pending>,
     /// A lifecycle request popped but throttled: processed first next step.
     deferred: Option<Vec<u8>>,
+    /// Queue handles already resolved for *this residency*. A handle is
+    /// runtime identity — valid only for the instance that issued it — so
+    /// this is cleared wherever `inst` changes: build, hibernate, wake.
+    /// A short `Vec` rather than a map: an instance uses a handful of queue
+    /// names, and a map's allocation would cost more than the scan saves.
+    handles: Vec<(String, QueueHandle)>,
 }
 
 impl Slot {
@@ -173,6 +181,7 @@ impl Slot {
             snap: None,
             pending: Vec::new(),
             deferred: None,
+            handles: Vec::new(),
         }
     }
 }
@@ -320,6 +329,7 @@ impl<H: SwarmHost> Swarm<H> {
             .map_err(|e| format!("the program would not load: {e}"))?;
         let slot = &mut self.slots[index];
         slot.inst = Some(inst);
+        slot.handles.clear();
         slot.alive = true;
         let id = slot.id;
         self.host.attached(InstanceId(id));
@@ -545,8 +555,10 @@ impl<H: SwarmHost> Swarm<H> {
         let slot = &mut self.slots[index];
         slot.snap = Some(snap);
         // The host's context goes with the instance; waking calls `attached`
-        // again, the same contract a spawn has.
+        // again, the same contract a spawn has. The handles go with it too:
+        // they named queues in an instance that no longer exists.
         slot.inst = None;
+        slot.handles.clear();
         self.host.detached(id);
         Ok(())
     }
@@ -596,11 +608,29 @@ impl<H: SwarmHost> Swarm<H> {
             }
         }
         self.slots[index].inst = Some(inst);
+        self.slots[index].handles.clear();
         self.host.attached(id);
         Ok(())
     }
 
     // ----------------------------------------------------------- delivery --
+
+    /// Resolve a queue by name for a resident instance, remembering the
+    /// answer. Every message would otherwise pay a `dv_queue_lookup` (a
+    /// string lookup inside the guest) plus the engine's own intern scan —
+    /// measured at 20-25% of a round trip (`bench/README.md`).
+    fn resolve_queue(&mut self, index: usize, queue: &str) -> Option<QueueHandle> {
+        if let Some((_, handle)) = self.slots[index]
+            .handles
+            .iter()
+            .find(|(name, _)| name == queue)
+        {
+            return Some(*handle);
+        }
+        let handle = self.slots[index].inst.as_deref_mut()?.queue(queue)?;
+        self.slots[index].handles.push((queue.to_string(), handle));
+        Some(handle)
+    }
 
     /// The host's side of the delivery table: resident → the queue; dead or
     /// unknown → [`SwarmError::Gone`], immediately; cached with
@@ -613,10 +643,14 @@ impl<H: SwarmHost> Swarm<H> {
         if !self.slots[index].alive {
             return Err(SwarmError::Gone);
         }
-        if let Some(inst) = self.slots[index].inst.as_deref_mut() {
-            let Some(q) = inst.queue(queue) else {
+        if self.slots[index].inst.is_some() {
+            let Some(q) = self.resolve_queue(index, queue) else {
                 return Err(SwarmError::UnknownQueue);
             };
+            let inst = self.slots[index]
+                .inst
+                .as_deref_mut()
+                .expect("checked above");
             return match inst.push(q, msg) {
                 Ok(PushOutcome::Accepted) => Ok(()),
                 Ok(_) => Err(SwarmError::Limit(format!(

@@ -12,7 +12,19 @@ on.
   Machine: 4-vCPU Intel Xeon @ 2.80 GHz, Linux container.
 
 - [`drt-bench-run.json`](drt-bench-run.json) — `cargo run --release -p
-  drt-bench -- --json --seed 7`, same machine, same day.
+  drt-bench -- --json --seed 7 --repeat 5`, same machine, same day.
+
+Both files are **medians of five runs**, and that is not a nicety. Five
+back-to-back runs of an identical DRT binary spanned 3.88–6.75 µs on the
+16-byte round trip — a 74% band. Any single-run difference smaller than that
+is noise wearing a number, and an earlier revision of this file reported one
+as if it were a result. `drt-bench --repeat N` medians field-wise;
+deterministic fields are unaffected, since their median is their value.
+
+Worth noting on its own: the C harness's spread over the same five runs was
+3.18–3.70 µs, four times tighter. DRT's variance is real and is its own
+finding — allocation churn on the hot path is the likely cause and has not
+been chased down.
 
 `crates/drt-bench` reproduces the same scenarios with the same flags and the
 same JSON field names, so the two files diff directly:
@@ -21,42 +33,47 @@ same JSON field names, so the two files diff directly:
 python3 bench/compare.py bench/c-swarm_bench-baseline.json bench/drt-bench-run.json
 ```
 
-## The result, first run
+## The result
 
 **Fidelity: every deterministic figure matches.** Snapshot bytes per agent
-(1,430), resident heap per agent (86,750 vs 86,770), agents per GiB in both
-states, the resident/cached ratio (60.66 vs 60.67), and the step counts the
-rate limiter produces (9 at rate 64, 65 at rate 8) all reproduce. That is the
-differential test passing: the port carries the same behaviour, not merely a
-similar one.
+(1,430), resident heap per agent (86,750 vs 86,760), agents per GiB in both
+states, the resident/cached ratio, and the step counts the rate limiter
+produces (9 at rate 64, 65 at rate 8). That is the differential test passing:
+the port carries the same behaviour, not merely a similar one.
 
-**Memory: the slot table is 11× smaller, and lazily allocated.** 144 B per
+**Memory: the slot table is 9.7× smaller, and lazily allocated.** 168 B per
 slot against the C's 1,632, and the table grows to what is claimed rather
-than to the bound. The 512-agent run allocates 73,870 B where the C reserves
-`520 × 1,632` = 848,640 B up front. `doc/Benchmarks.md`'s warning — a swarm
-sized for 100,000 instances reserving 156 MB before a program loads — does
-not carry over: the same bound costs DRT nothing until instances exist.
+than to the bound. `doc/Benchmarks.md`'s warning — a swarm sized for 100,000
+instances reserving 156 MB before a program loads — does not carry over: the
+same bound costs DRT nothing until instances exist.
 
-**Table scanning: faster where the C's cost scaled with the bound.** Idle
-step at 64× table headroom, the figure the C doc labels as one that "does not
-travel", is 233 µs against 409 µs — and DRT's `slots_allocated` stays at 257
-regardless of the headroom, which is the whole reason. Subtree kill of a tree
-of large programs is 55 µs/agent against 128. Spawning a 3.7 KB program is
-597 µs against 939, because the C copies the request through two 32 KB stack
-buffers per spawn whatever the program's real size.
+**Table scanning: 2.2× faster where the C's cost scaled with the bound.**
+Idle step at 64× table headroom, the figure the C doc labels as one that
+"does not travel", is 214 µs against 476 — and DRT's `slots_allocated` stays
+at 257 regardless of the headroom, which is the whole reason. With the table
+sized tight the position reverses: 218 µs against 184, 18% behind.
 
-**Message path: DRT is 20–25% slower, and it is a known cost.** A 16-byte
-round trip is 4.19 µs against 3.48; 4 KB is 16.9 µs against 13.6. Every
-`Swarm::push` resolves the destination queue *by name* and then interns the
-handle, on every message. Caching the resolved handle per (instance, queue)
-is the obvious fix and has not been done yet. The `MiB_per_s` rows are not
-comparable between harnesses — they divide by a differently-counted trip
-total; use `us_per_roundtrip`.
+**Hibernate and wake are at parity** (1.02× and 0.99×), which is the expected
+answer — both call the same `dv_snapshot`/`dv_restore` underneath, so a gap
+here would have meant the port was doing something extra.
 
-**Not yet ported:** `churn` (needs the host-side LRU residency policy the C
-bench carries) and `jwt` (measures the interpreter doing HMAC-SHA256, which
-is the same C core on both sides and so cannot distinguish the swarm layers).
-Both are worth adding; neither tells us anything about the port.
+**Spawning a large program is 22% faster** (578 µs against 739 for 3.7 KB),
+because the C copies each request through two 32 KB stack buffers whatever
+the program's real size. Small-program spawn and subtree kill are at parity.
+
+**Message path: 12–17% slower at small payloads, parity at 4 KB.** The
+16-byte round trip is 4.06 µs against 3.48; 256 B is 5.69 against 5.08; 4 KB
+is 14.0 against 13.8. `Swarm::push` now caches the resolved queue handle per
+residency, so what remains is elsewhere — most likely the `Vec<u8>` per
+message where the C hands over a borrowed span.
+
+**Process RSS is 24% higher per agent** (132 KB against 106 KB), against a
+guest heap that matches to the byte — so the difference is entirely the Rust
+side of the process, not the agents.
+
+**Not ported:** `churn` (needs the host-side LRU residency policy the C bench
+carries) and `jwt` (measures the interpreter doing HMAC-SHA256, which is the
+same C core on both sides and so cannot distinguish the swarm layers).
 
 ## What is actually comparable
 
