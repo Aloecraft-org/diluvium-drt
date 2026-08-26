@@ -1,0 +1,80 @@
+{
+  "cases": {
+    "density": {
+      "agents": 512.0,
+      "agents_per_GiB_cached": 750868.4083916084,
+      "agents_per_GiB_resident": 12377.302522885217,
+      "cached_bytes_per_agent": 1430.0,
+      "hibernate_us_each": 357.514734375,
+      "hibernated": 512.0,
+      "resident_bytes_per_agent": 86750.875,
+      "resident_over_cached": 60.66494755244755,
+      "resident_peak_per_agent": 86016.0,
+      "rss_bytes_per_agent": 104872.0,
+      "slot_table_bytes_allocated": 73872.0,
+      "slot_table_bytes_per_slot": 144.0,
+      "supervisor_bytes": 383924.0,
+      "wake_over_hibernate": 2.046455122063807,
+      "wake_us_each": 731.6378593750001
+    },
+    "queue": {
+      "agents": 64.0,
+      "p16_MiB_per_s": 3.6422883547824294,
+      "p16_refused_pushes": 0.0,
+      "p16_roundtrips_per_s": 238701.0096190213,
+      "p16_us_per_roundtrip": 4.18934130859375,
+      "p256_MiB_per_s": 40.8312841132619,
+      "p256_refused_pushes": 0.0,
+      "p256_roundtrips_per_s": 167244.93972792075,
+      "p256_us_per_roundtrip": 5.9792541503906245,
+      "p4096_MiB_per_s": 230.61884953941956,
+      "p4096_refused_pushes": 0.0,
+      "p4096_roundtrips_per_s": 59038.42548209141,
+      "p4096_us_per_roundtrip": 16.93812109375,
+      "rounds": 64.0
+    },
+    "roster": {
+      "agents": 256.0,
+      "us_per_full_walk": 14.840358,
+      "us_per_lookup": 0.09829663000000001
+    },
+    "spawn": {
+      "large_source_bytes": 3657.0,
+      "large_spawns_per_s": 1675.9498905909143,
+      "large_steps": 9.0,
+      "large_subtree_kill_ms": 28.146748,
+      "large_subtree_kill_us_each": 54.866955165692005,
+      "large_us_per_spawn": 596.6765507812501,
+      "rate8_source_bytes": 227.0,
+      "rate8_spawns_per_s": 1501.7907945938136,
+      "rate8_steps": 65.0,
+      "rate8_subtree_kill_ms": 27.062191,
+      "rate8_subtree_kill_us_each": 52.75280896686159,
+      "rate8_us_per_spawn": 665.87170703125,
+      "small_source_bytes": 227.0,
+      "small_spawns_per_s": 1771.202116121588,
+      "small_steps": 9.0,
+      "small_subtree_kill_ms": 25.705029,
+      "small_subtree_kill_us_each": 50.10726900584796,
+      "small_us_per_spawn": 564.5883046875
+    },
+    "step": {
+      "quarter_agents_slots_allocated": 65.0,
+      "quarter_agents_us_per_step": 25.78696875,
+      "quarter_agents_us_per_step_per_agent": 0.40292138671875,
+      "table_64x_slots_allocated": 257.0,
+      "table_64x_us_per_step": 232.59753124999997,
+      "table_64x_us_per_step_per_agent": 0.9085841064453124,
+      "table_8x_slots_allocated": 257.0,
+      "table_8x_us_per_step": 220.7523125,
+      "table_8x_us_per_step_per_agent": 0.862313720703125,
+      "tight_table_slots_allocated": 257.0,
+      "tight_table_us_per_step": 216.97621875000002,
+      "tight_table_us_per_step_per_agent": 0.8475633544921876
+    }
+  },
+  "counted": false,
+  "scale": 1.0,
+  "seed": 7,
+  "tool": "drt_bench"
+}

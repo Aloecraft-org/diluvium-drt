@@ -11,6 +11,7 @@ members = [
     "crates/drt",
     "connectors/time",
     "connectors/ssh",
+    "crates/drt-bench",
 ]
 
 [workspace.package]

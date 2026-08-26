@@ -363,6 +363,28 @@ impl<H: SwarmHost> Swarm<H> {
         self.slots.iter().filter(|s| s.id != 0 && s.alive).count()
     }
 
+    /// Every live handle, in table order — the roster `drt ps` walks.
+    pub fn ids(&self) -> Vec<InstanceId> {
+        self.slots
+            .iter()
+            .filter(|s| s.id != 0 && s.alive)
+            .map(|s| InstanceId(s.id))
+            .collect()
+    }
+
+    /// One slot's cost. Unlike `dvs.c`, which allocates `max_instances`
+    /// slots up front, the table here grows to what has been claimed — so
+    /// the memory a swarm reserves is [`Swarm::slots_allocated`] × this,
+    /// not the bound × this.
+    pub const fn slot_bytes() -> usize {
+        std::mem::size_of::<Slot>()
+    }
+
+    /// How many slots the table actually holds, used or free.
+    pub fn slots_allocated(&self) -> usize {
+        self.slots.len()
+    }
+
     pub fn parent(&self, id: InstanceId) -> Option<InstanceId> {
         let index = self.find(id)?;
         Some(InstanceId(self.slots[index].parent))

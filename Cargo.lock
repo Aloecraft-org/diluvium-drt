@@ -960,6 +960,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "drt-bench"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "drt-caps",
+ "drt-config",
+ "drt-swarm",
+ "rmp-serde",
+ "rmpv",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "drt-caps"
 version = "0.1.0"
 dependencies = [
