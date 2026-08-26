@@ -19,6 +19,7 @@ drt-hostcall = { workspace = true }
 drt-connector = { workspace = true }
 drt-swarm = { workspace = true }
 drt-connector-time = { workspace = true, optional = true }
+drt-connector-ssh = { workspace = true, optional = true }
 
 [features]
 # One codebase, feature profiles (SPEC.md §3): `slim` runs a script with
@@ -26,5 +27,6 @@ drt-connector-time = { workspace = true, optional = true }
 # connector is its own gate so a profile is a feature list, not a fork.
 default = ["slim"]
 slim = ["connector-time"]
-full = ["slim"]
+full = ["slim", "connector-ssh"]
 connector-time = ["dep:drt-connector-time"]
+connector-ssh = ["dep:drt-connector-ssh"]

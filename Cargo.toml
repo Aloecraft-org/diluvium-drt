@@ -10,6 +10,7 @@ members = [
     "crates/drt-swarm",
     "crates/drt",
     "connectors/time",
+    "connectors/ssh",
 ]
 
 [workspace.package]
@@ -25,6 +26,7 @@ drt-hostcall = { path = "crates/drt-hostcall", version = "0.1.0" }
 drt-connector = { path = "crates/drt-connector", version = "0.1.0" }
 drt-swarm = { path = "crates/drt-swarm", version = "0.1.0" }
 drt-connector-time = { path = "connectors/time", version = "0.1.0" }
+drt-connector-ssh = { path = "connectors/ssh", version = "0.1.0" }
 
 # Field names cross the boundary: the safe diluvium crate serializes with
 # rmp-serde's to_vec_named, and everything here does the same.
@@ -40,6 +42,11 @@ clap = { version = "4", features = ["derive"] }
 # amalgamated C core from the checkout, so a C toolchain is required.
 diluvium = { git = "https://github.com/Aloecraft-org/diluvium" }
 
+# The transport layer: one Transport trait over TCP/WebSocket/WebRTC/SSH,
+# schemes gated per platform as typed refusals (SPEC.md §9; `ssh` is
+# russh-backed, pubkey-only, modern suite only).
+ego_transport = { git = "https://github.com/Aloecraft-org/ego-transport" }
+
 # Consumed as the remaining parallel work lands (SPEC.md §3): ego-proc
-# (ForeignActor — merged, adapter next), ego-platform, ego-transport.
-# Declared the day the first crate here depends on them, not before.
+# (ForeignActor — merged upstream; the adapter is the next milestone) and
+# ego-platform. Declared the day the first crate here depends on them.

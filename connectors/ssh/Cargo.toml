@@ -1,0 +1,21 @@
+[package]
+name = "drt-connector-ssh"
+description = "The ssh client connector: host:ssh/exec over ego-transport's ssh scheme"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+serde = { workspace = true }
+rmpv = { workspace = true }
+ego_transport = { workspace = true }
+tokio = { version = "1", default-features = false, features = ["time"] }
+drt-caps = { workspace = true }
+drt-connector = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tempfile = "3"
+drt-hostcall = { workspace = true }

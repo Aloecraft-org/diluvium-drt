@@ -44,7 +44,10 @@ enum Command {
 
 /// Wire the connectors this build carries against the root config. Off by
 /// default, all of them: only what the config names gets wired.
-#[cfg_attr(not(feature = "connector-time"), allow(unused_mut, unused_variables))]
+#[cfg_attr(
+    not(any(feature = "connector-time", feature = "connector-ssh")),
+    allow(unused_mut, unused_variables)
+)]
 fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
     let mut registry = Registry::new();
     for (name, wiring) in &config.connectors {
@@ -54,6 +57,16 @@ fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
                 .wire(
                     "time",
                     std::sync::Arc::new(drt_connector_time::TimeConnector::new()),
+                    wiring.scope.clone(),
+                )
+                .map_err(|e| e.to_string())?,
+            // Not in `run`'s local defaults: `ssh/exec` needs a tokio
+            // reactor (`serve` brings one) and a deliberate grant.
+            #[cfg(feature = "connector-ssh")]
+            "ssh" => registry
+                .wire(
+                    "ssh",
+                    std::sync::Arc::new(drt_connector_ssh::SshConnector::new()),
                     wiring.scope.clone(),
                 )
                 .map_err(|e| e.to_string())?,
