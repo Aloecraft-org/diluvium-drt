@@ -102,6 +102,20 @@ repair.
 carries) and `jwt` (measures the interpreter doing HMAC-SHA256, which is the
 same C core on both sides and so cannot distinguish the swarm layers).
 
+## Footprint, for the distribution question
+
+`cargo build --profile release-small -p drt`, stripped:
+
+| profile | size | carries |
+|---|---|---|
+| `slim` (default) | 1.13 MiB | engine, swarm, `time`, `fs` |
+| `full` | 3.53 MiB | the above plus `sql` (SQLite bundled) and `ssh` (russh) |
+
+`sql` bundles SQLite rather than linking a system one on purpose — cap1's
+claim is that one binary carries the runtime, and a connector that needs a
+library to have been installed first is the two-binary cliff wearing another
+hat. It costs ~1.8 MiB, which is why `sql` is in `full` and not `slim`.
+
 ## What is actually comparable
 
 Both stacks run the *same C core* underneath — DRT's engine is diluvium via

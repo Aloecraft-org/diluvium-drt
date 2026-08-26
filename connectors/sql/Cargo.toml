@@ -1,0 +1,24 @@
+[package]
+name = "drt-connector-sql"
+description = "The sql connector: a granted directory, and the program names its database inside it"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+serde = { workspace = true }
+rmpv = { workspace = true }
+drt-caps = { workspace = true }
+drt-connector = { workspace = true }
+# Bundled on purpose: one binary carries the runtime (cap1's claim), and a
+# connector that needs a system library to have been installed first is the
+# two-binary cliff wearing another hat. It costs footprint, which is why sql
+# is in the `full` profile and not `slim`.
+rusqlite = { version = "0.37", features = ["bundled"] }
+
+[dev-dependencies]
+drt-hostcall = { workspace = true }
+tempfile = "3"
+pollster = "0.4"

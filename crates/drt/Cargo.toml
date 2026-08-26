@@ -26,6 +26,7 @@ drt-swarm = { workspace = true }
 drt-connector-time = { workspace = true, optional = true }
 drt-connector-ssh = { workspace = true, optional = true }
 drt-connector-fs = { workspace = true, optional = true }
+drt-connector-sql = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -36,7 +37,8 @@ tempfile = "3"
 # connector is its own gate so a profile is a feature list, not a fork.
 default = ["slim"]
 slim = ["connector-time", "connector-fs"]
-full = ["slim", "connector-ssh"]
+full = ["slim", "connector-ssh", "connector-sql"]
 connector-time = ["dep:drt-connector-time"]
 connector-ssh = ["dep:drt-connector-ssh"]
 connector-fs = ["dep:drt-connector-fs"]
+connector-sql = ["dep:drt-connector-sql"]

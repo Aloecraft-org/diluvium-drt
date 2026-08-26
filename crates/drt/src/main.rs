@@ -51,7 +51,8 @@ enum Command {
     not(any(
         feature = "connector-time",
         feature = "connector-ssh",
-        feature = "connector-fs"
+        feature = "connector-fs",
+        feature = "connector-sql"
     )),
     allow(unused_mut, unused_variables)
 )]
@@ -75,6 +76,16 @@ fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
                 .wire(
                     "fs",
                     std::sync::Arc::new(drt_connector_fs::FsConnector::new()),
+                    wiring.scope.clone(),
+                )
+                .map_err(|e| e.to_string())?,
+            // Same scope discipline as fs: the config grants a directory,
+            // the program names its databases inside it.
+            #[cfg(feature = "connector-sql")]
+            "sql" => registry
+                .wire(
+                    "sql",
+                    std::sync::Arc::new(drt_connector_sql::SqlConnector::new()),
                     wiring.scope.clone(),
                 )
                 .map_err(|e| e.to_string())?,

@@ -26,7 +26,7 @@ hostcall encoding (moved here from diluvium).
 | [`crates/drt-connector`](crates/drt-connector) | The `Connector` trait, registry, capability gating, and the dispatcher that guarantees every drained request is answered. Mocks implement the same trait; guests cannot tell. |
 | [`crates/drt-swarm`](crates/drt-swarm) | The swarm: `dvs.c` semantics ported over the `Engine` seam (instance table, attenuated caps with provenance, lifecycle drain, budgets, hibernation + `wake_on_message`); the snapshot store; endpoint refs. |
 | [`crates/drt`](crates/drt) | The binary: `run` \| `start` \| `repl` \| `ps` — see SPEC.md §13a. |
-| [`connectors/`](connectors) | Connector implementations, each feature-gated: `time`, `fs` (a granted directory) and `ssh` (client, `host:ssh/exec`) today; `sql`, `listen`, `exec` per SPEC.md §7. |
+| [`connectors/`](connectors) | Connector implementations, each feature-gated: `time`, `fs` and `sql` (each a granted directory) and `ssh` (client, `host:ssh/exec`) today; `listen` and `exec` per SPEC.md §7. |
 
 ## Building
 
