@@ -27,6 +27,7 @@
 //!   next step. Order and rate are preserved; the only observable difference
 //!   is the requester's own queue depth.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use drt_caps::{CapSet, Effect, Grant, Principal};
@@ -190,6 +191,12 @@ pub struct Swarm<H: SwarmHost> {
     engine: Arc<dyn Engine>,
     host: H,
     slots: Vec<Slot>,
+    /// Handle to slot index. `dvs.c` scans the table on every call that
+    /// takes a handle — its own bench notes that "a host walking its own
+    /// roster is quadratic in the swarm size" — and `Swarm::push` pays that
+    /// scan for every message. A slot never moves (the `Vec` only grows,
+    /// and `release` blanks in place), so an index is safe to hold.
+    index: HashMap<u32, usize>,
     max_instances: usize,
     next_id: u32,
     spawn_rate: u32,
@@ -218,6 +225,7 @@ impl<H: SwarmHost> Swarm<H> {
             engine,
             host,
             slots: Vec::new(),
+            index: HashMap::new(),
             max_instances: if max_instances != 0 {
                 max_instances as usize
             } else {
@@ -273,7 +281,7 @@ impl<H: SwarmHost> Swarm<H> {
         if id.0 == 0 {
             return None;
         }
-        self.slots.iter().position(|s| s.id == id.0)
+        self.index.get(&id.0).copied()
     }
 
     fn claim(&mut self) -> Option<usize> {
@@ -287,6 +295,7 @@ impl<H: SwarmHost> Swarm<H> {
         };
         self.slots[index] = Slot::free();
         self.slots[index].id = self.next_id;
+        self.index.insert(self.next_id, index);
         self.next_id += 1;
         Some(index)
     }
@@ -298,6 +307,7 @@ impl<H: SwarmHost> Swarm<H> {
         if self.slots[index].inst.is_some() {
             self.host.detached(InstanceId(id));
         }
+        self.index.remove(&id);
         self.slots[index] = Slot::free();
         // The slot is free; the handle is not reused.
     }

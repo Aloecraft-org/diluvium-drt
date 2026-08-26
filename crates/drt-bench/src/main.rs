@@ -472,16 +472,12 @@ fn roster(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
     let per_walk = started.elapsed().as_secs_f64() * 1e6 / reps as f64;
     std::hint::black_box(sink);
 
-    let last = *ids.last().unwrap_or(&root);
-    let started = Instant::now();
-    let mut sink = 0usize;
-    for _ in 0..reps * 100 {
-        if sw.resident(last) {
-            sink += 1;
-        }
-    }
-    let per_lookup = started.elapsed().as_secs_f64() * 1e6 / (reps * 100) as f64;
-    std::hint::black_box(sink);
+    // Derived from the walk, not measured against one handle — which is how
+    // the C harness derives it (`elapsed / reps / n`). Timing a single
+    // *last* handle instead measures the worst position against the C's
+    // average, and reports a ~2x gap that is entirely the choice of index.
+    let per_lookup = per_walk / ids.len().max(1) as f64;
+    let _ = root;
 
     let mut c = Case::new();
     c.insert("agents".into(), n as f64);

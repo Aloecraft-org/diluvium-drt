@@ -18,123 +18,104 @@ Both files are **medians of five runs** (`drt-bench --repeat N` medians
 field-wise; deterministic fields are unaffected, since their median is their
 value).
 
-## Corrections, and what stops them recurring
+## Both sides are captured interleaved. That is not optional.
 
-This file has three times reported a figure that was an artefact of how it
-was measured rather than a property of the runtime, so the method matters as
-much as the numbers. All three were the same mistake in different clothes:
-**the harness doing something the C harness does not, and the difference
-being invisible.**
+`bench/ab.sh N` alternates C, DRT, C, DRT… and medians each side. Capturing
+one and then the other — even an hour apart — compares two machine states,
+not two implementations, and on a shared container that difference dwarfs
+everything being measured.
 
-**First**, a single-sample claim of "20–25% slower". Five back-to-back runs
-of an identical binary spanned 3.88–6.75 µs on the 16-byte round trip — a
-74% band — so any single-run difference smaller than that was noise wearing
-a number. Fixed by medianing.
+This branch learned that the hard way. `tight_table_us_per_step` read 184 µs
+from a C baseline captured in the morning and 67–91 µs from the *same binary*
+that afternoon. Every ratio quoted against that baseline — including a
+confident "the message path is 35–40% faster" — was measuring the
+container's mood.
 
-**Second, and the real one**: the remaining gap was *this harness doing work
-the C harness does not*. The C encodes its payload once before the clock
-starts (`mp_filler`, then the same buffer every push); this one re-encoded a
-`rmpv::Value` into a fresh `Vec` per message — three allocations and, at
-4 KB, ten reallocating memcpys, 4,096 times inside the timed loop. That
-single line was the entire reported deficit **and** the entire variance
-excess.
+## Four corrections, and the guard each one bought
 
-Removing it moved the 16-byte round trip from 4.06 µs to 2.23 and collapsed
-the spread from 74% to 16% — the same tightness as the C harness. One cause,
-both symptoms.
+Every one was the same mistake in different clothes: **something differing
+between the two measurements that was not the runtime, and was invisible.**
 
-**What stops a third recurrence:** the harness now counts its own
-allocations and reports `p*_allocs_per_roundtrip` alongside every timing.
-The C's number on that path is zero — it encodes once and drains through a
-borrowed `dv_queue_peek`. So "this harness is doing work the C is not" is
-now a printed number rather than an invisible assumption, and any future gap
-can be checked against it before it is attributed to the runtime.
+| # | the artefact | the guard now in place |
+|---|---|---|
+| 1 | A single-sample claim, against a 74% run-to-run band | `--repeat N`, field-wise medians |
+| 2 | The harness re-encoded its payload per message; the C encodes once | `p*_allocs_per_roundtrip` printed beside every timing (the C's is zero) |
+| 3 | RSS read from a whole-suite run, conflating fixed cost with per-agent | `rss_baseline_bytes` captured at process start |
+| 4 | Timings compared across machine states hours apart | `bench/ab.sh` — interleaved capture, both files written together |
 
-**Third**, the memory figure — read from a contaminated run and conflating
-fixed cost with per-agent cost. See the memory section below. The harness now
-records an RSS baseline at process start.
+A fifth was caught before it was published: `us_per_lookup` timed the *last*
+handle repeatedly (a full-table scan, the worst position) against the C's
+figure, which is *derived* from a whole-roster walk and so is the average
+position. That is a factor of two before any implementation difference. It is
+now derived identically.
 
 It was never codegen. LLVM is deterministic for a given build; run-to-run
 variance in an identical binary comes from allocator state, page faults and
-address-space layout — which is exactly what allocation churn drives.
+address-space layout.
 
-**And what is now checked automatically:** `bench/check-fidelity.py` asserts
-the deterministic fields against the committed baseline, and CI runs it on
-every push. Timings deliberately are not asserted — a wall-clock check on a
-shared runner fails when the runner is busy rather than when something is
-wrong. Bytes, counts, the step counts the rate limiter produces, and
-allocations per round trip all reproduce, so those are the ones that break
-the build.
+**Checked automatically:** `bench/check-fidelity.py` asserts the
+deterministic fields against the committed baseline, and CI runs it on every
+push. Timings deliberately are not asserted — on a shared runner that is a
+check that fails when the runner is busy. Bytes, counts, the step counts the
+rate limiter produces, and allocations per round trip all reproduce.
 
 ## The result
 
+Interleaved, medians of five passes each.
+
 **Fidelity: every deterministic figure matches.** Snapshot bytes per agent
-(1,430), resident heap per agent (86,750 vs 86,760), agents per GiB in both
-states, the resident/cached ratio, and the step counts the rate limiter
-produces (9 at rate 64, 65 at rate 8). That is the differential test passing:
-the port carries the same behaviour, not merely a similar one.
+(1,430), resident heap per agent, the resident/cached ratio, and the step
+counts the rate limiter produces (9 at rate 64, 65 at rate 8). The port
+carries the same behaviour, not merely a similar one.
 
-**Message path: 35–40% faster.** The 16-byte round trip is 2.23 µs against
-3.48; 256 B is 3.05 against 5.08; 4 KB is 9.02 against 13.78 — 1.5–1.7×
-the throughput at every payload size. The reason is one line of `dvs.c`:
-`dvs_push` calls `dv_queue_lookup(inst, queue)` on **every message**, paying
-a string lookup inside the guest each time, where `Swarm::push` resolves the
-handle once per residency and caches it. DRT still allocates ~6 times per
-round trip where the C allocates none, and wins anyway.
+**Anything that touches the instance table is far ahead.** `dvs.c` resolves a
+handle by scanning the slot table, and its own bench notes that "every call
+that takes a handle pays it… a host walking its own roster is quadratic in
+the swarm size". DRT keeps a handle→index map, so:
 
-**Memory: the slot table is 9.7× smaller, and lazily allocated.** 168 B per
-slot against the C's 1,632, and the table grows to what is claimed rather
-than to the bound. `doc/Benchmarks.md`'s warning — a swarm sized for 100,000
-instances reserving 156 MB before a program loads — does not carry over: the
-same bound costs DRT nothing until instances exist.
+| | C | DRT | |
+|---|---|---|---|
+| one handle lookup | 0.044 µs | **0.0063 µs** | 7.0× |
+| full roster walk (256) | 11.2 µs | **1.6 µs** | 6.9× |
+| idle step, 64× table headroom | 190 µs | **73 µs** | 2.6× |
+| idle step, 8× headroom | 82.9 µs | **70.4 µs** | 1.2× |
 
-**Table scanning: 2.2× faster where the C's cost scaled with the bound.**
-Idle step at 64× table headroom, the figure the C doc labels as one that
-"does not travel", is 214 µs against 476 — and DRT's `slots_allocated` stays
-at 257 regardless of the headroom, which is the whole reason. With the table
-sized tight the position reverses: 218 µs against 184, 18% behind.
+The idle-step win is the same property twice: the C's cost scales with the
+table *bound*, DRT's with what is actually claimed.
 
-**Hibernate and wake are at parity** (1.02× and 0.99×), which is the expected
-answer — both call the same `dv_snapshot`/`dv_restore` underneath, so a gap
-here would have meant the port was doing something extra.
+**Message path: DRT is 19–29% slower, and this is the real remaining gap.**
 
-**Spawning a large program is 22% faster** (578 µs against 739 for 3.7 KB),
-because the C copies each request through two 32 KB stack buffers whatever
-the program's real size. Small-program spawn and subtree kill are at parity.
+| payload | C | DRT | |
+|---|---|---|---|
+| 16 B | 1.60 µs | 1.92 µs | 1.20 |
+| 256 B | 2.27 µs | 2.71 µs | 1.19 |
+| 4 KB | 6.85 µs | 8.84 µs | 1.29 |
 
-**Memory: per-agent slightly *lower*, with a fixed process cost that
-amortises away.** Measured at four agent counts and fitted, both harnesses
-run alone:
+The handle index did not move this — with 64 agents the scan it replaced was
+short. The likely cause is the ~6 allocations per round trip the harness
+counts, against the C's zero: `Instance::queue()` builds a `CString` for the
+FFI name and `Instance::pop()` returns an owned `Vec` where the C peeks a
+borrowed span and releases it. The arithmetic is about right — six
+allocations at 50–100 ns is 0.3–0.6 µs, and the gap is 0.32 µs at 16 B.
+Closing it means a borrowed peek on the `Instance` trait, which is tracked
+and not yet done.
 
-| | fixed process cost | per-agent, beyond the guest heap |
-|---|---|---|
-| C (`dvs.c`) | 0.72 MiB | 17.7 KiB |
-| DRT | 3.75 MiB | **16.6 KiB** |
+**Per-instance work is at or near parity**, and moves between passes:
+hibernate 1.08, wake 1.15, small spawn 1.23, subtree kill 0.86–1.16, tight
+idle step 1.05. Large-program spawn is consistently ahead (0.84) because the
+C copies each request through two 32 KB stack buffers whatever its real size.
 
-The guest heap itself is identical to the byte (84.7 KiB/agent), so this is
-the runtime's own overhead on each side. DRT carries about 3 MB more fixed —
-a larger binary, the allocator's arenas — and about 1 KiB *less* per agent.
-Total RSS therefore crosses over as a deployment grows: 21% higher at 128
-agents, 5% at 512, **1.9% at 1,024**, and closing. For a swarm, which is a
-thing you run at scale, the fixed part is the part that stops mattering.
+**Memory: 5% higher per agent, from a fixed cost that amortises.** Fitted
+across four agent counts with each harness run alone: C carries 0.72 MiB
+fixed and 17.7 KiB per agent beyond the guest heap; DRT carries 3.75 MiB
+fixed and **16.6 KiB** per agent. The guest heap is identical to the byte, so
+this is each runtime's own overhead. Total RSS crosses over as a deployment
+grows — 21% higher at 128 agents, 5% at 512, 1.9% at 1,024, still closing.
 
-An earlier revision of this file reported "24% higher per agent", which was
-wrong twice: the figure was read from a whole-suite run where earlier
-scenarios had left pages resident, and it conflated the fixed cost with the
-per-agent one. The harness now captures RSS at process start and reports
-`rss_bytes_over_baseline_per_agent` beside the absolute total, so the
-contamination is visible rather than silent.
-
-**Still worth doing**, now that the harness is not in the way: the ~6
-allocations per round trip are real. Two are the engine seam's — `queue()`
-builds a `CString` for the FFI name and `pop()` returns an owned `Vec` where
-the C peeks a borrowed span. A borrowed-peek on the `Instance` trait would
-close both. It is an optimisation on top of a win rather than a deficit to
-repair.
-
-**Not ported:** `churn` (needs the host-side LRU residency policy the C bench
-carries) and `jwt` (measures the interpreter doing HMAC-SHA256, which is the
-same C core on both sides and so cannot distinguish the swarm layers).
+**Not ported:** `churn` (needs the host-side LRU residency policy — which is
+also what `drt start` will need, so it is worth doing before building on the
+residency story) and `jwt` (measures the interpreter doing HMAC-SHA256, the
+same C core on both sides, so it cannot distinguish the swarm layers).
 
 ## Footprint, for the distribution question
 
