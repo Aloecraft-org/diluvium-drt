@@ -1,0 +1,26 @@
+{
+  "_comment": "A root config (SPEC.md §5). The same shape is a spawn request: host-config and spawn-request are one serde object, and attenuation is the only rule between them.",
+
+  "program": { "path": "examples/hello.dlua" },
+
+  "_caps": "The ceiling. Everything below is a subset of this, forever.",
+  "caps": [
+    { "capability": "host:time" },
+    { "capability": "host:fs/*" }
+  ],
+
+  "_budget": "Unstated bounds are unlimited at the root and inherited below.",
+  "budget": { "instructions": 100000000 },
+
+  "_connectors": "Off by default, all of them. A connector is wired to a PLACE; the program names resources inside it, and this file never carries an application's filenames.",
+  "connectors": {
+    "time": {},
+    "fs": {
+      "scope": {
+        "scope": "./examples/workspace",
+        "access": "readonly",
+        "max_bytes": 65536
+      }
+    }
+  }
+}

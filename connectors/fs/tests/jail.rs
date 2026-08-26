@@ -109,8 +109,8 @@ fn escapes_are_refused_on_the_resolved_path() {
     for bad in ["../secret.txt", "../../etc/passwd", "a/../../secret.txt"] {
         let err = call(&sc, "fs/read", read_args(bad)).unwrap_err();
         assert!(
-            err.contains("outside the granted scope") || err.contains("No such file"),
-            "{bad} was not refused: {err}"
+            err.contains("outside the granted scope"),
+            "{bad} must read as a jail refusal whether or not the target exists: {err}"
         );
     }
     let err = call(&sc, "fs/read", read_args("/etc/passwd")).unwrap_err();

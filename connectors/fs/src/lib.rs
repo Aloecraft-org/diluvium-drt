@@ -107,6 +107,12 @@ impl FsScope {
         if rel.is_empty() {
             return Err("the path is empty".into());
         }
+        // Lexically first: an escape reads the same whether or not the
+        // target exists, which is a clearer message and one less thing a
+        // probe can learn from the difference.
+        if !lexically_within(&root, rel_path) {
+            return Err(outside(rel));
+        }
         let joined = root.join(rel_path);
         let resolved = if must_exist {
             std::fs::canonicalize(&joined).map_err(|e| format!("'{rel}': {e}"))?
@@ -121,16 +127,44 @@ impl FsScope {
                 .ok_or_else(|| format!("'{rel}' names no file"))?;
             parent.join(name)
         };
-        // The check is on the *resolved* path, so `..` and symlinks are
-        // both caught by the same rule rather than by two special cases.
+        // And again on what the filesystem actually resolved to, which is
+        // where a symlink pointing out of the jail is caught.
         if !resolved.starts_with(&root) {
-            return Err(format!(
-                "'{rel}' resolves outside the granted scope; a program names files within \
-                 what the host granted, and nothing beyond it"
-            ));
+            return Err(outside(rel));
         }
         Ok(resolved)
     }
+}
+
+fn outside(rel: &str) -> String {
+    format!(
+        "'{rel}' resolves outside the granted scope; a program names files within what the \
+         host granted, and nothing beyond it"
+    )
+}
+
+/// Would joining `rel` onto `root` stay under it, folding `.` and `..`
+/// without asking the filesystem? A `..` that would climb above the root is
+/// what this catches, and it catches it whether or not the path exists.
+fn lexically_within(root: &Path, rel: &Path) -> bool {
+    use std::path::Component;
+    let mut depth = 0i32;
+    for part in rel.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+            }
+            Component::Normal(_) => depth += 1,
+            // A root or prefix component inside a supposedly relative path.
+            Component::RootDir | Component::Prefix(_) => return false,
+        }
+    }
+    let _ = root;
+    true
 }
 
 struct FsScopeType;

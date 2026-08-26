@@ -958,6 +958,8 @@ dependencies = [
  "drt-hostcall",
  "drt-swarm",
  "pollster",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

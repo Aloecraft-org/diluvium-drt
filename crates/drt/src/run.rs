@@ -19,7 +19,12 @@ use drt_swarm::engine::{
 const CALLS: &str = "host/calls";
 const REPLIES: &str = "host/replies";
 
-pub fn run(program: &Path, dispatcher: &Dispatcher) -> Result<(), String> {
+pub fn run(
+    program: &Path,
+    dispatcher: &Dispatcher,
+    caps: Vec<Grant>,
+    budget: drt_config::Budget,
+) -> Result<(), String> {
     let source = std::fs::read_to_string(program)
         .map_err(|e| format!("cannot read {}: {e}", program.display()))?;
     let name = program
@@ -32,15 +37,15 @@ pub fn run(program: &Path, dispatcher: &Dispatcher) -> Result<(), String> {
         .load(LoadSpec {
             program: ProgramBytes::Source(&source),
             name,
-            budget: Default::default(),
+            budget,
             unsafe_stdlib: false,
         })
         .map_err(|e| e.to_string())?;
 
-    // A local run is the operator running their own program: the ceiling is
-    // wide (`host:*`), and what is actually reachable is what this build
-    // wires — an unwired family answers `denied`, exactly as deployed.
-    let caps: Arc<CapSet> = CapSet::root(vec![Grant::grant("host:*")]);
+    // The ceiling the config set (or the wide local default when there is
+    // no config). What is actually reachable is the intersection with what
+    // this build wires — an unwired family answers `denied` either way.
+    let caps: Arc<CapSet> = CapSet::root(caps);
 
     let mut step = inst.run().map_err(guest_error)?;
     loop {

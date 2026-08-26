@@ -43,6 +43,18 @@ it:
 cargo run -p drt -- run examples/hello.dlua
 ```
 
+A deployment is a config plus a program. The config names the ceiling and
+wires each connector to a *place*; the program names resources inside those
+places, and the config never carries an application's filenames
+([`examples/deployment.json`](examples/deployment.json)):
+
+```
+cargo run -p drt -- run --config examples/deployment.json
+```
+
+An ill-scoped grant or an unreachable scope fails at startup, by name —
+never as a mystifying `denied` at first call.
+
 The ego-proc `ForeignActor` adapter and `drt start` (listener + sshd + REPL
 attach — the Lab-demo milestone) are the next milestones. A seams-only build
 (`--no-default-features`) compiles without the C core — the shape the wasm

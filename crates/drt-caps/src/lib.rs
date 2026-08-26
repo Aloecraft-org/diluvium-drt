@@ -271,8 +271,12 @@ impl ScopeType for NoScope {
     }
 }
 
+/// A scope that does not fit the capability it was written for. Raised
+/// from two places — validating a config's grants, and wiring a connector —
+/// so the wording names the capability and the fix rather than guessing
+/// which of the two the reader was looking at.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("grant '{capability}': {detail} (expected {expected})")]
+#[error("'{capability}': {detail} (expected {expected})")]
 pub struct ScopeError {
     pub capability: String,
     pub expected: String,

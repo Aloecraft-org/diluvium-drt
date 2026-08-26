@@ -7,13 +7,12 @@
 //! listener and the ego-proc adapters land. `wire_connectors` is where a
 //! profile's feature gates meet the root config, once, for every subcommand.
 
-mod run;
-
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
+use drt::{config, run};
 use drt_config::RootConfig;
 use drt_connector::Registry;
 
@@ -32,8 +31,8 @@ enum Command {
     /// Run one program to completion: config + one program is a complete
     /// deployment.
     Run {
-        /// A `.dlua` or `.lua` file.
-        program: PathBuf,
+        /// A `.dlua` or `.lua` file. Optional when the config names one.
+        program: Option<PathBuf>,
     },
     /// Run the deployment: the root program, its swarm, and whatever
     /// listeners the config names. Foreground; a process supervisor
@@ -99,43 +98,63 @@ fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
     Ok(registry)
 }
 
-/// A local run's config until the file+flags+env merge lands: the slim
-/// profile's promise (time today; fs and stdio to follow), wired explicitly
-/// like any other deployment would.
-fn local_config() -> RootConfig {
-    let mut config = RootConfig::default();
+/// With no config file, a local run still gets the connectors this build
+/// carries that need no scope of their own — the zero-ceremony case. `fs`
+/// is not among them on purpose: it has no default place, and inventing one
+/// on the program's behalf is the wrong the scope model exists to fix.
+fn local_defaults(config: &mut RootConfig) {
     if cfg!(feature = "connector-time") {
         config.connectors.insert("time".into(), Default::default());
     }
-    config
+}
+
+fn assemble(cli: &Cli) -> Result<(RootConfig, drt_connector::Dispatcher), String> {
+    let mut config = config::load(cli.config.as_deref())?;
+    if cli.config.is_none() {
+        local_defaults(&mut config);
+    }
+    let registry = wire_connectors(&config)?;
+    // By name, at startup: never a mystifying `denied` at first call.
+    config::validate_grants(&config, &registry)?;
+    Ok((config, drt_connector::Dispatcher::new(registry)))
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    if let Some(path) = &cli.config {
-        eprintln!(
-            "drt: --config {} is not read yet; using the local-run defaults",
-            path.display()
-        );
-    }
-    let config = local_config();
-    let registry = match wire_connectors(&config) {
-        Ok(r) => r,
+    let (config, dispatcher) = match assemble(&cli) {
+        Ok(pair) => pair,
         Err(e) => {
             eprintln!("drt: {e}");
             return ExitCode::FAILURE;
         }
     };
-    let dispatcher = drt_connector::Dispatcher::new(registry);
     match cli.command {
-        Command::Run { program } => match run::run(&program, &dispatcher) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("drt run: {e}");
-                ExitCode::FAILURE
+        Command::Run { ref program } => {
+            // The CLI argument names the program; a config may name one
+            // too, and the argument wins because it is the more specific
+            // thing the operator just typed.
+            let path = program.clone().or_else(|| match &config.root.program {
+                Some(drt_config::Program::Path(p)) => Some(p.clone()),
+                _ => None,
+            });
+            let Some(path) = path else {
+                eprintln!("drt run: name a program, as an argument or as `program` in the config");
+                return ExitCode::FAILURE;
+            };
+            match run::run(
+                &path,
+                &dispatcher,
+                config::ceiling(&config),
+                config.root.budget,
+            ) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("drt run: {e}");
+                    ExitCode::FAILURE
+                }
             }
-        },
-        other => {
+        }
+        ref other => {
             let what = match other {
                 Command::Start => "start",
                 Command::Repl => "repl",
