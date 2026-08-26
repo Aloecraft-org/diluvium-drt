@@ -38,7 +38,7 @@ in priority order:
 | Host protocol duties | `doc/Host.md` | Construction, drive loop, roster, queue pump, hostcalls. Acceptance test: **a guest must not be able to tell hosts apart.** |
 | Capability direction | `doc/Capabilities.md` | effect × capability × scope; one config shape at every depth; the host is the root's parent; host-config and spawn-request are the same object. DRT is the first implementation of this model — do NOT port the `.host.lua` shape. |
 | Existing Rust bindings | `bindings/rust/` | `diluvium-sys` (partial transcription — see §4), safe `diluvium` crate (`Send + !Sync`, `rmp-serde` with `to_vec_named` — field names cross the boundary), `diluvium-wasmtime` (core as wasm module; note its Cargo.toml comments on sjlj/EH). |
-| Acceptance suite | discofetch repo, `capability_testing/` | cap1–cap5 slices driving the real host. Port into this repo as integration tests; passing them rewired to DRT is the definition of "usable". |
+| Acceptance suite | discofetch repo, `capability_testing/` | cap1–cap7 slices driving the real host (grown past the cap1–cap5 this spec was written against: `cap6_fs` and `cap7_plugins` were added since). Port into this repo as integration tests; passing them rewired to DRT is the definition of "usable". |
 
 ## 3. Workspace layout
 
@@ -53,7 +53,7 @@ diluvium-drt/
                     # token allocation (guest lib allocates from 2^30 up)
     drt-connector   # Connector trait, registry, capability gating, mocks
     drt-swarm       # the dvs port, over diluvium-sys; Engine seam
-    drt             # the binary: run | serve | repl | ps
+    drt             # the binary: run | start | repl | ps (see 13a)
   connectors/       # time, fs, sql, listen, exec, ssh — each feature-gated
 ```
 
@@ -236,13 +236,73 @@ loading, non-local ref schemes.
 **Out, captured:** WIT/components, replay, multi-machine endpoints, Lab UI
 (but introspection is designed as Lab's backend), multi-engine.
 
-**Acceptance:** the ported capability suite passes against `drt serve`; guest
+**Acceptance:** the ported capability suite passes against `drt start`; guest
 indistinguishability holds (same guest, mock vs real connectors); `drt repl`
 locally and `ssh`-attach against a live swarm — that demo is the finish line.
 
+## 13a. The command surface (settled 2026-08-26)
+
+`drt` is **one binary that is both the runtime and its own client**, like
+`git` — not a client plus a daemon holding a registry of deployments, like
+`docker`. The decisions, and why:
+
+**One process, one deployment.** §5 already fixes it: the root config is a
+property of the OS process, so one process is one root config is one swarm.
+Two deployments are two processes. There is no supervising `drtctl` that owns
+several, and that is the same refusal as §8's: this project has no supervisor
+type, and process supervision is systemd/docker/k8s's job, done better.
+
+**`drt start`**, replacing the working name `serve` — it pairs with `stop`,
+where `up` would imply the compose-style multi-service orchestration this
+deliberately is not. It runs **in the foreground**, logs to stdout, and exits
+on SIGTERM: the twelve-factor shape, so a process supervisor can supervise it.
+There is deliberately **no `--detach`**.
+
+**Port binding is opt-in, never implied by the verb.** `start` binds only what
+the config's `listeners` name. A config with none is a complete, legitimate
+deployment that binds nothing — a headless swarm driving its root program.
+
+**The client commands reach a running deployment over a transport endpoint** —
+the §9 sshd subsystem channel carrying framed msgpack, which is the same
+mechanism serving REPL attach and remote access. One mechanism, three uses. A
+deployment exposes a local control endpoint derived from its name, so `drt ps`
+with no arguments finds the obvious local one and `drt ps ssh://host:2222`
+reaches any other. N parallel deployments are therefore N processes and N
+endpoints, with no registry invented to track them. (If enumerating local ones
+is ever wanted, the honest form is a filesystem convention — control endpoints
+under one directory — and never a daemon.)
+
+**Verbs, and what each may honestly mean:**
+
+| verb | what it does |
+|---|---|
+| `run <program>` | one program to completion, foreground. No listeners, no control endpoint. |
+| `start` | the deployment. Foreground; binds what the config names. |
+| `stop` | graceful: stop accepting, hibernate everything parked into the snapshot store, exit. This *is* the durable-agents story, so it earns v1. |
+| `ps` / `caps <id>` / `status` | introspection against a running deployment (§6). |
+| `repl` / `attach` | the REPL instance, local or wired into a live deployment (§9). |
+| `pause` / `resume` | **named, not built in v1.** See the caveat below. |
+
+**The `pause` caveat, because it is a doctrine trap.** `pause <instance>`
+must not mean "suspend that agent": §8 is emphatic that hibernation is
+self-initiated and nothing swaps an instance out behind its back. What is
+legitimate is what `dvs_hibernate` already allows — hibernating a *parked*
+descendant, which is safe precisely because the descendant chose the moment by
+parking. So `pause <id>` may only mean "hibernate it if it is parked, and
+refuse by name if it is not." Deployment-wide `pause` (stop stepping, e.g. to
+take a consistent snapshot set) is unobjectionable but is a seam, not v1.
+
+**Relation to ego-proc's lifecycle: none, deliberately.** ego-proc's
+`LifecycleStatus`/`ControlSignal` govern actors *inside* one process — the
+connector and service actors of §9. The OS process's own lifecycle belongs to
+whatever started it. Where that vocabulary does surface is in `ps`/`status`
+output: one `ActorHealth` shape covering both populations, service actors and
+guest agents, which is what §9 asks for. The CLI never grows a verb that
+commands a guest agent, because commanding guest agents is a program's job.
+
 ## 13. Open questions (deliberately)
 
-Final naming (DRT vs DRE; binary name); sql connector's verb surface
+Final naming (DRT vs DRE); sql connector's verb surface
 (`sql/query` stays as an ergonomic verb over fs-scope per Capabilities.md §4);
 hibernated-instance usage accessor (v1: show hibernated + budget + cached
 size, no usage figure — the agreed stub, not an oversight); whether

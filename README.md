@@ -25,7 +25,7 @@ hostcall encoding (moved here from diluvium).
 | [`crates/drt-config`](crates/drt-config) | Manifest/config schema. The serde types are the source of truth; one shape at every depth — host-config and spawn-request are the same object. |
 | [`crates/drt-connector`](crates/drt-connector) | The `Connector` trait, registry, capability gating, and the dispatcher that guarantees every drained request is answered. Mocks implement the same trait; guests cannot tell. |
 | [`crates/drt-swarm`](crates/drt-swarm) | The swarm: `dvs.c` semantics ported over the `Engine` seam (instance table, attenuated caps with provenance, lifecycle drain, budgets, hibernation + `wake_on_message`); the snapshot store; endpoint refs. |
-| [`crates/drt`](crates/drt) | The binary: `run` \| `serve` \| `repl` \| `ps`. |
+| [`crates/drt`](crates/drt) | The binary: `run` \| `start` \| `repl` \| `ps` — see SPEC.md §13a. |
 | [`connectors/`](connectors) | Connector implementations, each feature-gated: `time` and `ssh` (client, `host:ssh/exec`) today; `fs`, `sql`, `listen`, `exec` per SPEC.md §7. |
 
 ## Building
@@ -43,7 +43,7 @@ it:
 cargo run -p drt -- run examples/hello.dlua
 ```
 
-The ego-proc `ForeignActor` adapter and `drt serve` (listener + sshd + REPL
+The ego-proc `ForeignActor` adapter and `drt start` (listener + sshd + REPL
 attach — the Lab-demo milestone) are the next milestones. A seams-only build
 (`--no-default-features`) compiles without the C core — the shape the wasm
 targets start from.

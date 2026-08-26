@@ -1,8 +1,10 @@
-//! The `drt` binary (SPEC.md §3): `run | serve | repl | ps`.
+//! The `drt` binary: `run | start | repl | ps` (SPEC.md §13a settles the
+//! command surface — one process per deployment, client commands reaching a
+//! running one over its control endpoint, no daemon and no registry).
 //!
 //! `run` is real: one program, driven to completion with the hostcall pump
-//! (see `run.rs`). `serve`, `repl` and `ps` are honest stubs until the swarm
-//! port and the ego-proc adapters land. `wire_connectors` is where a
+//! (see `run.rs`). `start`, `repl` and `ps` are honest stubs until the
+//! listener and the ego-proc adapters land. `wire_connectors` is where a
 //! profile's feature gates meet the root config, once, for every subcommand.
 
 mod run;
@@ -33,8 +35,10 @@ enum Command {
         /// A `.dlua` or `.lua` file.
         program: PathBuf,
     },
-    /// Run a deployment with transport listeners.
-    Serve,
+    /// Run the deployment: the root program, its swarm, and whatever
+    /// listeners the config names. Foreground; a process supervisor
+    /// backgrounds it, and there is deliberately no --detach.
+    Start,
     /// A REPL is an instance, not a mode: a sealed guest with a generous
     /// local grant, bridged to this terminal.
     Repl,
@@ -61,7 +65,7 @@ fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
                 )
                 .map_err(|e| e.to_string())?,
             // Not in `run`'s local defaults: `ssh/exec` needs a tokio
-            // reactor (`serve` brings one) and a deliberate grant.
+            // reactor (`start` brings one) and a deliberate grant.
             #[cfg(feature = "connector-ssh")]
             "ssh" => registry
                 .wire(
@@ -118,7 +122,7 @@ fn main() -> ExitCode {
         },
         other => {
             let what = match other {
-                Command::Serve => "serve",
+                Command::Start => "start",
                 Command::Repl => "repl",
                 _ => "ps",
             };
