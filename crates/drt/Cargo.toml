@@ -20,13 +20,15 @@ drt-connector = { workspace = true }
 drt-swarm = { workspace = true }
 drt-connector-time = { workspace = true, optional = true }
 drt-connector-ssh = { workspace = true, optional = true }
+drt-connector-fs = { workspace = true, optional = true }
 
 [features]
 # One codebase, feature profiles (SPEC.md §3): `slim` runs a script with
 # fs/time/stdio only; `full` is everything this build can carry. Each
 # connector is its own gate so a profile is a feature list, not a fork.
 default = ["slim"]
-slim = ["connector-time"]
+slim = ["connector-time", "connector-fs"]
 full = ["slim", "connector-ssh"]
 connector-time = ["dep:drt-connector-time"]
 connector-ssh = ["dep:drt-connector-ssh"]
+connector-fs = ["dep:drt-connector-fs"]

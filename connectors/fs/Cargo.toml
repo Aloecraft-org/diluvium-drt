@@ -1,0 +1,19 @@
+[package]
+name = "drt-connector-fs"
+description = "The fs connector: a granted directory, and the program names files inside it"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+serde = { workspace = true }
+rmpv = { workspace = true }
+drt-caps = { workspace = true }
+drt-connector = { workspace = true }
+
+[dev-dependencies]
+drt-hostcall = { workspace = true }
+tempfile = "3"
+pollster = "0.4"

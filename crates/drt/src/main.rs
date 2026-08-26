@@ -49,7 +49,11 @@ enum Command {
 /// Wire the connectors this build carries against the root config. Off by
 /// default, all of them: only what the config names gets wired.
 #[cfg_attr(
-    not(any(feature = "connector-time", feature = "connector-ssh")),
+    not(any(
+        feature = "connector-time",
+        feature = "connector-ssh",
+        feature = "connector-fs"
+    )),
     allow(unused_mut, unused_variables)
 )]
 fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
@@ -61,6 +65,17 @@ fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
                 .wire(
                     "time",
                     std::sync::Arc::new(drt_connector_time::TimeConnector::new()),
+                    wiring.scope.clone(),
+                )
+                .map_err(|e| e.to_string())?,
+            // Wired only when the config names it, and only ever to the
+            // directory the config grants: the program names files inside
+            // that, and nothing wires a default place on its behalf.
+            #[cfg(feature = "connector-fs")]
+            "fs" => registry
+                .wire(
+                    "fs",
+                    std::sync::Arc::new(drt_connector_fs::FsConnector::new()),
                     wiring.scope.clone(),
                 )
                 .map_err(|e| e.to_string())?,

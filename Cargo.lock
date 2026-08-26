@@ -952,6 +952,7 @@ dependencies = [
  "drt-caps",
  "drt-config",
  "drt-connector",
+ "drt-connector-fs",
  "drt-connector-ssh",
  "drt-connector-time",
  "drt-hostcall",
@@ -1004,6 +1005,20 @@ dependencies = [
  "rmpv",
  "serde",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "drt-connector-fs"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "drt-caps",
+ "drt-connector",
+ "drt-hostcall",
+ "pollster",
+ "rmpv",
+ "serde",
+ "tempfile",
 ]
 
 [[package]]

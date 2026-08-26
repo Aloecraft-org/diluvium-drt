@@ -1,0 +1,250 @@
+//! The fs connector against a real directory. The escape tests are the
+//! point: a jail that only checks the string it was handed is not a jail,
+//! so `..`, absolute paths, and symlinks pointing out are all exercised
+//! against the resolved path.
+
+use std::sync::Arc;
+
+use drt_caps::{CapSet, Grant, Scope};
+use drt_connector::{Connector, Dispatcher, Registry};
+use drt_connector_fs::FsConnector;
+use drt_hostcall::{to_bytes, Request, Status};
+
+fn scope(dir: &std::path::Path, access: &str, max_bytes: u64) -> Scope {
+    Scope(rmpv::Value::Map(vec![
+        ("scope".into(), dir.to_str().unwrap().into()),
+        ("access".into(), access.into()),
+        ("max_bytes".into(), rmpv::Value::from(max_bytes)),
+    ]))
+}
+
+fn read_args(path: &str) -> rmpv::Value {
+    rmpv::Value::Map(vec![("path".into(), path.into())])
+}
+
+fn write_args(path: &str, data: &str, append: bool) -> rmpv::Value {
+    rmpv::Value::Map(vec![
+        ("path".into(), path.into()),
+        ("data".into(), data.into()),
+        ("append".into(), rmpv::Value::Boolean(append)),
+    ])
+}
+
+fn call(sc: &Scope, name: &str, args: rmpv::Value) -> Result<rmpv::Value, String> {
+    pollster::block_on(FsConnector::new().call(name, Some(args), Some(sc)))
+        .map_err(|e| e.to_string())
+}
+
+/// The cap6 workload, verb for verb: write, read back, append, read again.
+#[test]
+fn the_cap6_shape_round_trips() {
+    let dir = tempfile::tempdir().unwrap();
+    let sc = scope(dir.path(), "readwrite", 65536);
+
+    call(
+        &sc,
+        "fs/write",
+        write_args("cap6_note.txt", "{\"a\":1}", false),
+    )
+    .unwrap();
+    let got = call(&sc, "fs/read", read_args("cap6_note.txt")).unwrap();
+    assert_eq!(got.as_slice().unwrap(), b"{\"a\":1}");
+
+    call(
+        &sc,
+        "fs/write",
+        write_args("cap6_log.txt", "first\n", false),
+    )
+    .unwrap();
+    call(
+        &sc,
+        "fs/write",
+        write_args("cap6_log.txt", "second\n", true),
+    )
+    .unwrap();
+    let log = call(&sc, "fs/read", read_args("cap6_log.txt")).unwrap();
+    assert_eq!(
+        log.as_slice().unwrap(),
+        b"first\nsecond\n",
+        "append adds rather than replacing"
+    );
+
+    let listing = call(&sc, "fs/list", rmpv::Value::Nil).unwrap();
+    let names: Vec<_> = listing
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["cap6_log.txt", "cap6_note.txt"]);
+
+    call(&sc, "fs/remove", read_args("cap6_note.txt")).unwrap();
+    assert!(call(&sc, "fs/read", read_args("cap6_note.txt")).is_err());
+}
+
+/// Bytes are bytes: a Lua string is not required to be UTF-8, and neither
+/// direction may corrupt one.
+#[test]
+fn arbitrary_bytes_survive_the_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let sc = scope(dir.path(), "readwrite", 65536);
+    let raw: Vec<u8> = vec![0x00, 0xff, 0x1b, 0x80, b'a', 0x00];
+    let args = rmpv::Value::Map(vec![
+        ("path".into(), "bin.dat".into()),
+        ("data".into(), rmpv::Value::Binary(raw.clone())),
+    ]);
+    call(&sc, "fs/write", args).unwrap();
+    let got = call(&sc, "fs/read", read_args("bin.dat")).unwrap();
+    assert_eq!(got.as_slice().unwrap(), &raw[..]);
+}
+
+#[test]
+fn escapes_are_refused_on_the_resolved_path() {
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("secret.txt"), b"not yours").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let sc = scope(dir.path(), "readwrite", 65536);
+
+    // A traversal, an absolute path, and a nested traversal.
+    for bad in ["../secret.txt", "../../etc/passwd", "a/../../secret.txt"] {
+        let err = call(&sc, "fs/read", read_args(bad)).unwrap_err();
+        assert!(
+            err.contains("outside the granted scope") || err.contains("No such file"),
+            "{bad} was not refused: {err}"
+        );
+    }
+    let err = call(&sc, "fs/read", read_args("/etc/passwd")).unwrap_err();
+    assert!(err.contains("absolute"), "{err}");
+
+    // A symlink whose *target* is outside: caught because the check is on
+    // the resolved path, not the string.
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(outside.path().join("secret.txt"), dir.path().join("link"))
+            .unwrap();
+        let err = call(&sc, "fs/read", read_args("link")).unwrap_err();
+        assert!(
+            err.contains("outside the granted scope"),
+            "symlink escaped: {err}"
+        );
+
+        // And a symlinked *parent* on the write path, where the file itself
+        // does not exist yet.
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("dir")).unwrap();
+        let err = call(&sc, "fs/write", write_args("dir/new.txt", "x", false)).unwrap_err();
+        assert!(
+            err.contains("outside the granted scope"),
+            "symlinked parent escaped: {err}"
+        );
+    }
+}
+
+#[test]
+fn readonly_is_the_default_and_it_holds() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("there.txt"), b"readable").unwrap();
+
+    // The bare-string scope form takes the default, which is readonly.
+    let sc = Scope(rmpv::Value::from(dir.path().to_str().unwrap()));
+    assert_eq!(
+        call(&sc, "fs/read", read_args("there.txt"))
+            .unwrap()
+            .as_slice()
+            .unwrap(),
+        b"readable"
+    );
+    for verb in ["fs/write", "fs/remove"] {
+        let args = if verb == "fs/write" {
+            write_args("there.txt", "nope", false)
+        } else {
+            read_args("there.txt")
+        };
+        let err = call(&sc, verb, args).unwrap_err();
+        assert!(err.contains("readwrite"), "{verb} was not refused: {err}");
+    }
+}
+
+#[test]
+fn the_size_cap_bounds_both_directions() {
+    let dir = tempfile::tempdir().unwrap();
+    let sc = scope(dir.path(), "readwrite", 16);
+    // Writing past the cap.
+    let err = call(
+        &sc,
+        "fs/write",
+        write_args("big.txt", &"x".repeat(32), false),
+    )
+    .unwrap_err();
+    assert!(err.contains("past the 16-byte cap"), "{err}");
+    // Appending past it, counting what is already there.
+    call(&sc, "fs/write", write_args("grow.txt", "0123456789", false)).unwrap();
+    let err = call(&sc, "fs/write", write_args("grow.txt", "0123456789", true)).unwrap_err();
+    assert!(err.contains("past the 16-byte cap"), "{err}");
+    // Reading a file that grew past it behind our back.
+    std::fs::write(dir.path().join("planted.txt"), vec![b'x'; 64]).unwrap();
+    let err = call(&sc, "fs/read", read_args("planted.txt")).unwrap_err();
+    assert!(err.contains("past the 16-byte cap"), "{err}");
+}
+
+#[test]
+fn ill_scoped_wiring_fails_at_startup_by_name() {
+    let mut registry = Registry::new();
+    // No scope at all.
+    let err = registry
+        .wire("fs", Arc::new(FsConnector::new()), None)
+        .unwrap_err();
+    assert_eq!(err.capability, "host:fs");
+    assert!(err.to_string().contains("scope is required"), "{err}");
+
+    // A directory that is not there.
+    let missing = Scope(rmpv::Value::from("/nonexistent/workspace"));
+    let err = registry
+        .wire("fs", Arc::new(FsConnector::new()), Some(missing))
+        .unwrap_err();
+    assert!(err.to_string().contains("cannot be resolved"), "{err}");
+
+    // An access mode that is not one of the two.
+    let dir = tempfile::tempdir().unwrap();
+    let bad = Scope(rmpv::Value::Map(vec![
+        ("scope".into(), dir.path().to_str().unwrap().into()),
+        ("access".into(), "sometimes".into()),
+    ]));
+    let err = registry
+        .wire("fs", Arc::new(FsConnector::new()), Some(bad))
+        .unwrap_err();
+    assert!(err.to_string().contains("'readonly'"), "{err}");
+}
+
+/// Through the dispatcher: the grant gates the call before the connector
+/// ever sees a path.
+#[test]
+fn the_grant_gates_it_before_the_filesystem_does() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("there.txt"), b"readable").unwrap();
+    let mut registry = Registry::new();
+    registry
+        .wire(
+            "fs",
+            Arc::new(FsConnector::new()),
+            Some(scope(dir.path(), "readonly", 65536)),
+        )
+        .unwrap();
+    let dispatcher = Dispatcher::new(registry);
+    let raw = to_bytes(&Request {
+        tok: 3,
+        call: "fs/read".into(),
+        args: Some(read_args("there.txt")),
+    })
+    .unwrap();
+
+    let granted = CapSet::root(vec![Grant::grant("host:fs/*")]);
+    let reply = pollster::block_on(dispatcher.dispatch(&granted, &raw));
+    assert_eq!(reply.status, Status::Ok);
+    assert_eq!(reply.value.unwrap().as_slice().unwrap(), b"readable");
+
+    // Narrowed to reads of a different family: denied, and the filesystem
+    // is never touched.
+    let narrow = CapSet::root(vec![Grant::grant("host:time")]);
+    let reply = pollster::block_on(dispatcher.dispatch(&narrow, &raw));
+    assert_eq!(reply.status, Status::Denied);
+}
