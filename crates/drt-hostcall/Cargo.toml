@@ -1,0 +1,12 @@
+[package]
+name = "drt-hostcall"
+description = "The Diluvium hostcall encoding as serde types (doc/Hostcall.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+rmp-serde = { workspace = true }
+rmpv = { workspace = true }

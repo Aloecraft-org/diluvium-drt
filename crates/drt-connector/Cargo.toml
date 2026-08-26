@@ -1,0 +1,19 @@
+[package]
+name = "drt-connector"
+description = "The Connector trait, registry, capability gating, and the answered-always dispatcher"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+serde = { workspace = true }
+rmpv = { workspace = true }
+thiserror = { workspace = true }
+drt-caps = { workspace = true }
+drt-hostcall = { workspace = true }
+
+[dev-dependencies]
+rmp-serde = { workspace = true }
+pollster = "0.4"

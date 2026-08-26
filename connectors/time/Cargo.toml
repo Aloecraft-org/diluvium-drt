@@ -1,0 +1,17 @@
+[package]
+name = "drt-connector-time"
+description = "The time connector: wall-clock and host-monotonic milliseconds"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+rmpv = { workspace = true }
+drt-caps = { workspace = true }
+drt-connector = { workspace = true }
+
+[dev-dependencies]
+drt-hostcall = { workspace = true }
+pollster = "0.4"

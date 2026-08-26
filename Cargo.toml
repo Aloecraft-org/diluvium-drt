@@ -1,0 +1,40 @@
+# The DRT workspace (SPEC.md §3). One codebase; `slim`/`full` are cargo-feature
+# profiles of it, and the embedding library is the degenerate profile.
+[workspace]
+resolver = "2"
+members = [
+    "crates/drt-config",
+    "crates/drt-caps",
+    "crates/drt-hostcall",
+    "crates/drt-connector",
+    "crates/drt-swarm",
+    "crates/drt",
+    "connectors/time",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/Aloecraft-org/diluvium-drt"
+
+[workspace.dependencies]
+drt-config = { path = "crates/drt-config", version = "0.1.0" }
+drt-caps = { path = "crates/drt-caps", version = "0.1.0" }
+drt-hostcall = { path = "crates/drt-hostcall", version = "0.1.0" }
+drt-connector = { path = "crates/drt-connector", version = "0.1.0" }
+drt-swarm = { path = "crates/drt-swarm", version = "0.1.0" }
+drt-connector-time = { path = "connectors/time", version = "0.1.0" }
+
+# Field names cross the boundary: the safe diluvium crate serializes with
+# rmp-serde's to_vec_named, and everything here does the same.
+serde = { version = "1", features = ["derive"] }
+rmp-serde = "1"
+rmpv = { version = "1", features = ["with-serde"] }
+thiserror = "2"
+async-trait = "0.1"
+clap = { version = "4", features = ["derive"] }
+
+# Consumed once the parallel work lands (SPEC.md §3): diluvium-sys/diluvium
+# from the diluvium repo, ego-proc, ego-platform, ego-transport. Declared the
+# day the first crate here depends on them, not before.

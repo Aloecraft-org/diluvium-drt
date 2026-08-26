@@ -1,0 +1,12 @@
+[package]
+name = "drt-caps"
+description = "Capability grammar: effect × capability × scope, pattern match, attenuation, provenance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+rmpv = { workspace = true }
+thiserror = { workspace = true }

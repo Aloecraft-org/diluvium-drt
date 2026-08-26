@@ -1,0 +1,15 @@
+[package]
+name = "drt-config"
+description = "DRT manifest/config schema — the serde types are the source of truth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+drt-caps = { workspace = true }
+
+[dev-dependencies]
+rmp-serde = { workspace = true }
+rmpv = { workspace = true }

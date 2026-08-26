@@ -1,0 +1,29 @@
+[package]
+name = "drt"
+description = "The Diluvium RunTime: run | serve | repl | ps"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "drt"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+drt-config = { workspace = true }
+drt-caps = { workspace = true }
+drt-hostcall = { workspace = true }
+drt-connector = { workspace = true }
+drt-swarm = { workspace = true }
+drt-connector-time = { workspace = true, optional = true }
+
+[features]
+# One codebase, feature profiles (SPEC.md §3): `slim` runs a script with
+# fs/time/stdio only; `full` is everything this build can carry. Each
+# connector is its own gate so a profile is a feature list, not a fork.
+default = ["slim"]
+slim = ["connector-time"]
+full = ["slim"]
+connector-time = ["dep:drt-connector-time"]

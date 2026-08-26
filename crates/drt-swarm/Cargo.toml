@@ -1,0 +1,22 @@
+[package]
+name = "drt-swarm"
+description = "The dvs port: instance table, parentage, caps, lifecycle, budgets, snapshots — over the Engine seam"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+rmp-serde = { workspace = true }
+rmpv = { workspace = true }
+thiserror = { workspace = true }
+drt-caps = { workspace = true }
+drt-config = { workspace = true }
+
+# The one v1 Engine impl — current diluvium, statically linked — enters here
+# once the diluvium-sys transcription upstream is complete (SPEC.md §4):
+# diluvium-sys = { version = "0.1", ... }
+
+[dev-dependencies]
+tempfile = "3"
