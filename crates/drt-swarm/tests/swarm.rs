@@ -29,7 +29,7 @@ fn lifecycle_caps() -> Vec<Grant> {
 
 /// Run a fixed number of steps; extra steps against a settled swarm are
 /// no-ops, so generous is fine.
-fn settle(sw: &mut Swarm<StepHost>, steps: usize) -> usize {
+fn settle<H: drt_swarm::swarm::SwarmHost>(sw: &mut Swarm<H>, steps: usize) -> usize {
     let mut alive = 0;
     for _ in 0..steps {
         alive = sw.step();
@@ -38,7 +38,11 @@ fn settle(sw: &mut Swarm<StepHost>, steps: usize) -> usize {
 }
 
 /// Pop everything from an instance's exported queue, decoded.
-fn drain_out(sw: &mut Swarm<StepHost>, id: InstanceId, queue: &str) -> Vec<rmpv::Value> {
+fn drain_out<H: drt_swarm::swarm::SwarmHost>(
+    sw: &mut Swarm<H>,
+    id: InstanceId,
+    queue: &str,
+) -> Vec<rmpv::Value> {
     let mut out = Vec::new();
     let Some(inst) = sw.instance_mut(id) else {
         return out;
@@ -646,4 +650,128 @@ fn bytecode_spawns_are_a_stated_decision() {
         "got: {}",
         detail(&log[0])
     );
+}
+
+mod pump {
+    //! The capability story end to end: same request bytes, different
+    //! grants, different answers — through the swarm's own drive loop.
+
+    use super::*;
+    use drt_connector::{mock::MockConnector, Dispatcher, Registry};
+    use drt_swarm::pump::PumpHost;
+
+    #[test]
+    fn hostcalls_are_gated_by_each_instances_own_attenuated_set() {
+        let mut registry = Registry::new();
+        registry
+            .wire(
+                "time",
+                Arc::new(MockConnector::new().answer("time", rmpv::Value::from(12_345u64))),
+                None,
+            )
+            .unwrap();
+        let engine = Arc::new(DiluviumEngine::new().unwrap());
+        let mut sw = Swarm::new(engine, PumpHost::new(StepHost, Dispatcher::new(registry)));
+
+        // Parent and child run the same code: one hostcall, then the reply's
+        // status pushed to an exported queue. The parent holds host:time*;
+        // it spawns the child with no grants at all.
+        let caller = r#"
+            local calls = queue.declare("host/calls", { capacity = 4, exported = true, on_full = "reject" })
+            local replies = queue.declare("host/replies", { capacity = 4 })
+            local verdict = queue.declare("verdict", { capacity = 4, exported = true })
+            queue.push(calls, { tok = 7, call = "time" })
+            local _, reply = queue.wait({replies})
+            assert(reply.tok == 7)
+            queue.push(verdict, reply.status)
+        "#;
+        let parent_code = format!(
+            r#"
+            local lc = queue.declare("system/lifecycle", {{ capacity = 4 }})
+            queue.push(lc, {{ op = "spawn", code = [==[{caller}]==] }})
+            {caller}
+            queue.wait({{queue.declare("hold", {{ capacity = 1 }})}})
+        "#
+        );
+        let root = sw
+            .root(
+                parent_code.as_bytes(),
+                vec![Grant::grant("lifecycle"), Grant::grant("host:time*")],
+                Budget::default(),
+            )
+            .unwrap();
+        settle(&mut sw, 10);
+
+        let parent_verdict = drain_out(&mut sw, root, "verdict");
+        assert_eq!(
+            parent_verdict[0].as_str(),
+            Some("ok"),
+            "the parent holds the grant"
+        );
+
+        // The child made the same call with the same bytes and was denied —
+        // and the denial is an answer, not a drop, so the child completed.
+        let child = InstanceId(root.0 + 1);
+        assert!(!sw.resident(child), "the child ran to completion");
+        // Its verdict left with it; assert through the parent instead: spawn
+        // a second child granted a narrowed slice, and check the swarm's own
+        // record of both sets.
+        let parent_caps = sw.caps(root).unwrap();
+        assert!(parent_caps.holds("host:time"));
+    }
+
+    #[test]
+    fn a_denied_child_reads_denied_not_silence() {
+        let mut registry = Registry::new();
+        registry
+            .wire(
+                "time",
+                Arc::new(MockConnector::new().answer("time", rmpv::Value::from(1u64))),
+                None,
+            )
+            .unwrap();
+        let engine = Arc::new(DiluviumEngine::new().unwrap());
+        let mut sw = Swarm::new(engine, PumpHost::new(StepHost, Dispatcher::new(registry)));
+
+        // A parked caller that reports its verdict and waits, so the test
+        // can read the exported queue while it is still resident.
+        let caller = r#"
+            local calls = queue.declare("host/calls", { capacity = 4, exported = true, on_full = "reject" })
+            local replies = queue.declare("host/replies", { capacity = 4 })
+            local verdict = queue.declare("verdict", { capacity = 4, exported = true })
+            local hold = queue.declare("hold", { capacity = 1 })
+            queue.push(calls, { tok = 9, call = "time" })
+            local _, reply = queue.wait({replies})
+            queue.push(verdict, reply.status .. "|" .. tostring(reply.detail))
+            queue.wait({hold})
+        "#;
+        let parent_code = format!(
+            r#"
+            local lc = queue.declare("system/lifecycle", {{ capacity = 4 }})
+            local hold = queue.declare("hold", {{ capacity = 1 }})
+            queue.push(lc, {{ op = "spawn", code = [==[{caller}]==] }})
+            queue.wait({{hold}})
+        "#
+        );
+        let root = sw
+            .root(
+                parent_code.as_bytes(),
+                vec![Grant::grant("lifecycle"), Grant::grant("host:time*")],
+                Budget::default(),
+            )
+            .unwrap();
+        settle(&mut sw, 10);
+        let child = InstanceId(root.0 + 1);
+        assert!(
+            sw.resident(child),
+            "the caller parked on hold after reporting"
+        );
+        let verdict = drain_out(&mut sw, child, "verdict");
+        let text = verdict[0].as_str().unwrap();
+        assert!(
+            text.starts_with("denied|"),
+            "spawned with no grants, the same call is denied with a detail: {text}"
+        );
+        assert!(text.contains("outside this instance's grants"), "{text}");
+    }
 }

@@ -94,7 +94,10 @@ pub enum Driven {
 /// per instance: called on build and wake, and on hibernate and death. A
 /// host that keeps nothing implements neither.
 pub trait SwarmHost {
-    fn drive(&mut self, id: InstanceId, inst: &mut dyn Instance) -> Driven;
+    /// `caps` is the instance's own attenuated set — what a host mediating
+    /// its own resources (hostcalls above all) gates against, the same
+    /// question the swarm asks about queues.
+    fn drive(&mut self, id: InstanceId, caps: &CapSet, inst: &mut dyn Instance) -> Driven;
     fn attached(&mut self, _id: InstanceId) {}
     fn detached(&mut self, _id: InstanceId) {}
 }
@@ -107,7 +110,7 @@ pub trait SwarmHost {
 pub struct StepHost;
 
 impl SwarmHost for StepHost {
-    fn drive(&mut self, _id: InstanceId, inst: &mut dyn Instance) -> Driven {
+    fn drive(&mut self, _id: InstanceId, _caps: &CapSet, inst: &mut dyn Instance) -> Driven {
         let step = match inst.current_wait() {
             None => inst.run(),
             Some(wait) => {
@@ -666,8 +669,9 @@ impl<H: SwarmHost> Swarm<H> {
             let id = slot.id;
             let driven = {
                 let (host, slots) = (&mut self.host, &mut self.slots);
+                let caps = Arc::clone(&slots[i].caps);
                 let inst = slots[i].inst.as_deref_mut().expect("checked above");
-                host.drive(InstanceId(id), inst)
+                host.drive(InstanceId(id), &caps, inst)
             };
             // Driving can free slots (a supervisor may kill its own subtree
             // through a later host call); re-find before acting.

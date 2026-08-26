@@ -22,15 +22,15 @@
 //! four-row `dvs_push` delivery table, the bounded wake buffer (a `LIMIT`
 //! refusal, never growth), the spawn rate limit, and the 32KB request cap.
 //!
-//! **Status:** the port itself is blocked on the completed `diluvium-sys`
-//! transcription upstream (SPEC.md §4 — snapshot/budget/endpoints are
-//! missing there today). What ships now are the seams the port will fill:
-//! the [`engine`] trait pair, the [`snapshot`] store, and the [`refs`]
-//! encoding — the last is mandatory *now* because refs are captured inside
-//! snapshots, and a process-local index would make every stored snapshot
-//! untranslatable.
+//! The port lives in [`swarm`], over the [`engine`] seam ([`Engine`'s one
+//! v1 impl is current diluvium, statically linked). [`pump`] adds the
+//! per-instance capability-gated hostcall pump; [`snapshot`] is the durable
+//! store behind the in-memory cache; [`refs`] is the endpoint encoding —
+//! mandatory from day one because refs are captured inside snapshots, and a
+//! process-local index would make every stored snapshot untranslatable.
 
 pub mod engine;
+pub mod pump;
 pub mod refs;
 pub mod snapshot;
 pub mod swarm;
