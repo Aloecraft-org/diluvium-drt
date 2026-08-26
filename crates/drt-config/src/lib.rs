@@ -23,7 +23,7 @@ use drt_caps::{AttenuationError, Grant};
 /// Quantitative limits. `None` means "no limit stated", which under
 /// attenuation means "inherit the parent's" — a child may state a smaller
 /// number, never a larger one.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Budget {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<u64>,

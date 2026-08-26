@@ -1,10 +1,11 @@
 //! The `drt` binary (SPEC.md §3): `run | serve | repl | ps`.
 //!
-//! Every subcommand is a stub until the Engine's first impl lands (blocked on
-//! the `diluvium-sys` transcription upstream, SPEC.md §4) — but the stubs are
-//! honest about it, and the config/registry plumbing they will share is
-//! already the real thing: `wire_connectors` is where a profile's feature
-//! gates meet the root config, once, for every subcommand.
+//! `run` is real: one program, driven to completion with the hostcall pump
+//! (see `run.rs`). `serve`, `repl` and `ps` are honest stubs until the swarm
+//! port and the ego-proc adapters land. `wire_connectors` is where a
+//! profile's feature gates meet the root config, once, for every subcommand.
+
+mod run;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -66,33 +67,53 @@ fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
     Ok(registry)
 }
 
+/// A local run's config until the file+flags+env merge lands: the slim
+/// profile's promise (time today; fs and stdio to follow), wired explicitly
+/// like any other deployment would.
+fn local_config() -> RootConfig {
+    let mut config = RootConfig::default();
+    if cfg!(feature = "connector-time") {
+        config.connectors.insert("time".into(), Default::default());
+    }
+    config
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    // The merge (file + flags + env) lands with the first runnable engine;
-    // until then an absent config is the empty root object.
     if let Some(path) = &cli.config {
         eprintln!(
-            "drt: --config {} is not read yet; using the empty root object",
+            "drt: --config {} is not read yet; using the local-run defaults",
             path.display()
         );
     }
-    let config = RootConfig::default();
-    let _registry = match wire_connectors(&config) {
+    let config = local_config();
+    let registry = match wire_connectors(&config) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("drt: {e}");
             return ExitCode::FAILURE;
         }
     };
-    let what = match cli.command {
-        Command::Run { .. } => "run",
-        Command::Serve => "serve",
-        Command::Repl => "repl",
-        Command::Ps => "ps",
-    };
-    eprintln!(
-        "drt {what}: not yet runnable — the Engine's first impl is blocked on the \
-         diluvium-sys transcription (SPEC.md §4)"
-    );
-    ExitCode::FAILURE
+    let dispatcher = drt_connector::Dispatcher::new(registry);
+    match cli.command {
+        Command::Run { program } => match run::run(&program, &dispatcher) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("drt run: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        other => {
+            let what = match other {
+                Command::Serve => "serve",
+                Command::Repl => "repl",
+                _ => "ps",
+            };
+            eprintln!(
+                "drt {what}: not built yet — the swarm port and the ego-proc adapters are \
+                 the next milestones (SPEC.md §§8–9)"
+            );
+            ExitCode::FAILURE
+        }
+    }
 }

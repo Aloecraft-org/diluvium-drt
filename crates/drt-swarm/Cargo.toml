@@ -13,10 +13,14 @@ rmpv = { workspace = true }
 thiserror = { workspace = true }
 drt-caps = { workspace = true }
 drt-config = { workspace = true }
+diluvium = { workspace = true, optional = true }
 
-# The one v1 Engine impl — current diluvium, statically linked — enters here
-# once the diluvium-sys transcription upstream is complete (SPEC.md §4):
-# diluvium-sys = { version = "0.1", ... }
+[features]
+# The one v1 Engine impl: current diluvium, statically linked. On by
+# default; a seams-only build (`--no-default-features`) carries the traits
+# without the C core, which is what the wasm targets will start from.
+default = ["engine-diluvium"]
+engine-diluvium = ["dep:diluvium"]
 
 [dev-dependencies]
 tempfile = "3"

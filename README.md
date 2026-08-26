@@ -35,10 +35,18 @@ cargo build
 cargo test
 ```
 
-The workspace builds standalone today. The `drt-swarm` port is gated on the
-completed `diluvium-sys` transcription upstream (SPEC.md §4) and consumes
-`ego-proc` / `ego-transport` / `ego-platform` as they land; those are seams,
-not blockers, and the crates say so where it matters.
+A C toolchain is required: the `diluvium` crates arrive as a git dependency
+and `diluvium-sys` compiles the amalgamated C core from that checkout. Try
+it:
+
+```
+cargo run -p drt -- run examples/hello.dlua
+```
+
+The `dvs.c`-semantics port and the ego-proc `ForeignActor` adapter are the
+next milestones; `ego-transport` is consumed when it lands (listener, ssh).
+A seams-only build (`--no-default-features`) compiles without the C core —
+the shape the wasm targets start from.
 
 ## License
 

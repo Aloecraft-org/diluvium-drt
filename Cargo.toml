@@ -35,6 +35,11 @@ thiserror = "2"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
 
-# Consumed once the parallel work lands (SPEC.md §3): diluvium-sys/diluvium
-# from the diluvium repo, ego-proc, ego-platform, ego-transport. Declared the
-# day the first crate here depends on them, not before.
+# The language, from its own repo — diluvium/diluvium-sys stay there,
+# versioned with the header (SPEC.md §2). The -sys build compiles the
+# amalgamated C core from the checkout, so a C toolchain is required.
+diluvium = { git = "https://github.com/Aloecraft-org/diluvium" }
+
+# Consumed as the remaining parallel work lands (SPEC.md §3): ego-proc
+# (ForeignActor — merged, adapter next), ego-platform, ego-transport.
+# Declared the day the first crate here depends on them, not before.
