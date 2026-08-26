@@ -18,6 +18,7 @@ fn load(engine: &DiluviumEngine, source: &str, name: &str) -> Box<dyn Instance> 
             program: ProgramBytes::Source(source),
             name,
             budget: Budget::default(),
+            unsafe_stdlib: false,
         })
         .unwrap()
 }
@@ -134,6 +135,7 @@ fn a_snapshot_survives_the_process_and_continues() {
         snapshot: &bytes,
         host_stamp: Some("node-b"),
         budget: Budget::default(),
+        unsafe_stdlib: false,
     });
     assert!(matches!(wrong, Err(EngineError::SnapshotMismatch(_))));
 
@@ -142,6 +144,7 @@ fn a_snapshot_survives_the_process_and_continues() {
             snapshot: &bytes,
             host_stamp: Some("node-a"),
             budget: Budget::default(),
+            unsafe_stdlib: false,
         })
         .unwrap();
 
@@ -180,6 +183,7 @@ fn a_budget_bounds_a_runaway_program() {
                 instructions: Some(10_000),
                 memory_kb: None,
             },
+            unsafe_stdlib: false,
         })
         .unwrap();
     match inst.run() {

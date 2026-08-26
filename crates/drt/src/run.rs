@@ -33,6 +33,7 @@ pub fn run(program: &Path, dispatcher: &Dispatcher) -> Result<(), String> {
             program: ProgramBytes::Source(&source),
             name,
             budget: Default::default(),
+            unsafe_stdlib: false,
         })
         .map_err(|e| e.to_string())?;
 

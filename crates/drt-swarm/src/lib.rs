@@ -33,6 +33,7 @@
 pub mod engine;
 pub mod refs;
 pub mod snapshot;
+pub mod swarm;
 
 /// An instance handle. 0 is never valid, and a handle is never reused —
 /// `dvs_id`'s contract, kept.

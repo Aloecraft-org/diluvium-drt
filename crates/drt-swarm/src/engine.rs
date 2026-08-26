@@ -114,6 +114,12 @@ pub struct LoadSpec<'a> {
     /// Applied before the first step; an unstated bound is unlimited here —
     /// resolve against the parent ceiling first (`Budget::resolved_against`).
     pub budget: Budget,
+    /// `DV_FLAG_UNSAFE_STDLIB`: give the program `io`, `os` and `package`.
+    /// Off by default — sealed — and under the swarm it attenuates like any
+    /// other authority: a child inherits its parent's setting and may drop
+    /// it, never add it. Turning it on costs replayability and makes the
+    /// budget approximate (dv.h says why).
+    pub unsafe_stdlib: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -124,6 +130,21 @@ pub struct RestoreSpec<'a> {
     /// is never advisory.
     pub host_stamp: Option<&'a str>,
     pub budget: Budget,
+    /// Must match the set the snapshot was captured under — a snapshot does
+    /// not cross the stdlib seal (the permanents fingerprint differs).
+    pub unsafe_stdlib: bool,
+}
+
+/// How a queue is configured and how full it is — the introspection number
+/// behind queue-depth reporting, and what a driver uses to decide which
+/// waited queue fired.
+#[derive(Debug, Clone, Copy)]
+pub struct QueueStatus {
+    pub len: u32,
+    /// Always bounded; there is no unbounded option anywhere in Diluvium.
+    pub capacity: u32,
+    pub enabled: bool,
+    pub exported: bool,
 }
 
 /// One live instance. Bytes in, bytes out: messages are msgpack, and no
@@ -133,6 +154,7 @@ pub trait Instance: Send {
     /// program has no such queue), not an error. `&mut` because handles are
     /// interned per residency, and the host drives one thread anyway.
     fn queue(&mut self, name: &str) -> Option<QueueHandle>;
+    fn queue_info(&mut self, queue: QueueHandle) -> Result<QueueStatus, EngineError>;
     fn push(&mut self, queue: QueueHandle, msgpack: &[u8]) -> Result<PushOutcome, EngineError>;
     fn pop(&mut self, queue: QueueHandle) -> Result<Option<Vec<u8>>, EngineError>;
     /// First step of a loaded program. A restored instance is *continuing*,
@@ -232,8 +254,11 @@ pub mod diluvium_engine {
         }
     }
 
-    fn config_for(budget: &Budget) -> diluvium::Config {
-        let cfg = diluvium::Config::new();
+    fn config_for(budget: &Budget, unsafe_stdlib: bool) -> diluvium::Config {
+        let mut cfg = diluvium::Config::new();
+        if unsafe_stdlib {
+            cfg = cfg.unsafe_stdlib(true);
+        }
         // The counting hook goes on only when a bound is stated; 0 is the
         // ABI's "no limit", so an unstated half of a stated budget maps to it.
         if budget.instructions.is_some() || budget.memory_kb.is_some() {
@@ -252,7 +277,7 @@ pub mod diluvium_engine {
         }
 
         fn load(&self, spec: LoadSpec<'_>) -> Result<Box<dyn Instance>, EngineError> {
-            let cfg = config_for(&spec.budget);
+            let cfg = config_for(&spec.budget, spec.unsafe_stdlib);
             let inner = match spec.program {
                 ProgramBytes::Source(text) => {
                     // Source only unless bytecode was explicit: GUARANTEES.md,
@@ -269,7 +294,7 @@ pub mod diluvium_engine {
         }
 
         fn restore(&self, spec: RestoreSpec<'_>) -> Result<Box<dyn Instance>, EngineError> {
-            let inner = config_for(&spec.budget)
+            let inner = config_for(&spec.budget, spec.unsafe_stdlib)
                 .restore(spec.snapshot, spec.host_stamp)
                 .map_err(lift_error)?;
             Ok(Box::new(DiluviumInstance {
@@ -283,6 +308,17 @@ pub mod diluvium_engine {
         fn queue(&mut self, name: &str) -> Option<QueueHandle> {
             let id = self.inner.queue(name)?;
             Some(self.intern(id))
+        }
+
+        fn queue_info(&mut self, queue: QueueHandle) -> Result<QueueStatus, EngineError> {
+            let id = self.resolve(queue)?;
+            let info = self.inner.queue_info(id).map_err(lift_error)?;
+            Ok(QueueStatus {
+                len: info.len,
+                capacity: info.capacity,
+                enabled: info.enabled,
+                exported: info.exported,
+            })
         }
 
         fn push(&mut self, queue: QueueHandle, msgpack: &[u8]) -> Result<PushOutcome, EngineError> {
