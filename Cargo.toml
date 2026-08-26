@@ -50,3 +50,13 @@ ego_transport = { git = "https://github.com/Aloecraft-org/ego-transport" }
 # Consumed as the remaining parallel work lands (SPEC.md §3): ego-proc
 # (ForeignActor — merged upstream; the adapter is the next milestone) and
 # ego-platform. Declared the day the first crate here depends on them.
+
+# Size-tuned release for the distribution question (SPEC §3's slim profile
+# wants to travel): `cargo build --profile release-small -p drt`.
+[profile.release-small]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
