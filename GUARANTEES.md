@@ -39,6 +39,30 @@ is the same caveat on another machine: the scope pins where, as whom, with
 which key, and under which host key — but what the command does there is
 outside everything this file promises.
 
+## The signing key is out of a guest's reach, not out of the machine's
+
+`host:crypto/*` gives a program the right to *ask* for a signature. The key
+is never in the reply, never in the guest heap, and never in a snapshot, and
+the two working subkeys are derived so that a `crypto/hmac` grant cannot be
+used as an oracle to forge a JWT. That is the whole of the promise, and it is
+about the **guest boundary**.
+
+It is not about the host. The key sits in this process's memory for the
+process's life, and if the config names it inline it sits in a file on disk.
+A grant that can read that file (`host:fs/read` scoped to the config's
+directory) or run a command on the box (`exec`, `host:ssh/exec`) recovers the
+key, and no amount of care inside the connector changes that — the scopes
+are the control. Prefer `key_file` or `key_env` over an inline `key`, and do
+not grant a program a scope containing either.
+
+Two narrower limits, stated rather than implied. The constant-time compares
+cover the MAC verdicts (`jwt_verify`, `crypto/hmac` with `expect`) and
+nothing else claims side-channel resistance. And `crypto/turn_credential`
+signs with **HMAC-SHA1** under the **raw** configured secret, because
+coturn's `use-auth-secret` scheme fixes both; it is the one call that does
+not use a derived subkey, and the primitive is there for interop, not
+because it was chosen.
+
 ## `sshd` is a deliberate front-door exposure
 
 Running `drt serve` with a transport listener publishes a network surface on

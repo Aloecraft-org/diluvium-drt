@@ -52,7 +52,8 @@ enum Command {
         feature = "connector-time",
         feature = "connector-ssh",
         feature = "connector-fs",
-        feature = "connector-sql"
+        feature = "connector-sql",
+        feature = "connector-crypto"
     )),
     allow(unused_mut, unused_variables)
 )]
@@ -86,6 +87,18 @@ fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
                 .wire(
                     "sql",
                     std::sync::Arc::new(drt_connector_sql::SqlConnector::new()),
+                    wiring.scope.clone(),
+                )
+                .map_err(|e| e.to_string())?,
+            // The one scope whose contents deliberately never reach the
+            // program it serves: the key stays in this process, and a
+            // grant of `host:crypto/jwt_sign` is the right to ask for a
+            // signature, not the key.
+            #[cfg(feature = "connector-crypto")]
+            "crypto" => registry
+                .wire(
+                    "crypto",
+                    std::sync::Arc::new(drt_connector_crypto::CryptoConnector::new()),
                     wiring.scope.clone(),
                 )
                 .map_err(|e| e.to_string())?,

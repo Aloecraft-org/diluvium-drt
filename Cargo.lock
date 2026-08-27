@@ -952,6 +952,7 @@ dependencies = [
  "drt-caps",
  "drt-config",
  "drt-connector",
+ "drt-connector-crypto",
  "drt-connector-fs",
  "drt-connector-sql",
  "drt-connector-ssh",
@@ -1008,6 +1009,26 @@ dependencies = [
  "rmpv",
  "serde",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "drt-connector-crypto"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64",
+ "drt-caps",
+ "drt-connector",
+ "drt-hostcall",
+ "getrandom 0.3.4",
+ "hmac 0.12.1",
+ "pollster",
+ "rmpv",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.10.9",
+ "subtle",
 ]
 
 [[package]]

@@ -27,6 +27,7 @@ drt-connector-time = { workspace = true, optional = true }
 drt-connector-ssh = { workspace = true, optional = true }
 drt-connector-fs = { workspace = true, optional = true }
 drt-connector-sql = { workspace = true, optional = true }
+drt-connector-crypto = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -36,9 +37,10 @@ tempfile = "3"
 # fs/time/stdio only; `full` is everything this build can carry. Each
 # connector is its own gate so a profile is a feature list, not a fork.
 default = ["slim"]
-slim = ["connector-time", "connector-fs"]
+slim = ["connector-time", "connector-fs", "connector-crypto"]
 full = ["slim", "connector-ssh", "connector-sql"]
 connector-time = ["dep:drt-connector-time"]
 connector-ssh = ["dep:drt-connector-ssh"]
 connector-fs = ["dep:drt-connector-fs"]
 connector-sql = ["dep:drt-connector-sql"]
+connector-crypto = ["dep:drt-connector-crypto"]

@@ -141,9 +141,17 @@ same C core on both sides, so it cannot distinguish the swarm layers).
 
 | profile | size | carries |
 |---|---|---|
-| `slim` (default) | 1.13 MiB | engine, swarm, `time`, `fs` |
-| `full` | 3.53 MiB | the above plus `sql` (SQLite bundled) and `ssh` (russh) |
-| `full`, system SQLite | 2.54 MiB | the same, linking `libsqlite3` instead |
+| `slim` (default) | 1.22 MiB | engine, swarm, `time`, `fs`, `crypto` |
+| `full` | 3.61 MiB | the above plus `sql` (SQLite bundled) and `ssh` (russh) |
+| `full`, system SQLite | 2.62 MiB | the same, linking `libsqlite3` instead |
+
+**`crypto` costs 90 KiB, measured** — SHA-256, SHA-1, HMAC, base64 and the
+CSPRNG, which is the whole `host:crypto/*` family. It is in `slim` because
+that is the profile meant to travel: a program that can hash, mint a JWT and
+ask for CSPRNG bytes without a network round trip is exactly what the
+browser-and-notebook distribution story wants, and 90 KiB is not a price
+worth arguing over. `serde_json` is already in the binary for the root
+config, so the JWT payload's JSON costs nothing extra.
 
 **Bundling SQLite costs 0.99 MiB, measured.** The alternative is what
 `diluvium-host` does: `dhost_sql.c` includes `<sqlite3.h>` and links the

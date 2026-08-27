@@ -13,6 +13,7 @@ members = [
     "connectors/ssh",
     "connectors/fs",
     "connectors/sql",
+    "connectors/crypto",
     "crates/drt-bench",
 ]
 
@@ -32,6 +33,7 @@ drt-connector-time = { path = "connectors/time", version = "0.1.0" }
 drt-connector-ssh = { path = "connectors/ssh", version = "0.1.0" }
 drt-connector-fs = { path = "connectors/fs", version = "0.1.0" }
 drt-connector-sql = { path = "connectors/sql", version = "0.1.0" }
+drt-connector-crypto = { path = "connectors/crypto", version = "0.1.0" }
 
 # Field names cross the boundary: the safe diluvium crate serializes with
 # rmp-serde's to_vec_named, and everything here does the same.
