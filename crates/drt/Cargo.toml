@@ -24,7 +24,14 @@ rmpv = { workspace = true, optional = true }
 # The tunnel: SSH over WSS as a dumb pipe (see src/tunnel.rs). tokio and
 # ego-transport ride the `tunnel` feature, which `full` carries.
 ego_transport = { workspace = true, optional = true }
-tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "io-std", "io-util", "net", "sync", "macros"], optional = true }
+# The relay's WebSocket stack. Host-side machinery takes the right Rust
+# primitive: tokio-tungstenite splits for a full-duplex splice, delivers
+# whole messages (ego-transport's recv truncates past the caller's buffer),
+# and exposes the handshake request the relay routes on. Pinned to the
+# version already in the tree behind ego-transport, so one stack is built.
+tokio-tungstenite = { version = "0.24", optional = true }
+futures-util = { version = "0.3", default-features = false, optional = true }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "io-std", "io-util", "net", "sync", "time", "macros"], optional = true }
 serde_json = "1"
 drt-config = { workspace = true }
 drt-caps = { workspace = true }
@@ -43,6 +50,8 @@ tempfile = "3"
 ego_transport = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net", "sync", "time"] }
 drt-connector-fs = { workspace = true }
+tokio-tungstenite = "0.24"
+futures-util = { version = "0.3", default-features = false }
 
 [features]
 # One codebase, feature profiles (SPEC.md §3): `slim` runs a script with
@@ -50,7 +59,7 @@ drt-connector-fs = { workspace = true }
 # connector is its own gate so a profile is a feature list, not a fork.
 default = ["slim"]
 slim = ["connector-time", "connector-fs", "connector-crypto", "listen"]
-full = ["slim", "connector-ssh", "connector-sql", "tunnel"]
+full = ["slim", "connector-ssh", "connector-sql", "tunnel", "relay"]
 connector-time = ["dep:drt-connector-time"]
 connector-ssh = ["dep:drt-connector-ssh"]
 connector-fs = ["dep:drt-connector-fs"]
@@ -64,3 +73,6 @@ listen = ["dep:httparse", "dep:rmpv"]
 # WS->TCP listener half. In `full` beside `ssh` — the NAT-traversal story
 # is a server-and-CLI concern, not a notebook's.
 tunnel = ["dep:ego_transport", "dep:tokio"]
+# `drt relay`: the rendezvous relay — parked WSS legs paired by label and
+# spliced. In `full` beside tunnel; a relay is server machinery.
+relay = ["dep:tokio", "dep:tokio-tungstenite", "dep:futures-util"]

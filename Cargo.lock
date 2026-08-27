@@ -960,12 +960,14 @@ dependencies = [
  "drt-hostcall",
  "drt-swarm",
  "ego_transport",
+ "futures-util",
  "httparse",
  "pollster",
  "rmpv",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]

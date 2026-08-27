@@ -219,6 +219,34 @@ pub struct Residency {
     pub max_resident: usize,
 }
 
+/// The rendezvous relay (`drt relay`): parked WSS legs paired by label and
+/// spliced. Keys are **per label**, not global, because tickets later
+/// replace the key *values* and not this shape — and because per-label
+/// revocation is what a leaked device key needs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayConfig {
+    /// e.g. `127.0.0.1:8090` — behind the edge, which terminates TLS and
+    /// routes `<label>--tunnel.<zone>` here.
+    pub bind: String,
+    /// Label → its two keys. A label absent here has no route at all, and
+    /// an empty key is a closed door: the relay carries bytes to someone's
+    /// sshd, so absence must fail rather than open.
+    #[serde(default)]
+    pub labels: BTreeMap<String, RelayLabel>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayLabel {
+    /// Presented by the device parking a leg (`/park/<label>?k=…`).
+    #[serde(default)]
+    pub park_key: String,
+    /// Presented by the caller claiming one (`/s/<label>?k=…`). Distinct
+    /// from `park_key` on purpose: the device's key is long-lived on a
+    /// laptop, the caller's is the one handed to whoever is connecting.
+    #[serde(default)]
+    pub caller_key: String,
+}
+
 /// Process identity. The host key doubles as the node identity and the
 /// snapshot stamp source (SPEC.md §§8–9).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -251,6 +279,8 @@ pub struct RootConfig {
     pub listeners: Vec<Listener>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub residency: Option<Residency>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<RelayConfig>,
     #[serde(default, skip_serializing_if = "Identity::is_default")]
     pub identity: Identity,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

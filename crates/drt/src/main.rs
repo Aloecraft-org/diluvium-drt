@@ -52,6 +52,10 @@ enum Command {
     /// sftp, -L/-R through it) works like normal SSH over the WebSocket
     /// carrier. With --listen/--to: accept WebSocket connections and bridge
     /// each to a TCP target, in front of any sshd.
+    /// The rendezvous relay: parked WSS legs paired by label and spliced.
+    /// Reads the `relay` block of the config; runs foreground.
+    #[cfg(feature = "relay")]
+    Relay,
     #[cfg(feature = "tunnel")]
     Tunnel {
         /// The wss:// or ws:// URL to bridge stdio to.
@@ -209,6 +213,21 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        #[cfg(feature = "relay")]
+        Command::Relay => {
+            let Some(relay_config) = config.relay.clone() else {
+                eprintln!("drt relay: the config names no `relay` block");
+                return ExitCode::FAILURE;
+            };
+            let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
+            match runtime.block_on(drt::relay::serve(drt::relay::Relay::new(relay_config))) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("drt relay: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         #[cfg(feature = "tunnel")]
         Command::Tunnel { url, listen, to } => {
             let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");

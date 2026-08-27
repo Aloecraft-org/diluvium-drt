@@ -1,0 +1,112 @@
+//! The relay end to end: a device parks, a caller claims, bytes splice both
+//! ways — plus the refusals that make the keys keys.
+
+#![cfg(feature = "relay")]
+
+use drt::relay::{serve, Relay};
+use drt_config::{RelayConfig, RelayLabel};
+use futures_util::{SinkExt, StreamExt};
+use tokio_tungstenite::tungstenite::Message;
+
+async fn relay_on_port() -> (std::net::SocketAddr, ()) {
+    // Bind first so the test knows the port; serve() takes the config's
+    // bind string, so pick a free port the same way the OS does.
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = probe.local_addr().unwrap();
+    drop(probe);
+    let config = RelayConfig {
+        bind: addr.to_string(),
+        labels: [(
+            "xps".to_string(),
+            RelayLabel {
+                park_key: "park-secret-0123456789".into(),
+                caller_key: "caller-secret-987654321".into(),
+            },
+        )]
+        .into(),
+    };
+    let relay = Relay::new(config);
+    tokio::spawn(async move {
+        let _ = serve(relay).await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    (addr, ())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_caller_and_a_device_splice_through_the_relay() {
+    let (addr, ()) = relay_on_port().await;
+
+    // The device parks a leg, as websocat would: a dumb pipe, key in the URL.
+    let (mut device, _) =
+        tokio_tungstenite::connect_async(format!("ws://{addr}/park/xps?k=park-secret-0123456789"))
+            .await
+            .expect("the device could not park");
+
+    // A caller claims it. The claim manifests as the first caller byte —
+    // exactly what an SSH client's banner is.
+    let (mut caller, _) =
+        tokio_tungstenite::connect_async(format!("ws://{addr}/s/xps?k=caller-secret-987654321"))
+            .await
+            .expect("the caller could not connect");
+    caller
+        .send(Message::Binary(b"SSH-2.0-caller\r\n".to_vec()))
+        .await
+        .unwrap();
+
+    // The device sees the caller's bytes (its cue to dial 127.0.0.1:22
+    // lazily)…
+    let got = loop {
+        match device.next().await.expect("device leg died").unwrap() {
+            Message::Binary(b) => break b,
+            Message::Ping(_) => continue,
+            other => panic!("unexpected on device leg: {other:?}"),
+        }
+    };
+    assert_eq!(&got[..], b"SSH-2.0-caller\r\n");
+
+    // …and answers; the caller reads it back through the splice.
+    device
+        .send(Message::Binary(b"SSH-2.0-device\r\n".to_vec()))
+        .await
+        .unwrap();
+    let back = loop {
+        match caller.next().await.expect("caller leg died").unwrap() {
+            Message::Binary(b) => break b,
+            Message::Ping(_) => continue,
+            other => panic!("unexpected on caller leg: {other:?}"),
+        }
+    };
+    assert_eq!(&back[..], b"SSH-2.0-device\r\n");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wrong_key_never_upgrades_and_an_empty_pool_says_not_home() {
+    let (addr, ()) = relay_on_port().await;
+
+    // Wrong caller key: refused at the handshake — the WebSocket never
+    // exists, which is what keeps an open relay from being an open proxy.
+    let err = tokio_tungstenite::connect_async(format!("ws://{addr}/s/xps?k=wrong"))
+        .await
+        .unwrap_err();
+    assert!(format!("{err}").contains("403"), "{err}");
+
+    // Unknown label: same refusal, indistinguishable from a bad key.
+    let err = tokio_tungstenite::connect_async(format!("ws://{addr}/s/nope?k=x"))
+        .await
+        .unwrap_err();
+    assert!(format!("{err}").contains("403"), "{err}");
+
+    // Right key, no parked leg: the device is not home, and the caller is
+    // told so with a close, not a hang.
+    let (mut caller, _) =
+        tokio_tungstenite::connect_async(format!("ws://{addr}/s/xps?k=caller-secret-987654321"))
+            .await
+            .unwrap();
+    match caller.next().await.unwrap().unwrap() {
+        Message::Close(Some(frame)) => {
+            assert!(frame.reason.contains("not home"), "{frame:?}");
+        }
+        other => panic!("expected a close, got {other:?}"),
+    }
+}

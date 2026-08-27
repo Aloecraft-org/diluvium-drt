@@ -4,6 +4,8 @@
 pub mod config;
 #[cfg(feature = "listen")]
 pub mod listen;
+#[cfg(feature = "relay")]
+pub mod relay;
 pub mod run;
 pub mod start;
 #[cfg(feature = "tunnel")]
