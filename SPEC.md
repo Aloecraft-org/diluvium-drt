@@ -300,6 +300,43 @@ output: one `ActorHealth` shape covering both populations, service actors and
 guest agents, which is what §9 asks for. The CLI never grows a verb that
 commands a guest agent, because commanding guest agents is a program's job.
 
+## 13b. SSH over WSS (settled 2026-08-27)
+
+Discofetch fetchpoints sit behind whatever NAT topology an endpoint happens
+to have. The connectivity ladder, in order of preference: a direct path
+where hole-punching works (STUN/WebRTC — most networks); and where it does
+not (CGNAT, address-and-port-dependent filtering), the carrier that always
+works is an **outbound WSS connection to something reachable**, with
+ego-transport arranging the peer-to-peer leg where it can. SSH does not
+care what carries it — the protocol is end-to-end over any reliable byte
+stream — so DRT's obligation is **carrier flexibility, not a new
+protocol**.
+
+Two shapes, one principle (the bridge never looks inside):
+
+- **`drt tunnel <wss-url>`** — bridge this process's stdio to the WSS
+  connection: the OpenSSH `ProxyCommand` contract. This is what buys
+  "works like normal SSH" without reimplementing any of it: `ssh -o
+  ProxyCommand="drt tunnel wss://gate/fp" user@fp`, and rsync/sftp/`-L`/
+  `-R`/agent forwarding are all the real ssh client's, inherited. Host-key
+  verification and auth stay end-to-end between ssh and sshd; a gateway
+  relaying the WSS leg can drop the connection but reads ciphertext. TLS
+  on the `wss://` leg is belt over braces — middleboxes see ordinary
+  HTTPS; it is not load-bearing for secrecy.
+- **`drt tunnel --listen <addr> --to <host:port>`** — the other half:
+  accept WebSockets, bridge each to a TCP target, in front of any sshd
+  (today a stock one; later `drt start`'s own control endpoint).
+
+**The seam this names upstream (ego-transport):** in-process composition —
+the `host:ssh/exec` connector dialing *via* wss or webrtc, and the browser
+tier doing SSH at all — wants `SshClientConnection` to accept an
+already-open stream. russh has `connect_stream`; ego-transport's `connect`
+dials TCP itself today, and its native WebSocket `recv` truncates a message
+larger than the caller's buffer rather than buffering the tail. Both are
+upstream asks, filed; when they land, the connector's scope grows a `via`
+and the bridge loses no code, because the ProxyCommand shape stays useful
+to the system ssh client forever.
+
 ## 13. Open questions (deliberately)
 
 Final naming (DRT vs DRE); sql connector's verb surface

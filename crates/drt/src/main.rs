@@ -46,6 +46,23 @@ enum Command {
     Repl,
     /// The introspection surface: instances, caps, budgets, usage, health.
     Ps,
+    /// SSH over WSS, as a dumb pipe. With a URL: bridge this process's
+    /// stdio to it — the OpenSSH ProxyCommand contract, so
+    /// `ssh -o ProxyCommand="drt tunnel wss://gate/fp" user@fp` (and rsync,
+    /// sftp, -L/-R through it) works like normal SSH over the WebSocket
+    /// carrier. With --listen/--to: accept WebSocket connections and bridge
+    /// each to a TCP target, in front of any sshd.
+    #[cfg(feature = "tunnel")]
+    Tunnel {
+        /// The wss:// or ws:// URL to bridge stdio to.
+        url: Option<String>,
+        /// Serve the other half: accept WebSockets here…
+        #[arg(long, requires = "to", conflicts_with = "url")]
+        listen: Option<String>,
+        /// …and bridge each connection to this host:port.
+        #[arg(long, requires = "listen")]
+        to: Option<String>,
+    },
 }
 
 /// Wire the connectors this build carries against the root config. Off by
@@ -192,6 +209,24 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        #[cfg(feature = "tunnel")]
+        Command::Tunnel { url, listen, to } => {
+            let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
+            let outcome = match (url, listen, to) {
+                (Some(url), _, _) => runtime.block_on(drt::tunnel::stdio_to_ws(&url)),
+                (None, Some(listen), Some(to)) => {
+                    runtime.block_on(drt::tunnel::ws_to_tcp(&listen, &to))
+                }
+                _ => Err("name a URL to bridge stdio to, or --listen with --to".into()),
+            };
+            match outcome {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("drt tunnel: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         ref other => {
             let what = match other {
                 Command::Repl => "repl",

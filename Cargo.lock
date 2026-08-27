@@ -959,11 +959,13 @@ dependencies = [
  "drt-connector-time",
  "drt-hostcall",
  "drt-swarm",
+ "ego_transport",
  "httparse",
  "pollster",
  "rmpv",
  "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

@@ -183,7 +183,7 @@ C core on both sides, so it cannot distinguish the swarm layers).
 | profile | size | carries |
 |---|---|---|
 | `slim` (default) | 1.36 MiB | engine, swarm, `time`, `fs`, `crypto`, `listen` |
-| `full` | 3.61 MiB | the above plus `sql` (SQLite bundled) and `ssh` (russh) |
+| `full` | 3.99 MiB | the above plus `sql` (SQLite bundled), `ssh` (russh) and `tunnel` (SSH over WSS) |
 | `full`, system SQLite | 2.62 MiB | the same, linking `libsqlite3` instead |
 
 **`crypto` costs 90 KiB, measured** — SHA-256, SHA-1, HMAC, base64 and the

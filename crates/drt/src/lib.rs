@@ -6,3 +6,5 @@ pub mod config;
 pub mod listen;
 pub mod run;
 pub mod start;
+#[cfg(feature = "tunnel")]
+pub mod tunnel;

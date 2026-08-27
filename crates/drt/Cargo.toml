@@ -21,6 +21,10 @@ pollster = "0.4"
 # C host, and the same posture — parse strictly, refuse the rest.
 httparse = { version = "1", optional = true }
 rmpv = { workspace = true, optional = true }
+# The tunnel: SSH over WSS as a dumb pipe (see src/tunnel.rs). tokio and
+# ego-transport ride the `tunnel` feature, which `full` carries.
+ego_transport = { workspace = true, optional = true }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "io-std", "io-util", "net", "sync", "macros"], optional = true }
 serde_json = "1"
 drt-config = { workspace = true }
 drt-caps = { workspace = true }
@@ -35,6 +39,9 @@ drt-connector-crypto = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+# The tunnel test drives a real SSH session through both bridge halves.
+ego_transport = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net", "sync", "time"] }
 
 [features]
 # One codebase, feature profiles (SPEC.md §3): `slim` runs a script with
@@ -42,7 +49,7 @@ tempfile = "3"
 # connector is its own gate so a profile is a feature list, not a fork.
 default = ["slim"]
 slim = ["connector-time", "connector-fs", "connector-crypto", "listen"]
-full = ["slim", "connector-ssh", "connector-sql"]
+full = ["slim", "connector-ssh", "connector-sql", "tunnel"]
 connector-time = ["dep:drt-connector-time"]
 connector-ssh = ["dep:drt-connector-ssh"]
 connector-fs = ["dep:drt-connector-fs"]
@@ -52,3 +59,7 @@ connector-crypto = ["dep:drt-connector-crypto"]
 # always carries its listener, and a runtime that cannot serve a fetchpoint
 # is not the runtime discofetch is waiting for.
 listen = ["dep:httparse", "dep:rmpv"]
+# `drt tunnel`: the stdio<->WSS bridge (ProxyCommand shape) and the
+# WS->TCP listener half. In `full` beside `ssh` — the NAT-traversal story
+# is a server-and-CLI concern, not a notebook's.
+tunnel = ["dep:ego_transport", "dep:tokio"]
