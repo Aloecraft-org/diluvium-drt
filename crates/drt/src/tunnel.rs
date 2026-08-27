@@ -39,6 +39,8 @@
 //! ssh connector's scope grows a `via` and this file loses no code — the
 //! bridge stays useful for the system ssh client forever.
 
+use std::time::Duration;
+
 use ego_transport::transport::{Transport, TransportError};
 use ego_transport::WebSocketNative;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -163,4 +165,140 @@ where
 
 fn describe(url: &str, e: TransportError) -> String {
     format!("cannot reach {url}: {e:?}")
+}
+
+// ---------------------------------------------------------------------------
+// Park mode: the device side of the rendezvous relay
+// ---------------------------------------------------------------------------
+
+/// `drt tunnel --park <url> --to <host:port>`: hold a parked leg on the
+/// relay and become a session when a caller claims it.
+///
+/// The state machine, and the two rules that are load-bearing:
+///
+/// - **The local dial is lazy.** A parked leg can sit for hours, and sshd
+///   drops an idle connection at `LoginGraceTime` (120 s default) — so
+///   `<host:port>` is dialed only when the first claimed bytes arrive, and
+///   those bytes are replayed into it. Dial-at-park would make the first
+///   session die confusingly hours later.
+/// - **Replenish on claim, not on close.** The moment a parked leg sees its
+///   first byte it has become a session; a fresh leg parks immediately, so
+///   a second caller never waits for the first to hang up. Concurrency is
+///   the pool's depth over time, and no control protocol exists to need.
+///
+/// The outer loop reconnects with capped exponential backoff forever — a
+/// relay restart or a network blip re-parks on its own. This side uses
+/// tokio-tungstenite directly, like the relay and for the relay's reasons
+/// (split, whole messages, headers); the ego-transport modes above migrate
+/// in their own change.
+pub async fn park(url: &str, target: &str) -> Result<(), String> {
+    let mut backoff = Duration::from_secs(1);
+    loop {
+        match park_once(url, target).await {
+            // A claim happened: the session runs detached; park again now.
+            Ok(Parked::Claimed) => {
+                backoff = Duration::from_secs(1);
+            }
+            // Idle-timeout close from the relay, or a clean drop: re-park
+            // promptly — an unparked label is a device that is not home.
+            Ok(Parked::Dropped) => {
+                backoff = Duration::from_secs(1);
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            Err(e) => {
+                eprintln!("drt tunnel --park: {e}; retrying in {backoff:?}");
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_secs(60));
+            }
+        }
+    }
+}
+
+enum Parked {
+    Claimed,
+    Dropped,
+}
+
+async fn park_once(url: &str, target: &str) -> Result<Parked, String> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(url)
+        .await
+        .map_err(|e| format!("cannot park at {url}: {e}"))?;
+
+    // Hold, answering pings, until the first claimed bytes arrive.
+    let first = loop {
+        match ws.next().await {
+            Some(Ok(Message::Binary(b))) if !b.is_empty() => break b,
+            Some(Ok(Message::Ping(p))) => {
+                let _ = ws.send(Message::Pong(p)).await;
+            }
+            Some(Ok(Message::Close(_))) | None => return Ok(Parked::Dropped),
+            Some(Ok(_)) => continue,
+            Some(Err(e)) => return Err(format!("parked leg: {e}")),
+        }
+    };
+
+    // Claimed. The session runs detached so the caller of park() can
+    // re-park immediately — replenish-on-claim is this line.
+    let target = target.to_string();
+    let url = url.to_string();
+    tokio::spawn(async move {
+        if let Err(e) = run_session(ws, &target, first).await {
+            eprintln!("drt tunnel --park [{url}]: session ended: {e}");
+        }
+    });
+    Ok(Parked::Claimed)
+}
+
+/// One claimed session: dial the local target now (lazily, on purpose),
+/// replay the first bytes, splice until either side closes.
+async fn run_session(
+    ws: tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    target: &str,
+    first: impl Into<Vec<u8>>,
+) -> Result<(), String> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let mut tcp = tokio::net::TcpStream::connect(target)
+        .await
+        .map_err(|e| format!("cannot reach {target}: {e}"))?;
+    let (mut tcp_read, mut tcp_write) = tcp.split();
+    tcp_write
+        .write_all(&first.into())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let (mut ws_out, mut ws_in) = ws.split();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        tokio::select! {
+            read = tcp_read.read(&mut buf) => {
+                match read {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if ws_out.send(Message::Binary(buf[..n].to_vec())).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+            msg = ws_in.next() => {
+                match msg {
+                    Some(Ok(Message::Binary(b))) => {
+                        if tcp_write.write_all(&b).await.is_err() { break; }
+                    }
+                    Some(Ok(Message::Ping(p))) => { let _ = ws_out.send(Message::Pong(p)).await; }
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                    Some(Ok(_)) => {}
+                }
+            }
+        }
+    }
+    let _ = tcp_write.shutdown().await;
+    Ok(())
 }

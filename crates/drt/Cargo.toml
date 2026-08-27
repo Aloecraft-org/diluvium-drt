@@ -72,7 +72,7 @@ listen = ["dep:httparse", "dep:rmpv"]
 # `drt tunnel`: the stdio<->WSS bridge (ProxyCommand shape) and the
 # WS->TCP listener half. In `full` beside `ssh` — the NAT-traversal story
 # is a server-and-CLI concern, not a notebook's.
-tunnel = ["dep:ego_transport", "dep:tokio"]
+tunnel = ["dep:ego_transport", "dep:tokio", "dep:tokio-tungstenite", "dep:futures-util"]
 # `drt relay`: the rendezvous relay — parked WSS legs paired by label and
 # spliced. In `full` beside tunnel; a relay is server machinery.
 relay = ["dep:tokio", "dep:tokio-tungstenite", "dep:futures-util"]

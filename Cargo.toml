@@ -18,22 +18,22 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Aloecraft-org/diluvium-drt"
 
 [workspace.dependencies]
-drt-config = { path = "crates/drt-config", version = "0.1.0" }
-drt-caps = { path = "crates/drt-caps", version = "0.1.0" }
-drt-hostcall = { path = "crates/drt-hostcall", version = "0.1.0" }
-drt-connector = { path = "crates/drt-connector", version = "0.1.0" }
-drt-swarm = { path = "crates/drt-swarm", version = "0.1.0" }
-drt-connector-time = { path = "connectors/time", version = "0.1.0" }
-drt-connector-ssh = { path = "connectors/ssh", version = "0.1.0" }
-drt-connector-fs = { path = "connectors/fs", version = "0.1.0" }
-drt-connector-sql = { path = "connectors/sql", version = "0.1.0" }
-drt-connector-crypto = { path = "connectors/crypto", version = "0.1.0" }
+drt-config = { path = "crates/drt-config", version = "0.2.0" }
+drt-caps = { path = "crates/drt-caps", version = "0.2.0" }
+drt-hostcall = { path = "crates/drt-hostcall", version = "0.2.0" }
+drt-connector = { path = "crates/drt-connector", version = "0.2.0" }
+drt-swarm = { path = "crates/drt-swarm", version = "0.2.0" }
+drt-connector-time = { path = "connectors/time", version = "0.2.0" }
+drt-connector-ssh = { path = "connectors/ssh", version = "0.2.0" }
+drt-connector-fs = { path = "connectors/fs", version = "0.2.0" }
+drt-connector-sql = { path = "connectors/sql", version = "0.2.0" }
+drt-connector-crypto = { path = "connectors/crypto", version = "0.2.0" }
 
 # Field names cross the boundary: the safe diluvium crate serializes with
 # rmp-serde's to_vec_named, and everything here does the same.

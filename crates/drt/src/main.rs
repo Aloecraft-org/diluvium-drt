@@ -61,11 +61,17 @@ enum Command {
         /// The wss:// or ws:// URL to bridge stdio to.
         url: Option<String>,
         /// Serve the other half: accept WebSockets here…
-        #[arg(long, requires = "to", conflicts_with = "url")]
+        #[arg(long, requires = "to", conflicts_with_all = ["url", "park"])]
         listen: Option<String>,
-        /// …and bridge each connection to this host:port.
-        #[arg(long, requires = "listen")]
+        /// …and bridge each connection to this host:port (used by both
+        /// --listen and --park).
+        #[arg(long)]
         to: Option<String>,
+        /// The device side of the rendezvous relay: hold a parked leg at
+        /// this /park URL; when a caller claims it, dial --to lazily and
+        /// splice, re-parking a fresh leg immediately. Reconnects forever.
+        #[arg(long, requires = "to", conflicts_with = "url")]
+        park: Option<String>,
     },
 }
 
@@ -229,14 +235,24 @@ fn main() -> ExitCode {
             }
         }
         #[cfg(feature = "tunnel")]
-        Command::Tunnel { url, listen, to } => {
+        Command::Tunnel {
+            url,
+            listen,
+            to,
+            park,
+        } => {
             let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
-            let outcome = match (url, listen, to) {
-                (Some(url), _, _) => runtime.block_on(drt::tunnel::stdio_to_ws(&url)),
-                (None, Some(listen), Some(to)) => {
+            let outcome = match (url, listen, park, to) {
+                (Some(url), _, _, _) => runtime.block_on(drt::tunnel::stdio_to_ws(&url)),
+                (None, Some(listen), None, Some(to)) => {
                     runtime.block_on(drt::tunnel::ws_to_tcp(&listen, &to))
                 }
-                _ => Err("name a URL to bridge stdio to, or --listen with --to".into()),
+                (None, None, Some(park), Some(to)) => {
+                    runtime.block_on(drt::tunnel::park(&park, &to))
+                }
+                _ => Err(
+                    "name a URL to bridge stdio to, --listen with --to, or --park with --to".into(),
+                ),
             };
             match outcome {
                 Ok(()) => ExitCode::SUCCESS,

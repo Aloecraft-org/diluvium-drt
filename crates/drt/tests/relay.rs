@@ -110,3 +110,71 @@ async fn a_wrong_key_never_upgrades_and_an_empty_pool_says_not_home() {
         other => panic!("expected a close, got {other:?}"),
     }
 }
+
+/// The whole triangle, DRT on all three corners: `drt relay` in the
+/// middle, `park()` as the device (lazy local dial, replay of the first
+/// bytes), and a caller claiming through `/s/`. Twice, back to back —
+/// the second session proves replenish-on-claim parked a fresh leg while
+/// the first was still alive.
+#[cfg(feature = "tunnel")]
+#[tokio::test(flavor = "multi_thread")]
+async fn the_full_triangle_and_replenish_on_claim() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (addr, ()) = relay_on_port().await;
+
+    // The "sshd": a local echo server the device dials lazily.
+    let echo = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let echo_addr = echo.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut c, _)) = echo.accept().await else {
+                continue;
+            };
+            tokio::spawn(async move {
+                let mut b = [0u8; 4096];
+                while let Ok(n) = c.read(&mut b).await {
+                    if n == 0 || c.write_all(&b[..n]).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+
+    // The device: parks, re-parks on claim, forever.
+    let park_url = format!("ws://{addr}/park/xps?k=park-secret-0123456789");
+    tokio::spawn(async move {
+        let _ = drt::tunnel::park(&park_url, &echo_addr).await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    for round in 0..2u8 {
+        let (mut caller, _) = tokio_tungstenite::connect_async(format!(
+            "ws://{addr}/s/xps?k=caller-secret-987654321"
+        ))
+        .await
+        .unwrap();
+        let hello = format!("hello-{round}");
+        caller
+            .send(Message::Binary(hello.clone().into_bytes()))
+            .await
+            .unwrap();
+        let back = loop {
+            match caller.next().await.expect("caller leg died").unwrap() {
+                Message::Binary(b) => break b,
+                Message::Ping(_) => continue,
+                Message::Close(f) => panic!("closed in round {round}: {f:?}"),
+                _ => continue,
+            }
+        };
+        assert_eq!(&back[..], hello.as_bytes(), "round {round}");
+        // Leave the first session OPEN while the second claims: the fresh
+        // leg must come from replenish, not from this session ending.
+        if round == 1 {
+            drop(caller);
+        } else {
+            std::mem::forget(caller);
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
+    }
+}
