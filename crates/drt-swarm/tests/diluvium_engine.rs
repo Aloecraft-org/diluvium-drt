@@ -72,7 +72,7 @@ fn messages_round_trip_through_a_park() {
     let mut step = inst.run().unwrap();
     for n in [1u32, 2, 3] {
         match &step {
-            Step::Parked(w) => assert_eq!(w.queues, vec![inbox]),
+            Step::Parked(w) => assert_eq!(w.queues(), [inbox]),
             Step::Done => panic!("finished early"),
         }
         let msg = rmp_serde::to_vec(&n).unwrap();
@@ -153,7 +153,7 @@ fn a_snapshot_survives_the_process_and_continues() {
     let wait = inst.current_wait().expect("parked exactly as it was");
     let inbox = inst.queue("inbox").unwrap();
     let outbox = inst.queue("outbox").unwrap();
-    assert!(wait.queues.contains(&inbox));
+    assert!(wait.queues().contains(&inbox));
 
     inst.push(inbox, &rmp_serde::to_vec(&2u32).unwrap())
         .unwrap();

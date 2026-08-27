@@ -46,16 +46,61 @@ pub enum EngineError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct QueueHandle(pub u32);
 
+/// The ABI's own bound on how many queues one `wait` can name
+/// (`DV_WAIT_MAX` in `dv.h`). It is part of the ABI, so it is a constant
+/// here rather than a capacity hint.
+pub const WAIT_MAX: usize = 32;
+
 /// What a parked program is waiting for. The caller owns the clock: honour
 /// the timeout, ignore it, or answer immediately — the program only learns
 /// which handle the caller says fired.
-#[derive(Debug, Clone)]
+///
+/// The handles live **inline**, in the fixed array `dv_waitset` already
+/// hands over, because this type is built on every step of every parked
+/// instance — twice, once for the wait a host asks about and once for the
+/// `Parked` a step returns. A `Vec` here was two heap allocations per
+/// message round trip for the sake of moving at most 32 `u32`s.
+#[derive(Debug, Clone, Copy)]
 pub struct WaitSet {
-    pub queues: Vec<QueueHandle>,
+    queues: [QueueHandle; WAIT_MAX],
+    len: u8,
     pub timeout: Option<Duration>,
     /// Waiting for *space* in a full queue rather than for a message:
     /// drain it rather than pushing to it.
     pub for_space: bool,
+}
+
+impl WaitSet {
+    /// Build one. Handles past [`WAIT_MAX`] are dropped, which is what the
+    /// ABI does with them too — the array is the bound, on both sides.
+    pub fn new(
+        queues: impl IntoIterator<Item = QueueHandle>,
+        timeout: Option<Duration>,
+        for_space: bool,
+    ) -> WaitSet {
+        let mut set = WaitSet {
+            queues: [QueueHandle(0); WAIT_MAX],
+            len: 0,
+            timeout,
+            for_space,
+        };
+        for q in queues {
+            if (set.len as usize) < WAIT_MAX {
+                set.queues[set.len as usize] = q;
+                set.len += 1;
+            }
+        }
+        set
+    }
+
+    /// The handles, in the order the program named them.
+    pub fn queues(&self) -> &[QueueHandle] {
+        &self.queues[..self.len as usize]
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
 }
 
 /// Where a program got to.
@@ -226,21 +271,26 @@ pub mod diluvium_engine {
         }
 
         fn lift_wait(&mut self, wait: &diluvium::Wait) -> WaitSet {
-            // One allocation, sized up front. This used to `to_vec()` the
-            // ids and then `collect()` the interned handles — two
-            // allocations per lift, and `drive` lifts twice per step, which
-            // measured as four of the six allocations on the message path.
-            // The borrow works because `wait` is the engine's own value, not
-            // something borrowed out of `self`.
-            let mut queues = Vec::with_capacity(wait.ids().len());
-            for id in wait.ids() {
-                queues.push(self.intern(*id));
-            }
-            WaitSet {
-                queues,
+            // No allocation: `WaitSet` carries the same fixed array
+            // `dv_waitset` does. This lift used to build a `Vec`, and
+            // `drive` lifts twice per step — once for `current_wait`, once
+            // for the `Parked` the step returns — so it was two of the four
+            // allocations the drive loop showed per message round trip.
+            //
+            // The other two are `diluvium::Wait`'s own `Vec<QueueId>`,
+            // built inside the safe wrapper before this ever sees it. They
+            // close upstream, by giving `Wait` the same treatment.
+            let mut set = WaitSet {
+                queues: [QueueHandle(0); WAIT_MAX],
+                len: 0,
                 timeout: wait.timeout(),
                 for_space: wait.is_waiting_for_space(),
+            };
+            for id in wait.ids().iter().take(WAIT_MAX) {
+                set.queues[set.len as usize] = self.intern(*id);
+                set.len += 1;
             }
+            set
         }
 
         fn lift_step(&mut self, step: diluvium::Step) -> Step {

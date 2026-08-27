@@ -76,7 +76,7 @@ pub fn run(
             }
         }
 
-        step = if answered && replies.is_some_and(|rq| wait.queues.contains(&rq)) {
+        step = if answered && replies.is_some_and(|rq| wait.queues().contains(&rq)) {
             inst.resume(replies.unwrap()).map_err(guest_error)?
         } else if let Some(timeout) = wait.timeout {
             // We own the clock (the instance has none): honour the ask.

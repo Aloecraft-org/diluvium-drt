@@ -118,7 +118,7 @@ impl SwarmHost for StepHost {
             None => inst.run(),
             Some(wait) => {
                 let fired = wait
-                    .queues
+                    .queues()
                     .iter()
                     .copied()
                     .find(|&q| inst.queue_info(q).map(|info| info.len > 0).unwrap_or(false));

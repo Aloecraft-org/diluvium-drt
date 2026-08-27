@@ -37,9 +37,9 @@ NEAR = [("density", "resident_bytes_per_agent", 0.001)]
 
 # Ceilings: allocations per round trip on the hot path.
 CEILING = [
-    ("queue", "p16_allocs_per_roundtrip", 8.0),
-    ("queue", "p256_allocs_per_roundtrip", 8.0),
-    ("queue", "p4096_allocs_per_roundtrip", 8.0),
+    ("queue", "p16_allocs_per_roundtrip", 5.0),
+    ("queue", "p256_allocs_per_roundtrip", 5.0),
+    ("queue", "p4096_allocs_per_roundtrip", 5.0),
 ]
 
 
