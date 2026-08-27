@@ -172,6 +172,15 @@ fn map_host_lua(path: &Path, value: rmpv::Value) -> Result<RootConfig, String> {
                     };
                     if name == "listen" {
                         config.listeners.push(map_listener(path, block)?);
+                    } else if let rmpv::Value::Boolean(wired) = block {
+                        // `time = true`: wired, with no scope of its own.
+                        // `false` is the connector explicitly not wired,
+                        // which is the same as absent.
+                        if wired {
+                            config
+                                .connectors
+                                .insert(name.to_string(), Default::default());
+                        }
                     } else {
                         // The C's connector block *is* the scope in DRT's
                         // terms; an empty block wires the connector with no
@@ -245,7 +254,7 @@ fn map_listener(path: &Path, block: rmpv::Value) -> Result<drt_config::Listener,
             "max_conns" => {
                 listener.max_conns = value.as_u64().ok_or_else(|| bad("a count"))? as usize
             }
-            "headers" | "resp_headers" => {
+            "headers" | "resp_headers" | "response_headers" => {
                 let rmpv::Value::Array(items) = value else {
                     return Err(bad("a list of lowercased names"));
                 };

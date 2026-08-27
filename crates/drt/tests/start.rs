@@ -357,3 +357,40 @@ mod residency {
         );
     }
 }
+
+/// Repeated allowlisted headers join with ", ", as the C host joins them —
+/// a smuggled second x-df-sub arrives concatenated to the gateway's own,
+/// visibly, never as a separable header the program might pick wrongly.
+#[cfg(feature = "listen")]
+#[test]
+fn repeated_headers_join_rather_than_shadow() {
+    use std::io::{Read, Write};
+    let program = "\
+        local q   = queue.declare('http_in',  {capacity = 8})\n\
+        local out = queue.declare('http_out', {capacity = 8, exported = true})\n\
+        while true do\n\
+          local id, req = queue.wait({q})\n\
+          queue.push(out, {conn = req.conn, status = 200,\n\
+                           body = req.headers['x-df-sub'] or 'none'})\n\
+        end\n";
+    let program_json = serde_json::to_string(program).unwrap();
+    let cfg: RootConfig = serde_json::from_str(&format!(
+        r#"{{"program": {{"source": {program_json}}},
+            "listeners": [{{"scheme": "http", "address": "127.0.0.1:0",
+                           "headers": ["x-df-sub"]}}]}}"#
+    ))
+    .unwrap();
+    let bound = drt::listen::bind(&cfg.listeners).unwrap();
+    let addr = bound.addrs()[0];
+    std::thread::spawn(move || {
+        let _ = start::serve(&cfg, Dispatcher::new(Registry::new()), bound);
+    });
+    let mut conn = std::net::TcpStream::connect(addr).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    conn.write_all(b"GET / HTTP/1.1\r\nHost: t\r\nX-Df-Sub: gateway\r\nX-Df-Sub: smuggled\r\n\r\n")
+        .unwrap();
+    let mut response = String::new();
+    conn.read_to_string(&mut response).unwrap();
+    assert!(response.ends_with("gateway, smuggled"), "{response}");
+}

@@ -355,20 +355,34 @@ fn read_request(
             // about to grow.
             let mut present: Vec<(String, rmpv::Value)> = Vec::new();
             for name in &rt.hdr_allow {
-                let found = req
+                // Repeats join with ", ", as the C host joins them: a
+                // second x-df-sub arrives concatenated to the first rather
+                // than as something the program could mistake for the
+                // gateway's own. The gateway's set-header replaces, so a
+                // join is only ever visible when something upstream
+                // misbehaved — visibly.
+                let mut joined: Vec<u8> = Vec::new();
+                for h in req
                     .headers
                     .iter()
-                    .find(|h| h.name.eq_ignore_ascii_case(name));
-                if let Some(h) = found {
-                    if h.value.len() > HDR_VALUE_MAX {
+                    .filter(|h| h.name.eq_ignore_ascii_case(name))
+                {
+                    if h.value.is_empty() {
+                        continue;
+                    }
+                    if !joined.is_empty() {
+                        joined.extend_from_slice(b", ");
+                    }
+                    joined.extend_from_slice(h.value);
+                    if joined.len() > HDR_VALUE_MAX {
                         return Err((
                             431,
                             "an allowlisted header is past this host's value bound\n",
                         ));
                     }
-                    if !h.value.is_empty() {
-                        present.push((name.clone(), bytes_value(h.value)));
-                    }
+                }
+                if !joined.is_empty() {
+                    present.push((name.clone(), bytes_value(&joined)));
                 }
             }
             let _ = req;

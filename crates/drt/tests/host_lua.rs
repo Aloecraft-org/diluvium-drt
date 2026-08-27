@@ -34,10 +34,11 @@ fn the_c_hosts_dialect_maps_field_for_field() {
                   max_body = 65536,
                   deadline_ms = 5000,
                   max_conns = 64,
-                  headers = { "authorization" },
+                  headers = { "authorization", "x-df-sub", "host" },
+                  response_headers = { "location", "retry-after" },
                 },
                 fs = { scope = ".work", access = "readwrite", max_bytes = 65536 },
-                time = {},
+                time = true,
               },
             }
             "#,
@@ -59,11 +60,15 @@ fn the_c_hosts_dialect_maps_field_for_field() {
     assert_eq!(listener.scheme, "http");
     assert_eq!(listener.address, "0.0.0.0:8080");
     assert_eq!(listener.conn_deadline_ms, 5000);
-    assert_eq!(listener.headers, vec!["authorization"]);
+    assert_eq!(listener.headers, vec!["authorization", "x-df-sub", "host"]);
+    // `response_headers` is the C host's config spelling for what the
+    // struct calls resp_headers.
+    assert_eq!(listener.resp_headers, vec!["location", "retry-after"]);
 
     // A connector block is the scope; an empty block wires with none.
     let fs = &cfg.connectors["fs"];
     assert!(fs.scope.is_some());
+    // `time = true` wires the connector with no scope of its own.
     assert!(cfg.connectors["time"].scope.is_none());
 }
 

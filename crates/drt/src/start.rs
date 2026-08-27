@@ -135,6 +135,13 @@ impl SwarmHost for DeployHost {
             Ok(step) => self.note(id, step),
             Err(e) => {
                 self.parked.remove(&id.0);
+                // A deployment that loses an instance says so. The swarm
+                // reports the fault to the parent's system/events queue,
+                // which is right for supervised children — but the root has
+                // no supervisor but this process, and a deployment that
+                // drains silently after a root fault reads as a mystery
+                // exit, not a diagnosis.
+                eprintln!("drt: instance {} faulted: {e}", id.0);
                 Driven::Faulted(e.to_string())
             }
         }

@@ -180,7 +180,12 @@ pub struct Listener {
     pub headers: Vec<String>,
     /// The response-header allowlist: a name a guest reply uses that is
     /// not here is dropped whole — never truncated, never cleaned.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// `response_headers` is the C host's config spelling.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        alias = "response_headers"
+    )]
     pub resp_headers: Vec<String>,
 }
 
