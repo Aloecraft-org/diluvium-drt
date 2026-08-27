@@ -176,7 +176,7 @@ fn fanout(
     wake: bool,
     deadline: Duration,
 ) -> Result<(Swm, InstanceId, usize), Stalled> {
-    let mut sw = Swarm::with_limits(engine(), StepHost, (n + 8) as u32, rate);
+    let mut sw = Swarm::with_limits(engine(), StepHost::new(), (n + 8) as u32, rate);
     let src = guests::supervisor(n, worker, &["queue:work/*", "queue:log"], 0, wake);
     let root = sw
         .root(
@@ -324,6 +324,31 @@ fn spawn(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
 /// One message in and its reply out: a host push, a guest `queue.wait`, a
 /// guest push, a host drain. This is the host path — the swarm layer has no
 /// guest-to-guest routing.
+/// Drain every worker's `done` queue and count what came back — the
+/// harness's half of a round trip.
+///
+/// The C's `drain_done` peeks a borrowed span and releases it; the seam has
+/// no non-consuming peek, so `pop` hands over an owned `Vec`. That is one
+/// allocation and one payload copy per reply that the C does not make, and
+/// it is inside the timed region on this side only. It shows up as
+/// `p*_allocs_drain`, and it is a gap in the seam rather than in the swarm.
+fn drain_done(sw: &mut Swm, workers: &[InstanceId]) -> usize {
+    let mut got = 0;
+    for id in workers {
+        // Absent means cached, and its replies wait with it.
+        let Some(inst) = sw.instance_mut(*id) else {
+            continue;
+        };
+        let Some(q) = inst.queue("done") else {
+            continue;
+        };
+        while matches!(inst.pop(q), Ok(Some(_))) {
+            got += 1;
+        }
+    }
+    got
+}
+
 fn queue(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
     let agents = scaled(a, 64);
     let rounds = scaled(a, 64);
@@ -341,6 +366,7 @@ fn queue(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
         rmpv::encode::write_value(&mut payload, &rmpv::Value::Binary(vec![0x5a; size]))
             .expect("a bench payload encodes");
         let mut refused = 0.0;
+        let mut pushed = 0usize;
         let mut delivered = 0usize;
 
         let (allocs_before, bytes_before) = allocs();
@@ -354,7 +380,7 @@ fn queue(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
             let mark = allocs().0;
             for id in &workers {
                 if sw.push(*id, "work", &payload).is_ok() {
-                    delivered += 1;
+                    pushed += 1;
                 } else {
                     refused += 1.0;
                 }
@@ -365,19 +391,25 @@ fn queue(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
             sw.step();
             step_allocs += allocs().0 - mark;
             let mark = allocs().0;
-            for id in &workers {
-                if let Some(inst) = sw.instance_mut(*id) {
-                    if let Some(q) = inst.queue("done") {
-                        while matches!(inst.pop(q), Ok(Some(_))) {}
-                    }
-                }
-            }
+            delivered += drain_done(&mut sw, &workers);
             drain_allocs += allocs().0 - mark;
             if started.elapsed() > deadline {
                 return Err(Stalled(format!(
                     "queue: payload {size} exceeded the deadline"
                 )));
             }
+        }
+        // Let what is in flight land, so the count is of round trips
+        // *completed* and not of messages abandoned mid-flight. The C
+        // harness settles the same way, and for the same reason: dividing
+        // the elapsed time by a count of pushes rather than of replies
+        // measures a different thing on each side.
+        for _ in 0..64 {
+            if delivered >= pushed {
+                break;
+            }
+            sw.step();
+            delivered += drain_done(&mut sw, &workers);
         }
         let elapsed = started.elapsed().as_secs_f64();
         let (allocs_after, bytes_after) = allocs();
@@ -423,7 +455,12 @@ fn step_cost(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
         ("table_64x", n, 64),
         ("quarter_agents", n / 4, 1),
     ] {
-        let mut sw = Swarm::with_limits(engine(), StepHost, ((agents + 8) * headroom) as u32, 64);
+        let mut sw = Swarm::with_limits(
+            engine(),
+            StepHost::new(),
+            ((agents + 8) * headroom) as u32,
+            64,
+        );
         let src = guests::supervisor(
             agents,
             guests::WORKER_IDLE,

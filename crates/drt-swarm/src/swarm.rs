@@ -34,7 +34,7 @@ use drt_caps::{CapSet, Effect, Grant, Principal};
 use drt_config::Budget;
 
 use crate::engine::{
-    Engine, Instance, LoadSpec, ProgramBytes, PushOutcome, QueueHandle, RestoreSpec,
+    Engine, Instance, LoadSpec, ProgramBytes, PushOutcome, QueueHandle, RestoreSpec, WaitSet,
 };
 use crate::InstanceId;
 
@@ -107,21 +107,59 @@ pub trait SwarmHost {
 
 /// A host whose `drive` is one `run` or `resume` — the single-threaded
 /// legitimate host `dvs.h` describes, not a stub. A parked instance is
-/// resumed when one of its waited queues has a message; otherwise it stays
-/// parked (the swarm owns no clock, so a timeout is someone else's to
-/// honour).
-pub struct StepHost;
+/// resumed when one of its waited queues is ready; otherwise it stays parked
+/// (the swarm owns no clock, so a timeout is someone else's to honour —
+/// unlike the C bench harness, which times its own parks).
+///
+/// **Ready** is not the same question for both kinds of park. A program
+/// waiting for a *message* is ready when its queue is non-empty; one waiting
+/// for *space* in a full queue is ready when the queue has room. Answering
+/// the wrong one resumes a program straight back into a push that fails
+/// again, which is why `dv.h` §8.3 makes the host say which it means and why
+/// [`WaitSet::for_space`] exists.
+#[derive(Default)]
+pub struct StepHost {
+    /// The wait set each parked instance was last handed.
+    ///
+    /// `run` and `resume` already return the park as `Step::Parked`, so
+    /// asking `current_wait()` for it again on the next step is asking the
+    /// engine to repeat itself — a second `dv_waitset_get` across the FFI
+    /// per message round trip, where the C harness's `host_drive` makes
+    /// exactly one. An entry is dropped whenever residency changes, because
+    /// queue handles are interned per residency and a woken instance's are
+    /// not the ones it parked on.
+    parked: HashMap<u32, WaitSet>,
+}
+
+impl StepHost {
+    pub fn new() -> StepHost {
+        StepHost::default()
+    }
+}
 
 impl SwarmHost for StepHost {
-    fn drive(&mut self, _id: InstanceId, _caps: &CapSet, inst: &mut dyn Instance) -> Driven {
-        let step = match inst.current_wait() {
+    fn drive(&mut self, id: InstanceId, _caps: &CapSet, inst: &mut dyn Instance) -> Driven {
+        // Cached, or asked for — the second is the restored-instance path,
+        // whose park was never returned by anything here.
+        let wait = match self.parked.get(&id.0) {
+            Some(wait) => Some(*wait),
+            None => inst.current_wait(),
+        };
+        let step = match wait {
             None => inst.run(),
             Some(wait) => {
+                let ready = |info: crate::engine::QueueStatus| {
+                    if wait.for_space {
+                        info.len < info.capacity
+                    } else {
+                        info.len > 0
+                    }
+                };
                 let fired = wait
                     .queues()
                     .iter()
                     .copied()
-                    .find(|&q| inst.queue_info(q).map(|info| info.len > 0).unwrap_or(false));
+                    .find(|&q| inst.queue_info(q).map(ready).unwrap_or(false));
                 match fired {
                     Some(q) => inst.resume(q),
                     None => return Driven::Alive,
@@ -129,10 +167,29 @@ impl SwarmHost for StepHost {
             }
         };
         match step {
-            Ok(crate::engine::Step::Parked(_)) => Driven::Alive,
-            Ok(crate::engine::Step::Done) => Driven::Exited,
-            Err(e) => Driven::Faulted(e.to_string()),
+            Ok(crate::engine::Step::Parked(wait)) => {
+                self.parked.insert(id.0, wait);
+                Driven::Alive
+            }
+            Ok(crate::engine::Step::Done) => {
+                self.parked.remove(&id.0);
+                Driven::Exited
+            }
+            Err(e) => {
+                self.parked.remove(&id.0);
+                Driven::Faulted(e.to_string())
+            }
         }
+    }
+
+    // Build, wake, hibernate and death all change residency, and handles do
+    // not survive it.
+    fn attached(&mut self, id: InstanceId) {
+        self.parked.remove(&id.0);
+    }
+
+    fn detached(&mut self, id: InstanceId) {
+        self.parked.remove(&id.0);
     }
 }
 

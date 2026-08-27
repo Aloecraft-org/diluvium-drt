@@ -31,7 +31,7 @@ that afternoon. Every ratio quoted against that baseline — including a
 confident "the message path is 35–40% faster" — was measuring the
 container's mood.
 
-## Four corrections, and the guard each one bought
+## Five corrections, and the guard each one bought
 
 Every one was the same mistake in different clothes: **something differing
 between the two measurements that was not the runtime, and was invisible.**
@@ -42,8 +42,9 @@ between the two measurements that was not the runtime, and was invisible.**
 | 2 | The harness re-encoded its payload per message; the C encodes once | `p*_allocs_per_roundtrip` printed beside every timing (the C's is zero) |
 | 3 | RSS read from a whole-suite run, conflating fixed cost with per-agent | `rss_baseline_bytes` captured at process start |
 | 4 | Timings compared across machine states hours apart | `bench/ab.sh` — interleaved capture, both files written together |
+| 5 | The harness counted *pushes* where the C counts *drained replies* | `drain_done` returns the count, and a settle loop lands what is in flight |
 
-A fifth was caught before it was published: `us_per_lookup` timed the *last*
+A sixth was caught before it was published: `us_per_lookup` timed the *last*
 handle repeatedly (a full-table scan, the worst position) against the C's
 figure, which is *derived* from a whole-roster walk and so is the average
 position. That is a factor of two before any implementation difference. It is
@@ -75,78 +76,75 @@ the swarm size". DRT keeps a handle→index map, so:
 
 | | C | DRT | |
 |---|---|---|---|
-| one handle lookup | 0.067 µs | **0.0093 µs** | 7.2× |
-| full roster walk (256) | 17.1 µs | **2.4 µs** | 7.2× |
-| idle step, 64× table headroom | 298 µs | **91 µs** | 3.3× |
-| idle step, 8× headroom | 125 µs | **92 µs** | 1.4× |
+| one handle lookup | 0.056 µs | **0.0080 µs** | 7.0× |
+| full roster walk (256) | 14.3 µs | **2.1 µs** | 6.9× |
+| idle step, 64× table headroom | 334 µs | **85 µs** | 3.9× |
+| idle step, 8× headroom | 116 µs | **90 µs** | 1.3× |
 
 The idle-step win is the same property twice: the C's cost scales with the
 table *bound*, DRT's with what is actually claimed.
 
-**Message path: DRT is 13–24% slower, and this is the real remaining gap.**
+**Message path: DRT costs a flat ~0.45 µs more per round trip. It is a
+constant, not a percentage.**
 
-| payload | C | DRT | |
-|---|---|---|---|
-| 16 B | 2.42 µs | 2.99 µs | 1.24 |
-| 256 B | 3.10 µs | 3.69 µs | 1.19 |
-| 4 KB | 7.35 µs | 8.31 µs | 1.13 |
+| payload | C | DRT | ratio | absolute |
+|---|---|---|---|---|
+| 16 B | 2.14 µs | 2.54 µs | 1.19 | +0.40 µs |
+| 256 B | 3.05 µs | 3.53 µs | 1.16 | +0.48 µs |
+| 4 KB | 9.48 µs | 10.00 µs | 1.05 | +0.52 µs |
 
-The handle index did not move this — with 64 agents the scan it replaced was
-short. The six allocations per round trip were split by phase rather than
-guessed at:
+Every earlier version of this section quoted the ratio — "35–40% faster",
+then "19–29% slower", then "13–24% slower" — and the ratio was the wrong
+statistic all along. The overhead barely moves across a 256× range of
+payload sizes; what moves is the denominator. Reading a trend into 1.19 /
+1.16 / 1.05 is reading the payload size back out of a division.
 
-| phase | before | after |
-|---|---|---|
-| `Swarm::push` | 0.05 | 0.05 |
-| the drive loop | 4.05 | **2.03** |
-| the harness's drain | 2.00 | 2.00 |
+So the thing to explain is **0.45 µs of fixed cost per round trip**, and
+three separate attempts to explain it have now failed:
 
-Two of the drive loop's four were DRT's own: `WaitSet` held a `Vec` where
-`dv_waitset` hands over a fixed `dv_queue_id ids[DV_WAIT_MAX]`, and `drive`
-lifts a wait twice per step (once for `current_wait`, once for the `Parked`
-a step returns). `WaitSet` now carries the same fixed array, and the count
-drops from 6.09 to 4.08. The other two are `diluvium::Wait`'s own
-`Vec<QueueId>`, built inside the safe wrapper; they close upstream, by
-giving `Wait` the same treatment.
+| what was removed | measured effect on the clock |
+|---|---|
+| 3 of the 6 heap allocations on the hot path | none — 1.04 / 0.96 / 0.99 |
+| one FFI crossing per round trip (`dv_waitset_get`) | none — 1.04 / 1.00 / 1.04 |
+| a metric bug: counting pushes, not drained replies | none — they were equal |
 
-## The allocations were not the cause. That theory is dead.
+Each was measured old-binary-against-new, interleaved, seven passes each, so
+the only difference was the change itself. Each was a real defect and each is
+fixed. None of them was the cost — and in the same runs the idle-step
+scenarios moved between 0.88 and 1.11 on *identical* code, so this machine's
+noise floor is wider than anything being looked for.
 
-Removing a third of them — a change that is exactly and only that, measured
-old-binary-against-new interleaved, seven passes each — moved the message
-path by **nothing**:
+The remaining shape of the evidence — a constant, immune to removing
+individual items — says the cost is **distributed**: roughly 65 ns across
+each of the ~7 wrapper crossings a round trip makes, which is about what
+`dyn` dispatch, a safe wrapper and bounds-checked handle resolution cost when
+you add them up. If that reading is right there is no single fix, and the
+honest thing is to stop hunting one.
 
-| payload | allocs 6.09 → 4.08 | time |
-|---|---|---|
-| 16 B | −33% | 1.04 |
-| 256 B | −33% | 0.96 |
-| 4 KB | −33% | 0.99 |
+Two genuine seam gaps surfaced on the way. Both are worth closing on their
+own merits, and neither should be sold as performance work:
 
-Scattered either side of 1.0, and the 16-byte case came out *slower*. In the
-same pair of runs the idle-step scenarios moved between 0.88 and 1.11 on
-identical code paths, so ±11% is this machine's noise floor — larger than
-the whole effect being looked for.
+- **The seam has no non-consuming peek.** The C's drain is `dv_queue_peek` +
+  `dv_queue_release` — a borrowed span, no copy. DRT's `Instance::pop` hands
+  back an owned `Vec`, so every reply costs an allocation and a payload copy
+  the C never makes. That is `p*_allocs_drain`, and at 4 KB it is a 4 KB
+  memcpy per message.
+- **Looking a queue up by name allocates.** `dv_queue_lookup` takes a
+  `const char *`; the safe wrapper builds a `CString` for it. Queue names are
+  bounded at 64 bytes, so a stack buffer would do. The runtime path does not
+  pay this — `Swarm::push` caches handles per residency — but the harness's
+  drain does, once per agent per round.
 
-This branch had already been careful to say the allocations were *traced*
-and not *shown to cause* the gap. They do not. Two things follow. The
-`WaitSet` change stays, because two allocations per message to move at most
-32 `u32`s is bad code whatever the clock says, and the upstream ask stays
-for the same reason — but neither is a performance fix, and neither should
-be sold as one. And the 19–29% is still unexplained.
-
-One trap for whoever picks it up. The gap looks like it has a shape across
-payload sizes, and it does not: the capture before this one read 1.20 / 1.19
-/ 1.29 and this one reads 1.24 / 1.19 / 1.13, so the 4 KB column alone moved
-by more than the trend anyone would read into either. Do not build a theory
-on that ordering. What survives both captures is only the flat fact that all
-three are slower by roughly a fifth.
-
-So the next measurement to take is a **count**, not a time — FFI crossings
-per round trip on each side. A count is the comparable figure here, and a
-difference in one is a real difference rather than the container's mood;
-that is the whole doctrine below, applied to the one question still open.
+Allocations per round trip, for the record: **6.09** when this started,
+**3.06** now — `push` 0.05, the drive loop 1.02, the harness's drain 2.00.
+Two of the three removed were `WaitSet` holding a `Vec` where `dv_waitset`
+hands over a fixed `dv_queue_id ids[DV_WAIT_MAX]`; the third was
+`StepHost` asking `current_wait()` for a park `resume` had just returned to
+it. The drive loop's last one is `diluvium::Wait`'s own `Vec<QueueId>`,
+built inside the safe wrapper, and closes upstream by the same change.
 
 **Per-instance work is at or near parity**, and moves between passes:
-hibernate 0.99, wake 1.03, small spawn 1.07, subtree kill 0.85–1.07, tight
+hibernate 1.03, wake 1.00, small spawn 1.05, subtree kill 0.89–0.98, tight
 idle step 0.89. Large-program spawn is consistently ahead (0.75) because the
 C copies each request through two 32 KB stack buffers whatever its real size.
 

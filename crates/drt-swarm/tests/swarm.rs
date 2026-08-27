@@ -15,12 +15,12 @@ use drt_swarm::InstanceId;
 
 fn swarm() -> Swarm<StepHost> {
     let engine = Arc::new(DiluviumEngine::new().unwrap());
-    Swarm::new(engine, StepHost)
+    Swarm::new(engine, StepHost::new())
 }
 
 fn swarm_with(max_instances: u32, spawns_per_step: u32) -> Swarm<StepHost> {
     let engine = Arc::new(DiluviumEngine::new().unwrap());
-    Swarm::with_limits(engine, StepHost, max_instances, spawns_per_step)
+    Swarm::with_limits(engine, StepHost::new(), max_instances, spawns_per_step)
 }
 
 fn lifecycle_caps() -> Vec<Grant> {
@@ -671,7 +671,10 @@ mod pump {
             )
             .unwrap();
         let engine = Arc::new(DiluviumEngine::new().unwrap());
-        let mut sw = Swarm::new(engine, PumpHost::new(StepHost, Dispatcher::new(registry)));
+        let mut sw = Swarm::new(
+            engine,
+            PumpHost::new(StepHost::new(), Dispatcher::new(registry)),
+        );
 
         // Parent and child run the same code: one hostcall, then the reply's
         // status pushed to an exported queue. The parent holds host:time*;
@@ -731,7 +734,10 @@ mod pump {
             )
             .unwrap();
         let engine = Arc::new(DiluviumEngine::new().unwrap());
-        let mut sw = Swarm::new(engine, PumpHost::new(StepHost, Dispatcher::new(registry)));
+        let mut sw = Swarm::new(
+            engine,
+            PumpHost::new(StepHost::new(), Dispatcher::new(registry)),
+        );
 
         // A parked caller that reports its verdict and waits, so the test
         // can read the exported queue while it is still resident.
@@ -774,4 +780,59 @@ mod pump {
         );
         assert!(text.contains("outside this instance's grants"), "{text}");
     }
+}
+
+/// A program that fills its own exported queue and then parks *for space*,
+/// not for a message.
+///
+/// `on_full = "block"` is the only way to get such a park (Messaging.md
+/// §"Delivery"), and `dv.h` §8.3 makes the host say which kind of park it is
+/// answering. Answering the wrong one resumes a program straight back into a
+/// push that fails again — so a host that only ever asks "is the queue
+/// non-empty" leaves this one parked forever, on a queue that is not merely
+/// non-empty but completely full.
+const FILLS_THEN_BLOCKS: &str = "\
+local out = queue.declare('out', {capacity = 2, exported = true, on_full = 'block'})\n\
+local idle = queue.declare('idle', {capacity = 1})\n\
+for i = 1, 5 do\n\
+  queue.push(out, i)\n\
+end\n\
+queue.wait({idle})\n\
+";
+
+#[test]
+fn a_program_waiting_for_space_is_resumed_when_the_queue_drains() {
+    let mut sw = swarm();
+    let id = sw
+        .root(FILLS_THEN_BLOCKS.as_bytes(), vec![], Budget::default())
+        .unwrap();
+
+    // Two land and the third blocks: the queue is at capacity and the
+    // program is parked for space, not for a message.
+    settle(&mut sw, 4);
+    let mut got: Vec<i64> = Vec::new();
+    let first = drain_out(&mut sw, id, "out");
+    assert_eq!(first.len(), 2, "the queue should be at its capacity of 2");
+    got.extend(first.iter().map(|v| v.as_i64().unwrap()));
+
+    // Draining made room. A host that asks the message question sees a
+    // now-*empty* queue and never resumes it; asking the space question
+    // resumes it, and the rest land.
+    for _ in 0..8 {
+        settle(&mut sw, 4);
+        got.extend(
+            drain_out(&mut sw, id, "out")
+                .iter()
+                .map(|v| v.as_i64().unwrap()),
+        );
+        if got.len() == 5 {
+            break;
+        }
+    }
+    assert_eq!(
+        got,
+        vec![1, 2, 3, 4, 5],
+        "the blocked pushes never landed — the space-park was answered as a \
+         message-park, or not at all"
+    );
 }
