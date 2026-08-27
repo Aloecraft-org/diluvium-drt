@@ -32,6 +32,21 @@ EXACT = [
     ("queue", "p4096_refused_pushes"),
 ]
 
+# Churn: the same seed drives the C's own xorshift64* and the same LRU
+# policy (ties evict the highest index, as the C's <= scan does), so the
+# entire cache behaviour reproduces exactly — the die and the policy both.
+for _label in ("all_resident", "half_resident", "eighth_resident"):
+    EXACT += [
+        ("churn", f"{_label}_hit_rate"),
+        ("churn", f"{_label}_wakes"),
+        ("churn", f"{_label}_hibernates"),
+        ("churn", f"{_label}_steps"),
+        ("churn", f"{_label}_refused_pushes"),
+        ("churn", f"{_label}_wake_buffer_accepted"),
+        ("churn", f"{_label}_wake_buffer_refused_of_64"),
+        ("churn", f"{_label}_cached_bytes_each"),
+    ]
+
 # The guest heap is the C core's own and must match to within rounding.
 NEAR = [("density", "resident_bytes_per_agent", 0.001)]
 

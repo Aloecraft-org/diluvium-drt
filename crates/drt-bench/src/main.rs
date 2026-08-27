@@ -487,6 +487,202 @@ fn queue(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
     Ok(c)
 }
 
+// ------------------------------------------------------------------ churn --
+
+/// The C harness's xorshift64*, verbatim, so the traffic pattern is the
+/// same sequence of picks for the same seed: a differing hit rate is then a
+/// differing *policy*, never a differing die.
+struct Rng(u64);
+
+impl Rng {
+    fn below(&mut self, n: usize) -> usize {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        (self.0.wrapping_mul(2685821657736338717) % n as u64) as usize
+    }
+}
+
+/// Oversubscription: more agents than the residency budget, work arriving
+/// at a uniformly random one — the worst case for any cache, and the honest
+/// one to quote. The swarm has no residency cap of its own (its table
+/// bounds how many *exist*); the policy is the host's, and this harness
+/// carries the same LRU the C harness does: swap out the least recently
+/// used when a wake would pass the budget.
+fn churn(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
+    let total = scaled(a, 256).max(8);
+    let ops = scaled(a, 1024).max(16);
+    let mut c = Case::new();
+    c.insert("agents".into(), total as f64);
+    c.insert("ops".into(), ops as f64);
+    for (label, resident) in [
+        ("all_resident", total),
+        ("half_resident", total / 2),
+        ("eighth_resident", total / 8),
+    ] {
+        churn_at(a, &mut c, total, resident, ops, label, deadline)?;
+    }
+    Ok(c)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn churn_at(
+    a: &Args,
+    c: &mut Case,
+    total: usize,
+    resident: usize,
+    ops: usize,
+    label: &str,
+    deadline: Duration,
+) -> Result<(), Stalled> {
+    let (mut sw, root, spin_up) = fanout(guests::WORKER_IDLE, total, 64, true, deadline, 0)?;
+    let ids = worker_ids(&sw, root);
+    let n = ids.len();
+    let mut is_resident = vec![true; n];
+    let mut used_at = vec![0u64; n];
+    // The C's step counter runs from swarm creation, fanout spin-up
+    // included; count the same steps or the field reads five short.
+    let mut steps = spin_up as u64;
+
+    // Down to the residency budget before the clock starts, so the
+    // measurement is of the steady state and not of the descent into it.
+    for i in 0..n.saturating_sub(resident) {
+        if sw.hibernate(ids[i]).is_ok() {
+            is_resident[i] = false;
+        }
+    }
+
+    let mut msg = Vec::new();
+    rmpv::encode::write_value(&mut msg, &rmpv::Value::from(1u64)).unwrap();
+    let mut rng = Rng(a.seed);
+    let (mut woke, mut swapped, mut hits, mut misses, mut refused) = (0u64, 0u64, 0u64, 0u64, 0u64);
+    let started = Instant::now();
+    let mut ran = ops;
+    for i in 0..ops {
+        let pick = rng.below(n);
+        if is_resident[pick] {
+            hits += 1;
+        } else {
+            misses += 1;
+        }
+        match sw.push(ids[pick], "work", &msg) {
+            Ok(()) => {}
+            Err(drt_swarm::swarm::SwarmError::Limit(_)) => refused += 1,
+            Err(_) => {
+                misses -= 1;
+                refused += 1;
+            }
+        }
+        used_at[pick] = i as u64;
+        if !is_resident[pick] {
+            // The swarm restores it on the next step, ahead of any live
+            // push.
+            sw.step();
+            steps += 1;
+            if sw.resident(ids[pick]) {
+                is_resident[pick] = true;
+                woke += 1;
+            }
+        } else if i & 7 == 0 {
+            sw.step();
+            steps += 1;
+        }
+        // Hold the residency budget: evict the least recently used.
+        let mut live = is_resident.iter().filter(|r| **r).count();
+        while live > resident {
+            // The C's scan keeps replacing on `<=`, so among ties it
+            // evicts the *highest* index. `min_by_key` would take the
+            // lowest, and that one-line difference measurably shifts the
+            // hit pattern (six wakes over 1,024 ops at half residency).
+            let mut oldest = None;
+            let mut oldest_at = u64::MAX;
+            for j in 0..n {
+                if is_resident[j] && used_at[j] <= oldest_at {
+                    oldest_at = used_at[j];
+                    oldest = Some(j);
+                }
+            }
+            let Some(oldest) = oldest else { break };
+            if sw.hibernate(ids[oldest]).is_ok() {
+                is_resident[oldest] = false;
+                swapped += 1;
+                live -= 1;
+            } else {
+                break; // still running: it will be evicted later
+            }
+        }
+        if started.elapsed() > deadline {
+            ran = i + 1;
+            break;
+        }
+    }
+    for _ in 0..32 {
+        sw.step();
+        steps += 1;
+        drain_done(&mut sw, &ids);
+    }
+    let elapsed = started.elapsed().as_secs_f64();
+
+    let (cached_total, cached_n) = ids
+        .iter()
+        .map(|id| sw.cached_size(*id))
+        .filter(|sz| *sz > 0)
+        .fold((0usize, 0usize), |(t, k), sz| (t + sz, k + 1));
+
+    c.insert(format!("{label}_ops_per_s"), ran as f64 / elapsed);
+    c.insert(format!("{label}_hit_rate"), hits as f64 / ran as f64);
+    c.insert(format!("{label}_wakes"), woke as f64);
+    c.insert(format!("{label}_hibernates"), swapped as f64);
+    c.insert(
+        format!("{label}_us_per_wake"),
+        if woke > 0 {
+            elapsed * 1e6 / woke as f64
+        } else {
+            0.0
+        },
+    );
+    c.insert(format!("{label}_refused_pushes"), refused as f64);
+    c.insert(
+        format!("{label}_cached_bytes_each"),
+        if cached_n > 0 {
+            cached_total as f64 / cached_n as f64
+        } else {
+            0.0
+        },
+    );
+    c.insert(format!("{label}_steps"), steps as f64);
+    c.insert(format!("{label}_us_per_op"), elapsed * 1e6 / ran as f64);
+
+    // The wake buffer's bound, measured rather than quoted: a cached agent
+    // that asked to be woken takes messages into a bounded host buffer, and
+    // a full one is refused — bounded queues exist so backpressure is
+    // visible, and an unbounded wake buffer would be the one place it was
+    // not. Pushing hard at one sleeping agent without stepping is the only
+    // way to reach it.
+    if n > 0 {
+        let victim = ids
+            .iter()
+            .copied()
+            .find(|id| !sw.resident(*id))
+            .unwrap_or_else(|| {
+                let last = ids[n - 1];
+                let _ = sw.hibernate(last);
+                last
+            });
+        let (mut accepted, mut denied) = (0u64, 0u64);
+        for _ in 0..64 {
+            match sw.push(victim, "work", &msg) {
+                Ok(()) => accepted += 1,
+                Err(_) => denied += 1,
+            }
+        }
+        c.insert(format!("{label}_wake_buffer_accepted"), accepted as f64);
+        c.insert(format!("{label}_wake_buffer_refused_of_64"), denied as f64);
+    }
+    let _ = misses;
+    Ok(())
+}
+
 // ------------------------------------------------------------------- step --
 
 /// The cost of one step with every agent parked and nothing to do, against
@@ -616,6 +812,7 @@ fn main() -> ExitCode {
     let deadline = Duration::from_secs_f64(a.deadline);
     let scenarios: Vec<(&str, Scenario)> = vec![
         ("density", density),
+        ("churn", churn),
         ("spawn", spawn),
         ("queue", queue),
         ("step", step_cost),

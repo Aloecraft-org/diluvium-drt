@@ -164,10 +164,17 @@ fixed and **16.6 KiB** per agent. The guest heap is identical to the byte, so
 this is each runtime's own overhead. Total RSS crosses over as a deployment
 grows — 21% higher at 128 agents, 5% at 512, 1.9% at 1,024, still closing.
 
-**Not ported:** `churn` (needs the host-side LRU residency policy — which is
-also what `drt start` will need, so it is worth doing before building on the
-residency story) and `jwt` (measures the interpreter doing HMAC-SHA256, the
-same C core on both sides, so it cannot distinguish the swarm layers).
+**Churn — oversubscription under the same die and the same policy — now
+reproduces the C's cache behaviour exactly**: the same seed drives the C's
+own xorshift64* and the same LRU (ties evict the highest index, as the C's
+`<=` scan does), so hit rates (1.0 / 0.5127 / 0.1143), wakes (0 / 499 /
+907), hibernates, step counts and the 16-of-64 wake-buffer bound all match
+to the digit, and the fidelity gate asserts all of them. What the clock adds
+on top: nothing worth naming — interleaved, the three labels land at
+0.98–1.05 of the C on ops/s and per-wake alike.
+
+**Not ported:** `jwt` (measures the interpreter doing HMAC-SHA256, the same
+C core on both sides, so it cannot distinguish the swarm layers).
 
 ## Footprint, for the distribution question
 
