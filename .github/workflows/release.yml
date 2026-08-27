@@ -1,0 +1,191 @@
+name: Release
+
+# Builds and (optionally) publishes a DRT release for one specific commit.
+# The shape is diluvium's release.yml, kept deliberately: tag push publishes;
+# a manual run is a full rehearsal by default — tests, every platform,
+# artifacts on the run — and touches the Releases page only when publish=true.
+#
+# DRT versions independently of diluvium. The coupling is RECORDED, not
+# required: BUILDINFO.txt in every release names the diluvium git revision
+# this binary embeds and the dv ABI version it speaks, so "which diluvium is
+# inside" is a fact you read off the release, never a tag-naming convention.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Commit SHA, branch or tag to release (blank = the selected branch)'
+        type: string
+        required: false
+        default: ''
+      tag:
+        description: 'Tag name, e.g. v0.1.0 (required when publishing)'
+        type: string
+        required: false
+        default: ''
+      publish:
+        description: 'Publish to the Releases page. Leave off for a rehearsal.'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+      publish: ${{ steps.check.outputs.publish }}
+      sha: ${{ steps.check.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 0
+      - id: check
+        env:
+          EVENT: ${{ github.event_name }}
+          IN_TAG: ${{ inputs.tag }}
+          IN_PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -eu
+          if [ "$EVENT" = push ]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            PUBLISH=true
+          else
+            TAG="$IN_TAG"
+            PUBLISH="${IN_PUBLISH:-false}"
+            if [ "$PUBLISH" = true ] && [ -z "$TAG" ]; then
+              echo "::error::publish=true requires a tag name."
+              exit 1
+            fi
+            if [ -n "$TAG" ] && git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+              echo "::error::tag '$TAG' already exists."
+              exit 1
+            fi
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Tests
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-features
+
+  build:
+    name: Build (${{ matrix.name }})
+    needs: [preflight, test]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Static musl: the binary that installs onto any Linux box the
+          # way diluvium_linux_static_x86_64 does. `full` is the unprefixed
+          # default artifact — DRT installs as the runtime, and a runtime
+          # that cannot serve is the two-binary cliff again; `slim` is the
+          # qualified variant for the distribution-size story.
+          - name: linux_static_x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            setup: sudo apt-get update && sudo apt-get install -y musl-tools cmake
+          - name: darwin_arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            setup: 'true'
+          - name: darwin_x86_64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            setup: 'true'
+          # linux aarch64 and windows are next, not promised: the full
+          # profile carries aws-lc-sys through russh, and cross-compiling
+          # that is a job to rehearse, not to assume.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+      - name: Setup
+        run: ${{ matrix.setup }}
+      - name: Build full and slim
+        run: |
+          set -eu
+          cargo build --profile release-small -p drt --no-default-features --features full --target ${{ matrix.target }}
+          cp target/${{ matrix.target }}/release-small/drt drt_${{ matrix.name }}
+          cargo build --profile release-small -p drt --target ${{ matrix.target }}
+          cp target/${{ matrix.target }}/release-small/drt drt_slim_${{ matrix.name }}
+      - name: Smoke test
+        run: |
+          set -eu
+          ./drt_${{ matrix.name }} --version
+          echo 'local x = 1' > smoke.lua
+          ./drt_${{ matrix.name }} run smoke.lua
+          ./drt_slim_${{ matrix.name }} run smoke.lua
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drt-${{ matrix.name }}
+          path: drt_*
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish release
+    needs: [preflight, test, build]
+    if: needs.preflight.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drt-*
+          path: release_dist
+          merge-multiple: true
+      - name: BUILDINFO and checksums
+        run: |
+          set -eu
+          cd release_dist
+          DILUVIUM_REV=$(grep -A2 'name = "diluvium"' ../Cargo.lock | sed -n 's/.*#\([0-9a-f]*\)".*/\1/p' | head -1)
+          {
+            echo "tag: ${{ needs.preflight.outputs.tag }}"
+            echo "commit: ${{ needs.preflight.outputs.sha }}"
+            echo "diluvium: ${DILUVIUM_REV:-unknown}"
+            echo "built: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > BUILDINFO.txt
+          sha256sum drt_* BUILDINFO.txt > SHA256SUMS.txt
+          cat BUILDINFO.txt SHA256SUMS.txt
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.preflight.outputs.tag }}
+          target_commitish: ${{ needs.preflight.outputs.sha }}
+          name: DRT ${{ needs.preflight.outputs.tag }}
+          files: release_dist/*
+          generate_release_notes: true
