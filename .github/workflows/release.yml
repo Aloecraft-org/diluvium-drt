@@ -107,7 +107,15 @@ jobs:
           - name: linux_static_x86_64
             os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            setup: sudo apt-get update && sudo apt-get install -y musl-tools cmake
+            # CC=musl-gcc matters twice over: diluvium-sys's build script
+            # invokes $CC directly (not the cc crate), and without it the C
+            # core is compiled by the host glibc gcc — whose fortify and
+            # LFS symbols (__fprintf_chk, fopen64) do not exist in musl, as
+            # the first rehearsal proved at link time. The cc-crate users
+            # (aws-lc-sys, bundled sqlite) honour the same variable.
+            setup: >-
+              sudo apt-get update && sudo apt-get install -y musl-tools cmake
+              && echo "CC=musl-gcc" >> "$GITHUB_ENV"
           - name: darwin_arm64
             os: macos-latest
             target: aarch64-apple-darwin
@@ -172,7 +180,7 @@ jobs:
         run: |
           set -eu
           cd release_dist
-          DILUVIUM_REV=$(grep -A2 'name = "diluvium"' ../Cargo.lock | sed -n 's/.*#\([0-9a-f]*\)".*/\1/p' | head -1)
+          DILUVIUM_REV=$( (grep -A2 'name = "diluvium"' ../Cargo.lock || true) | sed -n 's/.*#\([0-9a-f]*\)".*/\1/p' | head -1)
           {
             echo "tag: ${{ needs.preflight.outputs.tag }}"
             echo "commit: ${{ needs.preflight.outputs.sha }}"
