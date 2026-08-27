@@ -959,7 +959,9 @@ dependencies = [
  "drt-connector-time",
  "drt-hostcall",
  "drt-swarm",
+ "httparse",
  "pollster",
+ "rmpv",
  "serde_json",
  "tempfile",
 ]

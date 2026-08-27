@@ -175,7 +175,7 @@ same C core on both sides, so it cannot distinguish the swarm layers).
 
 | profile | size | carries |
 |---|---|---|
-| `slim` (default) | 1.22 MiB | engine, swarm, `time`, `fs`, `crypto` |
+| `slim` (default) | 1.36 MiB | engine, swarm, `time`, `fs`, `crypto`, `listen` |
 | `full` | 3.61 MiB | the above plus `sql` (SQLite bundled) and `ssh` (russh) |
 | `full`, system SQLite | 2.62 MiB | the same, linking `libsqlite3` instead |
 

@@ -141,13 +141,62 @@ pub struct ConnectorWiring {
     pub scope: Option<drt_caps::Scope>,
 }
 
-/// A transport listener (`serve`): resolved through ego-transport by scheme.
+/// A listener: a network surface published on purpose (GUARANTEES.md). The
+/// `http` scheme is `dhost_http.c`'s contract — a queue bridge, where
+/// requests land on a named root queue and replies drain from another —
+/// with the same field names and the same defaults, so a deployment moves
+/// between the C host and DRT by moving its config.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Listener {
-    /// e.g. `ssh`. Non-local schemes resolve through ego-transport.
+    /// `http` today; `ssh` lands with the control endpoint. Non-local
+    /// schemes resolve through ego-transport.
     pub scheme: String,
-    /// e.g. `0.0.0.0:2222`.
+    /// e.g. `127.0.0.1:8080`. The C defaults its bind to the loopback —
+    /// the LB's side — and so should configs here: the edge terminates
+    /// TLS and sets the trusted headers, and a listener facing the world
+    /// directly is a deliberate act, not a default.
     pub address: String,
+    /// Requests land here, on the root program.
+    #[serde(default = "default_request_queue")]
+    pub queue: String,
+    /// Responses drain from here. Two listeners may share one.
+    #[serde(default = "default_reply_queue")]
+    pub reply_queue: String,
+    /// Refuse bigger request bodies (413).
+    #[serde(default = "default_max_body")]
+    pub max_body: usize,
+    /// The host-side timeout, per connection: a program that has not
+    /// answered by then gets its connection a 504 and the late reply is
+    /// consumed without a reader.
+    #[serde(default = "default_conn_deadline_ms")]
+    pub conn_deadline_ms: u64,
+    #[serde(default = "default_max_conns")]
+    pub max_conns: usize,
+    /// The request-header allowlist, lowercased: a header the deployment
+    /// does not name never reaches the program. The bound is the C's
+    /// `DH_MAX_HDRS` (16) per direction.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<String>,
+    /// The response-header allowlist: a name a guest reply uses that is
+    /// not here is dropped whole — never truncated, never cleaned.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resp_headers: Vec<String>,
+}
+
+fn default_request_queue() -> String {
+    "http_in".into()
+}
+fn default_reply_queue() -> String {
+    "http_out".into()
+}
+fn default_max_body() -> usize {
+    65536
+}
+fn default_conn_deadline_ms() -> u64 {
+    10_000
+}
+fn default_max_conns() -> usize {
+    64
 }
 
 /// Process identity. The host key doubles as the node identity and the

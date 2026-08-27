@@ -2,5 +2,7 @@
 //! this; keeping the flow here is what lets it be tested end to end.
 
 pub mod config;
+#[cfg(feature = "listen")]
+pub mod listen;
 pub mod run;
 pub mod start;
