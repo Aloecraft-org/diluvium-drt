@@ -42,6 +42,7 @@ tempfile = "3"
 # The tunnel test drives a real SSH session through both bridge halves.
 ego_transport = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net", "sync", "time"] }
+drt-connector-fs = { workspace = true }
 
 [features]
 # One codebase, feature profiles (SPEC.md §3): `slim` runs a script with
