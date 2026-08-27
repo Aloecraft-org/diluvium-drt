@@ -344,8 +344,14 @@ fn queue(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
         let mut delivered = 0usize;
 
         let (allocs_before, bytes_before) = allocs();
+        // Split the count by phase, so "where do the allocations come from"
+        // is answered rather than guessed at.
+        let mut push_allocs = 0u64;
+        let mut step_allocs = 0u64;
+        let mut drain_allocs = 0u64;
         let started = Instant::now();
         for _ in 0..rounds {
+            let mark = allocs().0;
             for id in &workers {
                 if sw.push(*id, "work", &payload).is_ok() {
                     delivered += 1;
@@ -353,8 +359,12 @@ fn queue(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
                     refused += 1.0;
                 }
             }
+            push_allocs += allocs().0 - mark;
             // One step carries every echo through wait → push.
+            let mark = allocs().0;
             sw.step();
+            step_allocs += allocs().0 - mark;
+            let mark = allocs().0;
             for id in &workers {
                 if let Some(inst) = sw.instance_mut(*id) {
                     if let Some(q) = inst.queue("done") {
@@ -362,6 +372,7 @@ fn queue(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
                     }
                 }
             }
+            drain_allocs += allocs().0 - mark;
             if started.elapsed() > deadline {
                 return Err(Stalled(format!(
                     "queue: payload {size} exceeded the deadline"
@@ -375,6 +386,9 @@ fn queue(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
             format!("p{size}_allocs_per_roundtrip"),
             (allocs_after - allocs_before) as f64 / trips,
         );
+        c.insert(format!("p{size}_allocs_push"), push_allocs as f64 / trips);
+        c.insert(format!("p{size}_allocs_step"), step_allocs as f64 / trips);
+        c.insert(format!("p{size}_allocs_drain"), drain_allocs as f64 / trips);
         c.insert(
             format!("p{size}_alloc_bytes_per_roundtrip"),
             (bytes_after - bytes_before) as f64 / trips,

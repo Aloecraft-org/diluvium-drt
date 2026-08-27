@@ -226,9 +226,18 @@ pub mod diluvium_engine {
         }
 
         fn lift_wait(&mut self, wait: &diluvium::Wait) -> WaitSet {
-            let ids: Vec<_> = wait.ids().to_vec();
+            // One allocation, sized up front. This used to `to_vec()` the
+            // ids and then `collect()` the interned handles — two
+            // allocations per lift, and `drive` lifts twice per step, which
+            // measured as four of the six allocations on the message path.
+            // The borrow works because `wait` is the engine's own value, not
+            // something borrowed out of `self`.
+            let mut queues = Vec::with_capacity(wait.ids().len());
+            for id in wait.ids() {
+                queues.push(self.intern(*id));
+            }
             WaitSet {
-                queues: ids.into_iter().map(|id| self.intern(id)).collect(),
+                queues,
                 timeout: wait.timeout(),
                 for_space: wait.is_waiting_for_space(),
             }

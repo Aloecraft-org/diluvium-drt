@@ -92,13 +92,31 @@ table *bound*, DRT's with what is actually claimed.
 | 4 KB | 6.85 µs | 8.84 µs | 1.29 |
 
 The handle index did not move this — with 64 agents the scan it replaced was
-short. The likely cause is the ~6 allocations per round trip the harness
-counts, against the C's zero: `Instance::queue()` builds a `CString` for the
-FFI name and `Instance::pop()` returns an owned `Vec` where the C peeks a
-borrowed span and releases it. The arithmetic is about right — six
-allocations at 50–100 ns is 0.3–0.6 µs, and the gap is 0.32 µs at 16 B.
-Closing it means a borrowed peek on the `Instance` trait, which is tracked
-and not yet done.
+short. The six allocations per round trip are now split by phase rather than
+guessed at, and the answer was not the one assumed:
+
+| phase | allocations per round trip |
+|---|---|
+| `Swarm::push` | **0.05** |
+| the drive loop | **4.05** |
+| the harness's drain | 2.00 |
+
+The push path is already clean — the handle cache did that. The cost is the
+**wait set**, and it is upstream: `dv_waitset` is a fixed-size C struct
+(`dv_queue_id ids[DV_WAIT_MAX]`), but the safe `diluvium` crate copies it
+into a `Vec<QueueId>` for every `current_wait()` and every `Step::Parked`.
+`StepHost::drive` triggers both per step, so four allocations per message
+exist purely to move a small fixed array onto the heap and back.
+
+The fix is upstream and small: make `Wait` hold the fixed array the ABI
+already hands over. DRT's own `WaitSet` should mirror it. Until then, a host
+can halve it by caching the wait set it was last handed instead of asking
+again with `current_wait()`.
+
+The remaining two are the harness's drain — `queue()` builds a `CString` for
+the FFI name (bounded by the 64-byte queue-name limit, so a stack buffer
+would do) and `pop()` returns an owned `Vec` where the C peeks a borrowed
+span.
 
 **Per-instance work is at or near parity**, and moves between passes:
 hibernate 1.08, wake 1.15, small spawn 1.23, subtree kill 0.86–1.16, tight
