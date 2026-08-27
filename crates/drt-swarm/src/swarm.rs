@@ -436,6 +436,14 @@ impl<H: SwarmHost> Swarm<H> {
         }
     }
 
+    /// The host, for state the host itself keeps — a deployment reading
+    /// its own pending deadlines, a test reading its counters. In `dvs.c`
+    /// the host owns the `ud` it registered and never lost sight of it;
+    /// here the swarm holds the host, so the sight line is this accessor.
+    pub fn host(&self) -> &H {
+        &self.host
+    }
+
     pub fn alive(&self) -> usize {
         self.slots.iter().filter(|s| s.id != 0 && s.alive).count()
     }

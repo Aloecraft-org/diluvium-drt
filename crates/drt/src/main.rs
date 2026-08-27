@@ -3,16 +3,19 @@
 //! running one over its control endpoint, no daemon and no registry).
 //!
 //! `run` is real: one program, driven to completion with the hostcall pump
-//! (see `run.rs`). `start`, `repl` and `ps` are honest stubs until the
-//! listener and the ego-proc adapters land. `wire_connectors` is where a
-//! profile's feature gates meet the root config, once, for every subcommand.
+//! (see `run.rs`). `start` is real: the deployment — root program plus its
+//! swarm — foreground, with park timeouts honoured on the host clock (see
+//! `start.rs`); listeners are refused until `listen` lands. `repl` and `ps`
+//! are honest stubs until the control endpoint exists. `wire_connectors` is
+//! where a profile's feature gates meet the root config, once, for every
+//! subcommand.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use drt::{config, run};
+use drt::{config, run, start};
 use drt_config::RootConfig;
 use drt_connector::Registry;
 
@@ -178,15 +181,25 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Command::Start => match start::start(&config, dispatcher) {
+            // Ok means the swarm drained: every instance exited. For a
+            // server-shaped deployment that never happens and foreground-
+            // forever is the contract; for a batch-shaped one this is the
+            // finish line.
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("drt start: {e}");
+                ExitCode::FAILURE
+            }
+        },
         ref other => {
             let what = match other {
-                Command::Start => "start",
                 Command::Repl => "repl",
                 _ => "ps",
             };
             eprintln!(
-                "drt {what}: not built yet — the swarm port and the ego-proc adapters are \
-                 the next milestones (SPEC.md §§8–9)"
+                "drt {what}: not built yet — it reaches a running deployment over the \
+                 control endpoint, which lands with sshd (SPEC.md §13a)"
             );
             ExitCode::FAILURE
         }

@@ -114,6 +114,15 @@ fixed. None of them was the cost — and in the same runs the idle-step
 scenarios moved between 0.88 and 1.11 on *identical* code, so this machine's
 noise floor is wider than anything being looked for.
 
+A fourth check closed the last open flank: whether the *guest* executes
+identical work. The instruction hook cannot answer it — the C's own
+`--count` reads a flat ~1,000 instructions total for this scenario against
+4,096 round trips, startup-scale, so neither side's counter sees the echo
+loop — but a stronger instrument already had: the snapshot fidelity fields
+are byte-identical (1,430 B/agent), and no divergent execution produces an
+identical heap. The guest side is settled; the constant lives in the host
+wrapper.
+
 The remaining shape of the evidence — a constant, immune to removing
 individual items — says the cost is **distributed**: roughly 65 ns across
 each of the ~7 wrapper crossings a round trip makes, which is about what

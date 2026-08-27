@@ -169,15 +169,28 @@ fn worker_ids(sw: &Swm, root: InstanceId) -> Vec<InstanceId> {
 }
 
 /// Bring `n` workers up under a supervisor and return the roster.
+/// The C's `COUNT_BUDGET`: large enough to never trip, set only to arm the
+/// instruction hook, because `dv_usage` counts nothing at all unless a
+/// budget is set. Counted and uncounted timings are not comparable — arming
+/// the hook slows the timed path — which is why `--count` is a separate run.
+const COUNT_BUDGET: u64 = 1 << 50;
+
 fn fanout(
     worker: &str,
     n: usize,
     rate: u32,
     wake: bool,
     deadline: Duration,
+    worker_budget: u64,
 ) -> Result<(Swm, InstanceId, usize), Stalled> {
     let mut sw = Swarm::with_limits(engine(), StepHost::new(), (n + 8) as u32, rate);
-    let src = guests::supervisor(n, worker, &["queue:work/*", "queue:log"], 0, wake);
+    let src = guests::supervisor(
+        n,
+        worker,
+        &["queue:work/*", "queue:log"],
+        worker_budget,
+        wake,
+    );
     let root = sw
         .root(
             src.as_bytes(),
@@ -200,7 +213,7 @@ fn fanout(
 fn density(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
     let n = scaled(a, 512);
     let rss_before = rss_bytes();
-    let (mut sw, root, _) = fanout(guests::WORKER_IDLE, n, 64, false, deadline)?;
+    let (mut sw, root, _) = fanout(guests::WORKER_IDLE, n, 64, false, deadline, 0)?;
     let workers = worker_ids(&sw, root);
 
     let mut resident_now = 0.0;
@@ -300,7 +313,7 @@ fn spawn(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
         ("rate8", guests::WORKER_IDLE, 8),
     ] {
         let started = Instant::now();
-        let (mut sw, root, steps) = fanout(worker, n, rate, false, deadline)?;
+        let (mut sw, root, steps) = fanout(worker, n, rate, false, deadline, 0)?;
         let elapsed = started.elapsed().as_secs_f64();
         c.insert(format!("{prefix}_spawns_per_s"), n as f64 / elapsed);
         c.insert(format!("{prefix}_us_per_spawn"), elapsed * 1e6 / n as f64);
@@ -349,6 +362,18 @@ fn drain_done(sw: &mut Swm, workers: &[InstanceId]) -> usize {
     got
 }
 
+/// Total VM instructions across the root and every worker — `total_insns`
+/// in the C harness, summed identically so the derived figure compares.
+fn total_insns(sw: &mut Swm, root: InstanceId, workers: &[InstanceId]) -> u64 {
+    let mut total = 0;
+    for id in std::iter::once(&root).chain(workers) {
+        if let Some(inst) = sw.instance_mut(*id) {
+            total += inst.usage().instructions;
+        }
+    }
+    total
+}
+
 fn queue(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
     let agents = scaled(a, 64);
     let rounds = scaled(a, 64);
@@ -357,7 +382,14 @@ fn queue(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
     c.insert("rounds".into(), rounds as f64);
 
     for size in [16usize, 256, 4096] {
-        let (mut sw, root, _) = fanout(guests::WORKER_ECHO, agents, 64, false, deadline)?;
+        let (mut sw, root, _) = fanout(
+            guests::WORKER_ECHO,
+            agents,
+            64,
+            false,
+            deadline,
+            if a.count { COUNT_BUDGET } else { 0 },
+        )?;
         let workers = worker_ids(&sw, root);
         // Encoded once, before the clock starts — the C does the same, and
         // re-encoding per message measured this harness rather than the
@@ -369,6 +401,7 @@ fn queue(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
         let mut pushed = 0usize;
         let mut delivered = 0usize;
 
+        let insns_at_start = a.count.then(|| total_insns(&mut sw, root, &workers));
         let (allocs_before, bytes_before) = allocs();
         // Split the count by phase, so "where do the allocations come from"
         // is answered rather than guessed at.
@@ -434,6 +467,22 @@ fn queue(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
             (trips * size as f64 * 2.0) / elapsed / (1024.0 * 1024.0),
         );
         c.insert(format!("p{size}_refused_pushes"), refused);
+        // Emitted only when something was actually counted. What this
+        // instrument established is a limit on itself: the C's own --count
+        // reads a flat ~1000 total here — startup-scale against 4,096
+        // round trips — so instruction counting cannot see the echo loop
+        // on either side, and guest parity rests on the stronger fact the
+        // fidelity gate already asserts: snapshots are byte-identical.
+        if let Some(at_start) = insns_at_start {
+            let total = total_insns(&mut sw, root, &workers) as f64;
+            if total > 0.0 {
+                c.insert(format!("p{size}_insns_per_roundtrip"), total / trips);
+                c.insert(
+                    format!("p{size}_insns_per_roundtrip_steady"),
+                    (total - at_start as f64) / trips,
+                );
+            }
+        }
     }
     Ok(c)
 }
@@ -507,7 +556,7 @@ fn step_cost(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
 /// slot table on every call that takes one.
 fn roster(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
     let n = scaled(a, 256);
-    let (sw, root, _) = fanout(guests::WORKER_IDLE, n, 64, false, deadline)?;
+    let (sw, root, _) = fanout(guests::WORKER_IDLE, n, 64, false, deadline, 0)?;
     let ids = sw.ids();
     let reps = 1000;
 

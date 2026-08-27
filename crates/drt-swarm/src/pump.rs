@@ -55,6 +55,14 @@ impl<H: SwarmHost> PumpHost<H> {
     }
 }
 
+impl<H: SwarmHost> PumpHost<H> {
+    /// The wrapped host — the pump adds hostcalls, it does not hide what
+    /// it wraps.
+    pub fn inner(&self) -> &H {
+        &self.inner
+    }
+}
+
 impl<H: SwarmHost> SwarmHost for PumpHost<H> {
     fn drive(&mut self, id: InstanceId, caps: &CapSet, inst: &mut dyn Instance) -> Driven {
         self.pump(caps, inst);
