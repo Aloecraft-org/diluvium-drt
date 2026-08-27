@@ -167,8 +167,9 @@ pub struct Listener {
     pub max_body: usize,
     /// The host-side timeout, per connection: a program that has not
     /// answered by then gets its connection a 504 and the late reply is
-    /// consumed without a reader.
-    #[serde(default = "default_conn_deadline_ms")]
+    /// consumed without a reader. `deadline_ms` is the C host's spelling,
+    /// accepted so a `.host.lua` maps without a rename.
+    #[serde(default = "default_conn_deadline_ms", alias = "deadline_ms")]
     pub conn_deadline_ms: u64,
     #[serde(default = "default_max_conns")]
     pub max_conns: usize,
