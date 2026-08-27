@@ -199,6 +199,20 @@ fn default_max_conns() -> usize {
     64
 }
 
+/// The host-side residency policy (`doc/Hibernate.md` §9.1.2: the policy
+/// belongs to the host, never the swarm — the swarm's table bounds how many
+/// instances *exist*, resident or cached alike). With a budget set, `drt
+/// start` hibernates the least-recently-active instances past it; a
+/// deployment that states none keeps everything resident, bounded by the
+/// instance table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Residency {
+    /// How many non-root instances may be resident at once. The root is
+    /// exempt: it holds the request queues, and a deployment whose front
+    /// door hibernates is not saving memory, it is closed.
+    pub max_resident: usize,
+}
+
 /// Process identity. The host key doubles as the node identity and the
 /// snapshot stamp source (SPEC.md §§8–9).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,6 +243,8 @@ pub struct RootConfig {
     pub connectors: BTreeMap<String, ConnectorWiring>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub listeners: Vec<Listener>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub residency: Option<Residency>,
     #[serde(default, skip_serializing_if = "Identity::is_default")]
     pub identity: Identity,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

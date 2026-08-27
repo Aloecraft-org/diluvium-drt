@@ -487,6 +487,16 @@ impl<H: SwarmHost> Swarm<H> {
             .unwrap_or(false)
     }
 
+    /// Whether a message can bring this instance back from the cache. The
+    /// four-row delivery table makes a cached instance *without* this flag
+    /// `Gone` to every sender, so a host residency policy that hibernates
+    /// one is not saving memory, it is disconnecting a mailbox.
+    pub fn wake_on_message(&self, id: InstanceId) -> bool {
+        self.find(id)
+            .map(|i| self.slots[i].wake_on_message)
+            .unwrap_or(false)
+    }
+
     pub fn cached_size(&self, id: InstanceId) -> usize {
         self.find(id)
             .and_then(|i| self.slots[i].snap.as_ref().map(Vec::len))

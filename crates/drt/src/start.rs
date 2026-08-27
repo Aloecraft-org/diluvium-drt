@@ -11,17 +11,13 @@
 //! timeout is. Without it, `queue.wait({q}, 100)` in a deployment would be
 //! a park nothing ever answers.
 //!
-//! What `start` does not do yet, stated rather than implied:
-//!
-//! - **Listeners.** A config naming `listeners` is refused loudly, not
-//!   accepted and ignored: an operator who wrote a listener block believes
-//!   a port is being served.
-//! - **The control endpoint.** `ps`/`pause`/`stop` reach a running
-//!   deployment over the sshd subsystem (SPEC.md §13a); until that lands,
-//!   the only controls are the terminal's.
-//! - **Residency policy.** Everything stays resident, bounded by the
-//!   instance table. Hibernation under memory pressure is the next piece
-//!   of this file.
+//! Listeners are served (`crate::listen`, the C host's queue-bridge
+//! contract), and the residency policy is real: a config naming
+//! `residency.max_resident` gets [`enforce_residency`]'s LRU each pass.
+//! What `start` does not do yet, stated rather than implied: **the control
+//! endpoint** — `ps`/`pause`/`stop` reach a running deployment over the
+//! sshd subsystem (SPEC.md §13a), and until that lands the only controls
+//! are the terminal's.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -47,6 +43,12 @@ const IDLE_TICK: Duration = Duration::from_millis(1);
 #[derive(Default)]
 pub struct DeployHost {
     parked: HashMap<u32, Park>,
+    /// A drive counter, and when each instance last did work (ran or was
+    /// resumed — an idle "still parked" check is not activity). The
+    /// residency policy's LRU order, kept here because the host is the
+    /// only place that sees work happen.
+    tick: u64,
+    active: HashMap<u32, u64>,
 }
 
 struct Park {
@@ -96,8 +98,12 @@ impl SwarmHost for DeployHost {
                 (wait, deadline)
             }),
         };
+        self.tick += 1;
         let step = match park {
-            None => inst.run(),
+            None => {
+                self.active.insert(id.0, self.tick);
+                inst.run()
+            }
             Some((wait, deadline)) => {
                 let fired = wait
                     .queues()
@@ -105,11 +111,17 @@ impl SwarmHost for DeployHost {
                     .copied()
                     .find(|&q| inst.queue_info(q).map(|i| ready(&wait, i)).unwrap_or(false));
                 match fired {
-                    Some(q) => inst.resume(q),
+                    Some(q) => {
+                        self.active.insert(id.0, self.tick);
+                        inst.resume(q)
+                    }
                     // A queue firing beats the timeout when both are true on
                     // the same tick — the message was there first as far as
                     // anyone can observe, and answering it loses nothing.
-                    None if deadline.is_some_and(|d| Instant::now() >= d) => inst.resume_timeout(),
+                    None if deadline.is_some_and(|d| Instant::now() >= d) => {
+                        self.active.insert(id.0, self.tick);
+                        inst.resume_timeout()
+                    }
                     None => {
                         // Keep the deadline armed across residency: the
                         // cache entry may have been dropped by a wake.
@@ -134,6 +146,53 @@ impl SwarmHost for DeployHost {
 
     fn detached(&mut self, id: InstanceId) {
         self.parked.remove(&id.0);
+    }
+}
+
+impl DeployHost {
+    /// When the instance last did work, in drive ticks. An instance the
+    /// host never drove reads 0 — the oldest possible, which is right: it
+    /// has done nothing since it arrived.
+    pub fn last_active(&self, id: InstanceId) -> u64 {
+        self.active.get(&id.0).copied().unwrap_or(0)
+    }
+}
+
+/// Hold the residency budget: hibernate the least-recently-active
+/// instances past it. The same LRU the churn harness carries (ties evict
+/// the highest id, matching the C's `<=` scan), applied with the
+/// deployment's own exemptions:
+///
+/// - The **root** is exempt — it holds the request queues, and a
+///   deployment whose front door hibernates is not saving memory, it is
+///   closed.
+/// - An instance without **`wake_on_message`** is exempt: the delivery
+///   table makes a cached instance without that flag `Gone` to every
+///   sender, so hibernating one would disconnect its mailbox, not park
+///   it. Such an instance's memory is what its spawner chose for it.
+///
+/// A hibernate the swarm refuses (the instance is mid-run) is skipped, as
+/// the churn harness skips it: it will be evicted on a later pass.
+pub fn enforce_residency(sw: &mut Deployment, root: InstanceId, max_resident: usize) {
+    let mut candidates: Vec<(u64, u32, InstanceId)> = sw
+        .ids()
+        .into_iter()
+        .filter(|id| *id != root && sw.resident(*id) && sw.wake_on_message(*id))
+        .map(|id| (sw.host().inner().last_active(id), id.0, id))
+        .collect();
+    if candidates.len() <= max_resident {
+        return;
+    }
+    // Oldest activity first; among ties, the highest id.
+    candidates.sort_by_key(|(at, raw, _)| (*at, std::cmp::Reverse(*raw)));
+    let mut over = candidates.len() - max_resident;
+    for (_, _, id) in candidates {
+        if over == 0 {
+            break;
+        }
+        if sw.hibernate(id).is_ok() {
+            over -= 1;
+        }
     }
 }
 
@@ -187,6 +246,9 @@ pub fn serve(
     loop {
         let alive = sw.step();
         pump_replies(&mut sw, root, &bound);
+        if let Some(residency) = config.residency {
+            enforce_residency(&mut sw, root, residency.max_resident);
+        }
         if alive == 0 {
             // The program chose to exit; ports serving a drained swarm
             // would answer 503 forever, and a supervisor should see the
@@ -207,9 +269,12 @@ pub fn serve(
 
 #[cfg(not(feature = "listen"))]
 fn serve_swarm_only(config: &RootConfig, dispatcher: Dispatcher) -> Result<(), String> {
-    let (mut sw, _root) = deployment(config, dispatcher)?;
+    let (mut sw, root) = deployment(config, dispatcher)?;
     loop {
         let alive = sw.step();
+        if let Some(residency) = config.residency {
+            enforce_residency(&mut sw, root, residency.max_resident);
+        }
         if alive == 0 {
             return Ok(());
         }
@@ -222,7 +287,9 @@ fn serve_swarm_only(config: &RootConfig, dispatcher: Dispatcher) -> Result<(), S
     }
 }
 
-type Deployment = Swarm<PumpHost<DeployHost>>;
+/// The deployment's concrete swarm: the pump answering hostcalls, the
+/// clocked host underneath.
+pub type Deployment = Swarm<PumpHost<DeployHost>>;
 
 fn deployment(
     config: &RootConfig,

@@ -250,3 +250,110 @@ mod listener {
         assert!(begun.elapsed() >= Duration::from_millis(300));
     }
 }
+
+// ---------------------------------------------------------------------------
+// The residency policy: LRU under a budget, with the deployment's exemptions
+// ---------------------------------------------------------------------------
+
+mod residency {
+    use drt::start::{enforce_residency, DeployHost, Deployment};
+    use drt_caps::Grant;
+    use drt_connector::{Dispatcher, Registry};
+    use drt_swarm::engine::diluvium_engine::DiluviumEngine;
+    use drt_swarm::pump::PumpHost;
+    use drt_swarm::swarm::Swarm;
+    use std::sync::Arc;
+
+    /// A root that spawns `n` idle children and parks forever — the shape
+    /// of a served deployment's supervisor.
+    fn deployment_of(n: usize, wake: bool) -> (Deployment, drt_swarm::InstanceId) {
+        let src = format!(
+            "local sys  = queue.declare('system/lifecycle', {{capacity = 8}})\n\
+             local hold = queue.declare('hold', {{capacity = 1}})\n\
+             local WORKER = [[\n\
+               local inbox = queue.declare('work', {{capacity = 4}})\n\
+               while true do queue.wait({{inbox}}) end\n\
+             ]]\n\
+             for i = 1, {n} do\n\
+               assert(queue.push(sys, {{op = 'spawn', code = WORKER,\n\
+                                       caps = {{'queue:work'}},\n\
+                                       wake_on_message = {wake}}}))\n\
+             end\n\
+             queue.wait({{hold}})\n"
+        );
+        let engine = Arc::new(DiluviumEngine::new().unwrap());
+        let mut sw = Swarm::new(
+            engine,
+            PumpHost::new(DeployHost::new(), Dispatcher::new(Registry::new())),
+        );
+        let root = sw
+            .root(
+                src.as_bytes(),
+                vec![Grant::grant("lifecycle"), Grant::grant("queue:*")],
+                Default::default(),
+            )
+            .unwrap();
+        for _ in 0..16 {
+            sw.step();
+            if sw.alive() > n {
+                break;
+            }
+        }
+        assert_eq!(sw.alive(), n + 1, "the children did not come up");
+        (sw, root)
+    }
+
+    fn resident_children(sw: &Deployment, root: drt_swarm::InstanceId) -> usize {
+        sw.ids()
+            .into_iter()
+            .filter(|id| *id != root && sw.resident(*id))
+            .count()
+    }
+
+    #[test]
+    fn the_budget_is_held_and_a_message_brings_one_back() {
+        let (mut sw, root) = deployment_of(3, true);
+        sw.step(); // children reach their parks
+
+        enforce_residency(&mut sw, root, 1);
+        assert_eq!(resident_children(&sw, root), 1, "the budget was not held");
+        assert!(sw.resident(root), "the root is exempt and must stay");
+
+        // A message to a hibernated child wakes it on the next step — the
+        // whole point of requiring wake_on_message before hibernating.
+        let sleeping = sw
+            .ids()
+            .into_iter()
+            .find(|id| *id != root && !sw.resident(*id))
+            .unwrap();
+        // msgpack uint 1 is the single byte 0x01 — no encoder needed.
+        sw.push(sleeping, "work", &[0x01]).unwrap();
+        sw.step();
+        assert!(sw.resident(sleeping), "the message did not wake it");
+
+        // Over budget again; the policy evicts back down — and not the
+        // one that just did work.
+        enforce_residency(&mut sw, root, 1);
+        assert_eq!(resident_children(&sw, root), 1);
+        assert!(
+            sw.resident(sleeping),
+            "the LRU evicted the most recently active instance"
+        );
+    }
+
+    /// An instance that did not ask to be woken is never hibernated by the
+    /// policy: the delivery table makes a cached instance without the flag
+    /// `Gone` to every sender, so hibernating it would disconnect its
+    /// mailbox, not park it.
+    #[test]
+    fn an_instance_without_wake_on_message_is_never_evicted() {
+        let (mut sw, root) = deployment_of(3, false);
+        sw.step();
+        enforce_residency(&mut sw, root, 0);
+        assert_eq!(
+            resident_children(&sw, root),
+            3,
+            "the policy hibernated a mailbox it would have disconnected"
+        );
+    }
+}
