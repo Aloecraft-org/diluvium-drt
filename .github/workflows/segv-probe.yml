@@ -33,18 +33,21 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y gdb
           sudo sysctl -w kernel.core_pattern=/tmp/core.%e.%p
-      - name: cargo test in a loop
+      - name: cargo test in a loop, rebuilding first
         run: |
           ulimit -c unlimited
           fails=0
           for i in $(seq 1 ${{ inputs.rounds }}); do
+            # Every failure so far rebuilt the engine crates and ran the
+            # tests in the same invocation; every pass did not. Force it.
+            cargo clean -p drt-swarm -p drt -p diluvium-sys -p diluvium 2>/dev/null || true
             if ! cargo test --workspace --all-features > /tmp/s.txt 2>&1; then
               fails=$((fails + 1))
               echo "=== ROUND $i FAILED ==="
               grep -E "SIGSEGV|test failed|panicked" -B2 -A2 /tmp/s.txt | head -20
             fi
           done
-          echo "RESULT cached-job: $fails failures in ${{ inputs.rounds }} rounds"
+          echo "RESULT rebuild-then-run: $fails failures in ${{ inputs.rounds }} rounds"
       - name: Backtrace any core
         if: always()
         run: |
