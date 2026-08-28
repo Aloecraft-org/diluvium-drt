@@ -31,6 +31,17 @@
 //! then belt over braces — worth having so middleboxes see ordinary HTTPS,
 //! not load-bearing for secrecy.)
 //!
+//! One known edge, and where it goes: the bridge tears down when **either**
+//! direction ends, so a local EOF ends the session rather than half-closing
+//! it. Under `ProxyCommand` — the case that matters — stdin stays open for
+//! the ssh session's whole life, so this is invisible. It shows up only
+//! when a script pipes a fixed input (`printf ... | drt tunnel <url>`),
+//! where the answer can be lost to the teardown stdin's EOF triggers. A
+//! real half-close needs a Close frame the peer can see, and
+//! ego-transport's `Transport` exposes only `send`/`recv` — so this is
+//! fixed by the same migration to tokio-tungstenite the relay already
+//! made, not by a timeout guessing when the far side is finished.
+//!
 //! What this deliberately is not: an in-process SSH-over-WSS *client* for
 //! the `host:ssh/exec` connector. That composition wants
 //! `SshClientConnection` to accept an already-open stream, which is an

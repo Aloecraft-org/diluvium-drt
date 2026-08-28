@@ -2,8 +2,12 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    # `main` for when there is one; the working branch is the trunk in
+    # practice today, and a trunk whose pushes are never checked is a CI
+    # config that agrees with itself and nothing else.
+    branches: [main, 'claude/**']
   pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
