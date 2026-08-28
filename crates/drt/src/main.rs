@@ -241,7 +241,18 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             };
             let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
-            match runtime.block_on(drt::relay::serve(drt::relay::Relay::new(relay_config))) {
+            let outcome = runtime.block_on(drt::relay::serve(drt::relay::Relay::new(relay_config)));
+            // Leak the runtime rather than drop it. tokio 1.53.1 has a
+            // use-after-free in runtime teardown — `BlockingPool::shutdown`
+            // racing a worker's `park::Inner::unpark` into a freed Condvar
+            // (backtrace in doc/Release.md) — and every one of these verbs
+            // resolves a hostname through `lookup_host`, which is a
+            // `spawn_blocking`, so there is always a parked blocking worker
+            // to race. The process is exiting; the OS reclaims everything
+            // drop would have. Leaking costs nothing and removes the whole
+            // class from shipped code.
+            std::mem::forget(runtime);
+            match outcome {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("drt relay: {e}");
@@ -256,7 +267,18 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             };
             let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
-            match runtime.block_on(drt::stun::serve(&stun_config)) {
+            let outcome = runtime.block_on(drt::stun::serve(&stun_config));
+            // Leak the runtime rather than drop it. tokio 1.53.1 has a
+            // use-after-free in runtime teardown — `BlockingPool::shutdown`
+            // racing a worker's `park::Inner::unpark` into a freed Condvar
+            // (backtrace in doc/Release.md) — and every one of these verbs
+            // resolves a hostname through `lookup_host`, which is a
+            // `spawn_blocking`, so there is always a parked blocking worker
+            // to race. The process is exiting; the OS reclaims everything
+            // drop would have. Leaking costs nothing and removes the whole
+            // class from shipped code.
+            std::mem::forget(runtime);
+            match outcome {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("drt stun: {e}");
@@ -284,6 +306,16 @@ fn main() -> ExitCode {
                     "name a URL to bridge stdio to, --listen with --to, or --park with --to".into(),
                 ),
             };
+            // Leak the runtime rather than drop it. tokio 1.53.1 has a
+            // use-after-free in runtime teardown — `BlockingPool::shutdown`
+            // racing a worker's `park::Inner::unpark` into a freed Condvar
+            // (backtrace in doc/Release.md) — and every one of these verbs
+            // resolves a hostname through `lookup_host`, which is a
+            // `spawn_blocking`, so there is always a parked blocking worker
+            // to race. The process is exiting; the OS reclaims everything
+            // drop would have. Leaking costs nothing and removes the whole
+            // class from shipped code.
+            std::mem::forget(runtime);
             match outcome {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
