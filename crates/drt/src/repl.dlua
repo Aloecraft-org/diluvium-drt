@@ -1,0 +1,59 @@
+-- The REPL, as a guest. `drt repl` is not a mode of the runtime: it is an
+-- ordinary sealed instance whose job is to evaluate lines, driven by a
+-- host that reads a terminal. Every line arrives on `repl/in`, every
+-- answer leaves on `repl/out`, and nothing else about the runtime is
+-- special-cased for it.
+--
+-- That is what makes this the same REPL everywhere. The host half is
+-- "line in, text out" — a terminal today, an xterm.js in a browser over
+-- the same two queues tomorrow. The evaluation lives here, once.
+
+local inq  = queue.declare('repl/in',  {capacity = 4})
+local outq = queue.declare('repl/out', {capacity = 16})
+
+-- One environment, held across lines: `x = 1` on one line is visible on
+-- the next, which is the entire point of a REPL. `__index = _G` keeps the
+-- stdlib reachable without copying it, and assignments land here rather
+-- than in the globals the runtime handed us.
+local env = setmetatable({}, {__index = _G})
+
+-- Lua's own REPL convention: try the line as an expression first so
+-- `1 + 1` prints 2, and fall back to a statement so `x = 1` works. The
+-- expression attempt's error is discarded — it is an artifact of the
+-- probe, never the user's mistake.
+local function compile(text)
+  local chunk = load('return ' .. text, '=repl', 't', env)
+  if chunk then return chunk end
+  return load(text, '=repl', 't', env)
+end
+
+while true do
+  local _, line = queue.wait({inq})
+  if type(line) ~= 'string' then
+    queue.push(outq, {ok = false, text = 'the repl expects a line of source'})
+  else
+    local chunk, err = compile(line)
+    if not chunk then
+      -- An error that runs off the end of the input is an unfinished
+      -- line, not a bad one: the host should ask for more rather than
+      -- report a syntax error the user has not finished making.
+      local incomplete = type(err) == 'string' and err:sub(-5) == '<eof>'
+      queue.push(outq, {ok = false, more = incomplete, text = tostring(err)})
+    else
+      local r = table.pack(pcall(chunk))
+      if r[1] then
+        -- Nothing returned prints nothing; a statement is not an
+        -- expression with a nil value.
+        if r.n > 1 then
+          local parts = {}
+          for i = 2, r.n do parts[#parts + 1] = tostring(r[i]) end
+          queue.push(outq, {ok = true, text = table.concat(parts, '\t')})
+        else
+          queue.push(outq, {ok = true})
+        end
+      else
+        queue.push(outq, {ok = false, text = tostring(r[2])})
+      end
+    end
+  end
+end

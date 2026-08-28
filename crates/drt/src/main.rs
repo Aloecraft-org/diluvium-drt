@@ -15,7 +15,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use drt::{config, run, start};
+use drt::{config, repl, run, start};
 use drt_config::RootConfig;
 use drt_connector::Registry;
 
@@ -46,16 +46,19 @@ enum Command {
     Repl,
     /// The introspection surface: instances, caps, budgets, usage, health.
     Ps,
+    /// The rendezvous relay: parked WSS legs paired by label and spliced.
+    /// Reads the `relay` block of the config; runs foreground. Inside
+    /// `drt start` the same relay also reports presence and bytes to the
+    /// root program, and can be asked before it admits a leg.
+    #[cfg(feature = "relay")]
+    Relay,
     /// SSH over WSS, as a dumb pipe. With a URL: bridge this process's
     /// stdio to it — the OpenSSH ProxyCommand contract, so
     /// `ssh -o ProxyCommand="drt tunnel wss://gate/fp" user@fp` (and rsync,
     /// sftp, -L/-R through it) works like normal SSH over the WebSocket
     /// carrier. With --listen/--to: accept WebSocket connections and bridge
-    /// each to a TCP target, in front of any sshd.
-    /// The rendezvous relay: parked WSS legs paired by label and spliced.
-    /// Reads the `relay` block of the config; runs foreground.
-    #[cfg(feature = "relay")]
-    Relay,
+    /// each to a TCP target, in front of any sshd. With --park/--to: the
+    /// device side of the relay.
     #[cfg(feature = "tunnel")]
     Tunnel {
         /// The wss:// or ws:// URL to bridge stdio to.
@@ -262,13 +265,21 @@ fn main() -> ExitCode {
                 }
             }
         }
-        ref other => {
-            let what = match other {
-                Command::Repl => "repl",
-                _ => "ps",
-            };
+        Command::Repl => {
+            match repl::repl(&dispatcher, config::ceiling(&config), config.root.budget) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("drt repl: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Command::Ps => {
+            // Unlike the REPL, `ps` has nothing it can do standalone: its
+            // whole subject is a deployment already running in another
+            // process, which is the control endpoint's to reach.
             eprintln!(
-                "drt {what}: not built yet — it reaches a running deployment over the \
+                "drt ps: not built yet — it reaches a running deployment over the \
                  control endpoint, which lands with sshd (SPEC.md §13a)"
             );
             ExitCode::FAILURE

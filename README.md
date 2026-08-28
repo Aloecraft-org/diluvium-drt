@@ -25,7 +25,8 @@ hostcall encoding (moved here from diluvium).
 | [`crates/drt-config`](crates/drt-config) | Manifest/config schema. The serde types are the source of truth; one shape at every depth — host-config and spawn-request are the same object. |
 | [`crates/drt-connector`](crates/drt-connector) | The `Connector` trait, registry, capability gating, and the dispatcher that guarantees every drained request is answered. Mocks implement the same trait; guests cannot tell. |
 | [`crates/drt-swarm`](crates/drt-swarm) | The swarm: `dvs.c` semantics ported over the `Engine` seam (instance table, attenuated caps with provenance, lifecycle drain, budgets, hibernation + `wake_on_message`); the snapshot store; endpoint refs. |
-| [`crates/drt`](crates/drt) | The binary: `run` \| `start` \| `repl` \| `ps` — see SPEC.md §13a. |
+| [`crates/drt`](crates/drt) | The binary: `run` \| `start` \| `repl` \| `relay` \| `tunnel` \| `ps` — see SPEC.md §13a. |
+| [`crates/drt-web`](crates/drt-web) | The browser tier: an `Engine` over a JS host bridge, so the same swarm runs in a page. See [`doc/Browser.md`](doc/Browser.md). |
 | [`connectors/`](connectors) | Connector implementations, each feature-gated: `time`, `fs` and `sql` (each a granted directory) and `ssh` (client, `host:ssh/exec`) today; `listen` and `exec` per SPEC.md §7. |
 
 ## Building
@@ -55,10 +56,40 @@ cargo run -p drt -- run --config examples/deployment.json
 An ill-scoped grant or an unreachable scope fails at startup, by name —
 never as a mystifying `denied` at first call.
 
-The ego-proc `ForeignActor` adapter and `drt start` (listener + sshd + REPL
-attach — the Lab-demo milestone) are the next milestones. A seams-only build
-(`--no-default-features`) compiles without the C core — the shape the wasm
-targets start from.
+## Installing
+
+```
+curl -fsSL https://diluvium.aloecraft.org/release/drt/install.sh | sh
+```
+
+`DRT_SLIM=1` installs the size profile; `DRT_VERSION=vX.Y.Z` pins a release.
+Or take a binary straight from
+[Releases](https://github.com/Aloecraft-org/diluvium-drt/releases) —
+each one carries a `BUILDINFO.txt` naming the diluvium revision inside it
+and the dv ABI it speaks. See [`doc/Release.md`](doc/Release.md).
+
+## What you can do with it today
+
+```
+drt run prog.dlua                    # one program, to completion
+drt repl                             # a REPL, which is an instance
+drt --config app.host.lua start      # the deployment: swarm + listeners + relay
+drt --config rv.host.lua relay       # the rendezvous relay, standalone
+drt tunnel --park wss://…/park/xps?k=… --to 127.0.0.1:22   # the device half
+ssh -o ProxyCommand="drt tunnel wss://…/s/xps?k=…" user@xps # the caller half
+```
+
+`drt start` reads a diluvium-host `.host.lua` unchanged — a deployment moves
+to DRT by swapping the binary and editing no files.
+[`doc/Relay.md`](doc/Relay.md) is the SSH-to-anything-from-anywhere recipe,
+including the control plane a supervisor uses for presence, metering and
+arbitration.
+
+`drt ps` and REPL *attach* are still ahead: both reach a deployment running
+in another process, which is the control endpoint's job and lands with sshd.
+
+A seams-only build (`--no-default-features`) compiles the traits without the
+C core — the shape the wasm targets start from.
 
 ## License
 
