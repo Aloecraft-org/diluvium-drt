@@ -28,6 +28,36 @@ does the same dispatch with `tag` set and `publish=true` touch the
 Releases page. The publish job depends on tests and builds, so a failure
 anywhere means no release rather than a partial one.
 
+### wasm32 is not in the matrix yet, and that is the decision
+
+`drt-web` is `crate-type = ["cdylib", "rlib"]`, so `cargo build -p drt-web
+--target wasm32-unknown-unknown` does produce a `.wasm`. Checked what is
+actually in it (2026-08-28): **one export, `memory`, and no callable
+functions.** There is no wasm-bindgen export layer yet — that is task #31,
+and it is the thing the Lab's Stage 3 waits on.
+
+So the artifact would be inert. Two reasons that is worse than absent:
+
+- A release artifact is a **compatibility surface**. Putting
+  `drt_web.wasm` in releases.json now means a name consumers can resolve,
+  for a file none of them can call.
+- The day exports land, that file's contents change completely while its
+  name does not. A consumer that fetched the earlier one has no way to
+  tell them apart short of introspecting the export table.
+
+**The trigger for adding it:** the export layer exists and the `.wasm`
+exports the sixteen functions `doc/Browser.md` names (seventeen with
+`handleOf`). At that point add `wasm32-unknown-unknown` to the build
+matrix and `profile.web.exports` to BUILDINFO, so the same
+"say-what-you-carry" rule that covers the native profiles covers this one.
+
+What is in place meanwhile is the `wasm` job in `ci.yml`: drt-web compiles
+for wasm32 on every push. That moves "the browser tier stopped building"
+from "discovered when someone starts Stage 3" to "discovered the day it
+broke", which is the part of this worth having early. The mirror half
+needs no DRT change — `install.sh` already falls back to GitHub Releases,
+so the Lab can consume from GitHub until a mirror namespace exists.
+
 ### Open: an unexplained SIGSEGV, twice, in two different binaries
 
 The first v0.3.0 publish attempt died in `cargo test --workspace

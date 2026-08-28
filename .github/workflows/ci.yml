@@ -74,6 +74,34 @@ jobs:
       - name: Build without default features
         run: cargo build --workspace --no-default-features
 
+  wasm:
+    # The browser tier compiles for its actual target, on every push.
+    #
+    # NOT in the release matrix, deliberately: `drt-web` is a cdylib, so a
+    # `.wasm` does get produced, but it currently has exactly one export
+    # (`memory`) and no callable functions — there is no wasm-bindgen
+    # export layer yet (task #31). Publishing that would put a name in
+    # releases.json for a file nobody can call, and the artifact's contents
+    # would change completely the day exports land while the name stayed
+    # the same. A release artifact is a compatibility surface; an inert one
+    # is a promise you cannot keep.
+    #
+    # What IS worth having now is this: the Lab's Stage 3 depends on
+    # drt-web still compiling for wasm32, and without this job the day it
+    # stops compiling is the day someone starts that work, not the day it
+    # broke. Thirty seconds a push to move that discovery earlier.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Build drt-web for wasm32
+        run: cargo build -p drt-web --target wasm32-unknown-unknown
+      - name: Its tests, natively (the rlib half is why they can run at all)
+        run: cargo test -p drt-web
+
   fidelity:
     # The benchmark's *deterministic* fields, checked against the committed
     # baseline. Timings deliberately are not: doc/Benchmarks.md's doctrine is
