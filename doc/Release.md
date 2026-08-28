@@ -28,35 +28,54 @@ does the same dispatch with `tag` set and `publish=true` touch the
 Releases page. The publish job depends on tests and builds, so a failure
 anywhere means no release rather than a partial one.
 
-### wasm32 is not in the matrix yet, and that is the decision
+### wasm32 is not in the matrix yet, and the trigger is a smoke test
 
 `drt-web` is `crate-type = ["cdylib", "rlib"]`, so `cargo build -p drt-web
 --target wasm32-unknown-unknown` does produce a `.wasm`. Checked what is
-actually in it (2026-08-28): **one export, `memory`, and no callable
-functions.** There is no wasm-bindgen export layer yet — that is task #31,
-and it is the thing the Lab's Stage 3 waits on.
+in it (2026-08-28): **one export, `memory`, and no callable functions.**
+The wasm-bindgen export layer is task #31.
 
-So the artifact would be inert. Two reasons that is worse than absent:
+**The reason it is not in the release matrix is verification, not
+naming.** Every leg in that matrix builds `-p drt` and then proves itself
+by *running* the artifact — `--version` and `run smoke.lua`
+(release.yml:171-180). A wasm32 leg matches none of that:
 
-- A release artifact is a **compatibility surface**. Putting
-  `drt_web.wasm` in releases.json now means a name consumers can resolve,
-  for a file none of them can call.
-- The day exports land, that file's contents change completely while its
-  name does not. A consumer that fetched the earlier one has no way to
-  tell them apart short of introspecting the export table.
+- It builds a **different crate**. The `drt` CLI cannot target wasm32 at
+  all — tokio, russh, bundled sqlite, and a C core that would want a
+  wasi-sdk. `drt-web` is a library for a JS host, not the CLI for a
+  different platform.
+- It **cannot be executed on the runner**. There is no JS host there, so
+  the artifact would be the only one in the release that nothing verifies.
+  Every other one has been run before it shipped.
 
-**The trigger for adding it:** the export layer exists and the `.wasm`
-exports the sixteen functions `doc/Browser.md` names (seventeen with
-`handleOf`). At that point add `wasm32-unknown-unknown` to the build
-matrix and `profile.web.exports` to BUILDINFO, so the same
-"say-what-you-carry" rule that covers the native profiles covers this one.
+An earlier draft of this section argued instead that publishing it would
+create a compatibility surface whose contents change while its name stays.
+That argument does not hold: contents changing between versions is what a
+version *is*, and `BUILDINFO` already exists to say what an artifact
+carries — an inert `.wasm` could declare `profile.web.exports: none` and
+be refused by name. Recorded because the weaker argument was "not ready"
+wearing better clothes, and the distinction matters for the next call like
+this one.
 
-What is in place meanwhile is the `wasm` job in `ci.yml`: drt-web compiles
-for wasm32 on every push. That moves "the browser tier stopped building"
-from "discovered when someone starts Stage 3" to "discovered the day it
-broke", which is the part of this worth having early. The mirror half
-needs no DRT change — `install.sh` already falls back to GitHub Releases,
-so the Lab can consume from GitHub until a mirror namespace exists.
+**The trigger, stated so nobody has to re-derive it.** wasm32 joins the
+matrix when the artifact can be verified the way the others are:
+
+1. The export layer exists (#31) and the `.wasm` exports the functions
+   `doc/Browser.md` names.
+2. A smoke step can execute it — node with the wasm-bindgen glue is
+   enough — and assert at minimum `abiVersion() === 1`, which is the wasm
+   equivalent of `drt --version`.
+3. BUILDINFO gains `profile.web.exports`, under the same
+   say-what-you-carry rule the native profiles follow.
+
+Until (2) exists, adding the target would ship an unverified artifact,
+which is the thing the matrix's smoke step exists to prevent.
+
+Meanwhile `ci.yml`'s `wasm` job compiles drt-web for wasm32 on every push.
+That guards a different property — *does it still build* — and is not a
+substitute for the release entry. The mirror half needs no DRT change:
+`install.sh` falls back to GitHub Releases (install.sh:13, 58-59), so the
+Lab can consume from GitHub whenever there is something to consume.
 
 ### Open: an unexplained SIGSEGV, twice, in two different binaries
 
