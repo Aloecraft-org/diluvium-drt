@@ -1,85 +1,92 @@
 name: segv-probe
 
-# TEMPORARY. Chasing the unexplained SIGSEGV in the host_lua test binary
-# (see doc/Release.md). Locally it will not reproduce in thousands of runs
-# on either rustc, under valgrind, or under a 64,800-instance
-# concurrent-lifecycle stress — so ask the machine it actually happened
-# on, with core dumps armed so a crash yields a backtrace rather than
-# another bare "signal: 11". Delete once answered.
+# Chasing the host_lua SIGSEGV. Round 2, with a real hypothesis.
+#
+# Round 1 ran the binary 500x on a runner and found nothing — but that job
+# got a cache MISS and built clean, while every failure so far has been in
+# release.yml's `test` job, which restores a cache with "full match: false"
+# and rebuilds on top. diluvium-sys compiles libonelua.a in OUT_DIR from a
+# build script, and the diluvium pin changed since that cache was seeded;
+# fresh Rust linked against a stale C archive would look exactly like this.
+#
+# Swatinem/rust-cache keys on the JOB ID, so the job below named `test`
+# shares release.yml's cache byte for byte, and `clean` deliberately has
+# none. Same command, same runner image, one variable.
 
 on:
   workflow_dispatch:
     inputs:
       rounds:
-        description: 'How many times to run the host_lua binary'
+        description: 'cargo test rounds per job'
         type: string
-        default: '500'
-      suites:
-        description: 'How many full --all-features suites to run'
-        type: string
-        default: '3'
+        default: '6'
 
 jobs:
-  probe:
+  # Shares release.yml's `test` cache — the suspect.
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-
       - name: Arm core dumps
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y gdb
+          sudo apt-get update -qq && sudo apt-get install -y gdb
           sudo sysctl -w kernel.core_pattern=/tmp/core.%e.%p
-          echo "cores: $(nproc)"
-          free -m
-          rustc --version
-
-      - name: Build the test binaries
-        run: cargo test --workspace --all-features --no-run
-
-      - name: Hammer host_lua
+      - name: cargo test in a loop
         run: |
           ulimit -c unlimited
-          BIN=$(ls -t target/debug/deps/host_lua-* | grep -v '[.]d$' | head -1)
-          echo "binary: $BIN"
-          "$BIN" --list | tail -2
           fails=0
           for i in $(seq 1 ${{ inputs.rounds }}); do
-            if ! "$BIN" > /tmp/out.txt 2>&1; then
-              rc=$?
+            if ! cargo test --workspace --all-features > /tmp/s.txt 2>&1; then
               fails=$((fails + 1))
-              echo "=== RUN $i FAILED rc=$rc ==="
-              tail -20 /tmp/out.txt
+              echo "=== ROUND $i FAILED ==="
+              grep -E "SIGSEGV|test failed|panicked" -B2 -A2 /tmp/s.txt | head -20
             fi
           done
-          echo "RESULT host_lua: $fails failures in ${{ inputs.rounds }} runs"
-
-      - name: Run the full suite a few times
-        run: |
-          ulimit -c unlimited
-          fails=0
-          for i in $(seq 1 ${{ inputs.suites }}); do
-            if ! cargo test --workspace --all-features > /tmp/suite.txt 2>&1; then
-              fails=$((fails + 1))
-              echo "=== SUITE $i FAILED ==="
-              grep -E "SIGSEGV|test failed|FAILED|panicked" -B3 -A3 /tmp/suite.txt | head -40
-            fi
-          done
-          echo "RESULT full suite: $fails failures in ${{ inputs.suites }} runs"
-
+          echo "RESULT cached-job: $fails failures in ${{ inputs.rounds }} rounds"
       - name: Backtrace any core
         if: always()
         run: |
           shopt -s nullglob
           cores=(/tmp/core.*)
-          if [ ${#cores[@]} -eq 0 ]; then
-            echo "RESULT no core dumps — nothing crashed"
-            exit 0
-          fi
+          [ ${#cores[@]} -eq 0 ] && { echo "RESULT no cores"; exit 0; }
           BIN=$(ls -t target/debug/deps/host_lua-* | grep -v '[.]d$' | head -1)
           for c in "${cores[@]}"; do
-            echo "=================== $c ==================="
+            echo "=========== $c ==========="
+            gdb -batch -ex "thread apply all bt" "$BIN" "$c" 2>&1 | head -150
+          done
+
+  # No cache at all — the control.
+  clean:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Arm core dumps
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y gdb
+          sudo sysctl -w kernel.core_pattern=/tmp/core.%e.%p
+      - name: cargo test in a loop
+        run: |
+          ulimit -c unlimited
+          fails=0
+          for i in $(seq 1 ${{ inputs.rounds }}); do
+            if ! cargo test --workspace --all-features > /tmp/s.txt 2>&1; then
+              fails=$((fails + 1))
+              echo "=== ROUND $i FAILED ==="
+              grep -E "SIGSEGV|test failed|panicked" -B2 -A2 /tmp/s.txt | head -20
+            fi
+          done
+          echo "RESULT clean-build: $fails failures in ${{ inputs.rounds }} rounds"
+      - name: Backtrace any core
+        if: always()
+        run: |
+          shopt -s nullglob
+          cores=(/tmp/core.*)
+          [ ${#cores[@]} -eq 0 ] && { echo "RESULT no cores"; exit 0; }
+          BIN=$(ls -t target/debug/deps/host_lua-* | grep -v '[.]d$' | head -1)
+          for c in "${cores[@]}"; do
+            echo "=========== $c ==========="
             gdb -batch -ex "thread apply all bt" "$BIN" "$c" 2>&1 | head -150
           done
