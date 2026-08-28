@@ -1,6 +1,7 @@
 name: segv-probe
 
-# Chasing the host_lua SIGSEGV. Round 2, with a real hypothesis.
+# Chasing the SIGSEGV. It is not host_lua-specific — it hit tests/stun.rs
+# in ci run 10 — so this loops the stun binary, which is small and fast.
 #
 # Round 1 ran the binary 500x on a runner and found nothing — but that job
 # got a cache MISS and built clean, while every failure so far has been in
@@ -39,6 +40,10 @@ jobs:
           cargo test -p drt --no-default-features --features full --test stun --no-run
           BIN=$(find target/debug/deps -maxdepth 1 -type f -executable -name 'stun-*' ! -name '*.d' | head -1)
           echo "binary: $BIN"
+          # The backtrace step needs the SAME binary this loop ran; handing
+          # gdb a different one yields a core full of `?? ()` and no symbols,
+          # which is exactly how the first captured core was wasted.
+          echo "PROBE_BIN=$BIN" >> "$GITHUB_ENV"
           segv=0; fails=0
           for i in $(seq 1 ${{ inputs.rounds }}); do
             "$BIN" > /tmp/s.txt 2>&1 || rc=$?; rc=${rc:-0}
@@ -50,16 +55,26 @@ jobs:
             rc=0
           done
           echo "RESULT: $segv signal-deaths, $fails failures in ${{ inputs.rounds }} runs"
+          # Fail the job when something died by signal. Counting a crash and
+          # then exiting 0 makes a green check mean "the loop finished",
+          # not "nothing crashed" — and a probe whose green is unreadable
+          # is worse than no probe.
+          [ "$segv" -eq 0 ] || exit 1
       - name: Backtrace any core
         if: always()
         run: |
           shopt -s nullglob
           cores=(/tmp/core.*)
           [ ${#cores[@]} -eq 0 ] && { echo "RESULT no cores"; exit 0; }
-          BIN=$(ls -t target/debug/deps/host_lua-* | grep -v '[.]d$' | head -1)
+          BIN="${PROBE_BIN:?the loop step did not export a binary path}"
+          echo "binary: $BIN"
           for c in "${cores[@]}"; do
             echo "=========== $c ==========="
-            gdb -batch -ex "thread apply all bt" "$BIN" "$c" 2>&1 | head -150
+            gdb -batch \
+                -ex "set pagination off" \
+                -ex "info registers rip rsp rbp" \
+                -ex "thread apply all bt full" \
+                "$BIN" "$c" 2>&1 | head -400
           done
 
   # No cache at all — the control.
@@ -78,6 +93,10 @@ jobs:
           cargo test -p drt --no-default-features --features full --test stun --no-run
           BIN=$(find target/debug/deps -maxdepth 1 -type f -executable -name 'stun-*' ! -name '*.d' | head -1)
           echo "binary: $BIN"
+          # The backtrace step needs the SAME binary this loop ran; handing
+          # gdb a different one yields a core full of `?? ()` and no symbols,
+          # which is exactly how the first captured core was wasted.
+          echo "PROBE_BIN=$BIN" >> "$GITHUB_ENV"
           segv=0; fails=0
           for i in $(seq 1 ${{ inputs.rounds }}); do
             "$BIN" > /tmp/s.txt 2>&1 || rc=$?; rc=${rc:-0}
@@ -89,14 +108,24 @@ jobs:
             rc=0
           done
           echo "RESULT: $segv signal-deaths, $fails failures in ${{ inputs.rounds }} runs"
+          # Fail the job when something died by signal. Counting a crash and
+          # then exiting 0 makes a green check mean "the loop finished",
+          # not "nothing crashed" — and a probe whose green is unreadable
+          # is worse than no probe.
+          [ "$segv" -eq 0 ] || exit 1
       - name: Backtrace any core
         if: always()
         run: |
           shopt -s nullglob
           cores=(/tmp/core.*)
           [ ${#cores[@]} -eq 0 ] && { echo "RESULT no cores"; exit 0; }
-          BIN=$(ls -t target/debug/deps/host_lua-* | grep -v '[.]d$' | head -1)
+          BIN="${PROBE_BIN:?the loop step did not export a binary path}"
+          echo "binary: $BIN"
           for c in "${cores[@]}"; do
             echo "=========== $c ==========="
-            gdb -batch -ex "thread apply all bt" "$BIN" "$c" 2>&1 | head -150
+            gdb -batch \
+                -ex "set pagination off" \
+                -ex "info registers rip rsp rbp" \
+                -ex "thread apply all bt full" \
+                "$BIN" "$c" 2>&1 | head -400
           done
