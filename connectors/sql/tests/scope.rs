@@ -168,12 +168,12 @@ fn query_refuses_a_statement_that_writes() {
     .unwrap();
 }
 
-/// `exec` exists only where the config granted writes. A readonly scope is
+/// `exec` exists only where the config granted writes. A read scope is
 /// exactly what it says.
 #[test]
 fn exec_needs_the_write_grant() {
     let dir = tempfile::tempdir().unwrap();
-    // Seed a database with a writable scope, then reopen the place readonly.
+    // Seed a database with a writable scope, then reopen the place read-only.
     {
         let c = SqlConnector::new();
         let rw = scope(dir.path(), "readwrite", 64);
@@ -186,7 +186,7 @@ fn exec_needs_the_write_grant() {
         .unwrap();
     }
     let c = SqlConnector::new();
-    let ro = scope(dir.path(), "readonly", 64);
+    let ro = scope(dir.path(), "read", 64);
     let err = call(
         &c,
         &ro,
@@ -205,12 +205,12 @@ fn exec_needs_the_write_grant() {
     .unwrap();
 }
 
-/// A readonly scope does not conjure databases either.
+/// A read scope does not conjure databases either.
 #[test]
-fn a_readonly_scope_does_not_create() {
+fn a_read_scope_does_not_create() {
     let dir = tempfile::tempdir().unwrap();
     let c = SqlConnector::new();
-    let ro = scope(dir.path(), "readonly", 64);
+    let ro = scope(dir.path(), "read", 64);
     let err = call(
         &c,
         &ro,

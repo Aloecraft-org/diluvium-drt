@@ -9,5 +9,7 @@ pub mod relay;
 pub mod repl;
 pub mod run;
 pub mod start;
+#[cfg(feature = "stun")]
+pub mod stun;
 #[cfg(feature = "tunnel")]
 pub mod tunnel;

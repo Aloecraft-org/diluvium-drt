@@ -140,11 +140,11 @@ fn escapes_are_refused_on_the_resolved_path() {
 }
 
 #[test]
-fn readonly_is_the_default_and_it_holds() {
+fn read_is_the_default_and_it_holds() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("there.txt"), b"readable").unwrap();
 
-    // The bare-string scope form takes the default, which is readonly.
+    // The bare-string scope form takes the default, which is read.
     let sc = Scope(rmpv::Value::from(dir.path().to_str().unwrap()));
     assert_eq!(
         call(&sc, "fs/read", read_args("there.txt"))
@@ -212,7 +212,7 @@ fn ill_scoped_wiring_fails_at_startup_by_name() {
     let err = registry
         .wire("fs", Arc::new(FsConnector::new()), Some(bad))
         .unwrap_err();
-    assert!(err.to_string().contains("'readonly'"), "{err}");
+    assert!(err.to_string().contains("\"read\""), "{err}");
 }
 
 /// Through the dispatcher: the grant gates the call before the connector
@@ -226,7 +226,7 @@ fn the_grant_gates_it_before_the_filesystem_does() {
         .wire(
             "fs",
             Arc::new(FsConnector::new()),
-            Some(scope(dir.path(), "readonly", 65536)),
+            Some(scope(dir.path(), "read", 65536)),
         )
         .unwrap();
     let dispatcher = Dispatcher::new(registry);
@@ -247,4 +247,39 @@ fn the_grant_gates_it_before_the_filesystem_does() {
     let narrow = CapSet::root(vec![Grant::grant("host:time")]);
     let reply = pollster::block_on(dispatcher.dispatch(&narrow, &raw));
     assert_eq!(reply.status, Status::Denied);
+}
+
+/// The C host settles the spelling. `dhost.c` accepts exactly `"read"` or
+/// `"readwrite"` for `config.connectors.fs.access` and refuses everything
+/// else by name, so DRT accepts exactly those two and refuses the rest —
+/// `"readonly"` included, which DRT itself took through v0.3.0 and which
+/// the C host has never accepted. A config that loads on one host loads on
+/// the other, and this test is what keeps that true.
+#[test]
+fn the_access_spelling_is_the_c_hosts() {
+    let dir = tempfile::tempdir().unwrap();
+    for good in ["read", "readwrite"] {
+        let mut registry = Registry::new();
+        assert!(
+            registry
+                .wire(
+                    "fs",
+                    Arc::new(FsConnector::new()),
+                    Some(scope(dir.path(), good, 4096)),
+                )
+                .is_ok(),
+            "the C host accepts {good:?} and so must DRT"
+        );
+    }
+    let mut registry = Registry::new();
+    let err = registry
+        .wire(
+            "fs",
+            Arc::new(FsConnector::new()),
+            Some(scope(dir.path(), "readonly", 4096)),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("\"read\""), "{err}");
+    assert!(err.contains("\"readwrite\""), "{err}");
 }

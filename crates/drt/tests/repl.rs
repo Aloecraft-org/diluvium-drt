@@ -76,7 +76,7 @@ fn the_repl_is_an_instance_under_the_configs_ceiling() {
         &config,
         format!(
             r#"{{"caps": [{{"capability": "host:fs/*"}}],
-                 "connectors": {{"fs": {{"scope": {{"scope": "{}", "access": "readonly"}}}}}}}}"#,
+                 "connectors": {{"fs": {{"scope": {{"scope": "{}", "access": "read"}}}}}}}}"#,
             work.display()
         ),
     )

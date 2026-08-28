@@ -52,6 +52,18 @@ enum Command {
     /// root program, and can be asked before it admits a leg.
     #[cfg(feature = "relay")]
     Relay,
+    /// The STUN binding server: answer "what address did this datagram
+    /// come from?", so a peer can learn its own reflexive address and try
+    /// a direct path before falling back to the relay. Reads the `stun`
+    /// block of the config; runs foreground. Inside `drt start` the same
+    /// server also reports its counters to the root program.
+    ///
+    /// Run two on separate addresses (the `stun1`/`stun2` pair): one
+    /// server reports an address, two report whether it *changed* between
+    /// vantage points, which is the fact that decides whether hole
+    /// punching can work at all.
+    #[cfg(feature = "stun")]
+    Stun,
     /// SSH over WSS, as a dumb pipe. With a URL: bridge this process's
     /// stdio to it — the OpenSSH ProxyCommand contract, so
     /// `ssh -o ProxyCommand="drt tunnel wss://gate/fp" user@fp` (and rsync,
@@ -233,6 +245,21 @@ fn main() -> ExitCode {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("drt relay: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        #[cfg(feature = "stun")]
+        Command::Stun => {
+            let Some(stun_config) = config.stun.clone() else {
+                eprintln!("drt stun: the config names no `stun` block");
+                return ExitCode::FAILURE;
+            };
+            let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
+            match runtime.block_on(drt::stun::serve(&stun_config)) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("drt stun: {e}");
                     ExitCode::FAILURE
                 }
             }

@@ -1,0 +1,23 @@
+-- A STUN binding server as its own deployment: `drt --config this start`.
+--
+-- Run TWO of these on separate addresses (the stun1/stun2 pair). One
+-- server tells a peer what address it saw; two tell it whether that
+-- address CHANGED between vantage points, which is the fact that decides
+-- whether hole punching can work at all. A client asking only one server
+-- gets an address; a client asking two gets to know whether to trust it.
+--
+-- Unlike the relay and the http listener, this is meant to face the world
+-- — reporting the address the world sees is the entire service — so bind
+-- accordingly, and put it behind the same rate limiting as anything else
+-- that answers strangers.
+return {
+  supervisor = "stun_supervisor.lua",
+
+  stun = {
+    bind = "0.0.0.0",
+    port = 3478,        -- the IANA STUN port
+    queue = "stun_in",  -- where counters land on the supervisor
+    report_ms = 10000,  -- how often; the server is stateless, so this is
+                        -- a heartbeat, not an event stream
+  },
+}

@@ -36,7 +36,7 @@ fn a_config_wires_a_connector_to_a_place_and_the_program_names_a_file_in_it() {
             r#"{{
               "caps": [{{"capability": "host:fs/*"}}],
               "connectors": {{
-                "fs": {{"scope": {{"scope": "{}", "access": "readonly"}}}}
+                "fs": {{"scope": {{"scope": "{}", "access": "read"}}}}
               }}
             }}"#,
             work.to_str().unwrap()

@@ -62,7 +62,7 @@ futures-util = { version = "0.3", default-features = false }
 # connector is its own gate so a profile is a feature list, not a fork.
 default = ["slim"]
 slim = ["connector-time", "connector-fs", "connector-crypto", "listen"]
-full = ["slim", "connector-ssh", "connector-sql", "tunnel", "relay"]
+full = ["slim", "connector-ssh", "connector-sql", "tunnel", "relay", "stun"]
 connector-time = ["dep:drt-connector-time"]
 connector-ssh = ["dep:drt-connector-ssh"]
 connector-fs = ["dep:drt-connector-fs"]
@@ -82,3 +82,8 @@ tunnel = ["dep:ego_transport", "dep:tokio", "dep:tokio-tungstenite", "dep:future
 # queue bridge, and `drt start` only runs that loop when listeners exist.
 # Without this a relay+no-listen build would start and silently not serve.
 relay = ["listen", "dep:tokio", "dep:tokio-tungstenite", "dep:futures-util"]
+# `drt stun`: the STUN binding server. The protocol is ego-transport's
+# (`ego_transport::stun`); this is the wiring. UDP and stateless, so
+# unlike the relay it needs no listener and no WebSocket stack — just a
+# runtime to own the socket.
+stun = ["dep:tokio", "dep:ego_transport"]

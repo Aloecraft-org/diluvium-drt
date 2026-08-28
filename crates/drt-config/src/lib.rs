@@ -256,6 +256,49 @@ pub struct RelayConfig {
     pub admit_timeout_ms: u64,
 }
 
+/// The STUN binding server, as `drt start` and `drt stun` run it.
+///
+/// DRT's own, like `relay`: the C host has no STUN, so this is an
+/// extension rather than a dialect match. It exists for the same reason
+/// the relay does — a fetchpoint behind CGNAT has to learn its own
+/// reflexive address from somewhere, and depending on a third party's
+/// STUN service to find out puts a stranger on the path of your own NAT
+/// traversal.
+///
+/// Two servers are the useful deployment, not one: `stun.detect_mapping`
+/// classifies a NAT by asking two or more servers about the *same* socket
+/// and comparing what they saw, and refuses with `NotEnoughServers`
+/// below two. A `stun1`/`stun2` pair on separate addresses is what makes
+/// that classification available to anyone pointed at them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StunConfig {
+    /// e.g. `0.0.0.0:3478`, or a bare host paired with `port`. Unlike the
+    /// relay and the http listener, a STUN server is *meant* to face the
+    /// world — its whole job is reporting the address the world sees — so
+    /// there is no loopback default to inherit here. The config says where.
+    pub bind: String,
+    /// Where the server's counters land on the root program when it runs
+    /// inside a deployment (`drt start`), as ordinary queue messages on
+    /// the same bridge the relay's control plane uses.
+    #[serde(default = "default_stun_queue")]
+    pub queue: String,
+    /// How often to report. A binding server is stateless and has no
+    /// events to speak of — only counters — so it reports on a timer
+    /// rather than per datagram: a busy server would otherwise spend the
+    /// deployment's queue on telemetry about itself.
+    #[serde(default = "default_stun_report_ms")]
+    pub report_ms: u64,
+}
+
+fn default_stun_queue() -> String {
+    "stun_in".into()
+}
+/// Ten seconds: often enough for a health panel, rare enough that the
+/// report is never the busiest thing on the queue.
+fn default_stun_report_ms() -> u64 {
+    10_000
+}
+
 fn default_relay_queue() -> String {
     "relay_in".into()
 }
@@ -309,6 +352,8 @@ pub struct RootConfig {
     pub residency: Option<Residency>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay: Option<RelayConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stun: Option<StunConfig>,
     #[serde(default, skip_serializing_if = "Identity::is_default")]
     pub identity: Identity,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

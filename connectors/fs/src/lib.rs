@@ -9,7 +9,7 @@
 //! it was handed is not a jail.
 //!
 //! `access` decides whether the writing verbs are wired at all, and it
-//! defaults to `readonly`: a connector that silently granted writes because
+//! defaults to `read`: a connector that silently granted writes because
 //! nobody said otherwise would be the wrong default in the one place it
 //! matters.
 //!
@@ -33,7 +33,9 @@ const DEFAULT_MAX_BYTES: u64 = 1024 * 1024;
 struct FsScope {
     /// The granted directory. Programs name files within it.
     scope: PathBuf,
-    /// `readonly` (the default) or `readwrite`.
+    /// `read` (the default) or `readwrite`. These are the C host's two
+    /// spellings (`dhost.c`), and DRT accepts exactly them: a config that
+    /// loads there loads here.
     #[serde(default)]
     access: Option<String>,
     /// Cap on a single file, both directions.
@@ -61,10 +63,11 @@ impl FsScope {
             return Err("scope names no directory".into());
         }
         match parsed.access.as_deref() {
-            None | Some("readonly") | Some("readwrite") => {}
+            None | Some("read") | Some("readwrite") => {}
             Some(other) => {
                 return Err(format!(
-                    "access is '{other}'; it is 'readonly' (the default) or 'readwrite'"
+                    "config.connectors.fs.access must be \"read\" or \
+                     \"readwrite\" (got '{other}')"
                 ))
             }
         }
@@ -171,7 +174,7 @@ struct FsScopeType;
 
 impl ScopeType for FsScopeType {
     fn describe(&self) -> &str {
-        "a directory: \"path\", or {scope, access?: readonly|readwrite, max_bytes?}"
+        "a directory: \"path\", or {scope, access?: read|readwrite, max_bytes?}"
     }
 
     fn validate(&self, scope: Option<&Scope>) -> Result<(), String> {

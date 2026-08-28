@@ -207,19 +207,64 @@ fn map_host_lua(path: &Path, value: rmpv::Value) -> Result<RootConfig, String> {
             // box is, and its supervisor arbitrates over the queue bridge.
             #[cfg(feature = "relay")]
             "relay" => config.relay = Some(map_relay(path, value)?),
+            // DRT's own, for the relay's reasons: the C host has no STUN.
+            #[cfg(feature = "stun")]
+            "stun" => config.stun = Some(map_stun(path, value)?),
             other => {
                 // The C's loader promise, kept: an unknown key is a typo
                 // about to become a silent default, so it is an error and
                 // names itself.
                 return Err(format!(
                     "{}: unknown key '{other}' (known: supervisor, caps, \
-                     connectors, relay)",
+                     connectors, relay, stun)",
                     path.display()
                 ));
             }
         }
     }
     Ok(config)
+}
+
+/// The `stun` block: the binding server as `drt start` and `drt stun` run
+/// it. `bind` takes a whole `host:port` or pairs with `port`, the way
+/// `relay` and `listen` do, so the three read alike.
+#[cfg(feature = "stun")]
+fn map_stun(path: &Path, block: rmpv::Value) -> Result<drt_config::StunConfig, String> {
+    let rmpv::Value::Map(entries) = block else {
+        return Err(format!("{}: stun must be a table", path.display()));
+    };
+    let mut stun = drt_config::StunConfig {
+        bind: String::new(),
+        queue: "stun_in".into(),
+        report_ms: 10_000,
+    };
+    let mut bind = String::new();
+    let mut port: Option<u64> = None;
+    for (key, value) in entries {
+        let Some(key) = key.as_str() else {
+            return Err(format!("{}: a non-string stun key", path.display()));
+        };
+        let bad = |what: &str| format!("{}: stun.{key} must be {what}", path.display());
+        match key {
+            "bind" => bind = value.as_str().ok_or_else(|| bad("an address"))?.to_string(),
+            "port" => port = Some(value.as_u64().ok_or_else(|| bad("a port number"))?),
+            "queue" => stun.queue = value.as_str().ok_or_else(|| bad("a queue name"))?.into(),
+            "report_ms" => stun.report_ms = value.as_u64().ok_or_else(|| bad("milliseconds"))?,
+            other => {
+                return Err(format!(
+                    "{}: unknown stun key '{other}' (known: bind, port, \
+                     queue, report_ms)",
+                    path.display()
+                ));
+            }
+        }
+    }
+    stun.bind = match (bind.is_empty(), port) {
+        (true, _) => return Err(format!("{}: stun needs a bind address", path.display())),
+        (false, Some(p)) => format!("{bind}:{p}"),
+        (false, None) => bind,
+    };
+    Ok(stun)
 }
 
 /// The `relay` block: the rendezvous relay as `drt start` runs it, with

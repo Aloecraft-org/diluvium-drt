@@ -57,14 +57,16 @@ const DEFAULT_MAX_RESULT_ROWS: usize = 1000;
 struct SqlScope {
     /// The granted directory. Programs name databases within it.
     scope: PathBuf,
-    /// `readonly` (the default) or `readwrite`.
+    /// `read` (the default) or `readwrite`. These are the C host's two
+    /// spellings (`dhost.c`), and DRT accepts exactly them: a config that
+    /// loads there loads here.
     #[serde(default)]
     access: Option<String>,
     #[serde(default)]
     max_result_rows: Option<usize>,
     /// Whether a database the program names but which does not exist may be
     /// created. Defaults to the write grant: a readwrite deployment creates,
-    /// a readonly one does not.
+    /// a read-only one does not.
     #[serde(default)]
     create: Option<bool>,
 }
@@ -89,10 +91,11 @@ impl SqlScope {
             return Err("scope names no directory".into());
         }
         match parsed.access.as_deref() {
-            None | Some("readonly") | Some("readwrite") => {}
+            None | Some("read") | Some("readwrite") => {}
             Some(other) => {
                 return Err(format!(
-                    "access is '{other}'; it is 'readonly' (the default) or 'readwrite'"
+                    "config.connectors.sql.access must be \"read\" or \
+                     \"readwrite\" (got '{other}')"
                 ))
             }
         }
@@ -169,7 +172,7 @@ struct SqlScopeType;
 
 impl ScopeType for SqlScopeType {
     fn describe(&self) -> &str {
-        "a directory: \"path\", or {scope, access?: readonly|readwrite, max_result_rows?, create?}"
+        "a directory: \"path\", or {scope, access?: read|readwrite, max_result_rows?, create?}"
     }
 
     fn validate(&self, scope: Option<&Scope>) -> Result<(), String> {

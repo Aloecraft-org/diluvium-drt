@@ -278,6 +278,19 @@ pub fn serve_with_observer(
         None => None,
     };
 
+    // The STUN server, same arrangement: its own runtime, its counters on
+    // the same queue bridge. Stateless, so it has nothing to ask and
+    // nothing to answer — it only reports.
+    #[cfg(feature = "stun")]
+    let mut stun = match &config.stun {
+        Some(cfg) => {
+            let bridge = crate::stun::StunBridge::start(cfg)?;
+            eprintln!("drt stun: listening on {}", bridge.addr());
+            Some(bridge)
+        }
+        None => None,
+    };
+
     // Step before delivering, always: the first step runs the root to its
     // first park, so the request queue exists before the first request is
     // pushed at it. Delivering first would race the program's own
@@ -292,6 +305,13 @@ pub fn serve_with_observer(
             // caller is holding a socket open for it.
             relay.collect(&mut sw, root);
             relay.deliver(&mut sw, root);
+        }
+        #[cfg(feature = "stun")]
+        if let Some(stun) = stun.as_mut() {
+            // A dropped report costs a panel one interval's numbers, and
+            // the next report carries the running totals anyway — the
+            // counters are cumulative, not deltas, so nothing is lost.
+            stun.report(&mut |queue, msg| sw.push(root, queue, msg).is_ok());
         }
         if let Some(residency) = config.residency {
             enforce_residency(&mut sw, root, residency.max_resident);
