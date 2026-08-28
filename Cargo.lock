@@ -1120,6 +1120,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "drt-web"
+version = "0.2.0"
+dependencies = [
+ "drt-caps",
+ "drt-config",
+ "drt-swarm",
+ "js-sys",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "dtls"
 version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

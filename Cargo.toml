@@ -15,6 +15,7 @@ members = [
     "connectors/sql",
     "connectors/crypto",
     "crates/drt-bench",
+    "crates/drt-web",
 ]
 
 [workspace.package]
@@ -29,6 +30,7 @@ drt-caps = { path = "crates/drt-caps", version = "0.2.0" }
 drt-hostcall = { path = "crates/drt-hostcall", version = "0.2.0" }
 drt-connector = { path = "crates/drt-connector", version = "0.2.0" }
 drt-swarm = { path = "crates/drt-swarm", version = "0.2.0" }
+drt-web = { path = "crates/drt-web", version = "0.2.0" }
 drt-connector-time = { path = "connectors/time", version = "0.2.0" }
 drt-connector-ssh = { path = "connectors/ssh", version = "0.2.0" }
 drt-connector-fs = { path = "connectors/fs", version = "0.2.0" }

@@ -261,6 +261,18 @@ pub trait Instance: MaybeSend {
     fn exceeded(&self) -> bool;
     /// The whole parked state, stamped when `host_stamp` is `Some`.
     fn snapshot(&mut self, host_stamp: Option<&str>) -> Result<Vec<u8>, EngineError>;
+
+    /// An opaque token identifying this instance to a host that keeps it
+    /// somewhere else.
+    ///
+    /// `None` for an in-process engine, which is why it defaults: the
+    /// instance IS the thing, and there is nothing to name. The browser
+    /// tier is the case that needs it — instances live in JS and this is
+    /// the handle JS minted — and a host driving them has only `&mut dyn
+    /// Instance` to work from, which is otherwise opaque.
+    fn host_token(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// A producer of instances speaking one dv ABI version.

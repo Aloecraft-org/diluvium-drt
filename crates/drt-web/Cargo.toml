@@ -1,0 +1,29 @@
+[package]
+name = "drt-web"
+description = "The browser tier: DRT's swarm over a JS-hosted diluvium instance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+# cdylib is the browser artifact; rlib keeps it testable natively, which is
+# how the bridge gets real coverage without a browser (see `bridge`).
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Deliberately WITHOUT default features: the traits, no C core. The browser
+# engine bridges to a JS-hosted diluvium instance rather than linking one,
+# so no wasi-sdk is involved (doc/Browser.md).
+# Declared by path rather than `workspace = true`: `default-features =
+# false` is SILENTLY IGNORED when inheriting a workspace dependency that
+# does not itself disable them, and the failure is remote — the C core gets
+# pulled in and the wasm build dies in diluvium-sys's build script asking
+# for a wasi-sdk this crate never needed.
+drt-swarm = { path = "../drt-swarm", version = "0.2.0", default-features = false }
+drt-caps = { workspace = true }
+drt-config = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+js-sys = "0.3"
