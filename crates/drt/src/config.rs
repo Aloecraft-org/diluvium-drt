@@ -201,18 +201,127 @@ fn map_host_lua(path: &Path, value: rmpv::Value) -> Result<RootConfig, String> {
                     }
                 }
             }
+            // DRT's own: the C host has no relay, so this key is an
+            // extension rather than a dialect match. A rendezvous
+            // fetchpoint is configured the same way everything else on the
+            // box is, and its supervisor arbitrates over the queue bridge.
+            #[cfg(feature = "relay")]
+            "relay" => config.relay = Some(map_relay(path, value)?),
             other => {
                 // The C's loader promise, kept: an unknown key is a typo
                 // about to become a silent default, so it is an error and
                 // names itself.
                 return Err(format!(
-                    "{}: unknown key '{other}' (known: supervisor, caps, connectors)",
+                    "{}: unknown key '{other}' (known: supervisor, caps, \
+                     connectors, relay)",
                     path.display()
                 ));
             }
         }
     }
     Ok(config)
+}
+
+/// The `relay` block: the rendezvous relay as `drt start` runs it, with
+/// its labels and (optionally) its arbitration queues. `bind` takes a
+/// whole `host:port` or pairs with `port`, the way `listen` does.
+#[cfg(feature = "relay")]
+fn map_relay(path: &Path, block: rmpv::Value) -> Result<drt_config::RelayConfig, String> {
+    let rmpv::Value::Map(entries) = block else {
+        return Err(format!("{}: relay must be a table", path.display()));
+    };
+    let mut relay = drt_config::RelayConfig {
+        bind: String::new(),
+        labels: Default::default(),
+        queue: "relay_in".into(),
+        reply_queue: String::new(),
+        admit_timeout_ms: 2000,
+    };
+    let mut bind = String::new();
+    let mut port: Option<u64> = None;
+    for (key, value) in entries {
+        let Some(key) = key.as_str() else {
+            return Err(format!("{}: a non-string relay key", path.display()));
+        };
+        let bad = |what: &str| format!("{}: relay.{key} must be {what}", path.display());
+        match key {
+            "bind" => bind = value.as_str().ok_or_else(|| bad("an address"))?.to_string(),
+            "port" => port = Some(value.as_u64().ok_or_else(|| bad("a port number"))?),
+            "queue" => relay.queue = value.as_str().ok_or_else(|| bad("a queue name"))?.into(),
+            "reply_queue" => {
+                relay.reply_queue = value.as_str().ok_or_else(|| bad("a queue name"))?.into()
+            }
+            "admit_timeout_ms" => {
+                relay.admit_timeout_ms = value.as_u64().ok_or_else(|| bad("milliseconds"))?
+            }
+            "labels" => {
+                let rmpv::Value::Map(labels) = value else {
+                    return Err(bad("a table of labels"));
+                };
+                for (name, entry) in labels {
+                    let name = name
+                        .as_str()
+                        .ok_or_else(|| bad("a table keyed by label name"))?
+                        .to_string();
+                    let rmpv::Value::Map(fields) = entry else {
+                        return Err(format!(
+                            "{}: relay.labels.{name} must be a table",
+                            path.display()
+                        ));
+                    };
+                    let mut label = drt_config::RelayLabel::default();
+                    for (k, v) in fields {
+                        let text = |v: &rmpv::Value| {
+                            v.as_str().map(str::to_string).ok_or_else(|| {
+                                format!("{}: relay.labels.{name} keys are strings", path.display())
+                            })
+                        };
+                        match k.as_str() {
+                            Some("park_key") => label.park_key = text(&v)?,
+                            Some("caller_key") => label.caller_key = text(&v)?,
+                            other => {
+                                return Err(format!(
+                                    "{}: unknown relay label key {other:?} (known: park_key, \
+                                     caller_key)",
+                                    path.display()
+                                ))
+                            }
+                        }
+                    }
+                    // An empty key is a closed door in `verify_key`, and a
+                    // config that reaches that state has a typo in it —
+                    // say so here, where the line number is still known.
+                    if label.park_key.is_empty() || label.caller_key.is_empty() {
+                        return Err(format!(
+                            "{}: relay.labels.{name} needs both park_key and caller_key; \
+                             an absent key refuses every leg",
+                            path.display()
+                        ));
+                    }
+                    relay.labels.insert(name, label);
+                }
+            }
+            other => {
+                return Err(format!(
+                    "{}: unknown relay key '{other}' (known: bind, port, labels, queue, \
+                     reply_queue, admit_timeout_ms)",
+                    path.display()
+                ))
+            }
+        }
+    }
+    relay.bind = match (bind.is_empty(), port) {
+        (true, _) => return Err(format!("{}: relay names no bind address", path.display())),
+        (false, Some(p)) => format!("{bind}:{p}"),
+        (false, None) if bind.contains(':') => bind,
+        (false, None) => {
+            return Err(format!(
+                "{}: relay.bind has no port; give `port` or write host:port",
+                path.display()
+            ))
+        }
+    };
+    Ok(relay)
 }
 
 fn map_listener(path: &Path, block: rmpv::Value) -> Result<drt_config::Listener, String> {

@@ -25,10 +25,23 @@
 //!
 //! # What is deliberately NOT here
 //!
-//! - **Metering** rides out over the supervisor's queue bridge (the listen
-//!   contract), so the deployment owns reporting and the relay owns only
-//!   the byte counts. That keeps policy in Lua, as the rendezvous kind
-//!   wants.
+//! # The control plane (when the relay runs inside a deployment)
+//!
+//! Standalone (`drt relay`), the static per-label key is the only gate and
+//! the relay tells nobody anything. Inside `drt start` it is given a
+//! [`Control`], and then three things become true at once, because they
+//! were always one missing channel rather than three missing features:
+//!
+//! - **Presence.** `parked` / `claimed` / `closed` arrive on the root's
+//!   relay queue as ordinary messages. A panel can say *the laptop is
+//!   home* without asking anything.
+//! - **Metering.** `closed` carries the session's byte count. The relay
+//!   counts; the deployment reports. Policy stays in Lua.
+//! - **Arbitration.** If the deployment names a reply queue it is asked
+//!   `admit` before a leg is allowed to proceed, and its answer decides.
+//!
+//! All of it over the same queue bridge the http listener uses, with the
+//! same token discipline — a message in, a reply naming its token out.
 //! - **Tickets.** P0 verifies a static per-label key from config. The API's
 //!   HMAC tickets (`{label, leg, expires}`) replace the key *values* later,
 //!   not this shape — `verify_key` is the one function that changes.
@@ -84,20 +97,106 @@ struct ParkedLeg {
     from_device: mpsc::Receiver<Vec<u8>>,
 }
 
+/// Something the deployment should know about. One-directional; the
+/// supervisor observes rather than answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayEvent {
+    /// A device leg is parked and waiting. The label is home.
+    Parked { label: String },
+    /// A caller took a parked leg; a session is live.
+    Claimed { label: String, session: u64 },
+    /// The session ended, having carried this many bytes in both
+    /// directions together — the number a meter bills or throttles on.
+    Closed {
+        label: String,
+        session: u64,
+        bytes: u64,
+    },
+}
+
+/// A question the relay needs answered before it lets a leg proceed.
+pub struct Admit {
+    pub label: String,
+    /// `"park"` or `"caller"`.
+    pub leg: &'static str,
+    /// `true` admits. A dropped sender is a refusal, so a deployment that
+    /// dies mid-question closes the door rather than holding it open.
+    pub reply: tokio::sync::oneshot::Sender<bool>,
+}
+
+/// The deployment's end of the relay. Absent when the relay runs alone.
+pub struct Control {
+    pub events: mpsc::UnboundedSender<RelayEvent>,
+    /// `None` when the deployment named no reply queue — it opted out of
+    /// being asked, and the static key is the only gate.
+    pub admit: Option<mpsc::UnboundedSender<Admit>>,
+    pub admit_timeout: Duration,
+}
+
 /// The relay's shared routing table and its config.
 pub struct Relay {
     config: RelayConfig,
     labels: Mutex<HashMap<String, Label>>,
     bytes_relayed: AtomicU64,
+    sessions: AtomicU64,
+    control: Option<Control>,
 }
 
 impl Relay {
     pub fn new(config: RelayConfig) -> Arc<Relay> {
+        Relay::build(config, None)
+    }
+
+    /// The relay as part of a deployment: events and arbitration reach the
+    /// root program over its queue bridge.
+    pub fn with_control(config: RelayConfig, control: Control) -> Arc<Relay> {
+        Relay::build(config, Some(control))
+    }
+
+    fn build(config: RelayConfig, control: Option<Control>) -> Arc<Relay> {
         Arc::new(Relay {
             config,
             labels: Mutex::new(HashMap::new()),
             bytes_relayed: AtomicU64::new(0),
+            sessions: AtomicU64::new(0),
+            control,
         })
+    }
+
+    fn emit(&self, event: RelayEvent) {
+        if let Some(c) = &self.control {
+            // A full or closed channel is not worth failing a session over:
+            // the deployment is gone or wedged, and dropping bytes is the
+            // relay's job to keep doing regardless.
+            let _ = c.events.send(event);
+        }
+    }
+
+    /// Ask the deployment whether this leg may proceed. `true` when nobody
+    /// is arbitrating; a timeout or a dropped answer is a refusal, because
+    /// having opted in to being asked, silence must fail closed.
+    async fn admitted(&self, label: &str, leg: &'static str) -> bool {
+        let Some(control) = &self.control else {
+            return true;
+        };
+        let Some(admit) = &control.admit else {
+            return true;
+        };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if admit
+            .send(Admit {
+                label: label.to_string(),
+                leg,
+                reply: tx,
+            })
+            .is_err()
+        {
+            return false;
+        }
+        matches!(
+            tokio::time::timeout(control.admit_timeout, rx).await,
+            Ok(Ok(true))
+        )
     }
 
     /// Total bytes spliced since start — the seed of the metering the
@@ -192,7 +291,30 @@ async fn handle(relay: Arc<Relay>, stream: TcpStream) -> Result<(), String> {
     let ws = tokio_tungstenite::accept_hdr_async(stream, callback)
         .await
         .map_err(|e| format!("relay handshake: {e}"))?;
+    let mut ws_checked = ws;
     let route = route.lock().unwrap().take().ok_or("relay: no route")?;
+
+    // Policy, after the key. The handshake callback cannot be async, so
+    // arbitration cannot happen there — and it should not: the key is the
+    // cheap structural gate (an unauthorized leg never upgrades, 403), and
+    // the deployment's policy is a second, slower question asked only of
+    // connections that already passed it.
+    let leg_name = match route.leg {
+        Leg::Park => "park",
+        Leg::Caller => "caller",
+    };
+    if !relay.admitted(&route.label, leg_name).await {
+        let _ = ws_checked
+            .send(Message::Close(Some(
+                tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                    code: 1008.into(),
+                    reason: "refused by the deployment".into(),
+                },
+            )))
+            .await;
+        return Ok(());
+    }
+    let ws = ws_checked;
 
     match route.leg {
         Leg::Park => park_leg(relay, route.label, ws).await,
@@ -248,6 +370,9 @@ async fn park_leg(relay: Arc<Relay>, label: String, mut ws: Ws) -> Result<(), St
                 from_device: from_device_rx,
             });
     }
+    relay.emit(RelayEvent::Parked {
+        label: label.clone(),
+    });
 
     let mut ping = tokio::time::interval(PARK_PING);
     let idle = tokio::time::sleep(PARK_IDLE);
@@ -261,10 +386,10 @@ async fn park_leg(relay: Arc<Relay>, label: String, mut ws: Ws) -> Result<(), St
             msg = ws.next() => {
                 match msg {
                     Some(Ok(Message::Binary(b))) => {
+                        // Counted in `claim_leg`, which is the one task that
+                        // sees both directions — counting here too would
+                        // double every byte.
                         claimed = true;
-                        relay
-                            .bytes_relayed
-                            .fetch_add(b.len() as u64, Ordering::Relaxed);
                         if from_device_tx.send(b).await.is_err() {
                             break;
                         }
@@ -279,7 +404,6 @@ async fn park_leg(relay: Arc<Relay>, label: String, mut ws: Ws) -> Result<(), St
                 match caller {
                     Some(b) => {
                         claimed = true;
-                        relay.bytes_relayed.fetch_add(b.len() as u64, Ordering::Relaxed);
                         if ws.send(Message::Binary(b)).await.is_err() { break; }
                     }
                     None => break, // the caller hung up
@@ -331,11 +455,23 @@ async fn claim_leg(relay: Arc<Relay>, label: String, mut ws: Ws) -> Result<(), S
         mut from_device,
     } = leg;
 
+    // A session exists from here: a caller has a device leg. Both
+    // directions pass through this task, so this is where bytes are
+    // counted — once each, for the session and for the relay total.
+    let session = relay.sessions.fetch_add(1, Ordering::Relaxed) + 1;
+    let mut bytes = 0u64;
+    relay.emit(RelayEvent::Claimed {
+        label: label.clone(),
+        session,
+    });
+
     loop {
         tokio::select! {
             msg = ws.next() => {
                 match msg {
                     Some(Ok(Message::Binary(b))) => {
+                        bytes += b.len() as u64;
+                        relay.bytes_relayed.fetch_add(b.len() as u64, Ordering::Relaxed);
                         if to_device.send(b).await.is_err() { break; }
                     }
                     Some(Ok(Message::Ping(p))) => { let _ = ws.send(Message::Pong(p)).await; }
@@ -345,12 +481,21 @@ async fn claim_leg(relay: Arc<Relay>, label: String, mut ws: Ws) -> Result<(), S
             }
             back = from_device.recv() => {
                 match back {
-                    Some(b) => { if ws.send(Message::Binary(b)).await.is_err() { break; } }
+                    Some(b) => {
+                        bytes += b.len() as u64;
+                        relay.bytes_relayed.fetch_add(b.len() as u64, Ordering::Relaxed);
+                        if ws.send(Message::Binary(b)).await.is_err() { break; }
+                    }
                     None => break, // the device leg closed
                 }
             }
         }
     }
+    relay.emit(RelayEvent::Closed {
+        label,
+        session,
+        bytes,
+    });
     Ok(())
 }
 

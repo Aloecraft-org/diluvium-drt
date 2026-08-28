@@ -244,7 +244,40 @@ pub fn serve(
     dispatcher: Dispatcher,
     bound: crate::listen::Bound,
 ) -> Result<(), String> {
+    serve_with_observer(config, dispatcher, bound, |_, _| {})
+}
+
+/// [`serve`], with a hook run once per pass after the swarm has stepped
+/// and everything pending has been delivered.
+///
+/// The embedding seam for a host that wants to watch its own deployment
+/// without owning the loop: read an exported queue, sample usage, notice a
+/// child that faulted. `drt ps` will want exactly this once the control
+/// endpoint can ask for it, and a test wants it now for the same reason —
+/// the loop owns the `Swarm`, so observing means being called by it.
+///
+/// The observer runs on the drive thread and blocks the next step, so it
+/// should do bookkeeping, not work.
+#[cfg(feature = "listen")]
+pub fn serve_with_observer(
+    config: &RootConfig,
+    dispatcher: Dispatcher,
+    bound: crate::listen::Bound,
+    mut observe: impl FnMut(&mut Deployment, InstanceId),
+) -> Result<(), String> {
     let (mut sw, root) = deployment(config, dispatcher)?;
+
+    // The relay, if the config names one, on its own runtime beside this
+    // loop. Its events and questions reach the root over the queue bridge
+    // — the same one the listener uses — so presence, metering and
+    // arbitration arrive as ordinary messages a supervisor already knows
+    // how to read.
+    #[cfg(feature = "relay")]
+    let mut relay = match &config.relay {
+        Some(cfg) => Some(RelayBridge::start(cfg.clone())?),
+        None => None,
+    };
+
     // Step before delivering, always: the first step runs the root to its
     // first park, so the request queue exists before the first request is
     // pushed at it. Delivering first would race the program's own
@@ -253,9 +286,17 @@ pub fn serve(
     loop {
         let alive = sw.step();
         pump_replies(&mut sw, root, &bound);
+        #[cfg(feature = "relay")]
+        if let Some(relay) = relay.as_mut() {
+            // Answers first: a question asked last pass is waiting, and a
+            // caller is holding a socket open for it.
+            relay.collect(&mut sw, root);
+            relay.deliver(&mut sw, root);
+        }
         if let Some(residency) = config.residency {
             enforce_residency(&mut sw, root, residency.max_resident);
         }
+        observe(&mut sw, root);
         if alive == 0 {
             // The program chose to exit; ports serving a drained swarm
             // would answer 503 forever, and a supervisor should see the
@@ -385,5 +426,169 @@ fn root_source(config: &RootConfig) -> Result<String, String> {
              (SPEC.md §5): add `\"program\": {\"path\": \"...\"}`"
                 .to_string(),
         ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The relay's control plane, bridged into the deployment
+// ---------------------------------------------------------------------------
+
+/// The deployment's end of an in-process relay.
+///
+/// The relay is tokio; `drt start`'s drive loop is not (the http listener
+/// is thread-per-connection over blocking sockets, so there is no runtime
+/// here otherwise). So the relay runs on its own runtime on its own thread
+/// and speaks to the loop through channels: events flow one way, admit
+/// questions flow in and their answers back. Both ends are non-blocking,
+/// which is what lets a synchronous drive loop arbitrate for an async
+/// relay without either waiting on the other.
+#[cfg(feature = "relay")]
+pub struct RelayBridge {
+    events: tokio::sync::mpsc::UnboundedReceiver<crate::relay::RelayEvent>,
+    admits: tokio::sync::mpsc::UnboundedReceiver<crate::relay::Admit>,
+    pending: HashMap<u64, tokio::sync::oneshot::Sender<bool>>,
+    next_tok: u64,
+    queue: String,
+    reply_queue: String,
+    /// Kept alive for the process's life: dropping it stops the relay.
+    _runtime: std::thread::JoinHandle<()>,
+}
+
+#[cfg(feature = "relay")]
+impl RelayBridge {
+    /// Bind the relay and start serving it on its own runtime.
+    pub fn start(config: drt_config::RelayConfig) -> Result<RelayBridge, String> {
+        let (event_tx, events) = tokio::sync::mpsc::unbounded_channel();
+        let (admit_tx, admits) = tokio::sync::mpsc::unbounded_channel();
+        let arbitrating = !config.reply_queue.is_empty();
+        let control = crate::relay::Control {
+            events: event_tx,
+            // No reply queue named means the deployment opted out of being
+            // asked, and the static key stays the only gate.
+            admit: arbitrating.then_some(admit_tx),
+            admit_timeout: Duration::from_millis(config.admit_timeout_ms),
+        };
+        let queue = config.queue.clone();
+        let reply_queue = config.reply_queue.clone();
+        let relay = crate::relay::Relay::with_control(config, control);
+        let runtime = std::thread::spawn(move || {
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    eprintln!("drt start: the relay needs a runtime: {e}");
+                    return;
+                }
+            };
+            if let Err(e) = rt.block_on(crate::relay::serve(relay)) {
+                eprintln!("drt start: relay stopped: {e}");
+            }
+        });
+        Ok(RelayBridge {
+            events,
+            admits,
+            pending: HashMap::new(),
+            next_tok: 0,
+            queue,
+            reply_queue,
+            _runtime: runtime,
+        })
+    }
+
+    /// Push whatever the relay has said onto the root's queue, and ask
+    /// whatever it needs asked. Non-blocking: anything not ready now is
+    /// picked up next pass.
+    fn deliver(&mut self, sw: &mut Deployment, root: InstanceId) {
+        while let Ok(event) = self.events.try_recv() {
+            let msg = encode(&event_value(&event));
+            // A full or undeclared queue is the deployment's own sizing to
+            // see. An event dropped here costs a panel an update; failing
+            // the relay over it would cost a session.
+            let _ = sw.push(root, &self.queue, &msg);
+        }
+        while let Ok(admit) = self.admits.try_recv() {
+            self.next_tok += 1;
+            let tok = self.next_tok;
+            let msg = encode(&rmpv::Value::Map(vec![
+                ("event".into(), "admit".into()),
+                ("tok".into(), rmpv::Value::from(tok)),
+                ("label".into(), admit.label.as_str().into()),
+                ("leg".into(), admit.leg.into()),
+            ]));
+            if sw.push(root, &self.queue, &msg).is_ok() {
+                self.pending.insert(tok, admit.reply);
+            }
+            // On a failed push the sender drops, which the relay reads as a
+            // refusal — the safe direction when a deployment that asked to
+            // arbitrate cannot be reached.
+        }
+    }
+
+    /// Drain the deployment's answers and complete the questions they name.
+    fn collect(&mut self, sw: &mut Deployment, root: InstanceId) {
+        if self.reply_queue.is_empty() || self.pending.is_empty() {
+            return;
+        }
+        let Some(inst) = sw.instance_mut(root) else {
+            return;
+        };
+        let Some(q) = inst.queue(&self.reply_queue) else {
+            return;
+        };
+        while let Ok(Some(raw)) = inst.pop(q) {
+            let Ok(value) = rmpv::decode::read_value(&mut &raw[..]) else {
+                continue;
+            };
+            let tok = field(&value, "tok").and_then(|v| v.as_u64());
+            let ok = field(&value, "ok")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if let Some(reply) = tok.and_then(|t| self.pending.remove(&t)) {
+                let _ = reply.send(ok);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "relay")]
+fn field<'a>(map: &'a rmpv::Value, name: &str) -> Option<&'a rmpv::Value> {
+    map.as_map()?
+        .iter()
+        .find(|(k, _)| k.as_str() == Some(name))
+        .map(|(_, v)| v)
+}
+
+#[cfg(feature = "relay")]
+fn encode(value: &rmpv::Value) -> Vec<u8> {
+    let mut out = Vec::new();
+    rmpv::encode::write_value(&mut out, value).expect("a relay event encodes");
+    out
+}
+
+/// One event as the guest sees it. Flat maps with an `event` tag, the same
+/// shape the http listener uses for a request — a program branches on a
+/// field, never on a message's position or length.
+#[cfg(feature = "relay")]
+fn event_value(event: &crate::relay::RelayEvent) -> rmpv::Value {
+    use crate::relay::RelayEvent;
+    match event {
+        RelayEvent::Parked { label } => rmpv::Value::Map(vec![
+            ("event".into(), "parked".into()),
+            ("label".into(), label.as_str().into()),
+        ]),
+        RelayEvent::Claimed { label, session } => rmpv::Value::Map(vec![
+            ("event".into(), "claimed".into()),
+            ("label".into(), label.as_str().into()),
+            ("session".into(), rmpv::Value::from(*session)),
+        ]),
+        RelayEvent::Closed {
+            label,
+            session,
+            bytes,
+        } => rmpv::Value::Map(vec![
+            ("event".into(), "closed".into()),
+            ("label".into(), label.as_str().into()),
+            ("session".into(), rmpv::Value::from(*session)),
+            ("bytes".into(), rmpv::Value::from(*bytes)),
+        ]),
     }
 }

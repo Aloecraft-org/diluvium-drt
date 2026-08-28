@@ -24,6 +24,9 @@ async fn relay_on_port() -> (std::net::SocketAddr, ()) {
             },
         )]
         .into(),
+        queue: "relay_in".into(),
+        reply_queue: String::new(),
+        admit_timeout_ms: 2000,
     };
     let relay = Relay::new(config);
     tokio::spawn(async move {
@@ -177,4 +180,181 @@ async fn the_full_triangle_and_replenish_on_claim() {
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// The control plane: the relay inside a deployment
+// ---------------------------------------------------------------------------
+
+/// A supervisor that watches the relay and arbitrates for it. It records
+/// every event to an exported queue the test reads, and refuses any label
+/// named `blocked` — which is the whole point of arbitration: a decision
+/// the relay's static keys cannot express, made in Lua.
+#[cfg(feature = "relay")]
+const WATCHER: &str = "\
+local ev  = queue.declare('relay_in',  {capacity = 64})\n\
+local out = queue.declare('relay_out', {capacity = 64})\n\
+local log = queue.declare('log',       {capacity = 64, exported = true})\n\
+while true do\n\
+  local id, m = queue.wait({ev})\n\
+  if m.event == 'admit' then\n\
+    queue.push(out, {tok = m.tok, ok = m.label ~= 'blocked'})\n\
+    queue.push(log, 'admit:' .. m.label .. ':' .. tostring(m.label ~= 'blocked'))\n\
+  elseif m.event == 'closed' then\n\
+    queue.push(log, 'closed:' .. m.label .. ':' .. tostring(m.bytes))\n\
+  else\n\
+    queue.push(log, m.event .. ':' .. m.label)\n\
+  end\n\
+end\n";
+
+/// Start a deployment whose config carries a relay, and hand back the
+/// relay's address plus a way to read what the supervisor logged.
+#[cfg(feature = "relay")]
+fn deployment_with_relay(
+    arbitrating: bool,
+) -> (std::net::SocketAddr, std::sync::mpsc::Receiver<String>) {
+    use drt_connector::{Dispatcher, Registry};
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let relay_addr = probe.local_addr().unwrap();
+    drop(probe);
+
+    let program = serde_json::to_string(WATCHER).unwrap();
+    let reply_queue = if arbitrating { "relay_out" } else { "" };
+    let cfg: drt_config::RootConfig = serde_json::from_str(&format!(
+        r#"{{"program": {{"source": {program}}},
+            "listeners": [{{"scheme": "http", "address": "127.0.0.1:0"}}],
+            "relay": {{"bind": "{relay_addr}",
+                       "queue": "relay_in", "reply_queue": "{reply_queue}",
+                       "labels": {{"xps": {{"park_key": "pk-0123456789abcdef",
+                                          "caller_key": "ck-0123456789abcdef"}},
+                                  "blocked": {{"park_key": "pk-0123456789abcdef",
+                                              "caller_key": "ck-0123456789abcdef"}}}}}}}}"#
+    ))
+    .unwrap();
+
+    // The deployment runs on its own thread; the test reads its log queue
+    // through a channel, since `Swarm` is not shared.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let bound = drt::listen::bind(&cfg.listeners).unwrap();
+        // A tiny wrapper loop: serve() owns the swarm, so drain the log by
+        // letting the supervisor export it and polling from inside.
+        let _ = drt::start::serve_with_observer(
+            &cfg,
+            Dispatcher::new(Registry::new()),
+            bound,
+            move |sw, root| {
+                if let Some(inst) = sw.instance_mut(root) {
+                    if let Some(q) = inst.queue("log") {
+                        while let Ok(Some(raw)) = inst.pop(q) {
+                            if let Ok(v) = rmpv::decode::read_value(&mut &raw[..]) {
+                                if let Some(line) = v.as_str() {
+                                    let _ = tx.send(line.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+        );
+    });
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    (relay_addr, rx)
+}
+
+#[cfg(feature = "relay")]
+fn drain(rx: &std::sync::mpsc::Receiver<String>, want: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while lines.len() < want && std::time::Instant::now() < deadline {
+        if let Ok(l) = rx.recv_timeout(std::time::Duration::from_millis(200)) {
+            lines.push(l);
+        }
+    }
+    lines
+}
+
+/// Read past the keepalive pings for the next frame that carries bytes.
+#[cfg(feature = "relay")]
+async fn next_binary<S>(ws: &mut tokio_tungstenite::WebSocketStream<S>) -> Vec<u8>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    loop {
+        match ws.next().await.expect("the leg died").unwrap() {
+            Message::Binary(b) => return b,
+            Message::Ping(_) | Message::Pong(_) => continue,
+            other => panic!("unexpected frame: {other:?}"),
+        }
+    }
+}
+
+/// Presence and metering: the supervisor sees a leg park, a caller claim
+/// it, and the session close carrying its byte count — the three facts a
+/// panel and a meter are built from, arriving as ordinary queue messages.
+#[cfg(feature = "relay")]
+#[test]
+fn the_deployment_sees_presence_and_bytes() {
+    let (addr, rx) = deployment_with_relay(false);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let (mut device, _) =
+            tokio_tungstenite::connect_async(format!("ws://{addr}/park/xps?k=pk-0123456789abcdef"))
+                .await
+                .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        let (mut caller, _) =
+            tokio_tungstenite::connect_async(format!("ws://{addr}/s/xps?k=ck-0123456789abcdef"))
+                .await
+                .unwrap();
+        caller
+            .send(Message::Binary(b"hello".to_vec()))
+            .await
+            .unwrap();
+        // The device echoes, so bytes cross both ways: 5 + 5. A parked leg
+        // is pinged (the first `interval` tick fires at once), so read past
+        // the pings for the frame that carries bytes.
+        let b = next_binary(&mut device).await;
+        device.send(Message::Binary(b)).await.unwrap();
+        assert_eq!(next_binary(&mut caller).await, b"hello");
+        drop(caller);
+        drop(device);
+    });
+
+    let lines = drain(&rx, 3);
+    assert!(lines.iter().any(|l| l == "parked:xps"), "{lines:?}");
+    assert!(lines.iter().any(|l| l == "claimed:xps"), "{lines:?}");
+    assert!(
+        lines.iter().any(|l| l == "closed:xps:10"),
+        "the session's byte count should reach the supervisor: {lines:?}"
+    );
+}
+
+/// Arbitration: a label the static keys admit, but the supervisor refuses.
+/// This is the thing keys cannot express and the reason the control plane
+/// exists — the deployment gets the last word.
+#[cfg(feature = "relay")]
+#[test]
+fn the_deployment_can_refuse_a_leg_the_keys_admit() {
+    let (addr, rx) = deployment_with_relay(true);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let refused = rt.block_on(async {
+        // The key is valid for `blocked`; only the supervisor objects.
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!(
+            "ws://{addr}/park/blocked?k=pk-0123456789abcdef"
+        ))
+        .await
+        .unwrap();
+        matches!(ws.next().await, Some(Ok(Message::Close(Some(f)))) if u16::from(f.code) == 1008)
+    });
+    assert!(
+        refused,
+        "the deployment's refusal should close the leg 1008"
+    );
+    let lines = drain(&rx, 1);
+    assert!(
+        lines.iter().any(|l| l == "admit:blocked:false"),
+        "the supervisor should have been asked: {lines:?}"
+    );
 }

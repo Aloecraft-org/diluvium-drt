@@ -147,3 +147,81 @@ fn a_config_that_is_not_data_is_refused() {
     let err = config::load(Some(&dir.path().join("loop.host.lua"))).unwrap_err();
     assert!(!err.is_empty());
 }
+
+/// The `relay` block: DRT's own extension to the dialect, because a
+/// rendezvous fetchpoint is configured like everything else on the box.
+/// `bind` may carry the port or pair with one, the way `listen` does.
+#[cfg(feature = "relay")]
+#[test]
+fn a_rendezvous_fetchpoint_configures_its_relay_in_host_lua() {
+    let dir = write_deployment(&[
+        (
+            "rv.host.lua",
+            r#"
+            return {
+              supervisor = "supervisor.lua",
+              relay = {
+                bind = "0.0.0.0",
+                port = 8443,
+                queue = "relay_in",
+                reply_queue = "relay_out",
+                admit_timeout_ms = 1500,
+                labels = {
+                  xps = { park_key = "pk-0123456789abcdef",
+                          caller_key = "ck-0123456789abcdef" },
+                },
+              },
+            }
+            "#,
+        ),
+        ("supervisor.lua", "local x = 1\n"),
+    ]);
+    let relay = config::load(Some(&dir.path().join("rv.host.lua")))
+        .unwrap()
+        .relay
+        .expect("the relay block should load");
+    assert_eq!(relay.bind, "0.0.0.0:8443");
+    assert_eq!(relay.queue, "relay_in");
+    assert_eq!(relay.reply_queue, "relay_out");
+    assert_eq!(relay.admit_timeout_ms, 1500);
+    assert_eq!(relay.labels["xps"].park_key, "pk-0123456789abcdef");
+
+    // host:port in one string, and no reply queue: the default posture,
+    // where the static key is the only gate.
+    let dir = write_deployment(&[(
+        "rv.host.lua",
+        r#"return { relay = { bind = "0.0.0.0:8443",
+                             labels = { xps = { park_key = "p", caller_key = "c" } } } }"#,
+    )]);
+    let relay = config::load(Some(&dir.path().join("rv.host.lua")))
+        .unwrap()
+        .relay
+        .unwrap();
+    assert_eq!(relay.bind, "0.0.0.0:8443");
+    assert!(
+        relay.reply_queue.is_empty(),
+        "arbitration is opt-in: {relay:?}"
+    );
+}
+
+/// The refusals that keep a relay from being an open door: a label missing
+/// one of its two keys, and a bind with nowhere to bind.
+#[cfg(feature = "relay")]
+#[test]
+fn a_relay_block_refuses_a_half_configured_label() {
+    let dir = write_deployment(&[(
+        "rv.host.lua",
+        r#"return { relay = { bind = "0.0.0.0:8443",
+                             labels = { xps = { park_key = "p" } } } }"#,
+    )]);
+    let err = config::load(Some(&dir.path().join("rv.host.lua"))).unwrap_err();
+    assert!(err.contains("caller_key"), "{err}");
+
+    let dir = write_deployment(&[(
+        "rv.host.lua",
+        r#"return { relay = { bind = "0.0.0.0",
+                             labels = { xps = { park_key = "p", caller_key = "c" } } } }"#,
+    )]);
+    let err = config::load(Some(&dir.path().join("rv.host.lua"))).unwrap_err();
+    assert!(err.contains("no port"), "{err}");
+}

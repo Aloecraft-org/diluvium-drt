@@ -233,6 +233,34 @@ pub struct RelayConfig {
     /// sshd, so absence must fail rather than open.
     #[serde(default)]
     pub labels: BTreeMap<String, RelayLabel>,
+    /// Where the relay's control events land on the root program, when the
+    /// relay runs inside a deployment (`drt start`). Presence, session
+    /// open/close, and the byte counts a meter needs all arrive here as
+    /// ordinary queue messages — the same bridge the http listener uses,
+    /// so the supervisor learns about tunnels without new mechanism.
+    #[serde(default = "default_relay_queue")]
+    pub queue: String,
+    /// Where the relay reads *answers*, which is what turns observation
+    /// into arbitration.
+    ///
+    /// **Empty means no arbitration**, and that is the default: the static
+    /// per-label key is the only gate, exactly as it is today. Naming a
+    /// reply queue is how a deployment opts in to being asked — and once
+    /// it has, a question it does not answer within `admit_timeout_ms` is
+    /// a refusal, because absence must fail for the same reason an empty
+    /// key does. Opting in is therefore also opting into answering.
+    #[serde(default)]
+    pub reply_queue: String,
+    /// How long the relay waits for an admit answer before refusing.
+    #[serde(default = "default_admit_timeout_ms")]
+    pub admit_timeout_ms: u64,
+}
+
+fn default_relay_queue() -> String {
+    "relay_in".into()
+}
+fn default_admit_timeout_ms() -> u64 {
+    2000
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

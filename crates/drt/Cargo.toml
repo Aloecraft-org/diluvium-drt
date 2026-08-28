@@ -20,7 +20,10 @@ pollster = "0.4"
 # The listener's HTTP/1.1 parser: the same job picohttpparser does for the
 # C host, and the same posture — parse strictly, refuse the rest.
 httparse = { version = "1", optional = true }
-rmpv = { workspace = true, optional = true }
+# msgpack values on the host side: the listener's request/response bridge
+# and `.host.lua` config evaluation both speak them, and config loading is
+# not optional, so neither is this.
+rmpv = { workspace = true }
 # The tunnel: SSH over WSS as a dumb pipe (see src/tunnel.rs). tokio and
 # ego-transport ride the `tunnel` feature, which `full` carries.
 ego_transport = { workspace = true, optional = true }
@@ -68,11 +71,14 @@ connector-crypto = ["dep:drt-connector-crypto"]
 # The http listener (dhost_http.c's contract). In slim because the C host
 # always carries its listener, and a runtime that cannot serve a fetchpoint
 # is not the runtime discofetch is waiting for.
-listen = ["dep:httparse", "dep:rmpv"]
+listen = ["dep:httparse"]
 # `drt tunnel`: the stdio<->WSS bridge (ProxyCommand shape) and the
 # WS->TCP listener half. In `full` beside `ssh` — the NAT-traversal story
 # is a server-and-CLI concern, not a notebook's.
 tunnel = ["dep:ego_transport", "dep:tokio", "dep:tokio-tungstenite", "dep:futures-util"]
 # `drt relay`: the rendezvous relay — parked WSS legs paired by label and
 # spliced. In `full` beside tunnel; a relay is server machinery.
-relay = ["dep:tokio", "dep:tokio-tungstenite", "dep:futures-util"]
+# Depends on `listen` because the relay's control plane rides the same
+# queue bridge, and `drt start` only runs that loop when listeners exist.
+# Without this a relay+no-listen build would start and silently not serve.
+relay = ["listen", "dep:tokio", "dep:tokio-tungstenite", "dep:futures-util"]
