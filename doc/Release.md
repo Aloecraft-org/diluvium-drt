@@ -19,6 +19,46 @@ equally recorded.
 This is SPEC.md's version-first doctrine applied to distribution: the
 compatibility fact travels with the bytes.
 
+## Before you publish
+
+The rehearsal is the gate, not a formality: **Actions → Release → Run
+workflow** with `publish` off runs the tests and builds and smoke-tests
+every platform, leaving the artifacts on the run. Only when that is green
+does the same dispatch with `tag` set and `publish=true` touch the
+Releases page. The publish job depends on tests and builds, so a failure
+anywhere means no release rather than a partial one.
+
+### Open: one unexplained SIGSEGV (2026-08-28)
+
+The first v0.3.0 publish attempt died in `cargo test --workspace
+--all-features` with **SIGSEGV in the `host_lua` test binary**, ~87 ms in,
+before any of its 6 tests reported
+([run 33157346043](https://github.com/Aloecraft-org/diluvium-drt/actions/runs/33157346043)).
+It has not reproduced since, and it is unexplained. What was checked:
+
+- The same command on the next commit: **passed**, as did both `ci` runs.
+- Locally, on rustc 1.98.0 (CI's stable) *and* 1.94.1: ~2,600 runs of that
+  exact test binary, 13 full `--all-features` suites — all clean.
+- Under valgrind, in parallel: **0 errors from 0 contexts**. So not heap
+  corruption.
+- A deliberate stress of concurrent engine lifecycle — 64,800 instances
+  across 24 threads, mixing budget exhaustion, faults, snapshots and
+  `unsafe_stdlib` — clean. So *not* concurrent instance lifecycle, which
+  was the leading theory: the test harness is the only place in the tree
+  where several engines live in one process at once.
+- Thread stack size from 128 KiB up: no change. So not stack overflow.
+- The C core is **byte-identical to v0.2.0's**: the diluvium pin bump
+  (f137b30) changed only `diluvium-sys/build.rs`, and the native compile
+  flags it produces (`-O2 -std=c99 -DMAKE_LIB -fPIC -DLUA_USE_LINUX`) are
+  the same ones the old script passed.
+
+So it is *probably* runner-level, and it is not proven to be. Nothing DRT
+ships drives instances from more than one thread — `run`, `start` and
+`repl` are all one instance per thread, which is the dv.h contract — so
+the exposure, if it is real, is the test harness. Treat a recurrence as a
+finding for the diluvium session with this run linked, not as a flake to
+re-run past.
+
 ## The workflow
 
 `.github/workflows/release.yml`, shaped like diluvium's on purpose:

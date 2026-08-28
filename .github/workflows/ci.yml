@@ -33,9 +33,17 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Test
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Test (default features)
         run: cargo test --workspace
+      # The profile that actually covers the code: `cargo test --workspace`
+      # builds `drt` with its DEFAULT feature (slim), so relay, tunnel, ssh
+      # and sql — and every test gated on them — were never compiled here,
+      # let alone run. The release workflow tests --all-features and so
+      # caught a failure this job structurally could not see. Two profiles,
+      # because a suite that runs one of them is a suite with a blind spot.
+      - name: Test (all features)
+        run: cargo test --workspace --all-features
       - name: Build without default features
         run: cargo build --workspace --no-default-features
 
