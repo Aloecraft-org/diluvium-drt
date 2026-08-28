@@ -17,6 +17,11 @@ name: segv-probe
 on:
   workflow_dispatch:
     inputs:
+      target:
+        description: 'Test binary to loop (host_lua = FM-2, the open one)'
+        type: string
+        required: false
+        default: 'host_lua'
       rounds:
         description: 'cargo test rounds per job'
         type: string
@@ -34,11 +39,12 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y gdb
           sudo sysctl -w kernel.core_pattern=/tmp/core.%e.%p
-      - name: loop the stun binary
+      - name: loop the test binary
         run: |
           ulimit -c unlimited
-          cargo test -p drt --no-default-features --features full --test stun --no-run
-          BIN=$(find target/debug/deps -maxdepth 1 -type f -executable -name 'stun-*' ! -name '*.d' | head -1)
+          T='${{ inputs.target }}'
+          cargo test -p drt --no-default-features --features full --test "$T" --no-run
+          BIN=$(find target/debug/deps -maxdepth 1 -type f -executable -name "$T-*" ! -name '*.d' | head -1)
           echo "binary: $BIN"
           # The backtrace step needs the SAME binary this loop ran; handing
           # gdb a different one yields a core full of `?? ()` and no symbols,
@@ -87,11 +93,12 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y gdb
           sudo sysctl -w kernel.core_pattern=/tmp/core.%e.%p
-      - name: loop the stun binary
+      - name: loop the test binary
         run: |
           ulimit -c unlimited
-          cargo test -p drt --no-default-features --features full --test stun --no-run
-          BIN=$(find target/debug/deps -maxdepth 1 -type f -executable -name 'stun-*' ! -name '*.d' | head -1)
+          T='${{ inputs.target }}'
+          cargo test -p drt --no-default-features --features full --test "$T" --no-run
+          BIN=$(find target/debug/deps -maxdepth 1 -type f -executable -name "$T-*" ! -name '*.d' | head -1)
           echo "binary: $BIN"
           # The backtrace step needs the SAME binary this loop ran; handing
           # gdb a different one yields a core full of `?? ()` and no symbols,
