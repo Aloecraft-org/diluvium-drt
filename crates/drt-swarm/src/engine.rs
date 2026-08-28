@@ -192,9 +192,54 @@ pub struct QueueStatus {
     pub exported: bool,
 }
 
+/// `Send`/`Sync` where threads exist, and nothing where they do not.
+///
+/// The browser target has one thread and its values are pinned to it: a
+/// JS-backed [`Engine`] holds `JsValue`-family handles, which are not
+/// `Send` and cannot be made so. Requiring `Send` unconditionally would
+/// therefore make a browser engine unimplementable — not awkward,
+/// impossible — while nothing in the swarm actually needs it (there are no
+/// threads and no task spawns in `swarm.rs`; the bound is there so a native
+/// embedding can move a `Swarm` between threads).
+///
+/// Aliases rather than duplicated trait bodies, so the two targets cannot
+/// drift in what they declare. `ego_transport` gates its own `Transport`
+/// the same way.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSend: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send + ?Sized> MaybeSend for T {}
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSend {}
+#[cfg(target_arch = "wasm32")]
+impl<T: ?Sized> MaybeSend for T {}
+
+/// See [`MaybeSend`].
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSync: Sync {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Sync + ?Sized> MaybeSync for T {}
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSync {}
+#[cfg(target_arch = "wasm32")]
+impl<T: ?Sized> MaybeSync for T {}
+
+// The property the aliases exist for, asserted at compile time so that
+// re-adding a `Send` bound fails here rather than in whoever is writing the
+// browser engine. `Rc` is never `Send`, and stands in for the `JsValue`
+// handles a JS-hosted engine holds. Zero-cost: a const block whose
+// functions are never called.
+#[cfg(target_arch = "wasm32")]
+const _: fn() = || {
+    fn requires_maybe_send<T: MaybeSend + ?Sized>() {}
+    // `Rc` is never `Send`. If this stops compiling, a `Send` bound came
+    // back and the browser engine is no longer implementable.
+    requires_maybe_send::<std::rc::Rc<()>>();
+};
+
 /// One live instance. Bytes in, bytes out: messages are msgpack, and no
 /// guest value crosses this trait in any other shape.
-pub trait Instance: Send {
+pub trait Instance: MaybeSend {
     /// Look up a queue the program declared. `None` is an answer (the
     /// program has no such queue), not an error. `&mut` because handles are
     /// interned per residency, and the host drives one thread anyway.
@@ -219,7 +264,7 @@ pub trait Instance: Send {
 }
 
 /// A producer of instances speaking one dv ABI version.
-pub trait Engine: Send + Sync {
+pub trait Engine: MaybeSend + MaybeSync {
     /// `dv_abi_version`, checked before anything else.
     fn abi_version(&self) -> u32;
     fn load(&self, spec: LoadSpec<'_>) -> Result<Box<dyn Instance>, EngineError>;
