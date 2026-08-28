@@ -28,7 +28,7 @@ does the same dispatch with `tag` set and `publish=true` touch the
 Releases page. The publish job depends on tests and builds, so a failure
 anywhere means no release rather than a partial one.
 
-### Open: one unexplained SIGSEGV (2026-08-28)
+### Open: an unexplained SIGSEGV, twice, in two different binaries
 
 The first v0.3.0 publish attempt died in `cargo test --workspace
 --all-features` with **SIGSEGV in the `host_lua` test binary**, ~87 ms in,
@@ -65,12 +65,40 @@ asks the machine it happened on, with core dumps armed
   test contributes, which is richer than a bare engine): clean.
 
 That does not *prove* infrastructure, because nothing can prove a negative
-about a core dump that no longer exists. It does move the estimate a long
-way: the identical artifact survived 500 runs where the first attempt died
-on the first. Nothing DRT ships drives instances from more than one thread
-— `run`, `start` and `repl` are one instance per thread, which is the dv.h
-contract — so the exposure, if it is real at all, is the test harness and
-not a deployment.
+about a core dump that no longer exists. Nothing DRT ships drives instances
+from more than one thread — `run`, `start` and `repl` are one instance per
+thread, which is the dv.h contract — so the exposure, if it is real at all,
+looks like the test harness and not a deployment.
+
+#### The second occurrence, which changed the picture (ci run 10)
+
+`ci` [run 33192177326](https://github.com/Aloecraft-org/diluvium-drt/actions/runs/33192177326)
+died the same way — `signal: 11, SIGSEGV` — in **`tests/stun.rs`, a test
+binary written that afternoon**, three tests in. That is the fact worth
+keeping, because it retires several things said above:
+
+- **It is not `host_lua`-specific.** Every theory framed around that one
+  binary, this document's included, was over-fitted to a sample of one.
+- It is not the cache, and not rebuild-then-run: probe rounds 2 and 3
+  tested both and killed both (8 rebuild-then-run rounds, clean).
+- The two binaries that have died have one thing in common: each runs a
+  full `drt::start` deployment — a live engine — concurrently with other
+  tests in the same process. That is the sharpest description available,
+  and it is a description, not a diagnosis.
+
+Still zero local reproductions: 200 runs of the `stun` binary after the
+crash, 0 signal deaths. So the instruction stands — instrument the scene,
+do not keep asking this machine. Cores are now armed in **`ci.yml` as well
+as `release.yml`**, and the probe loops the `stun` binary rather than the
+whole suite, which is two orders of magnitude more attempts per minute of
+runner time.
+
+What the same run *also* found, and what is fixed: two genuinely racy
+assertions in those new stun tests (mine, not DRT's). `requests` is
+counted before the reply goes out and `responses` after, so a snapshot can
+legitimately land between them; both tests now wait for the settled state
+instead of asserting on whichever snapshot arrived first. 3 failures in
+150 runs before, 0 in 200 after.
 
 The probe workflow is kept rather than deleted: if this recurs, one
 dispatch turns a bare `signal: 11` into a backtrace. Treat a recurrence as

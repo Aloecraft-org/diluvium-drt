@@ -232,18 +232,41 @@ end
 
     // And the counters reach a supervisor: report() hands the encoded
     // message to the same push the drive loop uses.
+    // Poll for a snapshot that has SEEN the probe, rather than asserting on
+    // the first one to arrive. The counters are written by the server on
+    // its own thread — `requests` before the reply goes out and
+    // `responses` after — so any single snapshot is a valid observation of
+    // a moment, including a moment before the probe landed or between its
+    // two counter writes. Waiting for the settled state is the only honest
+    // assertion; the first version of this test asserted on whatever
+    // arrived first and failed roughly one run in fifty.
     let mut pushed: Vec<(String, Vec<u8>)> = Vec::new();
-    for _ in 0..50 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let settled = loop {
         bridge.report(&mut |q, m| {
             pushed.push((q.to_string(), m.to_vec()));
             true
         });
-        if !pushed.is_empty() {
-            break;
+        if let Some(found) = pushed.iter().find(|(_, m)| {
+            let v = rmpv::decode::read_value(&mut &m[..]).unwrap();
+            let get = |n: &str| {
+                v.as_map()
+                    .unwrap()
+                    .iter()
+                    .find(|(k, _)| k.as_str() == Some(n))
+                    .and_then(|(_, v)| v.as_u64())
+            };
+            get("requests") == Some(1) && get("responses") == Some(1)
+        }) {
+            break found.clone();
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no snapshot ever showed the probe: {pushed:?}"
+        );
         std::thread::sleep(Duration::from_millis(20));
-    }
-    let (queue, msg) = pushed.first().expect("a snapshot was reported");
+    };
+    let (queue, msg) = &settled;
     assert_eq!(queue, "stun_in");
     let value = rmpv::decode::read_value(&mut &msg[..]).unwrap();
     let field = |name: &str| {
@@ -286,7 +309,11 @@ local events = queue.declare('stun_in', {capacity = 64})
 -- 50 ms report interval needs.
 for _ = 1, 20 do
   local _, m = queue.wait({events}, 500)
-  if m ~= nil and m.event == 'stun' and m.requests > 0 then
+  -- Wake on RESPONSES, not requests: `requests` is counted before the
+  -- reply is sent and `responses` after, so a report can legitimately
+  -- land between the two and show requests=1 responses=0. Waiting for
+  -- the response is waiting for the exchange to be over.
+  if m ~= nil and m.event == 'stun' and m.responses > 0 then
     host.call('fs/write', {
       path = 'seen.txt',
       data = m.addr .. ' requests=' .. tostring(m.requests)
@@ -356,6 +383,8 @@ end
     let seen = std::fs::read_to_string(dir.path().join("seen.txt"))
         .expect("the supervisor was told and wrote what it heard");
     assert!(seen.contains(&format!("127.0.0.1:{port}")), "{seen}");
-    assert!(seen.contains("requests=1"), "{seen}");
-    assert!(seen.contains("responses=1"), "{seen}");
+    // The prober retries until answered, so the count is "at least one",
+    // not exactly one — pinning it to 1 would be a second race.
+    assert!(!seen.contains("responses=0"), "{seen}");
+    assert!(!seen.contains("requests=0"), "{seen}");
 }

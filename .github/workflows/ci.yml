@@ -42,8 +42,35 @@ jobs:
       # let alone run. The release workflow tests --all-features and so
       # caught a failure this job structurally could not see. Two profiles,
       # because a suite that runs one of them is a suite with a blind spot.
+      # Cores armed here too, not just in release.yml. The SIGSEGV that
+      # has cost two releases turned up in this job on 2026-08-28, in the
+      # `stun` test binary — a binary written that afternoon, which is
+      # what proved it is not host_lua-specific. It has never reproduced
+      # locally, so the only place a backtrace will ever come from is the
+      # job where it happens. Costs seconds.
+      - name: Arm core dumps
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y gdb
+          sudo sysctl -w kernel.core_pattern=/tmp/core.%e.%p
       - name: Test (all features)
-        run: cargo test --workspace --all-features
+        run: |
+          ulimit -c unlimited
+          cargo test --workspace --all-features
+      - name: Backtrace any core
+        if: failure()
+        run: |
+          shopt -s nullglob
+          cores=(/tmp/core.*)
+          if [ ${#cores[@]} -eq 0 ]; then
+            echo "no core dump was written (the failure may not have been a crash)"
+            exit 0
+          fi
+          for c in "${cores[@]}"; do
+            echo "=================== $c ==================="
+            exe=$(file "$c" | grep -oP "execfn: '\K[^']+" | head -1)
+            echo "execfn: $exe"
+            gdb -batch -ex "thread apply all bt" "$exe" "$c" 2>&1 | head -200
+          done
       - name: Build without default features
         run: cargo build --workspace --no-default-features
 
