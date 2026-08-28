@@ -103,6 +103,15 @@ with a gdb backtrace step on failure, so the next occurrence yields a stack
 rather than a bare `signal: 11`. That instrumentation is what turned FM-1
 from six weeks of theories into one afternoon's answer.
 
+**Probe result, 2026-08-28 19:29** ([run 33204062245](https://github.com/Aloecraft-org/diluvium-drt/actions/runs/33204062245)):
+**1,600 runs of the `host_lua` binary on runners — 0 signal deaths.**
+
+Read that narrowly. It loops the binary *alone*, which does reproduce its
+own internal parallelism (6 tests across 4 threads) but not the machine
+state of a full `cargo test --workspace --all-features`, which is what
+both real occurrences happened under. So it lowers the estimate; it does
+not close FM-2.
+
 **Eliminated so far** (each tested, not reasoned): stale build cache;
 rebuild-then-run; concurrent engine lifecycle; heap corruption; thread
 stack size; a changed C core (byte-identical to v0.2.0's); CPU contention;

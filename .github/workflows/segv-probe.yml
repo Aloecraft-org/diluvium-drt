@@ -46,6 +46,12 @@ jobs:
           cargo test -p drt --no-default-features --features full --test "$T" --no-run
           BIN=$(find target/debug/deps -maxdepth 1 -type f -executable -name "$T-*" ! -name '*.d' | head -1)
           echo "binary: $BIN"
+          # A probe that cannot find its binary must not report green. Without
+          # this, an empty $BIN gives 800 iterations of rc=127 — counted as
+          # plain failures, which do not fail the step — and the run looks
+          # like 800 clean passes. Same class as the earlier bug where a
+          # crash exited 0: an unreadable green is worse than no probe.
+          [ -n "$BIN" ] && [ -x "$BIN" ] || { echo "::error::no test binary found for '$T'"; exit 1; }
           # The backtrace step needs the SAME binary this loop ran; handing
           # gdb a different one yields a core full of `?? ()` and no symbols,
           # which is exactly how the first captured core was wasted.
@@ -65,7 +71,11 @@ jobs:
           # then exiting 0 makes a green check mean "the loop finished",
           # not "nothing crashed" — and a probe whose green is unreadable
           # is worse than no probe.
+          # Fail on a signal death, and equally on a run where nothing ever
+          # succeeded — that means the loop was measuring something other
+          # than the thing it claims to measure.
           [ "$segv" -eq 0 ] || exit 1
+          [ "$fails" -lt "${{ inputs.rounds }}" ] || { echo "::error::every round failed; the probe measured nothing"; exit 1; }
       - name: Backtrace any core
         if: always()
         run: |
@@ -74,6 +84,12 @@ jobs:
           [ ${#cores[@]} -eq 0 ] && { echo "RESULT no cores"; exit 0; }
           BIN="${PROBE_BIN:?the loop step did not export a binary path}"
           echo "binary: $BIN"
+          # A probe that cannot find its binary must not report green. Without
+          # this, an empty $BIN gives 800 iterations of rc=127 — counted as
+          # plain failures, which do not fail the step — and the run looks
+          # like 800 clean passes. Same class as the earlier bug where a
+          # crash exited 0: an unreadable green is worse than no probe.
+          [ -n "$BIN" ] && [ -x "$BIN" ] || { echo "::error::no test binary found for '$T'"; exit 1; }
           for c in "${cores[@]}"; do
             echo "=========== $c ==========="
             gdb -batch \
@@ -100,6 +116,12 @@ jobs:
           cargo test -p drt --no-default-features --features full --test "$T" --no-run
           BIN=$(find target/debug/deps -maxdepth 1 -type f -executable -name "$T-*" ! -name '*.d' | head -1)
           echo "binary: $BIN"
+          # A probe that cannot find its binary must not report green. Without
+          # this, an empty $BIN gives 800 iterations of rc=127 — counted as
+          # plain failures, which do not fail the step — and the run looks
+          # like 800 clean passes. Same class as the earlier bug where a
+          # crash exited 0: an unreadable green is worse than no probe.
+          [ -n "$BIN" ] && [ -x "$BIN" ] || { echo "::error::no test binary found for '$T'"; exit 1; }
           # The backtrace step needs the SAME binary this loop ran; handing
           # gdb a different one yields a core full of `?? ()` and no symbols,
           # which is exactly how the first captured core was wasted.
@@ -119,7 +141,11 @@ jobs:
           # then exiting 0 makes a green check mean "the loop finished",
           # not "nothing crashed" — and a probe whose green is unreadable
           # is worse than no probe.
+          # Fail on a signal death, and equally on a run where nothing ever
+          # succeeded — that means the loop was measuring something other
+          # than the thing it claims to measure.
           [ "$segv" -eq 0 ] || exit 1
+          [ "$fails" -lt "${{ inputs.rounds }}" ] || { echo "::error::every round failed; the probe measured nothing"; exit 1; }
       - name: Backtrace any core
         if: always()
         run: |
@@ -128,6 +154,12 @@ jobs:
           [ ${#cores[@]} -eq 0 ] && { echo "RESULT no cores"; exit 0; }
           BIN="${PROBE_BIN:?the loop step did not export a binary path}"
           echo "binary: $BIN"
+          # A probe that cannot find its binary must not report green. Without
+          # this, an empty $BIN gives 800 iterations of rc=127 — counted as
+          # plain failures, which do not fail the step — and the run looks
+          # like 800 clean passes. Same class as the earlier bug where a
+          # crash exited 0: an unreadable green is worse than no probe.
+          [ -n "$BIN" ] && [ -x "$BIN" ] || { echo "::error::no test binary found for '$T'"; exit 1; }
           for c in "${cores[@]}"; do
             echo "=========== $c ==========="
             gdb -batch \
