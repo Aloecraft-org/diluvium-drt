@@ -275,6 +275,25 @@ pub trait Instance: MaybeSend {
     }
 }
 
+/// The dv ABI pair this build speaks, or `None` when it carries no engine.
+///
+/// Lives here rather than in the `drt` binary because `engine-diluvium` is
+/// **this crate's** feature: a `cfg!(feature = ...)` written in a consumer
+/// crate silently tests the consumer's own feature set and takes the
+/// fallback, which is how `drt buildinfo` first reported `dv_abi: 0` on a
+/// binary with a perfectly good engine in it. `Option` rather than `0`
+/// because a consumer must be able to tell "no engine" from "ABI zero".
+pub fn abi_versions() -> Option<(u32, u32)> {
+    #[cfg(feature = "engine-diluvium")]
+    {
+        Some(diluvium_engine::abi_versions())
+    }
+    #[cfg(not(feature = "engine-diluvium"))]
+    {
+        None
+    }
+}
+
 /// A producer of instances speaking one dv ABI version.
 pub trait Engine: MaybeSend + MaybeSync {
     /// `dv_abi_version`, checked before anything else.
@@ -288,6 +307,16 @@ pub mod diluvium_engine {
     //! The one v1 engine: current diluvium, statically linked.
 
     use super::*;
+
+    /// The two dv ABI numbers, for reporting rather than checking: what the
+    /// linked library actually speaks, and what these bindings were built
+    /// against. `DiluviumEngine::new` refuses when they differ; this lets a
+    /// binary state them without constructing an engine, which is what
+    /// `drt buildinfo` needs and what a package manager checks
+    /// `requires.dv_abi` against.
+    pub fn abi_versions() -> (u32, u32) {
+        (diluvium::library_abi_version(), diluvium::abi_version())
+    }
 
     pub struct DiluviumEngine;
 

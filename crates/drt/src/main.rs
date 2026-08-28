@@ -46,6 +46,19 @@ enum Command {
     Repl,
     /// The introspection surface: instances, caps, budgets, usage, health.
     Ps,
+    /// What this binary is and what it carries: version, the dv ABI it
+    /// speaks, its feature profile, and the connectors compiled into it.
+    ///
+    /// A binary that cannot say what it has cannot be checked against a
+    /// package that declares what it needs. `--json` is the form a
+    /// package manager reads; the release workflow uses it to fill
+    /// BUILDINFO.txt from the artifact itself rather than from a guess
+    /// made in YAML.
+    Buildinfo {
+        /// Machine-readable, for a package manager or a release job.
+        #[arg(long)]
+        json: bool,
+    },
     /// The rendezvous relay: parked WSS legs paired by label and spliced.
     /// Reads the `relay` block of the config; runs foreground. Inside
     /// `drt start` the same relay also reports presence and bytes to the
@@ -102,6 +115,99 @@ enum Command {
     )),
     allow(unused_mut, unused_variables)
 )]
+/// What this binary carries, computed from the features it was actually
+/// built with rather than declared anywhere.
+///
+/// The connector list is the load-bearing part: `full` and `slim` differ
+/// precisely in their connector set, so a package that declares
+/// `requires.connectors` can only be admitted or refused by name if the
+/// binary will say what it has. The dv ABI numbers are the other half —
+/// `library` is what the linked C core reports at runtime, `expected` is
+/// what these bindings were built against, and a difference between them
+/// is the mismatch `DiluviumEngine::new` refuses on.
+fn buildinfo(json: bool) -> String {
+    let mut connectors: Vec<&str> = Vec::new();
+    if cfg!(feature = "connector-time") {
+        connectors.push("time");
+    }
+    if cfg!(feature = "connector-fs") {
+        connectors.push("fs");
+    }
+    if cfg!(feature = "connector-crypto") {
+        connectors.push("crypto");
+    }
+    if cfg!(feature = "connector-sql") {
+        connectors.push("sql");
+    }
+    if cfg!(feature = "connector-ssh") {
+        connectors.push("ssh");
+    }
+    if cfg!(feature = "listen") {
+        connectors.push("listen");
+    }
+
+    let mut verbs: Vec<&str> = vec!["run", "start", "repl", "ps", "buildinfo"];
+    if cfg!(feature = "relay") {
+        verbs.push("relay");
+    }
+    if cfg!(feature = "stun") {
+        verbs.push("stun");
+    }
+    if cfg!(feature = "tunnel") {
+        verbs.push("tunnel");
+    }
+    verbs.sort_unstable();
+
+    // Named by what the profile actually is, not by what was asked for: a
+    // build with an unusual feature set is `custom`, and saying so is more
+    // useful than calling it whichever named profile it resembles.
+    let profile = match (
+        cfg!(feature = "relay") && cfg!(feature = "stun") && cfg!(feature = "tunnel"),
+        cfg!(feature = "connector-sql") && cfg!(feature = "connector-ssh"),
+    ) {
+        (true, true) => "full",
+        (false, false) => "slim",
+        _ => "custom",
+    };
+
+    // Asked of drt-swarm, which owns the engine feature — see the note on
+    // `abi_versions` there. `null`/`unknown` is reported honestly rather
+    // than as a zero a consumer would read as a real ABI number.
+    let abi = drt_swarm::engine::abi_versions();
+
+    if json {
+        format!(
+            "{{\"version\":\"{}\",\"profile\":\"{}\",\"dv_abi\":{},\
+             \"dv_abi_expected\":{},\"connectors\":[{}],\"verbs\":[{}]}}\n",
+            env!("CARGO_PKG_VERSION"),
+            profile,
+            abi.map_or("null".into(), |(l, _)| l.to_string()),
+            abi.map_or("null".into(), |(_, e)| e.to_string()),
+            connectors
+                .iter()
+                .map(|c| format!("\"{c}\""))
+                .collect::<Vec<_>>()
+                .join(","),
+            verbs
+                .iter()
+                .map(|v| format!("\"{v}\""))
+                .collect::<Vec<_>>()
+                .join(","),
+        )
+    } else {
+        format!(
+            "version: {}\nprofile: {}\ndv_abi: {}\ndv_abi_expected: {}\n\
+             connectors: {}\nverbs: {}\n",
+            env!("CARGO_PKG_VERSION"),
+            profile,
+            abi.map_or("unknown".into(), |(l, _)| l.to_string()),
+            abi.map_or("unknown".into(), |(_, e)| e.to_string()),
+            connectors.join(","),
+            verbs.join(","),
+        )
+    }
+}
+
 fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
     let mut registry = Registry::new();
     for (name, wiring) in &config.connectors {
@@ -323,6 +429,10 @@ fn main() -> ExitCode {
                     ExitCode::FAILURE
                 }
             }
+        }
+        Command::Buildinfo { json } => {
+            print!("{}", buildinfo(json));
+            ExitCode::SUCCESS
         }
         Command::Repl => {
             match repl::repl(&dispatcher, config::ceiling(&config), config.root.budget) {

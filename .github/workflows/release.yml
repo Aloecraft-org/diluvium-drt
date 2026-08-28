@@ -207,11 +207,35 @@ jobs:
           set -eu
           cd release_dist
           DILUVIUM_REV=$( (grep -A2 'name = "diluvium"' ../Cargo.lock || true) | sed -n 's/.*#\([0-9a-f]*\)".*/\1/p' | head -1)
+          # Asked of the artifact rather than guessed in YAML. The linux
+          # binaries are native here, so they can report the dv ABI they
+          # actually speak and the connectors actually compiled in; a
+          # cross-built darwin binary cannot be run, but both are the same
+          # cargo feature set, so the profile lines describe both.
+          chmod +x drt_linux_static_x86_64 drt_slim_linux_static_x86_64 || true
+          # Read the plain form, not the JSON: `connectors` is a list, and a
+          # sed that stops at the first comma silently reports only its
+          # first element — which is exactly what a dry run of the JSON
+          # version produced here.
+          bi() { ./"$1" buildinfo 2>/dev/null | sed -n "s/^$2: //p" ; }
+          DV_ABI=$(bi drt_linux_static_x86_64 dv_abi)
+          FULL_CONNECTORS=$(bi drt_linux_static_x86_64 connectors)
+          SLIM_CONNECTORS=$(bi drt_slim_linux_static_x86_64 connectors)
           {
             echo "tag: ${{ needs.preflight.outputs.tag }}"
             echo "commit: ${{ needs.preflight.outputs.sha }}"
             echo "diluvium: ${DILUVIUM_REV:-unknown}"
+            # The ABI the embedded core speaks. This is what a package's
+            # `requires.dv_abi` is checked against, so it belongs in the
+            # release rather than being inferred from the diluvium rev.
+            echo "dv_abi: ${DV_ABI:-unknown}"
             echo "built: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            # Which binary carries what. `full` and `slim` differ precisely
+            # in their connector set, so a package declaring
+            # `requires.connectors` can be admitted or refused by name
+            # instead of by guessing from the artifact filename.
+            echo "profile.full.connectors: ${FULL_CONNECTORS:-unknown}"
+            echo "profile.slim.connectors: ${SLIM_CONNECTORS:-unknown}"
           } > BUILDINFO.txt
           sha256sum drt_* BUILDINFO.txt > SHA256SUMS.txt
           cat BUILDINFO.txt SHA256SUMS.txt

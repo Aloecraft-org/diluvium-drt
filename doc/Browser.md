@@ -86,8 +86,8 @@ unwind.
 
 ## Imports: what JS must provide
 
-One object, supplied at construction. Fifteen functions: the `Engine`
-trait's three, `Instance`'s eleven, and `drive`.
+One object, supplied at construction. Sixteen functions: the `Engine`
+trait's three, `Instance`'s twelve, and `drive`.
 
 ```
   // Engine
@@ -96,6 +96,7 @@ trait's three, `Instance`'s eleven, and `drive`.
   restore(snapshot, hostStamp, budget, unsafeStdlib) -> instanceHandle
 
   // Instance, per handle
+  release(h)                        -> void
   queue(h, name)                    -> queueHandle | null
   queueInfo(h, q)                   -> {len, capacity, enabled, exported}
   push(h, q, bytes)                 -> 'accepted'|'droppedOldest'|'full'|'disabled'
@@ -109,8 +110,41 @@ trait's three, `Instance`'s eleven, and `drive`.
   snapshot(h, hostStamp)            -> bytes
 
   // Host
-  drive(id, capsHandle, instanceH)  -> 'alive'|'exited'|{faulted: message}
+  drive(id, instanceH)              -> 'alive'|'exited'|{faulted: message}
 ```
+
+`release(h)` is not optional and not a courtesy. A JS bridge holds its
+instances in a map keyed by handle; nothing else ever tells it that a
+handle is dead, so a host that never calls `release` leaks every instance
+it ever made — which is what `killing_an_instance_releases_the_js_handle`
+exists to catch. It was missing from this table until 2026-08-28, so an
+implementation written against the older text has that leak by
+construction: check for it before assuming otherwise.
+
+### `handleOf(id)` — settled, and why it is a seventeenth function
+
+The swarm mints an instance id *after* `load` has already returned a
+handle, so JS learns the pairing only when `drive` is first called for
+that id. An instance that has been spawned but not yet driven cannot be
+mapped, and a panel reading state between those two moments will not find
+it. Recording the pairing on first drive works and is what the Lab does
+today, but it is an inference from a call that happens to carry both
+values, not a fact anyone published.
+
+`Instance::host_token` already *is* that fact on the Rust side, so the
+export is a lookup rather than new bookkeeping:
+
+```
+  handleOf(id)                      -> instanceHandle | null
+```
+
+`null` for an id the swarm does not have — including one whose instance
+has been released, which is the same answer for the same reason.
+
+Deciding it now rather than later is the whole point: the export table is
+a compatibility surface the moment it ships, and a consumer written
+against a table without `handleOf` will have built the fragile inference
+in permanently.
 
 `Step` is `{parked: {queues, timeoutMs, forSpace}}` or `{done: true}`.
 
