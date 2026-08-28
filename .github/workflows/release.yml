@@ -88,7 +88,33 @@ jobs:
           ref: ${{ needs.preflight.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace --all-features
+      # Core dumps armed in the job that actually fails. A SIGSEGV here has
+      # twice cost a release and produced nothing but "signal: 11"; three
+      # standalone probes could not reproduce it, so stop probing and
+      # instrument the scene. Costs seconds, and turns the next occurrence
+      # into a backtrace instead of another round of guessing.
+      - name: Arm core dumps
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y gdb
+          sudo sysctl -w kernel.core_pattern=/tmp/core.%e.%p
+      - run: |
+          ulimit -c unlimited
+          cargo test --workspace --all-features
+      - name: Backtrace any core
+        if: failure()
+        run: |
+          shopt -s nullglob
+          cores=(/tmp/core.*)
+          if [ ${#cores[@]} -eq 0 ]; then
+            echo "no core dump was written (the crash may not have been in a test binary)"
+            exit 0
+          fi
+          for c in "${cores[@]}"; do
+            echo "=================== $c ==================="
+            exe=$(file "$c" | grep -oP "execfn: '\K[^']+" | head -1)
+            echo "execfn: $exe"
+            gdb -batch -ex "thread apply all bt" "$exe" "$c" 2>&1 | head -200
+          done
 
   build:
     name: Build (${{ matrix.name }})

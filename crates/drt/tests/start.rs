@@ -394,3 +394,28 @@ fn repeated_headers_join_rather_than_shadow() {
     conn.read_to_string(&mut response).unwrap();
     assert!(response.ends_with("gateway, smuggled"), "{response}");
 }
+
+/// A deployment with no HTTP listener — a relay-only rendezvous fetchpoint
+/// is exactly that — must still *sleep* between passes.
+///
+/// The drive loop's idle sleep and its request wakeup are the same call,
+/// `Bound::next_within`. With at least one listener the acceptor thread
+/// holds a sender, so that call waits. With none, the last sender used to
+/// drop when `bind` returned, and `recv_timeout` on a disconnected channel
+/// returns *immediately* — turning the idle sleep into a spin that burned
+/// a whole core for the life of the process. `Bound` now keeps a sender of
+/// its own, so an empty listener set idles like a full one.
+#[cfg(feature = "listen")]
+#[test]
+fn a_deployment_with_no_listeners_sleeps_instead_of_spinning() {
+    let bound = drt::listen::bind(&[]).unwrap();
+    let start = std::time::Instant::now();
+    assert!(bound.next_within(Duration::from_millis(150)).is_none());
+    let waited = start.elapsed();
+    assert!(
+        waited >= Duration::from_millis(140),
+        "next_within returned after {waited:?} instead of waiting out its \
+         timeout: the ingress channel disconnected, and the drive loop is \
+         spinning rather than idling"
+    );
+}

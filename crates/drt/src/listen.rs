@@ -84,6 +84,14 @@ struct Waiting {
 pub struct Bound {
     pub listeners: Vec<Arc<ListenerRt>>,
     ingress: Receiver<Ingress>,
+    /// Held only so the channel cannot disconnect. Every acceptor thread
+    /// owns a clone, so with at least one listener this is redundant —
+    /// but a deployment with NO listeners (a relay-only fetchpoint) has no
+    /// acceptor at all, and without this the last sender drops when `bind`
+    /// returns. `recv_timeout` on a disconnected channel returns at once
+    /// rather than waiting, which turns the drive loop's idle sleep into a
+    /// spin that burns a core forever.
+    _keepalive: Sender<Ingress>,
     waiting: Arc<Mutex<HashMap<u32, Waiting>>>,
     addrs: Vec<SocketAddr>,
 }
@@ -188,6 +196,7 @@ pub fn bind(configs: &[Listener]) -> Result<Bound, String> {
     Ok(Bound {
         listeners,
         ingress: rx,
+        _keepalive: tx,
         waiting,
         addrs,
     })
