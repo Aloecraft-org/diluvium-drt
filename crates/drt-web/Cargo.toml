@@ -20,7 +20,7 @@ crate-type = ["cdylib", "rlib"]
 # does not itself disable them, and the failure is remote — the C core gets
 # pulled in and the wasm build dies in diluvium-sys's build script asking
 # for a wasi-sdk this crate never needed.
-drt-swarm = { path = "../drt-swarm", version = "0.3.0", default-features = false }
+drt-swarm = { path = "../drt-swarm", version = "0.3.1", default-features = false }
 drt-caps = { workspace = true }
 drt-config = { workspace = true }
 

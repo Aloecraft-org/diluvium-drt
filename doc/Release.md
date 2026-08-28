@@ -28,6 +28,46 @@ does the same dispatch with `tag` set and `publish=true` touch the
 Releases page. The publish job depends on tests and builds, so a failure
 anywhere means no release rather than a partial one.
 
+## v0.3.1 — what it carries and why it followed v0.3.0 the same day
+
+v0.3.0 shipped and then the afternoon found four things wrong with it.
+Three are compatibility surfaces that get more expensive the longer they
+sit, which is why this is a same-day patch rather than a queue item.
+
+- **`access` is `read`, not `readonly`.** The C host (`dhost.c:709`,
+  `:1010`) accepts exactly `"read"` or `"readwrite"`; DRT accepted
+  `"readonly"` and *refused* `"read"`, so an existing discofetch config
+  fails DRT's parse — a crash-loop under the deploy chain check. Matched
+  to the C host exactly, refusal wording included. A test in each
+  connector pins it.
+- **FM-1, the tokio runtime teardown crash.** `drt relay`, `drt stun` and
+  `drt tunnel` dropped a `Runtime` on the way out, which is a
+  use-after-free in tokio 1.53.1's shutdown. They leak it now. See
+  `Failure-Modes.md`; the exposure was `drt tunnel`'s caller side, once
+  per SSH session, and never the fetchpoint.
+- **A relay-only deployment burned a whole core.** With no HTTP listener
+  the drive loop's idle sleep became a spin — 99.7% CPU, forever, on
+  exactly the rendezvous config `examples/rendezvous` documents. 3.0%
+  now, which is the 1 ms tick doing its job.
+- **BUILDINFO now says what a binary carries**: `dv_abi` (the promise
+  release.yml's own header made since v0.1.0 and never kept) and the
+  connector set per profile, both read out of the artifact by
+  `drt buildinfo` rather than guessed in YAML.
+
+Also: STUN (`drt stun`, a `stun` config block, counters to the
+supervisor), `drt buildinfo --json`, a `wasm` job in CI, and
+`doc/Browser.md`'s export table corrected — it listed fifteen functions
+and omitted `release`, which is a leak by construction for anyone
+implementing from it.
+
+One user-facing text change worth naming because it is a promise about
+something that does not exist yet: `drt start` with no program now points
+at **https://dollup.aloecraft.org**. dollup is unreleased as of this tag.
+The wording is a statement about what dollup does rather than a claim the
+link resolves today, and the message is deliberately the *only* place it
+appears — a missing `relay` block or an unparseable program are different
+problems, and answering those with a package manager would be noise.
+
 ### wasm32 is not in the matrix yet, and the trigger is a smoke test
 
 `drt-web` is `crate-type = ["cdylib", "rlib"]`, so `cargo build -p drt-web

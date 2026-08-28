@@ -81,6 +81,11 @@ fn an_unserved_scheme_is_refused() {
 fn a_config_with_no_program_says_what_is_missing() {
     let err = start::start(&config("{}"), Dispatcher::new(Registry::new())).unwrap_err();
     assert!(err.contains("names no program"), "{err}");
+    // Both ways out, and the URL pinned: this is the one message a person
+    // with an empty config ever sees, so a rotted link here is the whole
+    // answer to "where do programs come from" going quiet.
+    assert!(err.contains(r#""program": {"path": "..."}"#), "{err}");
+    assert!(err.contains("https://dollup.aloecraft.org"), "{err}");
 }
 
 // ---------------------------------------------------------------------------

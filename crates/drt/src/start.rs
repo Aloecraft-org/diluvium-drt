@@ -441,9 +441,17 @@ fn root_source(config: &RootConfig) -> Result<String, String> {
         Some(drt_config::Program::Path(path)) => std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read {}: {e}", path.display())),
         Some(drt_config::Program::Source(src)) => Ok(src.clone()),
+        // The one place a pointer to dollup belongs: the user has
+        // nothing to run, which is the only moment "where do programs come
+        // from" is the question they actually have. A missing `relay`
+        // block or a program that failed to parse are different problems,
+        // and answering them with a package manager would be noise.
         None => Err(
-            "the config names no program, and a deployment is config + a program \
-             (SPEC.md §5): add `\"program\": {\"path\": \"...\"}`"
+            "the config names no program, and a deployment is config + a \
+             program (SPEC.md §5).\n  \
+             name one:  \"program\": {\"path\": \"...\"}\n  \
+             or fetch one: dollup fetches and verifies them — \
+             https://dollup.aloecraft.org"
                 .to_string(),
         ),
     }
