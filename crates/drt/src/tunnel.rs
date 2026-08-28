@@ -45,12 +45,14 @@ use ego_transport::transport::{Transport, TransportError};
 use ego_transport::WebSocketNative;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-/// One read per WS message. ego-transport's native recv copies a message
-/// into the caller's buffer and silently drops any tail past it, so the
-/// buffer must be at least as large as the biggest message a peer sends.
-/// Both halves here send from a buffer of this same size, so through this
-/// bridge no message exceeds it; the upstream ask (give `recv` a way to
-/// hand over a whole message) removes the coupling.
+/// How much is moved per read. Formerly load-bearing for correctness:
+/// ego-transport's `recv` used to copy a message into the caller's buffer
+/// and silently drop the tail, so this had to be at least as large as any
+/// message a peer sent, and the bridge was safe only because both halves
+/// used the same size. That is fixed upstream as of ego-transport 0.1.3 —
+/// a `MessageBuffer` retains the tail and returns it on the next `recv` —
+/// so this is now a throughput knob and nothing more, and a peer sending
+/// larger frames is no longer a corruption hazard.
 const CHUNK: usize = 64 * 1024;
 
 /// Pump bytes both ways between a byte stream and a WS transport until

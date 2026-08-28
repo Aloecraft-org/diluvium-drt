@@ -1219,15 +1219,18 @@ dependencies = [
 [[package]]
 name = "ego_platform"
 version = "0.1.2"
-source = "git+https://github.com/Aloecraft-org/ego-platform#1c6c6ecee84230da2114b0877d94c4b4ddc0b16d"
+source = "git+https://github.com/Aloecraft-org/ego-platform#04e0e01d9e99e7db421047352303ea4b63cb4fbc"
 dependencies = [
  "base64",
  "console_error_panic_hook",
  "env_logger",
  "futures",
+ "getrandom 0.2.17",
  "gloo-timers",
  "js-sys",
  "log",
+ "rand_chacha 0.10.0",
+ "rand_core 0.10.1",
  "serde",
  "serde_json",
  "tokio",
@@ -1240,10 +1243,11 @@ dependencies = [
 
 [[package]]
 name = "ego_transport"
-version = "0.1.2"
-source = "git+https://github.com/Aloecraft-org/ego-transport#b19030926693f7bbc4ec3f30471cb61d97228a88"
+version = "0.1.3"
+source = "git+https://github.com/Aloecraft-org/ego-transport#455bf73a1b0ac1e0bd43a7bcdf3d027035360f62"
 dependencies = [
  "async-trait",
+ "base64",
  "bytes",
  "console_error_panic_hook",
  "ego_platform",
@@ -1252,16 +1256,19 @@ dependencies = [
  "js-sys",
  "log",
  "rand 0.10.2",
+ "ring",
  "russh",
  "thiserror 2.0.20",
  "tokio",
  "tokio-tungstenite",
  "tungstenite",
+ "turn",
  "wasip2",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
  "webrtc",
+ "webrtc-util",
 ]
 
 [[package]]
@@ -1562,8 +1569,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "wasi 0.11.1+wasi-snapshot-preview1",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -2760,6 +2769,16 @@ checksum = "d3022b5f1df60f26e1ffddd6c66e8aa15de382ae63b3a0c1bfc0e4d3e3f325cb"
 dependencies = [
  "ppv-lite86",
  "rand_core 0.9.5",
+]
+
+[[package]]
+name = "rand_chacha"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e6af7f3e25ded52c41df4e0b1af2d047e45896c2f3281792ed68a1c243daedb"
+dependencies = [
+ "ppv-lite86",
+ "rand_core 0.10.1",
 ]
 
 [[package]]

@@ -9,9 +9,9 @@ real `drt` binary and proving the same thing.
 |---|---|---|
 | `cap1_environment` | [`cap1_environment.rs`](cap1_environment.rs) | ported |
 | `cap2_sqlite_json` | partly, in [`connectors/sql`](../../../connectors/sql/tests/scope.rs) | the workload round-trips; the slice's own shape lands with `drt start` |
-| `cap3_crypto_jwt` | — | blocked: no `crypto` connector yet |
+| `cap3_crypto_jwt` | — | unblocked: `connectors/crypto` exists; the slice is not ported yet |
 | `cap4_swarm` | — | the swarm and `sql` are both in; the slice's supervisor shape lands with `drt start` |
-| `cap5_ports_daemon` | — | blocked: no `listen` connector / `drt start` yet |
+| `cap5_ports_daemon` | — | unblocked: `listen.rs` + `drt start` exist; the slice is not ported yet |
 | `cap6_fs` | partly, in [`connectors/fs`](../../../connectors/fs/tests/jail.rs) | the verb surface round-trips; the slice's own shape lands with `drt start` |
 | `cap7_plugins` | — | out of scope until dynamic connector loading (SPEC.md §7, a seam) |
 
