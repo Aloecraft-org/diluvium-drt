@@ -63,6 +63,21 @@ Same per-tag directories, same `latest/` stable path, same
 embedded revision from `BUILDINFO.txt`). Lab and every deploy script then
 learn one new path segment and nothing else.
 
+## Building for wasm
+
+`--no-default-features` carries the swarm and the capability layers without
+the C core, and that is what a browser build starts from — there the
+`Engine` bridges to a JS-hosted diluvium instance rather than linking one
+(SPEC.md §4).
+
+Building the `engine-diluvium` feature *for* a wasm target is the other
+case, and it needs a wasi-sdk (>= 24) named by `WASI_SDK_PATH`, because the
+C core must be compiled by a clang that can target wasm32. Without it
+`diluvium-sys` refuses with an explanation. That refusal is deliberate and
+worth knowing about: until recently the build *succeeded* and emitted a
+host `.o`, so `cargo build --target wasm32-unknown-unknown` looked green and
+only failed when something forced an actual link.
+
 ## Installing
 
 `install.sh` at the repo root, served from the mirror:

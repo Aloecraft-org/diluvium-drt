@@ -21,7 +21,16 @@ diluvium = { workspace = true, optional = true }
 [features]
 # The one v1 Engine impl: current diluvium, statically linked. On by
 # default; a seams-only build (`--no-default-features`) carries the traits
-# without the C core, which is what the wasm targets will start from.
+# without the C core, which is what the wasm targets start from.
+#
+# Building this feature FOR a wasm target needs a wasi-sdk (>= 24) named by
+# WASI_SDK_PATH, because the C core has to be compiled by a clang that can
+# target wasm32 — without it diluvium-sys refuses rather than quietly
+# emitting a host object, which is the right failure and a recent one (it
+# used to succeed and produce an x86-64 `.o` that only failed at link).
+# The browser tier does not need it: there the Engine bridges to a
+# JS-hosted diluvium instance (SPEC.md §4), so `--no-default-features` is
+# both the seam and the whole story.
 default = ["engine-diluvium"]
 engine-diluvium = ["dep:diluvium"]
 
