@@ -18,7 +18,7 @@
     "fs": {
       "scope": {
         "scope": "./examples/workspace",
-        "access": "readonly",
+        "access": "read",
         "max_bytes": 65536
       }
     }
