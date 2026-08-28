@@ -52,12 +52,30 @@ It has not reproduced since, and it is unexplained. What was checked:
   flags it produces (`-O2 -std=c99 -DMAKE_LIB -fPIC -DLUA_USE_LINUX`) are
   the same ones the old script passed.
 
-So it is *probably* runner-level, and it is not proven to be. Nothing DRT
-ships drives instances from more than one thread — `run`, `start` and
-`repl` are all one instance per thread, which is the dv.h contract — so
-the exposure, if it is real, is the test harness. Treat a recurrence as a
-finding for the diluvium session with this run linked, not as a flake to
-re-run past.
+Then the decisive one, since local evidence was never going to settle a
+crash that only ever happened on a runner: `.github/workflows/segv-probe.yml`
+asks the machine it happened on, with core dumps armed
+([run 33183183257](https://github.com/Aloecraft-org/diluvium-drt/actions/runs/33183183257)).
+
+- **500 runs of `host_lua-a203f73e97f90f57` — the same binary hash that
+  crashed — 0 failures, no core dumps.** Same runner image, same rustc,
+  same build artifact, not merely a similar one.
+- 3 more full `--all-features` suites on the runner: 0 failures.
+- Locally, 43,200 concurrent `drt::start` deployments (the shape the cap6
+  test contributes, which is richer than a bare engine): clean.
+
+That does not *prove* infrastructure, because nothing can prove a negative
+about a core dump that no longer exists. It does move the estimate a long
+way: the identical artifact survived 500 runs where the first attempt died
+on the first. Nothing DRT ships drives instances from more than one thread
+— `run`, `start` and `repl` are one instance per thread, which is the dv.h
+contract — so the exposure, if it is real at all, is the test harness and
+not a deployment.
+
+The probe workflow is kept rather than deleted: if this recurs, one
+dispatch turns a bare `signal: 11` into a backtrace. Treat a recurrence as
+a finding for the diluvium session with both runs linked, not as a flake
+to re-run past.
 
 ## The workflow
 
