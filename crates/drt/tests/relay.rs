@@ -293,11 +293,20 @@ where
 /// it, and the session close carrying its byte count — the three facts a
 /// panel and a meter are built from, arriving as ordinary queue messages.
 #[cfg(feature = "relay")]
+/// One runtime for the whole binary, never dropped — see the long note in
+/// `tests/stun.rs`. Same reason: a core dump caught `Runtime` teardown
+/// racing a worker's `Condvar::notify_one` into freed memory, and a
+/// `static` never runs that path. These tests had not crashed, but they
+/// drop runtimes the same way, so they carry the same exposure.
+fn rt() -> &'static tokio::runtime::Runtime {
+    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    RT.get_or_init(|| tokio::runtime::Runtime::new().expect("a tokio runtime"))
+}
+
 #[test]
 fn the_deployment_sees_presence_and_bytes() {
     let (addr, rx) = deployment_with_relay(false);
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
+    rt().block_on(async {
         let (mut device, _) =
             tokio_tungstenite::connect_async(format!("ws://{addr}/park/xps?k=pk-0123456789abcdef"))
                 .await
@@ -338,8 +347,7 @@ fn the_deployment_sees_presence_and_bytes() {
 #[test]
 fn the_deployment_can_refuse_a_leg_the_keys_admit() {
     let (addr, rx) = deployment_with_relay(true);
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let refused = rt.block_on(async {
+    let refused = rt().block_on(async {
         // The key is valid for `blocked`; only the supervisor objects.
         let (mut ws, _) = tokio_tungstenite::connect_async(format!(
             "ws://{addr}/park/blocked?k=pk-0123456789abcdef"

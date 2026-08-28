@@ -70,6 +70,61 @@ from more than one thread — `run`, `start` and `repl` are one instance per
 thread, which is the dv.h contract — so the exposure, if it is real at all,
 looks like the test harness and not a deployment.
 
+#### Named at last: tokio runtime teardown (segv-probe run 6)
+
+`segv-probe` [run 33194285525](https://github.com/Aloecraft-org/diluvium-drt/actions/runs/33194285525)
+produced the first symbolized core of this hunt. The `stun` crash is:
+
+```
+#22 stun::a_pair_classifies_the_mapping_and_one_refuses_to  (tests/stun.rs:134)
+#21 core::ptr::drop_glue<tokio::runtime::runtime::Runtime>
+#20 core::ptr::drop_glue<tokio::runtime::blocking::pool::BlockingPool>
+#19 tokio::runtime::blocking::pool::{impl#4}::drop        (pool.rs:284)
+#18 tokio::runtime::blocking::pool::BlockingPool::shutdown (pool.rs:263)
+#17 tokio::runtime::blocking::shutdown::Receiver::wait     (shutdown.rs:67)
+```
+
+while **thread 4**, a runtime worker, was in:
+
+```
+#8 tokio::runtime::park::Inner::unpark                     (park.rs:203)
+#6 parking_lot::condvar::Condvar::notify_one               (condvar.rs:135)
+#5 parking_lot::condvar::Condvar::notify_one_slow          (condvar.rs:172)
+#0 core::sync::atomic::atomic_store  dst=0x7f7964008390    <-- faulted here
+```
+
+The main thread is inside `Runtime` drop, waiting on the blocking pool
+(4 workers, `last_exited_thread: None`); a worker is concurrently storing
+into the `Condvar` of a `park::Inner` that teardown has already freed.
+**A use-after-free in tokio runtime shutdown** — not in DRT code, and not
+in the C engine, which is where every earlier theory here pointed.
+
+Versions: tokio **1.53.1**, which is the current release (`cargo update`
+finds nothing newer), parking_lot 0.12.5, parking_lot_core 0.9.12.
+
+Why these tests reach it: every `stun` probe resolves its server through
+`lookup_host`, which is a `spawn_blocking`, so each test leaves idle
+blocking workers parked; dropping the runtime then races their wakeup.
+
+Fixed on our side by giving each test binary **one runtime in a `static`,
+never dropped** (`tests/stun.rs`, `tests/relay.rs`) — a static is not
+dropped at exit, so the teardown path never runs. The tests share one
+runtime and get faster as a side effect.
+
+**What this does NOT explain, and must not be claimed to:** the original
+`host_lua` crash. That binary never constructs a tokio runtime (no
+`tokio`, no `async`, no `Runtime` anywhere in it, and its cap6 deployment
+configures neither relay nor stun). So this is either a second, distinct
+crash, or the host_lua one is still unexplained. It stays open.
+
+**Shipped-code exposure, worth a decision rather than a shrug:** the
+bridges (`RelayBridge`, `StunBridge`) hand their runtime to a thread that
+outlives the process, so they never drop one. The foreground verbs —
+`drt relay`, `drt stun`, `drt tunnel` — *do* drop a runtime when they
+return, which is this exact path. The blast radius is a clean shutdown
+turning into a SIGSEGV: a supervised service would read that as a crash
+rather than a stop.
+
 #### The second occurrence, which changed the picture (ci run 10)
 
 `ci` [run 33192177326](https://github.com/Aloecraft-org/diluvium-drt/actions/runs/33192177326)

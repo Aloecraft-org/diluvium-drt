@@ -12,6 +12,32 @@ use std::time::Duration;
 
 use drt_config::StunConfig;
 
+/// One runtime for the whole binary, deliberately never dropped.
+///
+/// This is not tidiness, it is the fix for a real crash. A core dump from
+/// segv-probe run 6 caught this binary dying in
+/// `drop_glue<tokio::runtime::Runtime>` -> `BlockingPool::shutdown` ->
+/// `Receiver::wait`, while a runtime worker on another thread was inside
+/// `park::Inner::unpark` -> `Condvar::notify_one_slow`, storing into a
+/// Condvar that teardown had already freed. A use-after-free in runtime
+/// shutdown, on tokio 1.53.1 (the current release) with parking_lot
+/// 0.12.5 — not in DRT code and not in the C engine.
+///
+/// Every probe resolves its server address through `lookup_host`, which
+/// is a `spawn_blocking`, so each test left idle blocking workers parked
+/// in the pool; dropping the runtime then raced their wakeup. A `static`
+/// is never dropped, so the teardown path simply never runs, and the
+/// tests get a faster shared runtime as a side effect.
+///
+/// The shipped code is a separate question, recorded in doc/Release.md:
+/// the bridges hand their runtime to a thread that outlives the process,
+/// but the foreground verbs (`drt relay`, `drt stun`, `drt tunnel`) do
+/// drop a runtime when they return, which is this same path.
+fn rt() -> &'static tokio::runtime::Runtime {
+    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    RT.get_or_init(|| tokio::runtime::Runtime::new().expect("a tokio runtime"))
+}
+
 fn config(bind: &str) -> StunConfig {
     StunConfig {
         bind: bind.into(),
@@ -24,8 +50,7 @@ fn config(bind: &str) -> StunConfig {
 /// saw, and it is the client's own socket.
 #[test]
 fn a_client_learns_its_own_reflexive_address() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
+    rt().block_on(async {
         let server = drt::stun::bind(&config("127.0.0.1:0")).await.unwrap();
         let addr = server.local_addr();
         server.spawn();
@@ -65,8 +90,7 @@ fn a_client_learns_its_own_reflexive_address() {
 /// is resolvable rather than a lie the caller has to chase.
 #[test]
 fn a_zero_port_resolves_to_the_port_taken() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
+    rt().block_on(async {
         let server = drt::stun::bind(&config("127.0.0.1:0")).await.unwrap();
         assert_ne!(server.local_addr().port(), 0);
     });
@@ -76,8 +100,7 @@ fn a_zero_port_resolves_to_the_port_taken() {
 /// time — not as a thread that dies quietly once the deployment is up.
 #[test]
 fn a_taken_port_fails_by_name() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
+    rt().block_on(async {
         let held = drt::stun::bind(&config("127.0.0.1:0")).await.unwrap();
         let taken = held.local_addr().to_string();
         let err = match drt::stun::bind(&config(&taken)).await {
@@ -93,8 +116,7 @@ fn a_taken_port_fails_by_name() {
 /// guessing from one.
 #[test]
 fn a_pair_classifies_the_mapping_and_one_refuses_to() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
+    rt().block_on(async {
         let one = drt::stun::bind(&config("127.0.0.1:0")).await.unwrap();
         let two = drt::stun::bind(&config("127.0.0.1:0")).await.unwrap();
         let (a, b) = (one.local_addr().to_string(), two.local_addr().to_string());
@@ -138,8 +160,7 @@ fn a_pair_classifies_the_mapping_and_one_refuses_to() {
 /// what a supervisor watches to tell scanners from clients.
 #[test]
 fn junk_is_dropped_and_counted_not_answered() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
+    rt().block_on(async {
         let server = drt::stun::bind(&config("127.0.0.1:0")).await.unwrap();
         let addr = server.local_addr();
         let metrics = server.metrics();
@@ -224,8 +245,7 @@ end
     let addr = bridge.addr();
     assert!(addr.port() != 0);
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let probe = rt
+    let probe = rt()
         .block_on(ego_transport::stun::probe(&addr.to_string()))
         .expect("the deployment's stun server answered");
     assert_eq!(probe.server, addr);
