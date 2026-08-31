@@ -954,6 +954,7 @@ dependencies = [
  "drt-connector",
  "drt-connector-crypto",
  "drt-connector-fs",
+ "drt-connector-rest",
  "drt-connector-sql",
  "drt-connector-ssh",
  "drt-connector-time",
@@ -1049,6 +1050,21 @@ dependencies = [
  "rmpv",
  "serde",
  "tempfile",
+]
+
+[[package]]
+name = "drt-connector-rest"
+version = "0.3.1"
+dependencies = [
+ "async-trait",
+ "drt-caps",
+ "drt-connector",
+ "httparse",
+ "rmpv",
+ "serde",
+ "tokio",
+ "tokio-rustls",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -3789,6 +3805,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-rustls"
+version = "0.26.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
+dependencies = [
+ "rustls",
+ "tokio",
+]
+
+[[package]]
 name = "tokio-tungstenite"
 version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4065,6 +4091,24 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "0.26.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
+dependencies = [
+ "webpki-roots 1.0.9",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "1.0.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]

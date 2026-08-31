@@ -111,7 +111,8 @@ enum Command {
         feature = "connector-ssh",
         feature = "connector-fs",
         feature = "connector-sql",
-        feature = "connector-crypto"
+        feature = "connector-crypto",
+        feature = "connector-rest"
     )),
     allow(unused_mut, unused_variables)
 )]
@@ -141,6 +142,9 @@ fn buildinfo(json: bool) -> String {
     }
     if cfg!(feature = "connector-ssh") {
         connectors.push("ssh");
+    }
+    if cfg!(feature = "connector-rest") {
+        connectors.push("rest");
     }
     if cfg!(feature = "listen") {
         connectors.push("listen");
@@ -260,6 +264,18 @@ fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
                 .wire(
                     "ssh",
                     std::sync::Arc::new(drt_connector_ssh::SshConnector::new()),
+                    wiring.scope.clone(),
+                )
+                .map_err(|e| e.to_string())?,
+            // Like `ssh`, needs a reactor, and like `crypto`, its scope
+            // carries secrets the guest must not see: an operator-injected
+            // `authorization` lets a program call an authenticated API
+            // without ever holding the credential.
+            #[cfg(feature = "connector-rest")]
+            "rest" => registry
+                .wire(
+                    "rest",
+                    std::sync::Arc::new(drt_connector_rest::RestConnector::new()),
                     wiring.scope.clone(),
                 )
                 .map_err(|e| e.to_string())?,
