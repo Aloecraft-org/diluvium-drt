@@ -211,6 +211,34 @@ access **got the same 403**, which rules out the Actions token
 specifically and points at a **repo ruleset or tag protection rule on
 `v*`** — the action creates the tag as part of creating the release.
 
+**Narrowed 2026-08-31, and it holds.** The evidence now has a clean
+before/after that the original diagnosis did not:
+
+- Run **33184812461** published **v0.3.0** at 15:26 UTC on 2026-08-28.
+  Green, tag created, six binaries plus `BUILDINFO.txt` and
+  `SHA256SUMS.txt` on the Releases page today.
+- Run **33204025600** failed on **v0.3.1** at 19:34 UTC the same day —
+  four hours later, on the *only* failing job, at the *only* failing
+  step, `Create release`.
+- `git diff 57d2399 86e71c1 -- .github/workflows/release.yml` touches
+  **nothing but the BUILDINFO block**. Both `permissions:` blocks are
+  byte-identical (`contents: read` at the top, `contents: write` on
+  `publish`), and the `softprops/action-gh-release@v2` step is unchanged.
+
+So the same workflow, with the same permissions, making the same API
+call, succeeded and then four hours later did not. Nothing in this
+repository changed in between, which leaves a repo or org **ruleset /
+tag protection on `v*` added in that window** as the explanation, exactly
+as suspected — now with the "it used to work" half nailed down rather
+than assumed.
+
+One consequence worth knowing: `Resource not accessible by integration`
+is the *GitHub App token* refusal. A release created by a human account
+from the Releases page is not an integration and is not subject to it, so
+**the owner can publish v0.3.1 by hand right now** without touching any
+rule. Adjusting the ruleset is the fix that makes the workflow work
+again; the manual release is the fix that makes v0.3.1 exist today.
+
 The owner's call: **do not spend more time on it; open a PR and they
 will merge.** No tag exists, so a retry after the rule is adjusted is
 clean.

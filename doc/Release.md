@@ -310,15 +310,38 @@ only failed when something forced an actual link.
 
 ## Installing
 
-`install.sh` at the repo root, served from the mirror:
+`install.sh` at the repo root, published two ways:
 
 ```
-curl -fsSL https://diluvium.aloecraft.org/release/drt/install.sh | sh
+curl -fsSL https://diluvium.aloecraft.org/release/drt/install.sh | sh   # the mirror
+curl -fsSL https://github.com/Aloecraft-org/diluvium-drt/releases/latest/download/install.sh | sh
 ```
 
-Mirror-first with a GitHub Releases fallback, SHA-256-verified when the
-mirror's sums are reachable, `DRT_SLIM=1` / `DRT_VERSION=vX.Y.Z` /
-`DRT_PREFIX=…` as the knobs.
+The mirror is the intended front door and the one the script itself
+prefers when resolving binaries. **It does not carry the `drt` namespace
+yet** — `/release/drt/install.sh`, `/release/drt/latest/…` and
+`/release/drt/releases.json` all 404 as of 2026-08-31, which for a while
+made the README's headline command the first thing a newcomer ran and the
+first thing that failed. So `install.sh` now ships as a **release asset**
+too: one line in the publish job, no server-side work, and a URL that
+resolves the day a release lands. The mirror ask below still stands and
+still wins once it is done.
+
+Mirror-first with a GitHub Releases fallback, and **SHA-256-verified on
+both** — the release workflow publishes `SHA256SUMS.txt` beside the
+binaries, so the old "the fallback path has no sums at all" comment
+described a workflow that had already changed. A missing sums file warns
+rather than refuses, so pinning a release older than the sums file still
+works; a *mismatch* always refuses.
+
+Knobs: `DRT_SLIM=1` / `DRT_VERSION=vX.Y.Z` / `DRT_PREFIX=…` / `DRT_MIRROR=…`.
+`DRT_MIRROR` takes a `file://` URL, which is the air-gapped install: point
+it at a directory holding `<version>/drt_<os>_<arch>` and optionally
+`SHA256SUMS.txt`, and nothing reaches the network.
+
+Linux refuses non-x86_64 **by name** rather than downloading the x86_64
+static binary and failing the `--version` guard with "does not run here",
+which was true and unhelpful.
 
 **On DRT as the primary install candidate: yes, staged.** The argument
 for: one binary that runs a script (`drt run`), serves a deployment

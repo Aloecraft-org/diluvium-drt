@@ -205,6 +205,12 @@ jobs:
       - name: BUILDINFO and checksums
         run: |
           set -eu
+          # install.sh ships as a release asset so the curl|sh front door has
+          # a URL that exists without any server-side work:
+          #   $GITHUB/releases/latest/download/install.sh
+          # The mirror stays the preferred front door once it carries the drt
+          # namespace; this is the one that works the day a release lands.
+          cp ../install.sh release_dist/install.sh
           cd release_dist
           DILUVIUM_REV=$( (grep -A2 'name = "diluvium"' ../Cargo.lock || true) | sed -n 's/.*#\([0-9a-f]*\)".*/\1/p' | head -1)
           # Asked of the artifact rather than guessed in YAML. The linux

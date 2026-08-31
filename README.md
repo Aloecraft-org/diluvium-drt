@@ -58,15 +58,42 @@ never as a mystifying `denied` at first call.
 
 ## Installing
 
-```
-curl -fsSL https://diluvium.aloecraft.org/release/drt/install.sh | sh
+One static binary, no runtime dependencies. Download it, `chmod +x`, go:
+
+```sh
+# linux x86_64 — also drt_darwin_arm64, drt_darwin_x86_64
+BASE=https://github.com/Aloecraft-org/diluvium-drt/releases/latest/download
+curl -fLO $BASE/drt_linux_static_x86_64
+curl -fLO $BASE/SHA256SUMS.txt
+sha256sum --ignore-missing -c SHA256SUMS.txt      # shasum -a 256 -c on macOS
+chmod +x drt_linux_static_x86_64 && ./drt_linux_static_x86_64 --version
 ```
 
-`DRT_SLIM=1` installs the size profile; `DRT_VERSION=vX.Y.Z` pins a release.
-Or take a binary straight from
-[Releases](https://github.com/Aloecraft-org/diluvium-drt/releases) —
-each one carries a `BUILDINFO.txt` naming the diluvium revision inside it
-and the dv ABI it speaks. See [`doc/Release.md`](doc/Release.md).
+Or let the script do it, which is the same download plus the checksum check
+and a `PATH` note:
+
+```sh
+curl -fsSL $BASE/install.sh | sh
+```
+
+`DRT_SLIM=1` takes the size profile, `DRT_VERSION=vX.Y.Z` pins a release,
+`DRT_PREFIX=` chooses the directory, and `DRT_MIRROR=` picks a different
+source — including a directory you already have, which is how this installs
+with no network at all:
+
+```sh
+DRT_MIRROR=file:///mnt/xfer/drt DRT_VERSION=v0.3.0 sh install.sh
+```
+
+Every release carries `BUILDINFO.txt` and `SHA256SUMS.txt`. `BUILDINFO`
+names the diluvium revision inside the binary and the dv ABI it speaks —
+`drt buildinfo` asks the binary itself, so "which diluvium is in here" is
+read off the artifact rather than inferred from a tag. See
+[`doc/Release.md`](doc/Release.md).
+
+The mirror at `https://diluvium.aloecraft.org/release/drt/` is the intended
+front door and the one `install.sh` prefers, but it does not carry the `drt`
+namespace yet — the URLs above are the ones that resolve today.
 
 ## What you can do with it today
 
