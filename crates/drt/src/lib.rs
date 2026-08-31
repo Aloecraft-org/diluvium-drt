@@ -4,6 +4,9 @@
 pub mod config;
 #[cfg(feature = "listen")]
 pub mod listen;
+/// `drt netcheck`: the NAT diagnostic. The verdict table is pure and
+/// always compiled; the measurements that need STUN are behind `stun`.
+pub mod netcheck;
 #[cfg(feature = "relay")]
 pub mod relay;
 pub mod repl;
