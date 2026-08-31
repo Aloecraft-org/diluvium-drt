@@ -15,10 +15,13 @@ DRT works. It runs sandboxed Lua under a capability model, serves
 fetchpoints today, speaks the C host's config dialect, and ships as a
 ~3 MB static binary with no runtime dependencies. 146 tests green. What
 it does *not* yet have is a first hour that a stranger can survive: the
-smallest useful program is fifteen lines of queue boilerplate, the
-nouns are inverted relative to how users will read them, and
-`drt start` with no arguments prints a schema fragment and exits 1.
-None of that is structural. All of it is unfinished surface.
+nouns are inverted relative to how users will read them, and `drt start`
+with no arguments prints a schema fragment and exits 1. None of that is
+structural. All of it is unfinished surface.
+
+*(The "smallest useful program is fifteen lines of queue boilerplate"
+line that stood here was wrong — `print(host.time())` has always worked.
+See decision 4, which is now closed.)*
 
 ## Priorities
 
@@ -126,33 +129,61 @@ where dollup is not permitted. So: mentioned once, somewhere people go
 looking; never in a hot path, never repeated, never a prerequisite to a
 first run. The removed `drt start` pointer violated all three.
 
-### 4. The guest-API prelude — the highest-value open item
+### 4. The guest-API prelude — CLOSED, and it was already built
 
-This is the real barrier for a newcomer, and it is bigger than any
-error message.
+**Resolved 2026-08-31. Do not build the prelude. It exists, upstream, in
+the C core, and building a second one on top breaks the first.**
 
-There is **no `time.now()`**. The guest API is a hostcall over queues:
-declare `host/calls` and `host/replies`, mint a token, push, wait, match
-the token back. `examples/hello.dlua` spends **fourteen lines** on that
-boilerplate before doing anything.
+The original entry, kept because the half that was right is worth keeping:
 
-I wrote `time.now()` twice while working inside this codebase all day.
-Anyone new will do the same and get:
+> There is **no `time.now()`**. I wrote `time.now()` twice while working
+> inside this codebase all day. Anyone new will do the same and get
+> `attempt to call a nil value (field 'now')`, which reads as "DRT is
+> broken," not "you weren't granted that."
 
-```
-attempt to call a nil value (field 'now')
-stack traceback: ...
-```
+That diagnosis is exactly right. The proposed fix — ship an `ask()` helper
+as a prelude so a first program is `print(host.time())` — was not needed:
+**`print(host.time())` already works today, on an unmodified DRT.** Run it.
 
-which reads as "DRT is broken," not "you weren't granted that."
+`src/dhostlib.h` in the embedded diluvium is the `host` guest library, and
+its header states this document's own rationale nearly verbatim ("A
+connector call used to take five lines of ceremony ... the ceremony was
+never the design"). It provides `host.time`, `host.monotonic`, `host.call`,
+`host.try`, `host.fs.*`, `host.crypto.*`, `host.sql.*`, `host.exec.*` and
+`host.spawn`, and DRT has been linking it the whole time —
+`crates/drt/tests/host_lua.rs` calls `host.fs.write` and
+`crates/drt/tests/stun.rs` calls `host.call`, and both have been green
+since they were written.
 
-Proposed: ship the `ask()` helper as a prelude so a first program is
-`print(host.time())`. **Additive** — renames nothing, breaks nothing,
-and `examples/hello.dlua` stays exactly as it is as the honest
-illustration of what the prelude does underneath. Notably **not blocked
-by decision 1**, since it concerns the guest API rather than the nouns.
+**How this went unnoticed, and the trap to avoid repeating.** `time` *is* a
+library — the pure calendar one — so `time.now()` fails with "field 'now'"
+rather than "time is nil", and that reads as a gap in a library you already
+found rather than a signpost to a different one. Meanwhile
+`examples/hello.dlua` demonstrated the hand-rolled queue pair, which looked
+like the guest API rather than like the substrate underneath it. Two pieces
+of evidence agreeing, and neither of them the actual API.
 
-Was awaiting a go when the session ended. If you do one thing, do this.
+**The prelude was implemented before this was caught, and the test suite
+caught it.** A composed-source prelude defining `host = {}` destroys the
+real `host` table; `a_cap6_shaped_deployment_runs_from_its_host_lua` failed
+with `attempt to index a nil value (field 'fs')`. Reverted. The lesson is
+cheap to state: before adding to the guest API, read
+`types/guest.lua` and `src/dhostlib.h` in the embedded diluvium checkout —
+that is where the guest API is defined, not in this repository.
+
+What actually shipped instead, which is what the barrier really needed:
+
+- `doc/HostBaseline.md` — the three families every DRT host must answer
+  (`time`, `time/monotonic`, `crypto/random`) and the four rules that make
+  an absent family safe. This is the owner's ask ("a standard set of
+  functions any DRT host needs to either provide or stub"), and it is what
+  makes `drt-web` checkable rather than merely unfinished.
+- `examples/hello.dlua` rewritten against `host.*`; the old fifteen-line
+  version kept as `examples/by-hand.dlua`, framed as the substrate.
+- A **Writing a program** section in the README that names the library and
+  explains the `time.now()` trap in place, so the next person meets the
+  answer where they hit the question.
+
 
 ---
 
@@ -247,7 +278,15 @@ clean.
 
 ## Traps — things that cost real time here
 
-- **`time.now()` does not exist.** See decision 4.
+- **`time.now()` does not exist, and the error misleads.** `time` is the
+  pure *calendar* library, so `time.now()` answers "attempt to call a nil
+  value (field 'now')" rather than naming the real one. The clock is
+  `host.time()`, on the `host` library — see decision 4 and
+  `doc/HostBaseline.md`.
+- **The guest API is defined upstream, not here.** `types/guest.lua` and
+  `src/dhostlib.h` in the embedded diluvium checkout are the source of
+  truth for what a program can call. Reading only this repository will
+  make you build something that already exists.
 - **The grant field is `capability`, not `cap`.**
 - **`access` is `"read"` or `"readwrite"`, never `"readonly"`.** This
   changed in v0.3.1 to match the C host (`dhost.c:709`, `:1010`), where
@@ -271,16 +310,19 @@ clean.
 
 ## What I would do next, in order
 
-1. **Build the prelude** (decision 4). Highest value per hour, unblocked
-   by everything else, and it is what stands between a newcomer and a
-   second program.
-2. **Have someone unfamiliar with the codebase run it** and watch where
-   they stall. The artifacts on run 33204025600 need no release.
-3. **Settle the nouns** (decision 1), then write the `drt start` copy
+1. **Have someone unfamiliar with the codebase run it** and watch where
+   they stall. This is now the highest-value item by a distance: decision
+   4 was closed by *reading* rather than building, and the only reason it
+   stayed open for a day is that nobody unfamiliar had tried the thing.
+   Releases are downloadable today — see the README's Installing section.
+2. **Settle the nouns** (decision 1), then write the `drt start` copy
    (decision 2) once, against the settled names.
-4. **PR the tag ruleset fix**, publish v0.3.1.
-5. Leave drt-web, the REPL conveniences, and FM-2 alone unless something
-   forces them.
+3. **Publish v0.3.1.** The owner can create the release by hand from the
+   Releases page; the App-token 403 does not apply to a human account.
+   Adjusting the ruleset is the separate fix that makes the workflow work.
+4. Leave drt-web, the REPL conveniences, and FM-2 alone unless something
+   forces them — though `doc/HostBaseline.md` now says what drt-web has to
+   answer, which is the part that was missing.
 
-The instinct to fix the first-run message *first* is wrong: decisions 1
-and 4 rewrite it anyway.
+The instinct to fix the first-run message *first* is still wrong: decision
+1 rewrites it anyway.

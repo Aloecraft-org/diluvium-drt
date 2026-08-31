@@ -7,35 +7,35 @@
 -- The program is identical either way. What changes is what the host
 -- wired and what the ceiling granted, and the program learns that as
 -- ordinary replies rather than as an error it has to catch.
+--
+-- `examples/by-hand.dlua` is this same program written against the raw
+-- queue pair, which is what every call below does underneath.
 
-local calls   = queue.declare("host/calls",   { capacity = 8, exported = true, on_full = "reject" })
-local replies = queue.declare("host/replies", { capacity = 8 })
+-- The clock is a *capability*, not arithmetic. It costs a grant, a
+-- connector answers it, and the answer arrives as a message -- so it is in
+-- the log, so a replay replays the same moment instead of the replayer's.
+--
+-- This is why it is `host.time()` and not `time.now()`. `time` is the pure
+-- calendar library (`time.iso`, `time.fields`, ...) and there is no clock
+-- in it, because a clock is not pure. See doc/HostBaseline.md.
+print("time:             " .. host.time())
 
-local tok = 0
-local function ask(call, args)
-    tok = tok + 1
-    queue.push(calls, { tok = tok, call = call, args = args })
-    local _, reply = queue.wait({replies})
-    assert(reply.tok == tok, "the token comes back verbatim")
-    return reply
+-- `host.try` is `host.call` without the raise: it returns the reply's
+-- status instead of raising it, which is what you want wherever a denial
+-- is a possible answer rather than a bug. Each `host.<family>.try_*` is
+-- the same thing with the arguments spelled out.
+local function show(label, value, status, detail)
+    print(string.format("%-18s %s %s", label, status, tostring(detail or value)))
 end
-
--- The one nondeterminism every program eventually wants. It arrives as a
--- message, which is why a replay could replay the same moment.
-local now = ask("time")
-print("time: " .. now.status .. " " .. tostring(now.value))
 
 -- A file inside the directory the host granted. The config named the
 -- directory; this program names the file. Neither knows the other's half.
-local note = ask("fs/read", { path = "note.txt" })
-print("fs/read note.txt: " .. note.status .. " " .. tostring(note.value or note.detail))
+show("fs/read note.txt:", host.fs.try_read("note.txt"))
 
 -- The same call, aimed outside the granted directory. Refused on the
 -- resolved path, so `..` buys nothing.
-local escape = ask("fs/read", { path = "../../etc/passwd" })
-print("fs/read escape:   " .. escape.status .. " " .. tostring(escape.detail))
+show("fs/read escape:", host.fs.try_read("../../etc/passwd"))
 
 -- A family the host never wired. Answered, not dropped: every drained
 -- request gets a reply, and "denied" is one.
-local nope = ask("sql/query", { sql = "select 1" })
-print("sql/query:        " .. nope.status .. " " .. tostring(nope.detail))
+show("sql/query:", host.try("sql/query", { sql = "select 1" }))

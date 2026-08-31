@@ -1,0 +1,46 @@
+-- The same program as `examples/hello.dlua`, written against the raw queue
+-- pair -- which is exactly what every `host.*` call does underneath.
+--
+--   drt run examples/by-hand.dlua
+--   drt run --config examples/deployment.json examples/by-hand.dlua
+--
+-- Read this one to understand the substrate; write the other one. The
+-- queues are the design (flexible, loggable, replayable) and the `host`
+-- library is the surface over them -- it owns the queue pair, allocates
+-- tokens, correlates replies, and turns a non-ok status into an error with
+-- the connector's own sentence in it.
+--
+-- Nothing here is privileged. `host.fs.read` reaches the same dispatcher,
+-- through the same grant check, as the fifteen lines below.
+
+local calls   = queue.declare("host/calls",   { capacity = 8, exported = true, on_full = "reject" })
+local replies = queue.declare("host/replies", { capacity = 8 })
+
+local tok = 0
+local function ask(call, args)
+    tok = tok + 1
+    queue.push(calls, { tok = tok, call = call, args = args })
+    local _, reply = queue.wait({replies})
+    assert(reply.tok == tok, "the token comes back verbatim")
+    return reply
+end
+
+-- The one nondeterminism every program eventually wants. It arrives as a
+-- message, which is why a replay could replay the same moment.
+local now = ask("time")
+print("time: " .. now.status .. " " .. tostring(now.value))
+
+-- A file inside the directory the host granted. The config named the
+-- directory; this program names the file. Neither knows the other's half.
+local note = ask("fs/read", { path = "note.txt" })
+print("fs/read note.txt: " .. note.status .. " " .. tostring(note.value or note.detail))
+
+-- The same call, aimed outside the granted directory. Refused on the
+-- resolved path, so `..` buys nothing.
+local escape = ask("fs/read", { path = "../../etc/passwd" })
+print("fs/read escape:   " .. escape.status .. " " .. tostring(escape.detail))
+
+-- A family the host never wired. Answered, not dropped: every drained
+-- request gets a reply, and "denied" is one.
+local nope = ask("sql/query", { sql = "select 1" })
+print("sql/query:        " .. nope.status .. " " .. tostring(nope.detail))

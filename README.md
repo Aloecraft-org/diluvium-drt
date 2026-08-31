@@ -118,6 +118,44 @@ in another process, which is the control endpoint's job and lands with sshd.
 A seams-only build (`--no-default-features`) compiles the traits without the
 C core — the shape the wasm targets start from.
 
+## Writing a program
+
+A program reaches the host through the **`host` library**, and the smallest
+useful one is a line:
+
+```lua
+print(host.time())        -- drt run hello.dlua
+```
+
+`host` is where anything that costs a grant lives — the clock, entropy, the
+filesystem, sql, spawning:
+
+```lua
+host.time()                          -- wall-clock ms
+host.monotonic()                     -- ms for intervals, this process's epoch
+host.crypto.random(16)               -- hex
+host.fs.read("note.txt")             -- raises on non-ok, with the refusal's own words
+host.fs.try_read("note.txt")         -- value, status, detail — a denial is an answer
+host.call("sql/exec", {sql = "..."}) -- any connector by name
+host.try("sql/exec", {sql = "..."})  -- the same, without the raise
+```
+
+**`time.now()` does not exist, and the error is misleading.** `time` *is* a
+library — the pure calendar one, `time.iso` / `time.parse` / `time.fields` —
+so `time.now()` answers `attempt to call a nil value (field 'now')`, which
+reads as a broken runtime rather than a wrong name. The clock is not there
+because a clock is not pure: it costs a grant, a connector answers it, and
+the answer lands in the log so a replay replays the same moment. That is
+`host.time()`.
+
+[`examples/hello.dlua`](examples/hello.dlua) is one deployment seen from
+inside, run it two ways and compare;
+[`examples/by-hand.dlua`](examples/by-hand.dlua) is the same program written
+against the raw `host/calls` queue pair, which is what every call above does
+underneath. [`doc/HostBaseline.md`](doc/HostBaseline.md) says which of these
+every DRT host must answer — the browser tier included — and the rules that
+make an absent one safe rather than mysterious.
+
 ## License
 
 Apache-2.0, same as diluvium.
