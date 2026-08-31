@@ -117,7 +117,51 @@ substitute for the release entry. The mirror half needs no DRT change:
 `install.sh` falls back to GitHub Releases (install.sh:13, 58-59), so the
 Lab can consume from GitHub whenever there is something to consume.
 
-### Open: an unexplained SIGSEGV, twice, in two different binaries
+### Resolved: two SIGSEGVs, two different bugs
+
+**Read this box first; the rest of this section is the hunt, kept because
+several of its confident conclusions were wrong in ways worth recording.**
+
+Both crashes are now named, and they were never the same bug:
+
+- **FM-1**, the `stun`/`relay` crash: a use-after-free in tokio 1.53.1
+  runtime teardown. Named 2026-08-28, fixed the same day. The subsection
+  below stands as written.
+- **FM-2**, the `host_lua` crash: a data race on diluvium's process-global
+  named-continuation registries (`diluvium_shim_addcont`, `src/dshim.c`),
+  hit when two threads call `dv_new` at once. Named 2026-08-31 from a
+  symbolized core in
+  [ci run 33444175875](https://github.com/Aloecraft-org/diluvium-drt/actions/runs/33444175875).
+  See `doc/Failure-Modes.md` and `doc/FM-2-Upstream.md`.
+
+**What that retires in the text below.** Four eliminations recorded here as
+tested findings could not have tested what they claimed, because
+`addcont` only writes until every name is registered and the array is then
+read-only for the life of the process — so the race window is cold start,
+and only cold start:
+
+- *"Not concurrent instance lifecycle — 64,800 instances across 24 threads,
+  clean."* That stress samples the window once, at startup, then hammers an
+  immutable array. It had no power to reject the hypothesis it was taken to
+  reject.
+- *"~2,600 local runs / 500 runs of the same binary hash / 1,600 probe runs,
+  all clean."* More iterations of the same shape is the wrong axis. The
+  right one is more *fresh processes* with more threads entering `dv_new`.
+- *"Under valgrind, 0 errors from 0 contexts. So not heap corruption."* True
+  and irrelevant: the default tool is memcheck, which does not detect data
+  races. This needed helgrind or ThreadSanitizer.
+- *"The sharpest description available"* — that both dying binaries run a
+  full deployment concurrently with other tests — was a correct observation
+  pointed one level too high. The shared factor is concurrent `dv_new`, not
+  concurrent deployments.
+
+The one inference that held: *"instrument the scene, do not keep asking this
+machine."* Arming cores in `ci.yml` is what produced the answer, on the
+first occurrence after it was armed.
+
+---
+
+#### The hunt, as it ran
 
 The first v0.3.0 publish attempt died in `cargo test --workspace
 --all-features` with **SIGSEGV in the `host_lua` test binary**, ~87 ms in,
@@ -204,7 +248,9 @@ runtime and get faster as a side effect.
 `host_lua` crash. That binary never constructs a tokio runtime (no
 `tokio`, no `async`, no `Runtime` anywhere in it, and its cap6 deployment
 configures neither relay nor stun). So this is either a second, distinct
-crash, or the host_lua one is still unexplained. It stays open.
+crash, or the host_lua one is still unexplained. It stays open. *(Answered
+2026-08-31: it was a second, distinct crash — the dshim race. The
+"either/or" above was right, and the first branch was the true one.)*
 
 **Shipped-code exposure, worth a decision rather than a shrug:** the
 bridges (`RelayBridge`, `StunBridge`) hand their runtime to a thread that
@@ -248,6 +294,14 @@ The probe workflow is kept rather than deleted: if this recurs, one
 dispatch turns a bare `signal: 11` into a backtrace. Treat a recurrence as
 a finding for the diluvium session with both runs linked, not as a flake
 to re-run past.
+
+That instruction was the right one and it paid: the recurrence on
+2026-08-31 came with cores already armed in `ci.yml`, and one backtrace
+ended the hunt. What the probe could never have done — and what four days
+of it obscured — is reproduce a cold-start race by looping a warm process.
+Keep the workflow; when the next unexplained signal death arrives, ask
+first whether the thing you are about to loop can still fail after its
+first second of life.
 
 ## The workflow
 

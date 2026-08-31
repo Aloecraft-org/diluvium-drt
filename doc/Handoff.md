@@ -215,11 +215,23 @@ fetchpoint — is unwired, not architecturally lost. Native-only surfaces
 that genuinely do not cross: `listen.rs` (thread-per-connection blocking
 sockets) and tunnel/relay/stun (tokio, native sockets).
 
-**FM-2 is open.** The `host_lua` SIGSEGV. 1,600 runs on runners came
-back clean, but that loops the binary *alone* — it reproduces its own
-6-tests-on-4-threads parallelism, not the machine state of a full
-workspace suite, which is what both real occurrences happened under. It
-lowers the estimate; it does not close it. See `doc/Failure-Modes.md`.
+**FM-2 is named, mitigated here, open upstream.** The `host_lua` SIGSEGV
+is a data race on diluvium's process-global continuation registries
+(`diluvium_shim_addcont`, `src/dshim.c`), hit when two threads call
+`dv_new` at once. A symbolized core on 2026-08-31 caught three threads
+inside `diluvium_openlibs`, one faulting in `strcmp`. DRT now serialises
+instance creation behind a mutex in `drt-swarm/src/engine.rs`, which closes
+it here; the real fix is upstream. Shipped exposure was nil either way —
+DRT creates instances only on the drive-loop thread — so this was always a
+test-harness crash for us. See `doc/Failure-Modes.md` and
+`doc/FM-2-Upstream.md`, the latter being the brief to hand whoever picks it
+up in the diluvium repo.
+
+The lesson worth carrying past this bug: `addcont` stops writing once every
+name is registered, so the window is cold start and nothing else. Four days
+of probes looped a warm process and proved nothing. Before you loop a
+binary to reproduce a crash, ask whether the thing you suspect can still
+fail after its first second of life.
 
 **v0.3.1 is unreleased.** See below.
 
@@ -320,9 +332,11 @@ clean.
 3. **Publish v0.3.1.** The owner can create the release by hand from the
    Releases page; the App-token 403 does not apply to a human account.
    Adjusting the ruleset is the separate fix that makes the workflow work.
-4. Leave drt-web, the REPL conveniences, and FM-2 alone unless something
-   forces them — though `doc/HostBaseline.md` now says what drt-web has to
-   answer, which is the part that was missing.
+4. Leave drt-web and the REPL conveniences alone unless something forces
+   them — though `doc/HostBaseline.md` now says what drt-web has to answer,
+   which is the part that was missing. FM-2 needs no more work *here*: the
+   mitigation is landed, and what remains is the upstream fix, briefed in
+   `doc/FM-2-Upstream.md`.
 
 The instinct to fix the first-run message *first* is still wrong: decision
 1 rewrites it anyway.

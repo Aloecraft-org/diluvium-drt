@@ -80,49 +80,77 @@ site that dropped a runtime now leaks it or never had one.
 
 ---
 
-## FM-2: the `host_lua` SIGSEGV — OPEN, unexplained
+## FM-2: a data race in diluvium's continuation registries — NAMED, mitigated here, open upstream
 
 **Do not read FM-1 as covering this.** `host_lua` constructs no tokio
 runtime — no `tokio`, no `async`, no `Runtime` anywhere in the binary, and
-its cap6 deployment configures neither relay nor stun. FM-1's mechanism
-cannot be its mechanism.
+its cap6 deployment configures neither relay nor stun. FM-1's mechanism is
+not its mechanism, and the two crashes were never the same bug.
 
-**Occurrences.** Twice, both in `cargo test --workspace --all-features` on
-a GitHub runner: release runs 5 and 7 (2026-08-28). Never locally, in
-several thousand runs across two rustc versions, under valgrind (0 errors),
-and under a 64,800-instance concurrent-lifecycle stress.
+**Named 2026-08-31**, from the first symbolized core this hunt produced:
+`ci` [run 33444175875](https://github.com/Aloecraft-org/diluvium-drt/actions/runs/33444175875).
 
-**Why it matters more than FM-1 did.** The binary exercises the cap6 shape
-— `drt::start::start` driving a real engine — which is the shape a
-fetchpoint runs. If the cause is in that path rather than in the test
-harness, the fetchpoint *is* exposed. That is not established; neither is
-the opposite.
+```
+Program terminated with signal SIGSEGV, Segmentation fault.
+#0  __strcmp_evex ()
+#1  diluvium_shim_addcont ()
+#2  diluvium_openlibs ()
+#3  dv_new ()
+#4  diluvium::Instance::fresh (src/lib.rs:400)
+...
+#10 host_lua::a_relay_block_refuses_a_half_configured_label (host_lua.rs:217)
+```
 
-**Detection today.** Core dumps are armed in `ci.yml` and `release.yml`,
-with a gdb backtrace step on failure, so the next occurrence yields a stack
-rather than a bare `signal: 11`. That instrumentation is what turned FM-1
-from six weeks of theories into one afternoon's answer.
+Two *other* threads were inside `dv_new` → `diluvium_openlibs` at the same
+moment. That is the finding: three threads constructing instances at once.
 
-**Probe result, 2026-08-28 19:29** ([run 33204062245](https://github.com/Aloecraft-org/diluvium-drt/actions/runs/33204062245)):
-**1,600 runs of the `host_lua` binary on runners — 0 signal deaths.**
+**The mechanism.** `diluvium_shim_addcont` (`src/dshim.c:750` at pin
+`f137b30`) appends to a process-global array — `dshim_conts`,
+`dshim_ncont` — with no mutex, no atomic and no once-guard, and
+`diluvium_openlibs` calls it on every `dv_new`. Two threads can claim the
+same slot index, leaving a slot whose `name` is still `NULL`; the next
+scan calls `strcmp(NULL, ...)` and the process dies. `src/dsnap.c:1312`
+carries a second copy of the same function over a second array. Full
+write-up, with the interleaving and the fix options, in
+[`FM-2-Upstream.md`](FM-2-Upstream.md).
 
-Read that narrowly. It loops the binary *alone*, which does reproduce its
-own internal parallelism (6 tests across 4 threads) but not the machine
-state of a full `cargo test --workspace --all-features`, which is what
-both real occurrences happened under. So it lowers the estimate; it does
-not close FM-2.
+**Why it never reproduced, which is the part worth keeping.** `addcont`
+writes only when a name is not already present, so once every name is
+registered the array is read-only for the life of the process. The window
+is the first few microseconds of the first concurrent `dv_new` calls in a
+fresh process, and then it closes permanently. Hammering a running process
+samples that window exactly once. That is why 1,600 probe runs, ~2,600
+local runs and a 64,800-instance stress all came back clean and all proved
+nothing — and why the original crash landed ~87 ms in, before any test
+reported, which is process start.
 
-**Eliminated so far** (each tested, not reasoned): stale build cache;
-rebuild-then-run; concurrent engine lifecycle; heap corruption; thread
-stack size; a changed C core (byte-identical to v0.2.0's); CPU contention;
-host_lua-specific framing (a second binary crashed too).
+It also explains the clean valgrind run: the default tool is memcheck,
+which does not detect data races. That needed helgrind or ThreadSanitizer.
 
-**Operational stance until it is named.** A crash here would be a hard
-process death of the deployment, not a teardown nicety — so a fetchpoint
-running `drt start` should be under a supervisor that restarts it
-(`Restart=always`), and its restart count should be alerted on rather than
-silently absorbed. That is ordinary practice regardless; this is a reason
-not to skip it.
+**Shipped exposure: none.** `drt run`, `drt start` and `drt repl` create
+instances only on the drive-loop thread — `listen.rs`'s per-connection
+threads push `Ingress` over a channel and construct nothing, and spawns go
+through `&mut Swarm`. DRT was never violating `dv.h`'s "one instance, one
+thread" contract, and could not have: the contract is per *instance*, the
+registries are per *process*, and nothing in the header covers them. The
+two binaries that died were test harnesses, which are the only place in
+this tree that calls `dv_new` from several threads at once.
+
+**Mitigation, landed.** `crates/drt-swarm/src/engine.rs` serialises
+instance *creation* behind a `Mutex`. Creation is rare and cheap next to
+running a program, and the lock covers only creation — instances still run
+concurrently, one per thread. This closes the cold-start window completely
+for DRT. It is a mitigation in one host, not the fix; remove it when the
+diluvium pin carries the upstream repair.
+
+**Still open upstream**, and it stays open here until then, because every
+other host — drt-web included, once it hosts more than one instance — has
+the bug unmitigated.
+
+**Operational stance.** Unchanged and still worth doing: a fetchpoint
+running `drt start` belongs under a supervisor that restarts it
+(`Restart=always`), with the restart count alerted on rather than silently
+absorbed.
 
 ---
 

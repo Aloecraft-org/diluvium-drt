@@ -399,6 +399,9 @@ pub mod diluvium_engine {
         }
     }
 
+    /// Serialises `dv_new`. See the comment in `load` and doc/FM-2-Upstream.md.
+    static CREATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn config_for(budget: &Budget, unsafe_stdlib: bool) -> diluvium::Config {
         let mut cfg = diluvium::Config::new();
         if unsafe_stdlib {
@@ -422,6 +425,26 @@ pub mod diluvium_engine {
         }
 
         fn load(&self, spec: LoadSpec<'_>) -> Result<Box<dyn Instance>, EngineError> {
+            // FM-2. `dv_new` reaches `diluvium_openlibs`, which registers named
+            // C continuations into two process-global arrays
+            // (`dshim_conts`/`dshim_ncont` in src/dshim.c, `ds_conts`/`ds_ncont`
+            // in src/dsnap.c) with no synchronisation at all. Two threads
+            // constructing instances at once can claim the same slot, leaving
+            // one whose `name` is still NULL, and the next scan segfaults in
+            // `strcmp`. That is the crash, with a symbolized core, in
+            // doc/Failure-Modes.md.
+            //
+            // The arrays go read-only once every name is registered, so this
+            // is a cold-start race: serialising creation closes it completely.
+            // Creation is rare and cheap relative to running a program, and
+            // this lock covers only creation -- instances still run
+            // concurrently, one per thread, exactly as dv.h requires.
+            //
+            // A mitigation, not the fix. The fix is upstream (doc/FM-2-Upstream.md);
+            // remove this when the diluvium pin carries it.
+            let _creating = CREATE_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let cfg = config_for(&spec.budget, spec.unsafe_stdlib);
             let inner = match spec.program {
                 ProgramBytes::Source(text) => {
