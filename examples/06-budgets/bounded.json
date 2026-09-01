@@ -1,5 +1,5 @@
 {
-  "_comment": "A budget the job fits inside. The whole loop costs a little under 2.4 million instructions, so this run never comes near the ceiling and the bound is invisible in the output.",
+  "_comment": "A budget the job fits inside. The whole loop costs 2,400,001 instructions, so this run never comes near the ceiling and the bound is invisible in the output.",
 
   "program": { "path": "app.dlua" },
 

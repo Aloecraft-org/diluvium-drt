@@ -48,7 +48,7 @@ another directory by editing the config and nothing else.
 **`..` buys nothing, and neither does a symlink.** The path is checked
 twice. First on the components as typed: a `..` that climbs above the scope
 is refused before the filesystem is touched at all, which is why the answer
-above is the same sentence whether or not `/etc/passwd` is there -- the
+above is the same sentence whether or not `/etc/passwd` is there — the
 refusal is not an existence oracle. Then again on what the filesystem
 actually resolved to, which is what catches a symlink inside the scope
 pointing out of it.
@@ -62,8 +62,17 @@ the ceiling for the whole process). `error` means the call did reach a
 connector and the connector refused it against its own scope, which is the
 escape attempt above. Both arrive as replies, with a sentence you can print.
 
+**A stated ceiling is a ceiling; an unstated one is not.** `with-fs.json`
+names two grants, so `sql/query` is outside them and the gate says so. A
+config that omits `caps` — or that writes `caps: []` — does not thereby
+grant nothing: on v0.4.0 both leave no ceiling to enforce, and every call a
+wired connector answers goes through. `caps` narrows what `connectors`
+already turned on; it is not the thing that turns them on. The configs in
+`06` are the omitted shape, which is harmless there only because that
+program makes no calls at all. Write the grants you mean.
+
 **A refusal is a reply, not an exception.** `host.try(name, args)` returns
-`value, status, detail`, so all three outcomes -- a result, a scope refusal,
-and a family that was never wired -- are read by the same three lines of
+`value, status, detail`, so all three outcomes — a result, a scope refusal,
+and a family that was never wired — are read by the same three lines of
 code. The direct forms (`host.fs.read`, `host.call`) raise instead, and are
 the right shape only where a refusal really would be a bug.

@@ -5,8 +5,12 @@ interesting: the scope is an **origin allowlist**, and an allowed origin can
 carry **headers the connector injects and the program can neither set nor
 read**.
 
-That second one is the part worth the example. It means a drt app can call
-an authenticated API without the program ever holding the credential.
+That second one is the part worth the example: it means a drt app can call
+an authenticated API without the program ever holding the credential. It is
+also the half this page cannot run — the part of the connector that opens a
+socket does not work under `drt run` in v0.4.0, so the command below shows
+the refusals, and the header terms are read as configuration. The last
+section says exactly which half that leaves standing.
 
 ## Run it
 

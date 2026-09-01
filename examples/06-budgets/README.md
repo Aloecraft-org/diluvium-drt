@@ -60,7 +60,8 @@ stands. There is no callback, no warning at ninety percent, and nothing for
 the program to negotiate with.
 
 **A bound you fit inside is invisible.** The first two runs print the same
-five lines. The whole loop costs a little under 2.4 million instructions and
+five lines. The whole loop costs 2,400,001 instructions — binary search on
+the number pins it exactly: 2,400,000 fails and 2,400,001 finishes — and
 `bounded.json` allows ten million, so the only evidence of the ceiling is
 that nothing happened. That is what a correctly sized budget looks like, and
 it is why the number is worth writing down in the runs where it never bites.
@@ -73,10 +74,11 @@ sees a non-zero exit and a reason, rather than having to guess whether the
 program hung.
 
 **Both fields bound the guest VM, and nothing else.** `instructions` is VM
-instructions executed; `memory_kb` is how much the VM may hold, and a program
-that exceeds it fails the same way with `not enough memory` in place of the
-sentence above. The negative space is the part worth stating, because it is
-not what most people assume:
+instructions executed; `memory_kb` is how much the VM may hold. Exceeding
+`memory_kb` also stops the run and exits 1, but the shape is not identical:
+it is `drt run: not enough memory` on stderr with no traceback at all, so
+there is no line number to point at. The negative space is the part worth
+stating, because it is not what most people assume:
 
 - **Neither bounds wall-clock time.** A hostcall that parks for 85 seconds
   consumes no instructions, so a program waiting on a slow `rest/get` or a
@@ -89,13 +91,20 @@ not what most people assume:
 That is why `app.dlua` is a pure loop with no hostcalls in it. A loop is the
 only shape that spends this budget rather than sitting inside it.
 
-**An unstated bound inherits the parent's.** The first run states no budget
-at all, and is not therefore bounded at zero: `budget` is absent, both fields
-fall through to the parent's, and the root's parent is the process. The same
-block is what a spawn request carries one level down, which is where the
-other half of the rule lives — a child may state a smaller number and never a
-larger one. `drt run` runs a single instance, so there is no child here to
-watch that half against.
+**An unstated bound is not a bound of zero.** The first run states no budget
+at all and finishes all 400,000 steps: an absent `budget` installs no
+counting hook, so the run is unbounded, not bounded at nothing. That is the
+root's case, and it is the one this example shows.
+
+**Attenuation is the design's rule, and v0.4.0 does not enforce it on
+budgets.** The same block a config carries is what a spawn request carries
+one level down, and the intent is that a child states a smaller number and
+never a larger one. `drt-config` has the check — `Budget::fits_within`, with
+unit tests — but nothing on the spawn path calls it: `Swarm::do_spawn` takes
+the request's `budget` verbatim, and an absent one leaves the child
+unbounded rather than inheriting the parent's ceiling. Capability grants do
+attenuate at spawn; budgets do not yet. `drt run` runs a single instance, so
+there is no child here either way.
 
 **In v0.4.0 the instruction budget is escapable from inside the guest.** A
 `pcall` around the loop catches the exhaustion as an ordinary Lua error, and

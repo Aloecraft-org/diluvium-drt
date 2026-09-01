@@ -1,9 +1,10 @@
-# 00 — getting drt, and proving it is the one you think
+# 00-install-methods
 
-A drt binary is one self-contained file with no runtime to install first
-(the Linux asset is statically linked), so getting it is a download. The
-part worth teaching is the step after: asking the binary what it is,
-instead of believing its filename.
+Getting a drt binary, and proving it is the one you think. A drt binary is
+one self-contained file with no runtime to install first (the Linux asset is
+statically linked), so getting it is a download. The part worth teaching is
+the step after: asking the binary what it is, instead of believing its
+filename.
 
 If you already have `drt` on your PATH, run the block below once and move on
 to `01`.
@@ -15,7 +16,19 @@ cd examples/00-install-methods
 drt buildinfo
 ```
 
-Six lines come back, and each answers something you would otherwise guess:
+## What you should see
+
+```
+version: 0.4.0
+profile: full
+dv_abi: 1
+dv_abi_expected: 1
+connectors: time,fs,crypto,sql,ssh,rest,listen
+verbs: buildinfo,netcheck,ps,relay,repl,run,start,stun,tunnel
+```
+
+That is this release; a different build answers with its own numbers. Six
+lines come back, and each answers something you would otherwise guess:
 
 - `version` — which release this is. A renamed file cannot lie here.
 - `profile` — `full` or `slim`. Slim is the size build and carries fewer

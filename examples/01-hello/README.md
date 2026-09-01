@@ -40,7 +40,7 @@ directly, so one file you can read in a minute is already a thing you can
 run. There is no project to create and no build step in front of it.
 
 **What a program can reach is the deployment's decision, not the program's.**
-With no config, one connector is wired -- `time` -- and it answers two calls,
+With no config, one connector is wired — `time` — and it answers two calls,
 `time` and `time/monotonic`. No other family is wired, so every call outside
 that one answers
 
@@ -48,12 +48,12 @@ that one answers
 denied  no connector is wired for 'crypto/random' in this process
 ```
 
-**A denial is a reply, not an error.** That is the part worth slowing down
-for. The program asked for entropy, the process answered "nobody here does
-that", and the next line ran. Nothing was dropped, nothing timed out, and
-there was no exception to catch. `host.try(name, args)` returns
+**A refusal is a reply, not an exception.** That is the part worth slowing
+down for. The program asked for entropy, the process answered "nobody here
+does that", and the next line ran. Nothing was dropped, nothing timed out,
+and there was nothing to catch. `host.try(name, args)` returns
 `value, status, detail`, so the program reads a refusal through the same code
-path it reads a result through -- which is what lets one program stay honest
+path it reads a result through — which is what lets one program stay honest
 across deployments that wire different things.
 
 The direct forms (`host.time()`, `host.fs.read(...)`) raise on a non-ok

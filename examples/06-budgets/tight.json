@@ -1,5 +1,5 @@
 {
-  "_comment": "The same program, and the same file as bounded.json but for one number. 1,000,000 is well under the 2.4 million the loop needs, so the run stops partway and the process exits 1.",
+  "_comment": "The same program, and the same file as bounded.json but for one number. 1,000,000 is well under the 2,400,001 the loop needs, so the run stops partway and the process exits 1.",
 
   "program": { "path": "app.dlua" },
 
