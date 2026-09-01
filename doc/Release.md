@@ -70,13 +70,25 @@ does the same dispatch with `tag` set and `publish=true` touch the
 Releases page. The publish job depends on tests and builds, so a failure
 anywhere means no release rather than a partial one.
 
-## v0.3.1 — superseded by v0.4.0, kept for the reasoning
+## v0.3.1 — published by hand, three days late
 
-**This section describes a release that was never published.** Its content
-shipped in **v0.4.0**, renumbered because the connector set changed (see
-above) and because a fresh number removes any question about whether the
-`v0.3.1` tag that 403'd half-exists. What each item below carries is still
-accurate; only the number is wrong. `CHANGELOG.yaml` is the current record.
+**Corrected 2026-09-01.** An earlier version of this section said v0.3.1 was
+never published and had been superseded by v0.4.0. That was true when written
+and stopped being true on 2026-08-31 at 22:49 UTC, when the release was
+created by hand from the Releases page — the workaround this document
+recommends, since the 403 is the App token's refusal and a human account is
+not subject to it.
+
+So v0.3.1 exists, is tagged at `00460fe`, and carries STUN, the C host's
+`access` spelling, FM-1 and FM-2's mitigation. It does **not** carry `rest`
+or `netcheck`; those are v0.4.0's, which is why the connector set changed and
+why v0.4.0 is not a patch. `CHANGELOG.yaml` is the current record and now
+holds a real v0.3.1 entry.
+
+The lesson worth keeping: this document described the release state and the
+release state moved underneath it. The changelog is generated and gated
+precisely so that cannot happen twice — prose about releases goes stale,
+`changelog.py check` does not.
 
 ### What it carried and why it followed v0.3.0 the same day
 
