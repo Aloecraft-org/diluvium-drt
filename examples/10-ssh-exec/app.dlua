@@ -1,4 +1,4 @@
--- Two commands the program would like run. Neither of them says where.
+-- Two commands this program would like run. Neither line says where.
 --
 --   drt run --config deploy.json
 --   drt run app.dlua

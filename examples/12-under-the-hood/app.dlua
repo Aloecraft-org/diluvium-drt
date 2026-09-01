@@ -1,0 +1,52 @@
+-- What every host.* call is underneath: a request on one queue, an answer on
+-- another. Deliberately more ceremony than anyone should type — read it once,
+-- then go on writing host.time().
+--
+--   drt run app.dlua
+
+-- The protocol fixes both names. `exported` is the flag that lets a host see
+-- and attach to a queue at all, and `on_full = "reject"` is the one
+-- doc/Hostcall.md states outright: a host that stopped draining becomes a
+-- refusal you can see rather than a program parked forever.
+local calls   = queue.declare("host/calls",   { capacity = 8, exported = true, on_full = "reject" })
+local replies = queue.declare("host/replies", { capacity = 8 })
+
+-- A request names three fields — `tok`, `call`, and `args` when the call
+-- takes any — and the token is yours: the host echoes it back verbatim and
+-- never reads it, which is what lets a program keep several calls in flight
+-- and still know which answer is whose.
+-- example: omits the reply timeout, and the stash the real library keeps for
+-- replies that arrive out of order — with one call in flight at a time, the
+-- next reply on the queue is always this one's.
+local tok = 0
+local function ask(call, args)
+    tok = tok + 1
+    queue.push(calls, { tok = tok, call = call, args = args })
+    local _, reply = queue.wait({ replies })
+    assert(reply.tok == tok, "the token comes back verbatim")
+    return reply
+end
+
+local function row(label, status, answer)
+    print(string.format("  %-22s %-7s %s", label, status, answer))
+end
+
+-- A reply names four and carries three: the token, a status, and `value` when
+-- the status is ok or `detail` when it is not. A denial is that table,
+-- delivered — which is "a refusal is a reply, not an exception", seen from
+-- below.
+print("by hand, on the raw queue pair:")
+local now = ask("time")
+row("time", now.status, now.value)
+local sql = ask("sql/query", { sql = "select 1" })
+row("sql/query", sql.status, sql.detail)
+
+-- The host library owns this same pair: it looks the two queues up before
+-- declaring its own, and mints its tokens from 2^30 upward so they can never
+-- collide with the small ones above. host.time() raises on a non-ok status,
+-- so a row it printed is an ok one.
+print("")
+print("the same two calls, through the library that owns that same pair:")
+row("host.time()", "ok", host.time())
+local _, status, detail = host.try("sql/query", { sql = "select 1" })
+row('host.try("sql/query")', status, detail)

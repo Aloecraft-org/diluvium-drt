@@ -2,9 +2,9 @@
 -- program is this same file all three times and only the numbers around it
 -- change:
 --
---   drt run app.dlua                 -- no config, so no bound is stated
---   drt run --config bounded.json    -- a bound this job fits inside
---   drt run --config tight.json      -- a bound it does not
+--   drt run app.dlua                 — no config, so no bound is stated
+--   drt run --config bounded.json    — a bound this job fits inside
+--   drt run --config tight.json      — a bound it does not
 --
 -- Nothing below asks what its budget is, and nothing branches on how much is
 -- left. A program does not negotiate a budget: it spends, and the VM stops it

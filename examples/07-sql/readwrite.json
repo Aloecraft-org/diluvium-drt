@@ -1,5 +1,5 @@
 {
-  "_comment": "One of the two apps. This file and its neighbour are the same but for `access`, and that one word decides whether `sql/exec` exists at all.",
+  "_comment": "One of the two apps. This file and its neighbour are the same but for `access`, and that one word decides whether the connector answers `sql/exec` or refuses it.",
 
   "program": { "path": "app.dlua" },
 

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# run-all.sh -- run every numbered example and diff its output against the
+# run-all.sh — run every numbered example and diff its output against the
 # expected.txt beside it.  This is the gate that keeps the example set from
 # rotting: an example whose output has drifted from its README fails here.
 #
-# Dependencies: bash, and coreutils + sed + diff.  Nothing else -- in
+# Dependencies: bash, and coreutils + sed + diff.  Nothing else — in
 # particular no jq, so meta.json is read by the small JSON reader below.
 
 set -o pipefail
@@ -14,7 +14,7 @@ HERE=$(cd -- "$(dirname -- "$0")" && pwd)
 
 usage() {
     cat <<EOF
-$SELF -- run every example in $HERE and diff it against its expected.txt.
+$SELF — run every example in $HERE and diff it against its expected.txt.
 
 usage: $SELF [options] [example ...]
 
@@ -25,7 +25,7 @@ to both that output and expected.txt, and diffs the two.  It prints one
 ok/FAILED line per example, the diff for each failure, and a summary.
 
 It exits non-zero if any example that RAN failed.  An example skipped for
-needing a network is never counted as a pass -- it is printed as
+needing a network is never counted as a pass — it is printed as
 "skipped (needs network)" and named again in the summary.
 
 options:
@@ -39,7 +39,7 @@ options:
 
 arguments:
   Any number of example names.  A name matches if it is a prefix of, or a
-  substring of, the directory name -- so "04", "04-files" and "files" all
+  substring of, the directory name — so "04", "04-files" and "files" all
   select examples/04-files.  With no names, every example runs.
 
 environment:
@@ -318,7 +318,7 @@ fi
 # ---------------------------------------------------------------------------
 # Resolve the binary under test, and put it on PATH as "drt".
 #
-# meta.json spells the command the README spells -- "drt run app.dlua" -- and
+# meta.json spells the command the README spells — "drt run app.dlua" — and
 # rewriting that text would also rewrite the "$ drt run app.dlua" banners the
 # examples echo into their own expected output.  So instead of editing the
 # command, we edit PATH.
@@ -390,7 +390,7 @@ for name in ${examples[@]+"${examples[@]}"}; do
     fi
 
     if [ "$meta_net" = "true" ] && [ "$want_net" != 1 ]; then
-        printf 'skipped  %-24s (needs network) -- pass --net to run it\n' "$name"
+        printf 'skipped  %-24s (needs network) — pass --net to run it\n' "$name"
         skipped[${#skipped[@]}]=$name
         continue
     fi
@@ -460,7 +460,7 @@ n_skip=${#skipped[@]}
 n_bare=${#uncovered[@]}
 
 for n in ${uncovered[@]+"${uncovered[@]}"}; do
-    printf 'NO META  %-24s not checked by anything -- add a meta.json\n' "$n"
+    printf 'NO META  %-24s not checked by anything — add a meta.json\n' "$n"
 done
 
 total=$((n_ok + n_fail + n_skip + n_bare))

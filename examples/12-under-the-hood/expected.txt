@@ -1,0 +1,7 @@
+by hand, on the raw queue pair:
+  time                   ok      <ms>
+  sql/query              denied  no connector is wired for 'sql/query' in this process
+
+the same two calls, through the library that owns that same pair:
+  host.time()            ok      <ms>
+  host.try("sql/query")  denied  no connector is wired for 'sql/query' in this process

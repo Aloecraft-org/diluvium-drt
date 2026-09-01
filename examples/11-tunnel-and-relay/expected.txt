@@ -1,0 +1,7 @@
+$ drt tunnel
+drt tunnel: name a URL to bridge stdio to, --listen with --to, or --park with --to
+exit 1
+
+$ drt relay --config rendezvous.host.lua
+drt: rendezvous.host.lua: relay.labels.xps needs both park_key and caller_key; an absent key refuses every leg
+exit 1

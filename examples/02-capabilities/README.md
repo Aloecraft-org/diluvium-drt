@@ -45,9 +45,11 @@ can be aimed at another directory by editing the config alone.
 **Two layers can say no, and they say it differently.** `denied` is the gate's
 word for a call that never reached a connector: nothing is wired for that
 family, or `caps` — the ceiling for the whole process — does not cover it.
-`error` means a connector did see the call and refused it against its own
-scope. That one is decided on the path as typed, before the filesystem is
-touched, so its sentence is the same whether or not `/etc/passwd` is there.
+`error` means a connector saw the call and refused it against its own scope,
+decided on the path as typed, before the filesystem is touched, so its
+sentence is the same whether or not `/etc/passwd` is there. A verb a wired
+connector does not have — `fs/chmod`, say — is `error` too, and its sentence
+names the four it does answer.
 
 **A refusal is a reply, not an exception.** `host.try(name, args)` returns
 `value, status, detail`, so all three outcomes are read by the same three

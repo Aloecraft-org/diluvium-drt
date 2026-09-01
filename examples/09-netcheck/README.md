@@ -6,7 +6,7 @@ a sentence of advice and the measurements that produced it.
 
 ## Run it
 
-```sh
+```
 cd examples/09-netcheck
 drt netcheck
 drt netcheck --stun stun.l.google.com:19302
@@ -31,10 +31,10 @@ $ drt netcheck --stun stun.l.google.com:19302
    ... the same nine lines, then exit 1
 ```
 
-Neither run sent a packet; the second returns in milliseconds, refused before
-a socket is opened. The `v6` line is read from your routing table rather than
-from the network, so a machine holding a routable IPv6 address prints it here,
-answers `v6-direct`, and exits 0.
+Neither run sent a packet; the second is refused before a STUN socket is
+opened, and both return in milliseconds. The `v6` line is read from your
+routing table rather than from the network, so a machine holding a routable
+IPv6 address prints it here, answers `v6-direct`, and exits 0.
 
 ## What it teaches
 
@@ -62,10 +62,14 @@ connection that never forms. A measured verdict exits 0, `relay` included; the
 
 ## With servers of your own
 
-```sh
+```
 drt netcheck --stun stun.l.google.com:19302 --stun stun.cloudflare.com:3478
 # example: omits --json and the case over the verdict a deploy script writes.
 ```
+
+A measured run names the port each server reported, labels it `independent`,
+`SYMMETRIC` or `open`, and exits 0. A network that blocks the probes waits a
+few seconds and lands back on the block above: nothing measured, exit 1.
 
 Two names that resolve to one host are one destination, and one destination
 looks endpoint-independent under any NAT — which is why the flag asks for two

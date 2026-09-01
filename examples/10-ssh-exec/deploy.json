@@ -1,5 +1,5 @@
 {
-  "_comment": "The shape a real deployment has. One host, one user, one key, one trust anchor — pin them here and the program above can only ask for a command.",
+  "_comment": "The shape a real deployment has. One host, one user, one key, one trust anchor — pin them here and the program it names can only ask for a command.",
 
   "program": { "path": "app.dlua" },
 

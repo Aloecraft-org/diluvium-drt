@@ -1,7 +1,7 @@
 # 07-sql
 
 A SQLite database from a program. `sql/exec` writes, `sql/query` reads, and
-the config decides which of the two exists. One program, two apps:
+the config decides which of the two it will let run. One program, two apps:
 `readwrite.json` and `read-only.json` differ in a single word.
 
 ## Run it
@@ -59,10 +59,13 @@ refused for the separator, which is stricter than an `fs` scope, where a path
 may descend. `create` follows the write grant, so the readwrite app makes
 `notes.db` on first use and the read-only one would not.
 
-**`access` decides whether `sql/exec` exists.** `readwrite` wires both calls;
-`read` wires `sql/query` alone and refuses every write by name, before the
-statement is prepared. It defaults to `read`. Nothing else in the two configs
-differs, so every line that changes in the second run is that one word.
+**`access` decides whether `sql/exec` is answered, not whether it exists.**
+Both apps wire the same connector and reach both calls; under `read` the
+connector sees `sql/exec` and refuses it by name, before the statement is
+prepared. That is why the second run says `error` and not `denied`: the call
+did reach a connector, which is the distinction `02` draws. `access` defaults
+to `read`. Nothing else in the two configs differs, so every line that changes
+in the second run is that one word.
 
 **The split is what a statement does, not what it is called.** `delete from
 notes` asked of `sql/query` comes back `error` — because SQLite prepared it

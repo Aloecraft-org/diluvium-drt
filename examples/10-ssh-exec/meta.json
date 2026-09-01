@@ -1,0 +1,7 @@
+{
+  "name": "10-ssh-exec",
+  "teaches": "host:ssh/exec runs a command on another machine, and the scope pins which one: host, user, key path, and a required host key or fingerprint, all validated at startup by name. There is no local exec — 'exec/run' answers denied and a config wiring connectors.exec is refused when it loads.",
+  "cmd": "echo '$ drt run --config deploy.json'; drt run --config deploy.json; echo \"exit $?\"; echo; echo '$ drt run app.dlua'; drt run app.dlua; echo \"exit $?\"; echo; echo '$ drt run --config no-exec.json'; drt run --config no-exec.json; echo \"exit $?\"",
+  "needs_network": false,
+  "normalise": []
+}

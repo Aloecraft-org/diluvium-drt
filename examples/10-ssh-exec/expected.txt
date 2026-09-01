@@ -1,0 +1,12 @@
+$ drt run --config deploy.json
+drt: 'host:ssh': cannot read key file deploy_key: No such file or directory (os error 2) (expected {host, user, key_path, host_key|host_fingerprint, timeout_ms?, max_output_bytes?})
+exit 1
+
+$ drt run app.dlua
+  ssh/exec  denied  no connector is wired for 'ssh/exec' in this process
+  exec/run  denied  no connector is wired for 'exec/run' in this process
+exit 0
+
+$ drt run --config no-exec.json
+drt: config wires connector 'exec', which this build does not carry
+exit 1

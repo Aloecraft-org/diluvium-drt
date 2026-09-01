@@ -46,10 +46,14 @@ running out looks like — but the swarm checks the *names* in a spawn request
 and not the *numbers*. A child stating a budget larger than its parent's is
 taken at its word today. Do not lean on it against code you did not write.
 
-**A program parks itself; nothing parks it behind its back.**
+**A program parks itself, and an ancestor or the deployment may park it too.**
 `{op = 'hibernate'}` pushed on `system/lifecycle` is the child asking to be
 swapped out. It is snapshotted, stops being resident, and stays alive; its
-parent hears `hibernated` the same way it would hear `exited`.
+parent hears `hibernated` the same way it would hear `exited`. The same
+request naming a descendant's `id` parks that descendant instead, and a
+config with `residency.max_resident` parks the least recently active of the
+children spawned with `wake_on_message`. A stranger cannot: parentage is the
+only relation the swarm knows.
 
 **Waking is a delivery, and a child has no letterbox yet.**
 `wake_on_message = true` means a message pushed at the parked instance restores

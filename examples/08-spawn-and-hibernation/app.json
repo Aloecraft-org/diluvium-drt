@@ -1,6 +1,13 @@
 {
+  "_comment": "The parent's app. Everything the child gets, it gets from here, through `host.spawn` — a config names no children.",
+
   "program": {"path": "parent.dlua"},
-  "connectors": {"time": {}},
+
+  "_caps": "The ceiling, and the pool a spawn attenuates from. `lifecycle` is what lets an instance park itself; `host:time` is the grant the parent keeps and the child is not given.",
   "caps": [{"capability": "lifecycle"}, {"capability": "host:time"}],
+
+  "connectors": {"time": {}},
+
+  "_budget": "The parent's. The child states its own in parent.dlua, and in v0.4.0 that number is taken at its word rather than attenuated.",
   "budget": {"instructions": 5000000}
 }

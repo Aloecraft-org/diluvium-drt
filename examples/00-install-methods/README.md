@@ -7,7 +7,7 @@ binary what it is, instead of believing its filename.
 
 ## Run it
 
-```sh
+```
 cd examples/00-install-methods
 drt buildinfo
 ```
@@ -42,7 +42,7 @@ same content on one line, which is the form a deploy script reads.
 
 This part needs the network, so it is not part of the run above.
 
-```sh
+```
 # example: omits the other published assets — drt_darwin_arm64,
 # drt_darwin_x86_64, and drt_slim_* for the size profile.
 BASE=https://github.com/Aloecraft-org/diluvium-drt/releases/latest/download
@@ -64,7 +64,7 @@ the same download and the same check. Point `DRT_MIRROR` at a `file://`
 directory laid out like a release — `v0.4.0/` holding the asset and its
 `SHA256SUMS.txt` — and it installs with no network at all.
 
-```sh
+```
 # knobs: DRT_VERSION pins a release, DRT_PREFIX picks the directory,
 # DRT_SLIM=1 takes the size profile.
 curl -fsSL $BASE/install.sh | sh
