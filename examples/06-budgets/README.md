@@ -17,6 +17,9 @@ the `cd`. Both configs name `app.dlua`, the file beside them.
 
 ## What you should see
 
+Abridged where one run repeats the one above it; `expected.txt` is the whole
+of it, and the loop is pure arithmetic, so those are the numbers every time.
+
 ```
 $ drt run app.dlua
    100000 steps   acc = 36212
@@ -38,8 +41,7 @@ stack traceback:
 exit 1
 ```
 
-The loop is pure arithmetic, so those are the numbers every run prints. It
-writes nothing to disk.
+It writes nothing to disk.
 
 ## What it teaches
 

@@ -150,11 +150,12 @@ the answer lands in the log so a replay replays the same moment. That is
 
 [`examples/hello.dlua`](examples/hello.dlua) is one deployment seen from
 inside, run it two ways and compare;
-[`examples/by-hand.dlua`](examples/by-hand.dlua) is the same program written
-against the raw `host/calls` queue pair, which is what every call above does
-underneath. [`doc/HostBaseline.md`](doc/HostBaseline.md) says which of these
-every DRT host must answer — the browser tier included — and the rules that
-make an absent one safe rather than mysterious.
+[`examples/12-under-the-hood`](examples/12-under-the-hood) makes two of these
+calls twice — by hand on the raw `host/calls` queue pair, then through the
+library — which is what every call above does underneath.
+[`doc/HostBaseline.md`](doc/HostBaseline.md) says which of these every DRT host
+must answer — the browser tier included — and the rules that make an absent one
+safe rather than mysterious.
 
 ## License
 

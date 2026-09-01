@@ -14,6 +14,9 @@ drt netcheck --stun stun.l.google.com:19302
 
 ## What you should see
 
+Abridged, because the second run prints what the first did; `expected.txt` is
+the whole of it.
+
 ```
 $ drt netcheck
 relay — the UDP mapping could not be measured, and relay is the answer that works on every network
