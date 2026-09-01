@@ -89,6 +89,12 @@ argument.
 
 ### Known issues
 
+- **The embedded diluvium has the FM-2 data race.** This release pins
+  `f137b30`, and diluvium 5.5.1_build12 (2026-09-01) names that
+  revision and earlier as affected. DRT mitigates it by serialising
+  instance creation behind a mutex in `drt-swarm`, so DRT's own
+  exposure is closed; anything else embedding this revision is not.
+  The pin bump is the real fix and has not been taken yet.
 - **No `exec`.** DRT has no local process execution at all — no
   `std::process::Command` anywhere. `exec/run` answers denied and a
   config wiring `connectors.exec` is refused at load. `ssh/exec` runs
@@ -172,6 +178,20 @@ with a 403 and the release had to be created by hand.
 - The shipped `examples/deployment.json` did not load: the `access` fix above missed the one config file a new user copies. Found by running it rather than reading it.
 - Linux non-x86_64 refuses by name in `install.sh` instead of downloading the x86_64 static binary and failing the `--version` guard.
 - `doc/Browser.md`'s export table listed fifteen functions and omitted `release`.
+
+### Known issues
+
+- **The embedded diluvium has the FM-2 data race, and this release is
+  published.** v0.3.1 pins `f137b30`; diluvium 5.5.1_build12 names that
+  revision and earlier as affected. A host that creates instances on
+  more than one thread can die in `strcmp` in the first microseconds of
+  a fresh process.
+
+  DRT's own exposure is nil in this release for the reason
+  `doc/Failure-Modes.md` gives — `run`, `start` and `repl` create
+  instances only on the drive-loop thread — so this affected DRT's test
+  harness rather than any deployment. Recorded against the version it
+  affects rather than only against the one that fixes it.
 
 ### Upgrading
 
