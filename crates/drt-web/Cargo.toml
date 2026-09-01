@@ -25,5 +25,11 @@ drt-caps = { workspace = true }
 drt-config = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = "0.2"
+# PINNED, and it must stay pinned. The wasm-bindgen ABI is unstable across
+# patch releases and has to match the `wasm-bindgen-cli` that generates the
+# glue -- and ego-transport pins this exact version for the same reason, so
+# a browser build carrying both agrees only if these agree.
+wasm-bindgen = "=0.2.114"
 js-sys = "0.3"
+serde-wasm-bindgen = "0.6"
+console_error_panic_hook = "0.1"

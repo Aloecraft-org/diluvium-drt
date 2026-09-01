@@ -11,19 +11,31 @@
 //! tests drives a real `Swarm`, so this gets ordinary `cargo test`
 //! coverage rather than only being exercisable in a browser.
 //!
-//! **What is not here yet (task #31), so nobody reads this crate as
-//! finished:** there is no `wasm_bindgen` in it at all. That means no
-//! exports — JS cannot call in — and no glue binding a real JS object to
-//! `HostBridge` — the wasm cannot call out. Both directions are described
-//! and neither is wired, so the crate compiles to a `.wasm` that exports
-//! only `memory`. There is also no connector/pump layer: native DRT routes
-//! guest hostcalls through `PumpHost` and a `Dispatcher`, and the browser
-//! tier's equivalent — pumping the queues the bridge already exposes out
-//! to JS-side connectors — is the third piece of #31.
+//! **Both directions are wired now.** [`exports`] is `doc/Browser.md`'s
+//! table as wasm-bindgen classes, so JS can call in; [`js_bridge`] binds a
+//! real JS object to [`bridge::HostBridge`], so the wasm can call out. Both
+//! are wasm32-only and both are thin: the logic they sit on is exercised
+//! natively against the mock bridge.
+//!
+//! **What is still missing (the third piece of task #31):** the
+//! connector/pump layer. Native DRT routes guest hostcalls through
+//! `PumpHost` and a `Dispatcher`; the browser tier's equivalent — pumping
+//! the queues the bridge already exposes out to JS-side connectors — does
+//! not exist. So a program can run, park and be driven in a page, but it
+//! cannot reach `host.fs` or `host.time`. `doc/HostBaseline.md` says what a
+//! browser host owes when that lands.
 
 pub mod bridge;
 pub mod engine;
 pub mod host;
+
+/// The JS-facing halves. wasm32 only: `js_bridge` binds a real JS object to
+/// [`bridge::HostBridge`] (the wasm calling out), and `exports` is
+/// `doc/Browser.md`'s table (JS calling in).
+#[cfg(target_arch = "wasm32")]
+pub mod exports;
+#[cfg(target_arch = "wasm32")]
+pub mod js_bridge;
 
 pub use bridge::{Driven, HostBridge, InstanceHandle};
 pub use engine::{BrowserEngine, BrowserInstance};

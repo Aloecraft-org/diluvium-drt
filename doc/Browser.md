@@ -78,11 +78,25 @@ DRT additionally exports what `dvs.c` never had a JS binding for:
 `slotsAllocated()`, and the `allowHibernation`/`allowBytecode`/
 `allowUnsafeStdlib`/`setHostIdentity` switches.
 
-**Every export must be panic-safe.** A Rust panic crossing the boundary
-mid-`step` corrupts swarm bookkeeping exactly as a JS exception unwinding a
-wasm frame does — the hazard `swarm.js` already guards with `_faults`. Each
-export wraps its body and converts a panic into a thrown JS error, never an
-unwind.
+**Every export must be panic-safe** — but *not* in the way an earlier
+draft of this section said, and the difference matters. It claimed each
+export "wraps its body and converts a panic into a thrown JS error, never
+an abort". Measured in Chromium against the real artifact
+(`crates/drt-web/browser-test`), that is wrong twice over:
+
+- **The wrapper does not catch panics.** `wasm32-unknown-unknown` is
+  `panic="abort"` — the target's default on stable, not a profile choice —
+  and `catch_unwind` cannot catch an abort.
+- **A panic does surface to JS anyway**, as a wasm trap:
+  `RuntimeError: unreachable`, which a caller can catch. But nothing ran on
+  the way out — no unwinding, no `Drop`, no cleanup — **and the module keeps
+  answering afterwards.** A caller who catches and carries on is using state
+  nothing repaired, and it looks healthy from the outside.
+
+So the rule that holds is: **an export must not panic.** The wrapper is what
+turns an `Err` into a thrown error and is worth keeping, but nothing may
+rely on it for panics, and a page that catches a trap should discard the
+module rather than reuse it.
 
 ## Imports: what JS must provide
 

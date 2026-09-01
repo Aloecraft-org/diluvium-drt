@@ -1,0 +1,13 @@
+{
+  "name": "drt-web-browser-test",
+  "private": true,
+  "type": "module",
+  "description": "The browser half of drt-web's suite: real Chromium, real wasm, mock JS host.",
+  "scripts": {
+    "build": "cargo build -p drt-web --target wasm32-unknown-unknown --release && wasm-bindgen --target web --out-dir pkg ../../../target/wasm32-unknown-unknown/release/drt_web.wasm",
+    "test": "node run-playwright.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.62.1"
+  }
+}
