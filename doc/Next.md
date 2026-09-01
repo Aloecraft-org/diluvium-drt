@@ -302,10 +302,17 @@ same refusal as a child asking for a wider directory.
 are not authority at all — they are queue machinery, and diluvium's queues
 already carry bounds and a full-queue policy. Putting an Rx operator in a
 capability scope would make the scope responsible for delivery semantics,
-which is a different concern that happens to share vocabulary. Worth deciding
-deliberately which of the two each request means; my read is that the ask is
-mostly the first, and the Rx naming is borrowed for its shape rather than its
-layer.
+which is a different concern that happens to share vocabulary.
+
+**Confirmed by the owner (2026-09-01): the Rx naming is borrowed for its
+shape, not its layer.** So the ask is the authority half — a rate limit is a
+grant, attenuates like a grant, and is refused like a grant. `debounce` and
+`throttle` are vocabulary for *how a limit behaves when it is hit* (drop,
+delay, collapse), not a request to move stream operators into the capability
+model. Worth keeping in the eventual arg names: a scope saying
+`{ rate = "10/min", on_exceed = "throttle" }` is authority with a named
+behaviour, whereas one saying `debounce(500)` is a queue asking to be
+misfiled as a permission.
 
 ### `ssmtp` is the cheapest of the four, and it is nearly built
 

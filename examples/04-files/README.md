@@ -88,10 +88,15 @@ sizes and the instruction budget does not reach the filesystem, so nothing
 else is watching. It defaults to 1 MiB; these configs say 1024 so the
 refusal fits on the page.
 
-**`..` buys nothing, and neither does a leading `/`.** The escape is refused
-against the path the filesystem resolves to and not the string that was
-typed, so a symlink inside the scope pointing out of it is refused the same
-way. The program cannot read its own source, one level above the directory
+**`..` buys nothing, and neither does a leading `/`.** `..` is folded before
+the filesystem is touched at all, and `fs/read`, `fs/list` and `fs/remove`
+then check a second time against the path the filesystem actually resolved
+to — so a name that only reaches outside by way of a symlink is refused as
+well. `fs/write` is the exception worth knowing: it resolves the *containing
+directory* rather than a file it may be about to create, so it catches a
+symlinked directory but follows a symlink sitting at the final name. Grant
+`readwrite` over a directory someone else can drop links into with that in
+mind. The program cannot read its own source, one level above the directory
 it was granted — and `app.dlua` is a file in this very example directory,
 which is the point: the grant is `workspace`, not "wherever the app lives".
 The absolute path is refused earlier still, before the filesystem is touched

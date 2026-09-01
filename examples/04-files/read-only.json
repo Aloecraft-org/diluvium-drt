@@ -1,5 +1,5 @@
 {
-  "_comment": "The other half of the app: a config. This one and read-only.json differ in a single word, and that word is `access`.",
+  "_comment": "The other half of the app: a config. This one and readwrite.json differ in a single word, and that word is `access`.",
 
   "program": { "path": "app.dlua" },
 

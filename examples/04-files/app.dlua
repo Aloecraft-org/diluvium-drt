@@ -81,9 +81,11 @@ row("fs/write big.txt", status, detail)
 -- `../app.dlua` is still a file in this same example directory. The scope
 -- is the workspace, not the folder the app happens to live in.
 --
--- The check is against the path the filesystem resolves to and not the
--- string that was typed, so a symlink inside the scope pointing out of it
--- is refused the same way.
+-- The `..` is folded before the filesystem is touched, and a read then
+-- checks again against the path that actually resolved, so a name that
+-- reaches outside by way of a symlink is refused here too. (`fs/write`
+-- resolves only the containing directory, so it does not catch a symlink
+-- at the final name -- see the README.)
 local _, status, detail = host.fs.try_read("../app.dlua")
 row("fs/read ../app.dlua", status, detail)
 
