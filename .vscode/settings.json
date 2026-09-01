@@ -1,0 +1,14 @@
+{
+  // Diluvium is Lua plus a few additions, so Lua's grammar renders `.dlua`
+  // legibly with the additions merely unhighlighted. This is here rather
+  // than in each person's own settings because it is the one place a
+  // setting reaches everyone who opens the repo without them configuring
+  // anything.
+  //
+  // The real grammar is the extension in Aloecraft-org/diluvium
+  // (editors/vscode); install that and it wins over this. See
+  // doc/Editors.md.
+  "files.associations": {
+    "*.dlua": "lua"
+  }
+}

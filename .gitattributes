@@ -6,10 +6,8 @@
 # `defer`, `with`, safe navigation), and Lua's grammar renders all of it
 # legibly — the additions come out unhighlighted rather than wrong.
 #
-# `*.host.lua` needs no rule: it already ends in `.lua`, so GitHub already
-# reads it as Lua. It is named here only because the editor extension
-# treats it as Diluvium specifically, and someone comparing the two lists
-# should not have to wonder whether the omission was deliberate.
+# `*.host.lua` needs no rule: it already ends in `.lua`. It is on its way
+# out anyway (doc/Editors.md), and its removal changes nothing here.
 *.dlua linguist-language=Lua
 
 # On the language bar: these are counted, deliberately. They are six small
