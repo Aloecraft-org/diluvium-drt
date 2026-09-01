@@ -1,0 +1,28 @@
+# Diluvium source: `.dlua`, and the host-config dialect in `*.host.lua`.
+#
+# GitHub highlights by *language*, and its language list has no Diluvium in
+# it, so the best available answer is to say these are Lua. Diluvium is Lua
+# plus a handful of additions (string interpolation, `??`, `switch`,
+# `defer`, `with`, safe navigation), and Lua's grammar renders all of it
+# legibly — the additions come out unhighlighted rather than wrong.
+#
+# `*.host.lua` needs no rule: it already ends in `.lua`, so GitHub already
+# reads it as Lua. It is named here only because the editor extension
+# treats it as Diluvium specifically, and someone comparing the two lists
+# should not have to wonder whether the omission was deliberate.
+*.dlua linguist-language=Lua
+
+# On the language bar: these are counted, deliberately. They are six small
+# files against a Rust workspace so they will not distort it, and the
+# examples are product surface rather than incidental — a runtime for a Lua
+# dialect showing some of that dialect is accurate. To hide them instead,
+# add `-linguist-detectable` to the rule above.
+
+# Generated and committed. `CHANGELOG.yaml` is the source of truth and
+# `script/changelog.py generate` writes these two; they are in the tree
+# because the release mirror runs a stdlib-only Python with no build step
+# and reads `changelog.json` directly (doc/Release.md). Marking them
+# generated collapses their diffs, which is right: the review belongs on
+# the YAML, and CI's `changelog.py check` is what proves these match it.
+CHANGELOG.md linguist-generated=true
+changelog.json linguist-generated=true

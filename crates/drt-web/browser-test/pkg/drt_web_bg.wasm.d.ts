@@ -1,0 +1,30 @@
+/* tslint:disable */
+/* eslint-disable */
+export const memory: WebAssembly.Memory;
+export const __wbg_swarm_free: (a: number, b: number) => void;
+export const abiVersion: () => number;
+export const buildInfo: () => any;
+export const swarm___panicForTests: (a: number) => [number, number];
+export const swarm_alive: (a: number) => [number, number, number];
+export const swarm_budget: (a: number, b: number) => [number, number, number];
+export const swarm_cachedSize: (a: number, b: number) => [number, number, number];
+export const swarm_caps: (a: number, b: number) => [number, number, number];
+export const swarm_free: (a: number) => void;
+export const swarm_holds: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const swarm_ids: (a: number) => [number, number, number, number];
+export const swarm_kill: (a: number, b: number) => [number, number];
+export const swarm_new: (a: any, b: number, c: number) => [number, number, number];
+export const swarm_parent: (a: number, b: number) => [number, number, number];
+export const swarm_push: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
+export const swarm_resident: (a: number, b: number) => [number, number, number];
+export const swarm_root: (a: number, b: number, c: number, d: any, e: any) => [number, number, number];
+export const swarm_step: (a: number) => [number, number, number];
+export const setPanicHook: () => void;
+export const __wbindgen_malloc: (a: number, b: number) => number;
+export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+export const __wbindgen_exn_store: (a: number) => void;
+export const __externref_table_alloc: () => number;
+export const __wbindgen_externrefs: WebAssembly.Table;
+export const __wbindgen_free: (a: number, b: number, c: number) => void;
+export const __externref_table_dealloc: (a: number) => void;
+export const __wbindgen_start: () => void;
