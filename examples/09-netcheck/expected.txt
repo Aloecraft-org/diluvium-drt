@@ -7,7 +7,7 @@ evidence
   v6         none routable
   udp map    not measured
   tcp map    not measured
-  inbound    not tested (no --port given)
+  inbound    not measured (no inbound test in this build)
 exit 1
 
 $ drt netcheck --stun stun.l.google.com:19302
@@ -19,5 +19,5 @@ evidence
   v6         none routable
   udp map    not measured
   tcp map    not measured
-  inbound    not tested (no --port given)
+  inbound    not measured (no inbound test in this build)
 exit 1

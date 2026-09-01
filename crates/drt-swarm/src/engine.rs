@@ -400,6 +400,9 @@ pub mod diluvium_engine {
     }
 
     /// Serialises `dv_new`. See the comment in `load` and doc/FM-2-Upstream.md.
+    ///
+    /// Kept deliberately past the upstream fix. See the removal note in
+    /// `load` before deleting it.
     static CREATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn config_for(budget: &Budget, unsafe_stdlib: bool) -> diluvium::Config {
@@ -440,8 +443,30 @@ pub mod diluvium_engine {
             // this lock covers only creation -- instances still run
             // concurrently, one per thread, exactly as dv.h requires.
             //
-            // A mitigation, not the fix. The fix is upstream (doc/FM-2-Upstream.md);
-            // remove this when the diluvium pin carries it.
+            // A mitigation, not the fix. The fix is upstream, and as of
+            // diluvium 5.5.1_build12 (2026-09-01) it is *in* upstream:
+            // `src/dsync.h` guards both registries (doc/FM-2-Upstream.md).
+            //
+            // This lock is kept anyway, on purpose, so nobody reading it
+            // later has to reconstruct why:
+            //
+            //   * v0.4.0-rc.1 still pins `f137b30`, which is pre-build12 and
+            //     named by upstream as affected. Until the pin moves, this
+            //     lock is the only thing closing FM-2 for DRT.
+            //   * The examples gate was captured against that pin. Bumping
+            //     the pin and dropping the lock in one change would mean a
+            //     release candidate nobody had run the gate against.
+            //
+            // **It is safe to delete once `Cargo.lock` pins build12 or
+            // later** -- that is the whole condition, and it is checkable
+            // in one command:
+            //
+            //     grep -A2 'name = "diluvium"' Cargo.lock
+            //
+            // Deleting it is not urgent even then. Creation is rare, the
+            // lock covers only creation, and a redundant mutex costs a
+            // pointer-width compare on a cold path. Remove it because it is
+            // dead, not because it is expensive.
             let _creating = CREATE_LOCK
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);

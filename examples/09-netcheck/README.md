@@ -27,7 +27,7 @@ evidence
   v6         none routable
   udp map    not measured
   tcp map    not measured
-  inbound    not tested (no --port given)
+  inbound    not measured (no inbound test in this build)
 exit 1
 
 $ drt netcheck --stun stun.l.google.com:19302
@@ -56,7 +56,8 @@ confidently wrong on exactly the networks where being right matters.
 **`not measured` is a finding, so it gets a line.** A silently missing one
 reads as a measurement that passed. `address`, `tcp map` and `inbound` are an
 edge's half of the work and v0.4.0 has no edge to ask, so they say the above
-on every network — and there is no `--port` to give.
+on every network. There is no flag to change that: an inbound test needs
+an edge to ask, and v0.4.0 has none.
 
 **`relay` is the fallback, and the exit code separates the two.** Taking relay
 on a network that could have punched costs a hop; the opposite mistake costs a

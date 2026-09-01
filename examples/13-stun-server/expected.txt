@@ -6,4 +6,4 @@ evidence
   v6         none routable
   udp map    <port> (127.0.0.1:34780), <port> (127.0.0.1:34781)  independent
   tcp map    not measured
-  inbound    not tested (no --port given)
+  inbound    not measured (no inbound test in this build)
