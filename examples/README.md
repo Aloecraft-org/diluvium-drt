@@ -27,6 +27,7 @@ reference. Everything here is v0.4.0.
 | [`11-tunnel-and-relay`](11-tunnel-and-relay) | Two machines that cannot reach each other both dial out to a relay, which splices their legs into one pipe that ssh rides over. | `drt tunnel` |
 | [`12-under-the-hood`](12-under-the-hood) | What every `host.*` call is underneath: the `host/calls` and `host/replies` pair, a token the host echoes back, and a reply of four fields. | `drt run app.dlua` |
 | [`13-stun-server`](13-stun-server) | Run two STUN binding servers and classify this machine's NAT from what they answer. One server is never enough. | `./demo.sh` |
+| [`14-ssh-through-a-tunnel`](14-ssh-through-a-tunnel) | Use your own `ssh` client through DRT with OpenSSH's `ProxyCommand`. `scp`, `rsync`, `sftp` and `-L` come free. | `drt tunnel` |
 
 `drt run` executes one program to completion and exits — no swarm, no
 listeners, no second instance — and it is what `01`–`07`, `10` and `12` use.

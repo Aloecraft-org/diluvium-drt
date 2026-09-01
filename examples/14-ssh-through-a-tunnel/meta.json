@@ -1,0 +1,7 @@
+{
+  "name": "14-ssh-through-a-tunnel",
+  "teaches": "use your own ssh client through DRT with OpenSSH's ProxyCommand; scp, rsync, sftp and -L come free",
+  "cmd": "echo '$ drt tunnel'; drt tunnel; echo \"exit $?\"",
+  "needs_network": false,
+  "normalise": []
+}

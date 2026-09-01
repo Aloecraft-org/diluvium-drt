@@ -67,3 +67,10 @@ Everything this directory runs is the config half, and that half is real. The
 call itself wants a reachable sshd — and in v0.4.0 it gets nowhere near one:
 `ssh/exec` reaches for a tokio reactor no guest loop runs, and the process
 panics instead of answering.
+
+## If you wanted a shell, not a hostcall
+
+`ssh/exec` is one connection, one command, output back as data — no session,
+no PTY, a fresh handshake per call. To use your own `ssh` client through DRT,
+with `scp`, `rsync` and port forwarding, see
+[`14-ssh-through-a-tunnel`](../14-ssh-through-a-tunnel).

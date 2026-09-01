@@ -1,0 +1,3 @@
+$ drt tunnel
+drt tunnel: name a URL to bridge stdio to, --listen with --to, or --park with --to
+exit 1
