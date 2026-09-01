@@ -142,7 +142,10 @@ pub struct Measurements {
     pub udp_ports: Vec<(String, u16)>,
     /// What each reflect edge saw. Informational: the TCP half.
     pub tcp_views: Vec<EdgeView>,
-    /// The inbound test, when `--port` named a port to test.
+    /// The inbound test. Filled by a caller that can arrange an
+    /// unsolicited inbound connect; nothing in this build can, so it is
+    /// always `None` here and the renderer says "not measured" rather
+    /// than naming a flag the binary does not accept.
     pub inbound: Option<(u16, Inbound)>,
 }
 
@@ -352,7 +355,7 @@ pub fn render_text(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
                 Inbound::Timeout => "timeout",
             }
         )),
-        None => out.push_str("  inbound    not tested (no --port given)\n"),
+        None => out.push_str("  inbound    not measured (no inbound test in this build)\n"),
     }
 
     out

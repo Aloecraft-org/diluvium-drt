@@ -5,8 +5,16 @@ DRT document about a diluvium bug, written here because DRT is where the
 evidence was collected and where FM-2 has been tracked for four days. Copy
 it into that repo or read it from this one; nothing in it depends on DRT.
 
-**Status: diagnosed from a symbolized core, mechanism confirmed by reading
-the source. Not yet fixed anywhere.**
+**Status: fixed upstream in diluvium 5.5.1_build12, 2026-09-01.** That
+release adds `src/dsync.h` and guards both registries, and its changelog
+names `f137b30` and earlier as affected. Everything below is the brief
+that asked for it, kept as written: the diagnosis, the evidence and the
+constraints are still the record of *why* the fix is shaped the way it
+is, and the reproduction recipe is still how you would check a build.
+
+Read the rest as history with one live consequence: **DRT has not taken
+the pin bump yet.** v0.4.0-rc.1 ships on `f137b30`, so the mitigation in
+`drt-swarm` is still load-bearing for DRT today. See the last section.
 
 Verified facts and reconstruction are kept apart throughout, because the
 history of this bug is four days of confident wrong answers built on
@@ -394,7 +402,15 @@ DRT serialises instance *creation* behind a mutex in
 `crates/drt-swarm/src/engine.rs` (see `doc/Failure-Modes.md`, FM-2). That
 is a mitigation in one host, not a fix: it costs nothing because creation
 is rare, and it makes DRT's test suite honest again. It does not protect
-any other host, and it should be removed once this lands and the pin moves.
+any other host.
+
+It is still there, and deliberately so. The upstream fix landed but the
+DRT pin did not move with it — v0.4.0-rc.1 is `f137b30`, which build12
+names as affected — so removing the mutex now would reopen FM-2 for DRT
+rather than close it. The condition for removal is one line in
+`Cargo.lock`: `grep -A2 'name = "diluvium"' Cargo.lock` showing build12
+or later. The comment at the lock's use site says the same thing, so a
+future reader hits it wherever they start.
 
 DRT's shipped exposure was nil either way — `drt run`, `drt start` and
 `drt repl` create instances only on the drive-loop thread — so this was a

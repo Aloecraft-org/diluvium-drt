@@ -80,7 +80,7 @@ site that dropped a runtime now leaks it or never had one.
 
 ---
 
-## FM-2: a data race in diluvium's continuation registries — NAMED, mitigated here, open upstream
+## FM-2: a data race in diluvium's continuation registries — NAMED, mitigated here, fixed upstream in build12, pin not yet moved
 
 **Do not read FM-1 as covering this.** `host_lua` constructs no tokio
 runtime — no `tokio`, no `async`, no `Runtime` anywhere in the binary, and
@@ -114,6 +114,13 @@ carries a second copy of the same function over a second array. Full
 write-up, with the interleaving and the fix options, in
 [`FM-2-Upstream.md`](FM-2-Upstream.md).
 
+**Fixed upstream 2026-09-01**, in diluvium 5.5.1_build12: `src/dsync.h`
+guards both registries, and that release names `f137b30` and earlier as
+affected. DRT has not taken the bump — v0.4.0-rc.1 pins `f137b30` on
+purpose, because the examples gate was captured against it — so for a
+binary built from this tree the mitigation below is still what closes
+FM-2, not a leftover.
+
 **Why it never reproduced, which is the part worth keeping.** `addcont`
 writes only when a name is not already present, so once every name is
 registered the array is read-only for the life of the process. The window
@@ -141,11 +148,14 @@ instance *creation* behind a `Mutex`. Creation is rare and cheap next to
 running a program, and the lock covers only creation — instances still run
 concurrently, one per thread. This closes the cold-start window completely
 for DRT. It is a mitigation in one host, not the fix; remove it when the
-diluvium pin carries the upstream repair.
+diluvium pin carries the upstream repair — `grep -A2 'name = "diluvium"'
+Cargo.lock` showing build12 or later is the whole condition, and the
+comment at the lock's use site says so too.
 
-**Still open upstream**, and it stays open here until then, because every
-other host — drt-web included, once it hosts more than one instance — has
-the bug unmitigated.
+**Fixed upstream, not yet pinned here.** build12 carries the repair; this
+tree does not carry build12. So the mitigation is still the thing holding,
+and any *other* host embedding `f137b30` — drt-web included, once it hosts
+more than one instance — has the bug unmitigated.
 
 **Operational stance.** Unchanged and still worth doing: a fetchpoint
 running `drt start` belongs under a supervisor that restarts it

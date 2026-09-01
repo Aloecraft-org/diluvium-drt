@@ -12,12 +12,20 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
-## [0.4.0] - unreleased
+## [0.4.0-rc.1] - unreleased (prerelease)
 
-`v0.4.0` &middot; dv ABI 1 &middot; diluvium `f137b308c4dc`
+`v0.4.0-rc.1` &middot; dv ABI 1 &middot; diluvium `f137b308c4dc`
 
 Outbound HTTP from a guest, a NAT diagnostic, and a set of examples
 that found a bug in the first of those before anyone shipped it.
+
+**A candidate, not the release.** It is cut so downstream work can
+start against something with a tag rather than a branch name, and
+it is cut *on the diluvium pin the examples were verified against*
+-- `f137b30`, which is pre-build12. Taking the bump and shipping in
+one move would mean publishing a set of examples nobody had run the
+gate against on those bytes. 0.4.0 proper takes build12 and re-runs
+the gate; that is the only difference planned between this and it.
 
 Numbered 0.4.0 rather than 0.3.2 because the connector set changed:
 `rest` is new, so `profile.full.connectors` in BUILDINFO is not what
@@ -72,6 +80,8 @@ argument.
 - `CHANGELOG.yaml` and `script/changelog.py`, ported from diluvium's, with the release body and the mirror's `changelog.json` generated from one source. CI fails if they drift.
 - `doc/Editors.md` (how to get `.dlua` recognised, and why GitHub cannot match the editor extension) and `.gitattributes` mapping `.dlua` to Lua.
 - `doc/Next.md`: the deferred work, sized against the code rather than estimated.
+- `doc/Verification.md`: what the examples gate cannot reach -- the runs that need a real network, a second machine or a reachable sshd -- written for whoever has one.
+- `doc/Ask-0.5.0-Reply.md`: the reply to discofetch's 0.5.0 ask, with the two `reported` findings reproduced and the three decisions DRT needs before starting.
 
 ### Fixed
 
@@ -85,6 +95,14 @@ argument.
   the same release that introduced it. The connector now carries its
   own runtime for callers that have none, leaked rather than dropped
   for FM-1's reason.
+- **`netcheck` advertised a flag the binary does not accept.** The
+  evidence block printed `inbound  not tested (no --port given)`,
+  and there is no `--port` in any build -- which also makes
+  `direct`, the verdict that requires an inbound connect,
+  unreachable from the CLI. It now reads `not measured (no inbound
+  test in this build)`, which is true. The flag itself arrives with
+  the reflect edges; `09-netcheck` already said so and the program
+  now agrees with the example.
 - `release.yml`'s publish job copied `install.sh` from one directory above the workspace, which does not exist. Under `set -eu` that failed the step and took the whole publish with it. Never caught because `publish` is the one job a rehearsal does not execute.
 
 ### Known issues
@@ -94,7 +112,43 @@ argument.
   revision and earlier as affected. DRT mitigates it by serialising
   instance creation behind a mutex in `drt-swarm`, so DRT's own
   exposure is closed; anything else embedding this revision is not.
-  The pin bump is the real fix and has not been taken yet.
+  The pin bump is the real fix, is deliberately not taken in a
+  candidate, and is the first thing 0.4.0 does. The mutex stays
+  until it lands -- `crates/drt-swarm/src/engine.rs` carries the
+  removal condition at the lock, so nobody has to rediscover it.
+- **Budgets do not attenuate at spawn.** `Budget::fits_within` and
+  `InstanceConfig::check_attenuation` (`crates/drt-config/src/lib.rs:69,114`)
+  are written, correct and tested, and are called from nowhere else
+  in the workspace. A child takes the budget it names, so it can
+  grant itself more instructions and more memory than its parent
+  holds. Capabilities attenuate; budgets do not.
+  `08-spawn-and-hibernation` teaches "a child holds a subset of its
+  parent's grants and nothing more", which is true of capabilities
+  and false of budgets. Found independently by discofetch and by
+  this repo's own examples pass.
+- **A guest can switch its instruction budget off, permanently, in
+  two lines.** `pcall` around a loop catches budget exhaustion as an
+  ordinary Lua error; the budget never fires again for the life of
+  the instance, and `drt run` still exits 0. Measured: exhaustion at
+  ~250k steps under a 1,000,000 limit, then an unbounded loop still
+  running when killed at 20 s.
+
+  The cause is upstream, at the pin and in diluvium `main` alike:
+  the instruction hook (`src/dv.c:219`) clears itself before raising
+  -- "once is enough; the error is on its way" -- so a caught error
+  leaves nothing armed. **build12 does not fix this**, and it cannot
+  be closed from the host side: a CPU-bound loop never returns to
+  the host, so there is no resume for `dv_exceeded()` to refuse.
+  `doc/Ask-0.5.0-Reply.md` §1.2 is the brief.
+- **SQL discards an open transaction at exit, silently.**
+  `begin`/`commit`/`rollback` do work -- they pass through to SQLite
+  on a held connection, and a committed row survives. But a program
+  that opens a transaction and exits without committing gets `ok` on
+  every call, sees its own write in-process, and loses it on exit
+  with no error and no non-zero status. Correct SQLite behaviour on
+  a dropped connection; the wrong contract for a durable tier. The
+  connector's "autocommit only" header comment is the part that is
+  wrong, not the code.
 - **No `exec`.** DRT has no local process execution at all — no
   `std::process::Command` anywhere. `exec/run` answers denied and a
   config wiring `connectors.exec` is refused at load. `ssh/exec` runs
