@@ -144,9 +144,18 @@ wrong:
   the config's fs scope is refused by name, at startup, like every other
   scope mistake.
 
-The third is the one that fits the model, and it is the reason this is
-half a day rather than an hour: the merge has to run the same attenuation
-check a spawn does, rather than a `BTreeMap::insert`.
+**Decided (2026-09-01): flags merge but may only narrow.** The effective
+scope is the intersection, so there is no precedence rule to remember and no
+case convention — "who wins" is "whichever is tighter", and a `--dir` outside
+the config's scope is refused by name at startup like every other scope
+mistake. The owner's reason for preferring it is the one worth recording:
+someone who genuinely wants to widen a capability on code imported from
+dollup can download that config and set it explicitly, which is a deliberate
+act with a diff, and no path remains that widens by accident.
+
+This is the reason the entry is half a day rather than an hour: the merge has
+to run the same attenuation check a spawn does, rather than a
+`BTreeMap::insert`.
 
 Worth doing alongside, since it is the same decision: honour the `DRT_*`
 environment variables the doc comment implies, or delete the clause. Either
@@ -235,6 +244,96 @@ once.
    to lean on.
 
 ---
+
+---
+
+## Recorded, not sized: scopes that decide at call time
+
+Four asks arrived together, and they are **one extension wearing four
+faces**. Writing them separately would get them built separately, which is
+how a capability model grows four incompatible dialects.
+
+Every scope DRT has today answers **"where"**, once, at startup: `fs` names a
+directory, `sql` names a database, `ssh` names a host, `rest` names an origin
+allowlist. `ScopeType::validate` runs before the first call and refuses a
+malformed scope by name while the operator is still looking at the terminal.
+
+These four all ask a scope to answer **"whether, now"** — a predicate over the
+call and its context rather than a place.
+
+- **Rate limits**, per message or per call, with reactive-extensions shapes:
+  debounce, throttle, sample.
+- **Time of day**, and this one generalises: any capability could carry
+  "only between 09:00 and 18:00", not just email.
+- **Email (`ssmtp`)** scoped by recipient domain or specific address.
+- **Geofence** — the host supplies a location, the scope evaluates a radius
+  around a point or a simple polygon. Explicitly not to be built; recorded so
+  the shape below is designed with it in mind rather than retrofitted.
+
+### The good news, from reading the trait
+
+`Connector::call(&self, call, args, scope)` **already receives the scope on
+every call**, not once at wiring. So a scope that decides per call needs no
+trait change and no new plumbing — the connector simply consults more of it.
+
+Two costs, and they are the whole design:
+
+1. **State.** `Connector` is `Send + Sync` and `call` takes `&self`, so a rate
+   limiter's counters need interior mutability. That is ordinary, but it is
+   the first time a connector would carry state that outlives a call, and
+   where that state lives decides whether a limit is per instance, per
+   lineage, or per process. Those are three different products.
+2. **Where the refusal happens.** DRT's startup validation is a property
+   worth protecting: a bad scope is caught before anything runs. A dynamic
+   scope keeps that for its *shape* (a malformed cron expression or polygon
+   still fails at startup) but not for its *outcome* — "denied, outside
+   permitted hours" can only be said at the call. That is a real change to
+   what an operator can learn before starting, and it should be stated
+   rather than discovered.
+
+### Two of these are not the same thing, and should not share a mechanism
+
+**Rate limiting as capability policy** ("this app may make 10 `rest/get` per
+minute") belongs in the scope. It is an authority question, it attenuates
+like any other, and a child asking for a higher rate than its parent is the
+same refusal as a child asking for a wider directory.
+
+**Debounce and throttle as stream operators** ("collapse these queue messages")
+are not authority at all — they are queue machinery, and diluvium's queues
+already carry bounds and a full-queue policy. Putting an Rx operator in a
+capability scope would make the scope responsible for delivery semantics,
+which is a different concern that happens to share vocabulary. Worth deciding
+deliberately which of the two each request means; my read is that the ask is
+mostly the first, and the Rx naming is borrowed for its shape rather than its
+layer.
+
+### `ssmtp` is the cheapest of the four, and it is nearly built
+
+It is `rest`'s sibling. `connectors/rest`'s scope is an origin allowlist
+checked twice — against the URL, then against the resolved address — and an
+email scope is the same structure with recipients in place of origins:
+allow `@example.com`, or one exact address, and refuse the rest by name.
+
+It also inherits the part of `rest` worth having: an allow entry can carry
+operator-supplied `headers` that the connector injects and the guest can
+neither set nor read. For SMTP that is the credential and the envelope
+sender — the app sends mail without ever holding the password, and cannot
+forge the From line. That is the capability model doing its actual job, and
+it is the argument for `ssmtp` being a connector rather than something a
+program reaches through `rest`.
+
+### If this is built, build the predicate once
+
+The shape that serves all four: a scope may carry an optional `when` — a
+predicate over call context (clock, call count, location) — evaluated by a
+shared helper rather than reimplemented per connector. Then time-of-day is
+one predicate, rate limit is another, geofence is a third that nobody has to
+build yet, and a connector author gets them by declaring a scope rather than
+by writing them.
+
+The alternative — each connector growing its own `hours` field — is four
+implementations, four spellings, and no way to say "this grant is
+business-hours-only" about a capability whose author did not think of it.
 
 ## Not in this list
 
