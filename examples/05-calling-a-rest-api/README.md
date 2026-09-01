@@ -103,16 +103,15 @@ of the boundary from the code that spends it.
 drt run live.dlua --config allowlist.json
 ```
 
-**This does not work in v0.4.0.** A URL the allowlist permits reaches the
-part of the connector that opens a socket, and `drt run` drives connectors
-without the async runtime that part needs, so the process aborts instead of
-answering. Nothing you can put in the program or the config works around it.
+Writing this example is what found the bug that used to be here. `drt run`
+drives connectors with `pollster::block_on`, which carries no tokio reactor,
+and the connector's socket calls need one — so a URL the allowlist *permitted*
+panicked with "there is no reactor running" and exit 101, while every refusal
+above worked, because refusals are decided before a connection is attempted.
+The connector now carries its own runtime for callers that have none.
 
-It is worth saying exactly which half of this example that leaves standing.
-The six rows above are decided before a connection is attempted, so the
-origin comparison, the userinfo refusal and the two-verb surface are shown
-by a run. The header terms are not: the check that refuses a program's
-`authorization` sits past the same broken boundary, so a header the program
-may not set aborts the process too rather than being refused by name. Read
-that half in `allowlist.json`, as configuration, and take the mechanism
-from the connector rather than from an output line.
+What you see depends on the network in front of you. A direct connection
+prints GitHub's answer; a proxy that intercepts TLS prints `error tls`, which
+is the connector answering rather than crashing. Either way the point holds:
+the program contains no header, no token, and nothing that could obtain one —
+`allowlist.json` does, and the connector injects it on the way out.

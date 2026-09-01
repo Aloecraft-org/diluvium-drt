@@ -490,13 +490,32 @@ impl Connector for RestConnector {
         let timeout =
             Duration::from_millis(timeout_ms.unwrap_or(limits::DEFAULT_MS).min(limits::MAX_MS));
 
-        let resp = tokio::time::timeout(
-            timeout,
-            fetch(&url, method, &headers, body.as_deref(), &sc, entry),
-        )
-        .await
-        .map_err(|_| CallError::new("timeout"))?
-        .map_err(CallError::new)?;
+        let work = async {
+            tokio::time::timeout(
+                timeout,
+                fetch(&url, method, &headers, body.as_deref(), &sc, entry),
+            )
+            .await
+        };
+        // `drt start` drives connectors on a tokio runtime; `drt run` drives
+        // them with `pollster::block_on` (run.rs:67), which has no reactor —
+        // and every socket call below needs one. Awaiting directly under
+        // `run` panicked with "there is no reactor running", a Rust
+        // backtrace and exit 101, which is the worst failure this codebase
+        // has: not a refusal a program can read, not even a message an
+        // operator can act on.
+        //
+        // So the connector carries its own runtime for the case where the
+        // caller has none. It is leaked rather than dropped, for FM-1's
+        // reason — tokio 1.53.1 use-after-frees on runtime teardown — and
+        // built once for the life of the process.
+        let outcome = match tokio::runtime::Handle::try_current() {
+            Ok(_) => work.await,
+            Err(_) => own_runtime().block_on(work),
+        };
+        let resp = outcome
+            .map_err(|_| CallError::new("timeout"))?
+            .map_err(CallError::new)?;
 
         let mut map = vec![
             (
@@ -531,6 +550,24 @@ fn bytes_of(value: &rmpv::Value) -> Option<Vec<u8>> {
         rmpv::Value::Binary(b) => Some(b.clone()),
         _ => None,
     }
+}
+
+/// The runtime this connector falls back to when the caller has none.
+///
+/// One per process, created on first use, and never dropped: FM-1 is a
+/// use-after-free in tokio 1.53.1's runtime teardown, and `drt relay`,
+/// `drt stun` and `drt tunnel` all leak theirs for the same reason. A
+/// `OnceLock` holding it forever is that mitigation spelled as ownership
+/// rather than as `mem::forget`.
+fn own_runtime() -> &'static tokio::runtime::Runtime {
+    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("a tokio runtime for the rest connector")
+    })
 }
 
 /// Build the request line and headers. Separated from the socket so it can

@@ -2,13 +2,16 @@
 --
 --   drt run live.dlua --config allowlist.json
 --
--- IN v0.4.0 THIS ABORTS. The refusals in `app.dlua` are answered before
--- anything is connected, so they work; a URL the allowlist permits reaches
--- the part of the connector that opens a socket, and `drt run` drives
--- connectors without the async runtime that part needs. The process ends
--- with a panic rather than a reply. Nothing in this file or in the config
--- works around it -- it is the runtime, not the program. The README says
--- so too, and this comment goes away when it does.
+-- This works. It did not when this example was written: `drt run` drives
+-- connectors with `pollster::block_on`, which has no tokio reactor, and the
+-- connector's socket calls need one -- so a permitted URL panicked with
+-- "there is no reactor running" and exit 101 instead of answering. Found by
+-- writing this file. The connector now carries its own runtime for callers
+-- that have none, and both verbs work.
+--
+-- What you see still depends on the network in front of you. A machine
+-- behind a proxy that intercepts TLS gets `error tls`, which is the
+-- connector answering rather than crashing.
 --
 -- Read it anyway, next to `allowlist.json`, because between them they are
 -- the whole lesson.
