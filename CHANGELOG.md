@@ -170,6 +170,14 @@ argument.
   a dropped connection; the wrong contract for a durable tier. The
   connector's "autocommit only" header comment is the part that is
   wrong, not the code.
+
+  Decided for 0.4.0, recorded in `doc/Ask-0.5.0-Reply.md` §3.1: the
+  connector rolls the transaction back **explicitly**, names it, and
+  the instance stops non-zero. The explicit rollback is the point --
+  SQLite would roll back anyway on teardown, but leaving it implicit
+  makes the outcome depend on a connection drop nobody here controls,
+  and an accidental commit is the one failure that is not
+  recoverable.
 - **No `exec`.** DRT has no local process execution at all — no
   `std::process::Command` anywhere. `exec/run` answers denied and a
   config wiring `connectors.exec` is refused at load. `ssh/exec` runs
