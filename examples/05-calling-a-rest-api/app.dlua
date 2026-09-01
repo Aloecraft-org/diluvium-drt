@@ -49,4 +49,5 @@ get("http://169.254.169.254/latest/meta-data/")
 
 -- The surface is two calls. `rest/put` is inside the `host:rest/*` grant,
 -- so it reaches the connector and the connector is the one to say no.
-show("rest/put", "https://api.github.com/zen", "rest/put (not rest/get or rest/post)")
+show("rest/put", "https://api.github.com/zen",
+     "rest/put (not rest/get or rest/post)")
