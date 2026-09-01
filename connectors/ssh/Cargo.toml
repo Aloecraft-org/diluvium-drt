@@ -11,7 +11,7 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 rmpv = { workspace = true }
 ego_transport = { workspace = true }
-tokio = { version = "1", default-features = false, features = ["time"] }
+tokio = { version = "1", default-features = false, features = ["time", "rt", "rt-multi-thread"] }
 drt-caps = { workspace = true }
 drt-connector = { workspace = true }
 

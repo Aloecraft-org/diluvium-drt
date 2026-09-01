@@ -159,6 +159,21 @@ impl SshConnector {
     }
 }
 
+/// The runtime this connector falls back to when the caller has none.
+///
+/// One per process, built on first use, never dropped — FM-1 is a
+/// use-after-free in tokio 1.53.1's runtime teardown.
+fn own_runtime() -> &'static tokio::runtime::Runtime {
+    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("a tokio runtime for the ssh connector")
+    })
+}
+
 #[async_trait::async_trait]
 impl Connector for SshConnector {
     fn scope_type(&self) -> Box<dyn ScopeType> {
@@ -186,15 +201,28 @@ impl Connector for SshConnector {
         let cap = scope.max_output_bytes.unwrap_or(DEFAULT_MAX_OUTPUT_BYTES) as usize;
         let config = scope.client_config().map_err(CallError::new)?;
 
-        tokio::time::timeout(timeout, exec_once(&scope.host, config, &args.command, cap))
-            .await
-            .unwrap_or_else(|_| {
-                Err(CallError::new(format!(
-                    "ssh/exec timed out after {}ms (the wall clock is the only bound a remote \
+        // Same shape as the rest connector's: `drt start` and `drt run` both
+        // answer hostcalls through `pollster::block_on` (run.rs:67,
+        // repl.rs:73, pump.rs:47), which carries no reactor, and every call
+        // below needs one. The comment in main.rs saying `start` brings a
+        // reactor was wrong — start's drive loop runs on the main thread and
+        // the relay/STUN runtimes live on other threads — so `ssh/exec`
+        // panicked from every guest loop rather than answering. Leaked, not
+        // dropped, for FM-1's reason.
+        let work = async {
+            tokio::time::timeout(timeout, exec_once(&scope.host, config, &args.command, cap)).await
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(_) => work.await,
+            Err(_) => own_runtime().block_on(work),
+        }
+        .unwrap_or_else(|_| {
+            Err(CallError::new(format!(
+                "ssh/exec timed out after {}ms (the wall clock is the only bound a remote \
                      command has)",
-                    timeout.as_millis()
-                )))
-            })
+                timeout.as_millis()
+            )))
+        })
     }
 }
 

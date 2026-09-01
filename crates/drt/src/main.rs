@@ -280,8 +280,17 @@ fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
                     wiring.scope.clone(),
                 )
                 .map_err(|e| e.to_string())?,
-            // Not in `run`'s local defaults: `ssh/exec` needs a tokio
-            // reactor (`start` brings one) and a deliberate grant.
+            // Not in `run`'s local defaults: `ssh/exec` reaches off this
+            // machine and wants a deliberate grant.
+            //
+            // The old wording here said it "needs a tokio reactor (`start`
+            // brings one)". That was wrong twice: `start` does NOT bring one
+            // to the hostcall path — its drive loop is on the main thread and
+            // the relay/STUN runtimes are on others — and every hostcall
+            // path answers through `pollster::block_on` (run.rs:67,
+            // repl.rs:73, pump.rs:47). So `ssh/exec` panicked from every
+            // guest loop, and this comment is why it read as expected. The
+            // connector carries its own runtime now.
             #[cfg(feature = "connector-ssh")]
             "ssh" => registry
                 .wire(
