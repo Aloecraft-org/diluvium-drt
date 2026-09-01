@@ -101,6 +101,26 @@ enum Command {
         #[arg(long, requires = "to", conflicts_with = "url")]
         park: Option<String>,
     },
+    /// What can this network do, and what should you do about it.
+    ///
+    /// Prints one of four verdicts — direct, v6-direct, punchable, relay —
+    /// with the measurements that produced it. Exit 0 on a verdict,
+    /// `relay` included: a network that needs a tunnel is a successful
+    /// measurement, not an error. Non-zero means nothing could be
+    /// measured.
+    #[cfg(feature = "stun")]
+    Netcheck {
+        /// A STUN server, repeatable. Two on separate addresses are needed
+        /// to classify a mapping; `detect_mapping` refuses below two rather
+        /// than guessing, so one server yields "not measured" and the
+        /// relay fallback, never a confident wrong answer.
+        #[arg(long = "stun", value_name = "HOST:PORT")]
+        stun: Vec<String>,
+        /// Machine-readable output. The default is human text, because the
+        /// primary consumer is a person deciding what to do next.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Wire the connectors this build carries against the root config. Off by
@@ -156,6 +176,9 @@ fn buildinfo(json: bool) -> String {
     }
     if cfg!(feature = "stun") {
         verbs.push("stun");
+        // netcheck rides the same gate: its decisive measurement is
+        // `detect_mapping` across two STUN servers.
+        verbs.push("netcheck");
     }
     if cfg!(feature = "tunnel") {
         verbs.push("tunnel");
@@ -458,6 +481,38 @@ fn main() -> ExitCode {
                     ExitCode::FAILURE
                 }
             }
+        }
+        #[cfg(feature = "stun")]
+        Command::Netcheck { stun, json } => {
+            let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
+            let mut m = drt::netcheck::Measurements::default();
+            let servers: Vec<&str> = stun.iter().map(String::as_str).collect();
+            runtime.block_on(drt::netcheck::gather::local_and_udp(&mut m, &servers));
+            // The same leak as `stun`/`relay`/`tunnel`, for the same reason:
+            // FM-1, tokio 1.53.1's use-after-free in runtime teardown, and
+            // `detect_mapping` resolves through `lookup_host`, so there is
+            // always a parked blocking worker to race. See doc/Failure-Modes.md.
+            std::mem::forget(runtime);
+
+            let (verdict, why) = drt::netcheck::decide(&m);
+            if json {
+                println!(
+                    "{{\"verdict\":\"{}\",\"why\":\"{}\",\"advice\":\"{}\"}}",
+                    verdict,
+                    why.replace('"', "'"),
+                    verdict.advice()
+                );
+            } else {
+                print!("{}", drt::netcheck::render_text(&m, verdict, why));
+            }
+            // A verdict is a success, `relay` included. Only "nothing could
+            // be measured at all" is a failure, and that is the case where
+            // there was no network to ask rather than a network that
+            // answered badly.
+            if m.udp_mapping.is_none() && m.routable_v6.is_none() {
+                return ExitCode::FAILURE;
+            }
+            ExitCode::SUCCESS
         }
         Command::Ps => {
             // Unlike the REPL, `ps` has nothing it can do standalone: its

@@ -74,6 +74,21 @@ jobs:
       - name: Build without default features
         run: cargo build --workspace --no-default-features
 
+  changelog:
+    # CHANGELOG.yaml is the source of truth; CHANGELOG.md and changelog.json
+    # are generated and COMMITTED, because the release mirror runs on a host
+    # with a stdlib-only Python and no build step and reads changelog.json
+    # directly. `check` is what stops that committed copy going stale, and
+    # `consistency` is what stops the tree's version drifting away from the
+    # newest entry.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install --quiet pyyaml
+      - run: ./script/changelog.py validate
+      - run: ./script/changelog.py check
+      - run: ./script/changelog.py consistency
+
   wasm:
     # The browser tier compiles for its actual target, on every push.
     #

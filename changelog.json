@@ -1,0 +1,185 @@
+{
+  "schema": 1,
+  "repo": "Aloecraft-org/diluvium-drt",
+  "latest": "v0.3.0",
+  "mirror_tags": [
+    "v0.3.0",
+    "v0.2.0",
+    "v0.1.0"
+  ],
+  "releases": [
+    {
+      "version": "0.4.0",
+      "tag": "v0.4.0",
+      "date": null,
+      "status": "unreleased",
+      "stable": true,
+      "mirror": false,
+      "dv_abi": 1,
+      "diluvium": "f137b308c4dce917b24c71ab41add61606945e58",
+      "connectors": {
+        "full": [
+          "time",
+          "fs",
+          "crypto",
+          "sql",
+          "ssh",
+          "rest",
+          "listen"
+        ],
+        "slim": [
+          "time",
+          "fs",
+          "crypto",
+          "listen"
+        ]
+      },
+      "summary": "The release v0.3.1 was going to be, plus everything the four days\nspent chasing its release blocker turned up.\n\n**Numbered 0.4.0 rather than 0.3.1 because the connector set\nchanged.** `rest` is new, so `profile.full.connectors` in BUILDINFO\nis not what v0.3.0's was, and a package declaring\n`requires.connectors` is checked against that list by name. A patch\ndigit over a changed compatibility surface is the one thing\nBUILDINFO exists to prevent. `netcheck` is a new verb on the same\nargument.\n\nThe headline for anyone deploying: **STUN ships for the first\ntime.** `drt stun`, the `stun` config block, and counters to the\nsupervisor all landed after v0.3.0 was tagged and have been sitting\nunreleased since. So has the C host's `access` spelling, which is a\ncompatibility fix rather than a feature -- an existing discofetch\nconfig does not parse on v0.3.0.\n",
+      "upgrading": "**If you run configs written for the C host, this release is the one\nthat parses them.** v0.3.0 refused `access: \"read\"` and accepted\n`\"readonly\"`, which is backwards; v0.4.0 matches `dhost.c` exactly.\nA config that was edited to say `\"readonly\"` as a workaround must be\nchanged back -- `\"readonly\"` is now refused, by name, as it is by the\nC host.\n\nNothing else in this release removes or renames a surface. `rest` and\n`netcheck` are additive and reach nothing unless a config wires them:\n`rest` answers no call at all without a scope granting origins, and\nan empty allowlist is a startup refusal rather than a runtime\nsurprise.\n",
+      "latest": false,
+      "sections": {
+        "added": [
+          "**STUN.** `drt stun` serves RFC 5389 binding requests, a `stun`\nconfig block configures it, and inside `drt start` the same server\nreports its counters to the root program. Two servers on separate\naddresses is what makes mapping classification available at all:\none vantage says what one vantage saw, and it takes two to know\nwhether the mapping *changed*, which is the fact that decides\nwhether hole punching can work.\n",
+          "**`drt netcheck`.** One of four verdicts -- `direct`, `v6-direct`,\n`punchable`, `relay` -- with the measurements that produced it, per\ndiscofetch's `doc/NETCHECK-SPEC.md`. The verdict tree is a table\nrather than nested branches, on that spec's own reasoning: it is\nthe part that will be wrong first when real home networks surprise\nus, and a table is edited and re-tested.\n\nThe decisive measurement is the UDP mapping across two STUN\nservers, never the TCP one. A NAT can be endpoint-independent for\nTCP and symmetric for UDP, and reading the verdict off the TCP\ncolumns would be confidently wrong on exactly the networks where\nthis matters most.\n\nReflect and the prober -- the edges' half -- are not implemented\nhere; the inbound test reports \"not measured\" until they exist.\n",
+          "**The `rest` connector: `host:rest/get` and `host:rest/post`.**\nThe guest surface is diluvium's, from\n`plugins/rest/rest.plugin.json`, so a program written against\n`diluvium-host` runs unchanged -- same calls, same shapes, and the\nsame bounds read out of `rest_plugin.c` rather than picked.\nRedirects are not followed, because the C plugin does not follow\nthem.\n\nUnlike the C host's out-of-process plugin, this takes a **scope**:\nan origin allowlist, checked against the URL *and* against the\nresolved address before connecting, since an allowed name that\nresolves into private space is the DNS rebinding shape. An allow\nentry may also carry `headers`, which the connector injects and the\nguest can neither set nor read -- so a deployment calls an\nauthenticated API without the program ever holding the credential\n-- and `allow_headers`, which when present is the exhaustive set\nthe guest may set on that origin.\n",
+          "`install.sh` ships as a release asset, so the one-liner has a URL that exists without waiting on server-side work.",
+          "`doc/HostBaseline.md`: the standard set of families any DRT host must provide or stub, measured against both hosts rather than reasoned about. Three mandatory (`time`, `time/monotonic`, `crypto/random`) and four rules, of which rule 3 has the teeth: a stub refuses, it never fakes.",
+          "`doc/FM-2-Upstream.md`: the brief for fixing FM-2 in diluvium.",
+          "This changelog, and `script/changelog.py` to generate and check it. Ported from diluvium's, shape and CLI intact."
+        ],
+        "changed": [
+          "**`access` is `read`, not `readonly`** -- a compatibility fix, and\nthe reason this is not optional for anyone running the C host's\nconfigs. `dhost.c` accepts exactly `\"read\"` or `\"readwrite\"`; DRT\naccepted `\"readonly\"` and *refused* `\"read\"`, so an existing\ndiscofetch config fails DRT's parse and crash-loops under the\ndeploy chain check. Matched to the C host exactly, refusal wording\nincluded, with a test in each connector pinning it.\n",
+          "`BUILDINFO.txt` now says what a binary carries: `dv_abi` (promised since v0.1.0 and never kept) and the connector set per profile, both read out of the artifact by `drt buildinfo` rather than guessed in YAML.",
+          "The README leads with a download that works today. The documented mirror URL 404s -- the mirror never grew the `drt` namespace -- and a doc that promises a 404 is how that went unnoticed. The mirror is still named as the intended front door, and named as not carrying the namespace yet.",
+          "`install.sh` verifies both sources. It carried a comment saying the GitHub fallback had no sums, true when written and false since the publish job started uploading `SHA256SUMS.txt`. A mismatch refuses; a missing sums file warns, so pinning an older release still works.",
+          "`DRT_MIRROR` takes `file://` URLs, which turns out to be the air-gapped install with no new code: point it at a directory and nothing touches the network.",
+          "`examples/hello.dlua` is rewritten against `host.*`, printing byte-identical output to the fifteen-line queue-boilerplate version it replaces. The old one is kept as `examples/by-hand.dlua`, as the honest illustration of what every `host.*` call does underneath."
+        ],
+        "fixed": [
+          "**FM-1: a use-after-free in tokio runtime teardown.** `drt relay`,\n`drt stun` and `drt tunnel` dropped a `Runtime` on the way out,\nwhich races a parked blocking worker's wakeup into a freed\n`Condvar` in tokio 1.53.1. They leak it now. The exposure was a\nclean shutdown turning into a SIGSEGV, which a supervised service\nreads as a crash rather than a stop.\n",
+          "**FM-2: a data race in diluvium's continuation registries.**\n`diluvium_shim_addcont` appends to a process-global array with no\nsynchronisation, so two threads calling `dv_new` at once can leave\na slot whose name is NULL and the next scan segfaults in `strcmp`.\nDRT now serialises instance *creation* behind a mutex, which closes\nit here; instances still run concurrently, one per thread.\n\nThe real fix is upstream and is not in this release. DRT's shipped\nexposure was nil either way -- `run`, `start` and `repl` create\ninstances only on the drive-loop thread -- so this was a\ntest-harness crash for us and a live one for any host that creates\ninstances on more than one thread. See `doc/FM-2-Upstream.md`.\n",
+          "**A relay-only deployment burned a whole core.** With no HTTP listener the drive loop's idle sleep became a spin -- 99.7% CPU, forever, on exactly the rendezvous config `examples/rendezvous` documents. 3.0% now, which is the 1 ms tick doing its job.",
+          "The shipped `examples/deployment.json` did not load: the `access` fix above missed the one config file a new user copies. Found by running it rather than reading it.",
+          "`release.yml`'s publish job copied `install.sh` from one directory above the workspace, which does not exist. Under `set -eu` that failed the step and took the whole publish with it -- no release rather than a release missing an asset. Never caught because `publish` is the one job a rehearsal does not execute.",
+          "Linux non-x86_64 now refuses by name in `install.sh` instead of downloading the x86_64 static binary and failing the `--version` guard with \"does not run here\", which is true and no help at all.",
+          "`doc/Browser.md`'s export table listed fifteen functions and omitted `release`, which is a leak by construction for anyone implementing from it."
+        ],
+        "known_issues": [
+          "**FM-2 is open upstream.** The mutex above closes it for DRT. Any\nother host embedding this diluvium revision and creating instances\nfrom more than one thread still has the race.\n",
+          "**wasm32 is not in the release matrix, and the browser tier is\nunwired.** `drt-web` compiles for wasm32 on every push but exports\nonly `memory`: there is no `wasm-bindgen` layer, no glue binding a\nJS object to `HostBridge`, and no connector pump. Publishing an\nartifact nothing can call would be a compatibility surface with\nnothing behind it. See `doc/Next.md` for what it would take.\n",
+          "**`drt ps` is a stub.** The introspection surface it names is\ndesigned and the data is all reachable in-process; what is missing\nis the control endpoint it would reach a running deployment over,\nwhich lands with sshd.\n",
+          "**The REPL has no line editor.** Pressing Up feeds a raw `\\\\x1b`\ninto the line, and since 0x1b is Lua's bytecode signature byte the\nREPL answers \"attempt to load a binary chunk\". Architecturally\nsound and unfinished; do not put a newcomer in front of it.\n",
+          "**Budgets bound the VM, not the deployment.** `instructions` and\n`memory_kb` are properties of the guest VM. Neither bounds wall\ntime -- a hostcall that parks for 85 seconds consumes no\ninstructions -- nor cumulative spawns in a lineage. `doc/Next.md`\nsizes both.\n"
+        ]
+      },
+      "notes_md": "## [0.4.0] - unreleased\n\n`v0.4.0` &middot; dv ABI 1 &middot; diluvium `f137b308c4dc`\n\nThe release v0.3.1 was going to be, plus everything the four days\nspent chasing its release blocker turned up.\n\n**Numbered 0.4.0 rather than 0.3.1 because the connector set\nchanged.** `rest` is new, so `profile.full.connectors` in BUILDINFO\nis not what v0.3.0's was, and a package declaring\n`requires.connectors` is checked against that list by name. A patch\ndigit over a changed compatibility surface is the one thing\nBUILDINFO exists to prevent. `netcheck` is a new verb on the same\nargument.\n\nThe headline for anyone deploying: **STUN ships for the first\ntime.** `drt stun`, the `stun` config block, and counters to the\nsupervisor all landed after v0.3.0 was tagged and have been sitting\nunreleased since. So has the C host's `access` spelling, which is a\ncompatibility fix rather than a feature -- an existing discofetch\nconfig does not parse on v0.3.0.\n\n### Connectors\n\n- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `listen`\n- `slim`: `time`, `fs`, `crypto`, `listen`\n\n### Added\n\n- **STUN.** `drt stun` serves RFC 5389 binding requests, a `stun`\n  config block configures it, and inside `drt start` the same server\n  reports its counters to the root program. Two servers on separate\n  addresses is what makes mapping classification available at all:\n  one vantage says what one vantage saw, and it takes two to know\n  whether the mapping *changed*, which is the fact that decides\n  whether hole punching can work.\n- **`drt netcheck`.** One of four verdicts -- `direct`, `v6-direct`,\n  `punchable`, `relay` -- with the measurements that produced it, per\n  discofetch's `doc/NETCHECK-SPEC.md`. The verdict tree is a table\n  rather than nested branches, on that spec's own reasoning: it is\n  the part that will be wrong first when real home networks surprise\n  us, and a table is edited and re-tested.\n\n  The decisive measurement is the UDP mapping across two STUN\n  servers, never the TCP one. A NAT can be endpoint-independent for\n  TCP and symmetric for UDP, and reading the verdict off the TCP\n  columns would be confidently wrong on exactly the networks where\n  this matters most.\n\n  Reflect and the prober -- the edges' half -- are not implemented\n  here; the inbound test reports \"not measured\" until they exist.\n- **The `rest` connector: `host:rest/get` and `host:rest/post`.**\n  The guest surface is diluvium's, from\n  `plugins/rest/rest.plugin.json`, so a program written against\n  `diluvium-host` runs unchanged -- same calls, same shapes, and the\n  same bounds read out of `rest_plugin.c` rather than picked.\n  Redirects are not followed, because the C plugin does not follow\n  them.\n\n  Unlike the C host's out-of-process plugin, this takes a **scope**:\n  an origin allowlist, checked against the URL *and* against the\n  resolved address before connecting, since an allowed name that\n  resolves into private space is the DNS rebinding shape. An allow\n  entry may also carry `headers`, which the connector injects and the\n  guest can neither set nor read -- so a deployment calls an\n  authenticated API without the program ever holding the credential\n  -- and `allow_headers`, which when present is the exhaustive set\n  the guest may set on that origin.\n- `install.sh` ships as a release asset, so the one-liner has a URL that exists without waiting on server-side work.\n- `doc/HostBaseline.md`: the standard set of families any DRT host must provide or stub, measured against both hosts rather than reasoned about. Three mandatory (`time`, `time/monotonic`, `crypto/random`) and four rules, of which rule 3 has the teeth: a stub refuses, it never fakes.\n- `doc/FM-2-Upstream.md`: the brief for fixing FM-2 in diluvium.\n- This changelog, and `script/changelog.py` to generate and check it. Ported from diluvium's, shape and CLI intact.\n\n### Changed\n\n- **`access` is `read`, not `readonly`** -- a compatibility fix, and\n  the reason this is not optional for anyone running the C host's\n  configs. `dhost.c` accepts exactly `\"read\"` or `\"readwrite\"`; DRT\n  accepted `\"readonly\"` and *refused* `\"read\"`, so an existing\n  discofetch config fails DRT's parse and crash-loops under the\n  deploy chain check. Matched to the C host exactly, refusal wording\n  included, with a test in each connector pinning it.\n- `BUILDINFO.txt` now says what a binary carries: `dv_abi` (promised since v0.1.0 and never kept) and the connector set per profile, both read out of the artifact by `drt buildinfo` rather than guessed in YAML.\n- The README leads with a download that works today. The documented mirror URL 404s -- the mirror never grew the `drt` namespace -- and a doc that promises a 404 is how that went unnoticed. The mirror is still named as the intended front door, and named as not carrying the namespace yet.\n- `install.sh` verifies both sources. It carried a comment saying the GitHub fallback had no sums, true when written and false since the publish job started uploading `SHA256SUMS.txt`. A mismatch refuses; a missing sums file warns, so pinning an older release still works.\n- `DRT_MIRROR` takes `file://` URLs, which turns out to be the air-gapped install with no new code: point it at a directory and nothing touches the network.\n- `examples/hello.dlua` is rewritten against `host.*`, printing byte-identical output to the fifteen-line queue-boilerplate version it replaces. The old one is kept as `examples/by-hand.dlua`, as the honest illustration of what every `host.*` call does underneath.\n\n### Fixed\n\n- **FM-1: a use-after-free in tokio runtime teardown.** `drt relay`,\n  `drt stun` and `drt tunnel` dropped a `Runtime` on the way out,\n  which races a parked blocking worker's wakeup into a freed\n  `Condvar` in tokio 1.53.1. They leak it now. The exposure was a\n  clean shutdown turning into a SIGSEGV, which a supervised service\n  reads as a crash rather than a stop.\n- **FM-2: a data race in diluvium's continuation registries.**\n  `diluvium_shim_addcont` appends to a process-global array with no\n  synchronisation, so two threads calling `dv_new` at once can leave\n  a slot whose name is NULL and the next scan segfaults in `strcmp`.\n  DRT now serialises instance *creation* behind a mutex, which closes\n  it here; instances still run concurrently, one per thread.\n\n  The real fix is upstream and is not in this release. DRT's shipped\n  exposure was nil either way -- `run`, `start` and `repl` create\n  instances only on the drive-loop thread -- so this was a\n  test-harness crash for us and a live one for any host that creates\n  instances on more than one thread. See `doc/FM-2-Upstream.md`.\n- **A relay-only deployment burned a whole core.** With no HTTP listener the drive loop's idle sleep became a spin -- 99.7% CPU, forever, on exactly the rendezvous config `examples/rendezvous` documents. 3.0% now, which is the 1 ms tick doing its job.\n- The shipped `examples/deployment.json` did not load: the `access` fix above missed the one config file a new user copies. Found by running it rather than reading it.\n- `release.yml`'s publish job copied `install.sh` from one directory above the workspace, which does not exist. Under `set -eu` that failed the step and took the whole publish with it -- no release rather than a release missing an asset. Never caught because `publish` is the one job a rehearsal does not execute.\n- Linux non-x86_64 now refuses by name in `install.sh` instead of downloading the x86_64 static binary and failing the `--version` guard with \"does not run here\", which is true and no help at all.\n- `doc/Browser.md`'s export table listed fifteen functions and omitted `release`, which is a leak by construction for anyone implementing from it.\n\n### Known issues\n\n- **FM-2 is open upstream.** The mutex above closes it for DRT. Any\n  other host embedding this diluvium revision and creating instances\n  from more than one thread still has the race.\n- **wasm32 is not in the release matrix, and the browser tier is\n  unwired.** `drt-web` compiles for wasm32 on every push but exports\n  only `memory`: there is no `wasm-bindgen` layer, no glue binding a\n  JS object to `HostBridge`, and no connector pump. Publishing an\n  artifact nothing can call would be a compatibility surface with\n  nothing behind it. See `doc/Next.md` for what it would take.\n- **`drt ps` is a stub.** The introspection surface it names is\n  designed and the data is all reachable in-process; what is missing\n  is the control endpoint it would reach a running deployment over,\n  which lands with sshd.\n- **The REPL has no line editor.** Pressing Up feeds a raw `\\\\x1b`\n  into the line, and since 0x1b is Lua's bytecode signature byte the\n  REPL answers \"attempt to load a binary chunk\". Architecturally\n  sound and unfinished; do not put a newcomer in front of it.\n- **Budgets bound the VM, not the deployment.** `instructions` and\n  `memory_kb` are properties of the guest VM. Neither bounds wall\n  time -- a hostcall that parks for 85 seconds consumes no\n  instructions -- nor cumulative spawns in a lineage. `doc/Next.md`\n  sizes both.\n\n### Upgrading\n\n**If you run configs written for the C host, this release is the one\nthat parses them.** v0.3.0 refused `access: \"read\"` and accepted\n`\"readonly\"`, which is backwards; v0.4.0 matches `dhost.c` exactly.\nA config that was edited to say `\"readonly\"` as a workaround must be\nchanged back -- `\"readonly\"` is now refused, by name, as it is by the\nC host.\n\nNothing else in this release removes or renames a surface. `rest` and\n`netcheck` are additive and reach nothing unless a config wires them:\n`rest` answers no call at all without a scope granting origins, and\nan empty allowlist is a startup refusal rather than a runtime\nsurprise.\n"
+    },
+    {
+      "version": "0.3.0",
+      "tag": "v0.3.0",
+      "date": "2026-08-28",
+      "status": "released",
+      "stable": true,
+      "mirror": true,
+      "dv_abi": 1,
+      "diluvium": "f137b308c4dce917b24c71ab41add61606945e58",
+      "connectors": {
+        "full": [
+          "time",
+          "fs",
+          "crypto",
+          "sql",
+          "ssh",
+          "listen"
+        ],
+        "slim": [
+          "time",
+          "fs",
+          "crypto",
+          "listen"
+        ]
+      },
+      "summary": "The rendezvous relay, end to end: a real `ssh` session over WSS\nthrough `drt tunnel`, 37 bytes metered, rehearsed against the release\nartifact.\n",
+      "upgrading": null,
+      "latest": true,
+      "sections": {
+        "added": [
+          "`drt relay`: the rendezvous relay -- parked WSS legs paired by label and spliced, with presence, metering and arbitration reported to the root program.",
+          "`drt tunnel`: SSH over WSS as a dumb pipe, in three shapes -- the OpenSSH `ProxyCommand` contract over stdio, a WS\u2192TCP listener, and the device side of the relay."
+        ],
+        "known_issues": [
+          "`access` is spelled `readonly` here and refuses `read`, which is backwards from the C host. A config written for `dhost.c` does not parse. Fixed in 0.4.0.",
+          "A relay-only deployment (no HTTP listener) spins a core at 99.7% forever. Fixed in 0.4.0.",
+          "`drt relay`, `drt stun` and `drt tunnel` can SIGSEGV on clean shutdown (FM-1). Fixed in 0.4.0."
+        ]
+      },
+      "notes_md": "## [0.3.0] - 2026-08-28\n\n`v0.3.0` &middot; dv ABI 1 &middot; diluvium `f137b308c4dc`\n\nThe rendezvous relay, end to end: a real `ssh` session over WSS\nthrough `drt tunnel`, 37 bytes metered, rehearsed against the release\nartifact.\n\n### Connectors\n\n- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `listen`\n- `slim`: `time`, `fs`, `crypto`, `listen`\n\n### Added\n\n- `drt relay`: the rendezvous relay -- parked WSS legs paired by label and spliced, with presence, metering and arbitration reported to the root program.\n- `drt tunnel`: SSH over WSS as a dumb pipe, in three shapes -- the OpenSSH `ProxyCommand` contract over stdio, a WS\u2192TCP listener, and the device side of the relay.\n\n### Known issues\n\n- `access` is spelled `readonly` here and refuses `read`, which is backwards from the C host. A config written for `dhost.c` does not parse. Fixed in 0.4.0.\n- A relay-only deployment (no HTTP listener) spins a core at 99.7% forever. Fixed in 0.4.0.\n- `drt relay`, `drt stun` and `drt tunnel` can SIGSEGV on clean shutdown (FM-1). Fixed in 0.4.0.\n"
+    },
+    {
+      "version": "0.2.0",
+      "tag": "v0.2.0",
+      "date": "2026-08-27",
+      "status": "released",
+      "stable": true,
+      "mirror": true,
+      "dv_abi": 1,
+      "diluvium": "f137b308c4dce917b24c71ab41add61606945e58",
+      "connectors": {
+        "full": [
+          "time",
+          "fs",
+          "crypto",
+          "sql",
+          "ssh",
+          "listen"
+        ],
+        "slim": [
+          "time",
+          "fs",
+          "crypto",
+          "listen"
+        ]
+      },
+      "summary": "Park mode: the device corner of the triangle.\n",
+      "upgrading": null,
+      "latest": false,
+      "sections": {},
+      "notes_md": "## [0.2.0] - 2026-08-27\n\n`v0.2.0` &middot; dv ABI 1 &middot; diluvium `f137b308c4dc`\n\nPark mode: the device corner of the triangle.\n\n### Connectors\n\n- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `listen`\n- `slim`: `time`, `fs`, `crypto`, `listen`\n"
+    },
+    {
+      "version": "0.1.0",
+      "tag": "v0.1.0",
+      "date": "2026-08-27",
+      "status": "released",
+      "stable": true,
+      "mirror": true,
+      "dv_abi": 1,
+      "diluvium": "f137b308c4dce917b24c71ab41add61606945e58",
+      "connectors": {
+        "full": [
+          "time",
+          "fs",
+          "crypto",
+          "sql",
+          "ssh",
+          "listen"
+        ],
+        "slim": [
+          "time",
+          "fs",
+          "crypto",
+          "listen"
+        ]
+      },
+      "summary": "The first release: DRT as a static binary that runs sandboxed Lua\nunder a capability model and serves fetchpoints.\n",
+      "upgrading": null,
+      "latest": false,
+      "sections": {
+        "known_issues": [
+          "`BUILDINFO.txt`'s header promised a `dv_abi` field it did not emit. Kept from v0.1.0 in 0.4.0."
+        ]
+      },
+      "notes_md": "## [0.1.0] - 2026-08-27\n\n`v0.1.0` &middot; dv ABI 1 &middot; diluvium `f137b308c4dc`\n\nThe first release: DRT as a static binary that runs sandboxed Lua\nunder a capability model and serves fetchpoints.\n\n### Connectors\n\n- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `listen`\n- `slim`: `time`, `fs`, `crypto`, `listen`\n\n### Known issues\n\n- `BUILDINFO.txt`'s header promised a `dv_abi` field it did not emit. Kept from v0.1.0 in 0.4.0.\n"
+    }
+  ]
+}
