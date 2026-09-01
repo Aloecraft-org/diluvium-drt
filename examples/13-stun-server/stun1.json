@@ -1,0 +1,8 @@
+{
+  "_comment": "A STUN binding server, alone in its own app. `drt stun` reads this block and nothing else.",
+
+  "stun": {
+    "_bind": "Unlike the relay and the http listener, this is MEANT to face the world — reporting the address the world sees is the whole service — so there is no loopback default to inherit. The config says where. Here it is loopback because this example probes itself.",
+    "bind": "127.0.0.1:34780"
+  }
+}

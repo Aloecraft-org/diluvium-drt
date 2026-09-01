@@ -26,6 +26,7 @@ reference. Everything here is v0.4.0.
 | [`10-ssh-exec`](10-ssh-exec) | `ssh/exec` is the one call that leaves the sandbox, so the scope pins the destination. And there is no local `exec`, in any build. | `drt run --config deploy.json` |
 | [`11-tunnel-and-relay`](11-tunnel-and-relay) | Two machines that cannot reach each other both dial out to a relay, which splices their legs into one pipe that ssh rides over. | `drt tunnel` |
 | [`12-under-the-hood`](12-under-the-hood) | What every `host.*` call is underneath: the `host/calls` and `host/replies` pair, a token the host echoes back, and a reply of four fields. | `drt run app.dlua` |
+| [`13-stun-server`](13-stun-server) | Run two STUN binding servers and classify this machine's NAT from what they answer. One server is never enough. | `./demo.sh` |
 
 `drt run` executes one program to completion and exits — no swarm, no
 listeners, no second instance — and it is what `01`–`07`, `10` and `12` use.

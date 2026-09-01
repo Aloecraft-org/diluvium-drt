@@ -1,0 +1,9 @@
+punchable — the UDP mapping is endpoint-independent, so the address a STUN server sees is the address a peer can reach
+  use: use a rendezvous; peers will connect to you directly
+
+evidence
+  address    not measured (no reflect edge answered)
+  v6         none routable
+  udp map    <port> (127.0.0.1:34780), <port> (127.0.0.1:34781)  independent
+  tcp map    not measured
+  inbound    not tested (no --port given)
