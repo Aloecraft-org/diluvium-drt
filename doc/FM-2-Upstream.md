@@ -13,7 +13,7 @@ constraints are still the record of *why* the fix is shaped the way it
 is, and the reproduction recipe is still how you would check a build.
 
 Read the rest as history with one live consequence: **DRT has not taken
-the pin bump yet.** v0.4.0-rc.1 ships on `f137b30`, so the mitigation in
+the pin bump yet.** v0.4.0rc1 ships on `f137b30`, so the mitigation in
 `drt-swarm` is still load-bearing for DRT today. See the last section.
 
 Verified facts and reconstruction are kept apart throughout, because the
@@ -405,7 +405,7 @@ is rare, and it makes DRT's test suite honest again. It does not protect
 any other host.
 
 It is still there, and deliberately so. The upstream fix landed but the
-DRT pin did not move with it — v0.4.0-rc.1 is `f137b30`, which build12
+DRT pin did not move with it — v0.4.0rc1 is `f137b30`, which build12
 names as affected — so removing the mutex now would reopen FM-2 for DRT
 rather than close it. The condition for removal is one line in
 `Cargo.lock`: `grep -A2 'name = "diluvium"' Cargo.lock` showing build12

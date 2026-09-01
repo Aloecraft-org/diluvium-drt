@@ -161,3 +161,72 @@ fn no_program_anywhere_says_so() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("name a program"));
 }
+
+/// The budget escape, and the one thing `drt run` can still say about it.
+///
+/// A guest catches instruction exhaustion with `pcall` and keeps running --
+/// the hook clears itself before raising at this pin, so nothing re-arms
+/// it. DRT cannot stop that from here (the enforcement fix is upstream,
+/// doc/Ask-0.5.0-Reply.md §1.2), but it must not report success for it:
+/// exit 0 would make `drt run` the only place in DRT that hides a budget
+/// that stopped being enforced.
+#[test]
+fn a_program_that_caught_its_budget_and_kept_running_does_not_exit_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        &dir.path().join("prog.dlua"),
+        "pcall(function() local n = 0 while true do n = n + 1 end end)\nprint('kept going')\n",
+    );
+    write(
+        &dir.path().join("drt.json"),
+        r#"{"budget": {"instructions": 1000000}}"#,
+    );
+
+    let out = drt()
+        .arg("run")
+        .arg(dir.path().join("prog.dlua"))
+        .arg("--config")
+        .arg(dir.path().join("drt.json"))
+        .output()
+        .unwrap();
+
+    // The program really did run past the budget -- this is the escape
+    // itself, asserted so the test fails loudly if it is ever closed
+    // upstream and this whole case becomes unreachable.
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("kept going"),
+        "the guest did not get past the budget; if the upstream hook now \
+         re-arms, this test and the branch it covers are both obsolete"
+    );
+    assert!(!out.status.success(), "exit 0 would hide the escape");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("exhausted its instruction budget"),
+        "stderr: {stderr}"
+    );
+}
+
+/// The other half: a program that stays inside its budget is untouched by
+/// the check above.
+#[test]
+fn a_program_inside_its_budget_still_exits_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    write(&dir.path().join("prog.dlua"), "print('fine')\n");
+    write(
+        &dir.path().join("drt.json"),
+        r#"{"budget": {"instructions": 1000000}}"#,
+    );
+
+    let out = drt()
+        .arg("run")
+        .arg(dir.path().join("prog.dlua"))
+        .arg("--config")
+        .arg(dir.path().join("drt.json"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

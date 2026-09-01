@@ -1,6 +1,6 @@
 # DRT's reply to the 0.5.0 ask
 
-**Written 2026-09-01, against `v0.4.0-rc.1`.** Answers
+**Written 2026-09-01, against `v0.4.0rc1`.** Answers
 discofetch's *"What discofetch needs from DRT — the 0.5.0 ask"* (1 Sep,
 written against `d629341`) and its §2.2 addendum.
 
@@ -89,10 +89,21 @@ Lua does not have. Second, `dv_resume` should refuse to start on an
 instance whose `exceeded` is set, so a yield-and-resume guest cannot walk
 past it either.
 
-**Cheap half DRT can do meanwhile, and should:** `drt run` must not exit 0
-when `exceeded()` is true. That does not restore the bound — the program
-still ran — but it stops the escape being *silent*, which is what makes it
-dangerous to a supervisor.
+**Cheap half DRT can do meanwhile — done, in v0.4.0rc1.** `drt run` no
+longer exits 0 when `exceeded()` is true. That does not restore the bound
+(the program has already run) but it stops the escape being *silent*,
+which is what made it dangerous to a supervisor.
+
+Worth being precise about who can already see this, since it is the first
+question anyone asks. **A host can detect it; a guest cannot.** `dv.h`
+exposes `dv_exceeded()`, the safe crate exposes `Instance::exceeded()`,
+the `Engine` trait carries it (`drt-swarm/src/engine.rs:261`), and
+`drt start` has always read it to classify a stop as
+`exceeded`/`faulted`/`exited` (`swarm.rs:829`) — so a supervisor program
+watching a child's stop event has had this information all along. `drt run`
+was the one place that threw it away. There is no guest-side query, and
+there should not be: a program that could ask how much budget it had left
+would be a program that could schedule around it.
 
 ### §1.3 SQL — `reproduced`, and the ask's preference order is aimed at the wrong option
 
@@ -159,9 +170,10 @@ statement**; it is accurate as written and I have left it alone.
 
 ---
 
-## 3. Decisions I need before starting
+## 3. Decisions — all three answered
 
-Three. Each is yours because each trades something that is yours to trade.
+Answered 2026-09-01, recorded here rather than in a thread. Each was
+discofetch's to make because each trades something that is theirs.
 
 ### 3.1 SQL: what should an open transaction at exit do?
 
@@ -179,6 +191,12 @@ are told about is a bug report, and a lost write you are not told about is
 a data-integrity incident that surfaces weeks later. (b) is the one I
 would push back on hardest — a runtime that guesses at commit intent is a
 worse promise than one that refuses.
+
+**Decided: (a).** An instance stopping with a transaction open is a named
+error and a non-zero exit. Note what this does *not* change, since the ask
+was written believing otherwise: `begin`, `commit` and `rollback` all stay,
+because they already work. The connector's "autocommit only" header comment
+is what gets deleted.
 
 ### 3.2 netcheck's TLS decision (§2.2a) — the profile question, not the flag
 
@@ -201,12 +219,26 @@ is unacceptable, say so and I will split further — verdict tree in `slim`,
 measurement behind `full` — but that is a third feature flag for a
 diagnostic and I would rather not.
 
+**Decided: as proposed.** A `netcheck` feature, `full` only, `stun` left
+cheap. `slim` loses the verdict, and that is priced and accepted. It also
+means the connector list in `BUILDINFO` changes again, which is the
+argument for 0.5.0 the ask already makes.
+
 ### 3.3 `--port`'s meaning (§2.2c)
 
 Agreed it is ambiguous and agreed with your suggestion. `--port N` means
 *"probe the service already listening on N"* and binds nothing. If the
 "can anything reach me at all" test is wanted, it is a different flag with
 a different name that says out loud that it binds a listener.
+
+**Decided: as proposed**, and with the second flag confirmed as future
+work rather than something that exists. To be unambiguous, because the ask
+reads as though one of them might already be there: **neither flag exists
+today, and netcheck opens no inbound socket at all.** `--port N` (probe a
+service already listening, bind nothing) and a separately named flag that
+does bind a scratch listener are both §2 work. The naming rule is the
+point of the split — nobody should discover after the fact that a
+diagnostic bound a socket, so the flag that binds one has to say so.
 
 **Already done for the rc:** the renderer no longer advertises a flag the
 binary does not accept. `inbound not tested (no --port given)` is now

@@ -450,7 +450,7 @@ pub mod diluvium_engine {
             // This lock is kept anyway, on purpose, so nobody reading it
             // later has to reconstruct why:
             //
-            //   * v0.4.0-rc.1 still pins `f137b30`, which is pre-build12 and
+            //   * v0.4.0rc1 still pins `f137b30`, which is pre-build12 and
             //     named by upstream as affected. Until the pin moves, this
             //     lock is the only thing closing FM-2 for DRT.
             //   * The examples gate was captured against that pin. Bumping

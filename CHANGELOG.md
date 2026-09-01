@@ -12,9 +12,9 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
-## [0.4.0-rc.1] - unreleased (prerelease)
+## [0.4.0rc1] - 2026-09-01 (prerelease)
 
-`v0.4.0-rc.1` &middot; dv ABI 1 &middot; diluvium `f137b308c4dc`
+`v0.4.0rc1` &middot; dv ABI 1 &middot; diluvium `f137b308c4dc`
 
 Outbound HTTP from a guest, a NAT diagnostic, and a set of examples
 that found a bug in the first of those before anyone shipped it.
@@ -71,10 +71,12 @@ argument.
 
   Reflect and the prober — the edges' half — are not implemented
   here; the inbound test reports "not measured" until they exist.
-- **`examples/`, a run-through that is also a gate.** Seven
+- **`examples/`, a run-through that is also a gate.** Sixteen
   self-contained directories, each run from inside its own folder,
   each carrying an `expected.txt` captured from a real run, and
-  `run-all.sh` to diff them. The point of the gate is that this
+  `run-all.sh` to diff them. One needs the open internet and is
+  skipped unless `--net` says otherwise; a skip is reported as a skip
+  and never as a pass. The point of the gate is that this
   repository's own traps list says to re-run the examples when config
   parsing changes — now something does.
 - `CHANGELOG.yaml` and `script/changelog.py`, ported from diluvium's, with the release body and the mirror's `changelog.json` generated from one source. CI fails if they drift.
@@ -82,6 +84,20 @@ argument.
 - `doc/Next.md`: the deferred work, sized against the code rather than estimated.
 - `doc/Verification.md`: what the examples gate cannot reach -- the runs that need a real network, a second machine or a reachable sshd -- written for whoever has one.
 - `doc/Ask-0.5.0-Reply.md`: the reply to discofetch's 0.5.0 ask, with the two `reported` findings reproduced and the three decisions DRT needs before starting.
+
+### Changed
+
+- **`drt run` no longer exits 0 for a program that escaped its
+  instruction budget.** A guest can catch exhaustion with `pcall` and
+  keep running (see known issues); until now `drt run` reported
+  success for that, which made it the only place in DRT that hid it
+  — `drt start` has always classified such a stop as `exceeded`.
+
+  It is not enforcement and does not pretend to be: the program has
+  already run. It is the difference between a budget that was escaped
+  and a budget that was escaped silently, and a supervisor can only
+  act on the second kind if something says so. A program that stays
+  inside its budget is unaffected.
 
 ### Fixed
 
@@ -140,6 +156,11 @@ argument.
   be closed from the host side: a CPU-bound loop never returns to
   the host, so there is no resume for `dv_exceeded()` to refuse.
   `doc/Ask-0.5.0-Reply.md` §1.2 is the brief.
+
+  What this release does do is stop hiding it: `drt run` reports a
+  non-zero exit for a program that escaped, so a supervisor sees an
+  escape rather than a success. That is all a host can do from
+  outside the VM.
 - **SQL discards an open transaction at exit, silently.**
   `begin`/`commit`/`rollback` do work -- they pass through to SQLite
   on a held connection, and a committed row survives. But a program

@@ -116,7 +116,7 @@ write-up, with the interleaving and the fix options, in
 
 **Fixed upstream 2026-09-01**, in diluvium 5.5.1_build12: `src/dsync.h`
 guards both registries, and that release names `f137b30` and earlier as
-affected. DRT has not taken the bump — v0.4.0-rc.1 pins `f137b30` on
+affected. DRT has not taken the bump — v0.4.0rc1 pins `f137b30` on
 purpose, because the examples gate was captured against it — so for a
 binary built from this tree the mitigation below is still what closes
 FM-2, not a leftover.

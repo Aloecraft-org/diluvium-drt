@@ -308,15 +308,16 @@ def consistency(doc):
     version = r["version"]
     where = "newest entry (%s)" % version
 
-    # A release candidate is `X.Y.Z-rc.N`, and the crates it is built from
+    # A release candidate is `X.Y.ZrcN` -- no hyphen, matching the other
+    # repositories' candidates -- and the crates it is built from
     # stay at `X.Y.Z`: the tag is the release's identity, the manifest
     # version is the code's, and a candidate is the same code as the
     # release it is a candidate for. Bumping a dozen path dependencies to
-    # `-rc.1` and back again would be churn that proves nothing, so the
+    # `rc1` and back again would be churn that proves nothing, so the
     # comparisons below are made against the base version.
-    m = re.fullmatch(r"(\d+\.\d+\.\d+)(?:-rc\.\d+)?", str(version))
+    m = re.fullmatch(r"(\d+\.\d+\.\d+)(?:rc\d+)?", str(version))
     if not m:
-        bad.append("%s: version is not X.Y.Z or X.Y.Z-rc.N" % where)
+        bad.append("%s: version is not X.Y.Z or X.Y.ZrcN" % where)
         return bad
     version = m.group(1)
 

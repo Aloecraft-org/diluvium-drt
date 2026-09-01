@@ -19,6 +19,11 @@ use drt_swarm::engine::{
 const CALLS: &str = "host/calls";
 const REPLIES: &str = "host/replies";
 
+/// Where the budget-escape refusal below sends the reader. A pointer, not a
+/// message: the failure needs more explanation than an error line can carry
+/// and the explanation is not this file's to hold.
+const BUDGET_ESCAPE_DOC: &str = "doc/Ask-0.5.0-Reply.md \u{a7}1.2";
+
 pub fn run(
     program: &Path,
     dispatcher: &Dispatcher,
@@ -50,6 +55,29 @@ pub fn run(
     let mut step = inst.run().map_err(guest_error)?;
     loop {
         let wait = match step {
+            // A program that finished is not necessarily a program that
+            // stayed inside its budget. Instruction exhaustion arrives in
+            // the guest as an ordinary Lua error, so a `pcall` catches it
+            // -- and at the pin, the hook clears itself before raising
+            // (`src/dv.c:219`), so nothing re-arms and the rest of the run
+            // is unbounded. Reporting exit 0 for that would make `drt run`
+            // the only place in DRT that hides it: `drt start` already
+            // classifies a stop as `exceeded` from the same flag
+            // (`drt-swarm/src/swarm.rs:829`), and a supervisor reads it.
+            //
+            // This is not enforcement and does not pretend to be -- the
+            // program has already run. It is the difference between a
+            // budget that was escaped and a budget that was escaped
+            // silently. The enforcement fix is upstream; the brief is
+            // doc/Ask-0.5.0-Reply.md §1.2.
+            Step::Done if inst.exceeded() => {
+                return Err(format!(
+                    "the program exhausted its instruction budget and then \
+                     continued: the budget was caught as an ordinary error and \
+                     stopped being enforced. Exit status reports it because \
+                     nothing else can ({BUDGET_ESCAPE_DOC})."
+                ))
+            }
             Step::Done => return Ok(()),
             Step::Parked(wait) => wait,
         };
