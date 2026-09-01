@@ -9,7 +9,8 @@ them.** Those corrections are kept in place rather than quietly fixed,
 because a wrong shared belief about where the cost is will be re-derived by
 the next person otherwise.
 
-The first four are independent, unblocked, and about two days together.
+The first five are independent, unblocked, and about two and a half days
+together.
 
 ---
 
@@ -100,11 +101,62 @@ quadratic today". That is not true: `Swarm::find` is O(1), a lookup in
 it. `ids()` plus N accessor calls is O(n). The real quadratic is on the
 teardown path, where a swarm that grows a leaf per pattern will meet it.
 
+### 5. Capability flags, wasmtime-style — ~half a day for `--dir`, and one policy decision
+
+`drt --dir ./work run app.dlua`, `drt --listen http://127.0.0.1:8080 start` —
+grant a capability from the command line instead of writing a config, the way
+`wasmtime --dir` does.
+
+This matters more than convenience. With no config only `time` and
+`time/monotonic` are wired, so a standalone `.dlua` can compute but cannot do
+I/O, and that is what stops a single file from feeling like an app. A `--dir`
+flag closes that without weakening the scope model: the flag still names a
+*place*, which is exactly what a scope is.
+
+**The mechanism is already sketched.** `assemble()` in `crates/drt/src/main.rs`
+mutates a `RootConfig` before wiring — that is what `local_defaults` does — so
+flag merging has a natural home right beside it. `Listener` defaults
+everything but `scheme` and `address`, so `--listen http://127.0.0.1:8080`
+maps to one struct with no other choices to make. The fs half is a
+`ConnectorWiring` with a scope, which is the same shape a config writes.
+
+**Worth knowing before starting: the intent is already documented as if it
+were built.** `Cli`'s doc comment reads *"Root config file. Flags and env
+merge over it into one root object."* Nothing merges. `--config` is the only
+flag, and no code reads an environment variable. That is the same shape as
+`BUILDINFO`'s `dv_abi`, which release.yml's header promised from v0.1.0 and
+did not emit until v0.4.0 — a comment describing a design rather than the
+code under it.
+
+**The policy decision, which is the part that is not easy.** DRT has both a
+config and flags, so precedence has to be decided, and the obvious answer is
+wrong:
+
+- *Flags always win.* wasmtime's model, and coherent there because flags are
+  the only config. Here it would mean a command line can widen a config's
+  `caps` ceiling — and a ceiling that a flag can raise is not a ceiling.
+- *Flags apply only when there is no config.* Safe, trivially explainable,
+  and it covers the case that motivated this. It also makes the flag useless
+  for the ordinary "run this deployment but point fs somewhere else" edit.
+- *Flags merge, but may only narrow.* Consistent with DRT's own attenuation
+  rule — a child may state a smaller number, never a larger one — applied to
+  the command line as one more layer. A `--dir` naming a directory outside
+  the config's fs scope is refused by name, at startup, like every other
+  scope mistake.
+
+The third is the one that fits the model, and it is the reason this is
+half a day rather than an hour: the merge has to run the same attenuation
+check a spawn does, rather than a `BTreeMap::insert`.
+
+Worth doing alongside, since it is the same decision: honour the `DRT_*`
+environment variables the doc comment implies, or delete the clause. Either
+is fine; the current state — promising a merge that does not exist — is not.
+
 ---
 
 ## Blocked on something else
 
-### 5. Roster introspection in one query — ~½ day of swarm work, gated on the control endpoint
+### 6. Roster introspection in one query — ~½ day of swarm work, gated on the control endpoint
 
 The data is all there behind O(1) accessors; aggregating it into one struct
 is half a day. But `drt ps` is a stub that says so
@@ -119,7 +171,7 @@ roster query is a small thing hanging off it.
 
 ## The browser tier
 
-### 6. A verified browser release — ~1 week minimal, 2-3 weeks useful
+### 7. A verified browser release — ~1 week minimal, 2-3 weeks useful
 
 `drt-web` became a second-class citizen, and there is a visible feedback
 loop in this repository's own reasoning about why. `ci.yml:80-87` and
