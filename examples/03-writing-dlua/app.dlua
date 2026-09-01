@@ -1,0 +1,170 @@
+-- Diluvium, for someone who already writes Lua.
+--
+--   drt run app.dlua
+--
+-- Diluvium is Lua 5.5 with a handful of additions, and it is backward
+-- compatible: a .dlua file containing nothing but Lua is a valid program.
+-- So none of this is something you have to adopt, and existing Lua you
+-- paste in keeps working. Each section below is one addition, run rather
+-- than described -- what you see is what this file produced.
+--
+-- The last section is the one that costs people an hour, which is why it
+-- is in the program rather than in a FAQ.
+
+-- The printer, written in the first addition so it demonstrates itself:
+-- `$` before the opening quote turns `{...}` into an expression slot, and
+-- `::` hands the rest of the slot to string.format.
+local function row(syntax, result)
+    print($"  {syntax::%-36s}{result}")
+end
+
+print("Diluvium is Lua. These are the additions, each one run.")
+print("")
+
+-- 1 --------------------------------------------------------------------
+-- Interpolation is a different literal, not a different string type: no
+-- `$` means an ordinary Lua string, where braces are just braces.
+--
+-- The format spec is `::` and not `:` because `:` already means a method
+-- call, and `$"{obj:method()}"` has to keep meaning that.
+print("string interpolation")
+local user, ratio = "ana", 2 / 3
+row([[$"hi {user}"]],              $"hi {user}")
+row([[$"{ratio::%.2f}"]],          $"{ratio::%.2f}")
+row([[$"{#user::%3d} chars"]],     $"{#user::%3d} chars")
+row([["hi {user}"  (no $)]],       "hi {user}")
+print("")
+
+-- 2 --------------------------------------------------------------------
+-- `??` tests for nil specifically, not for falsiness. That is the whole
+-- reason it exists next to `or`: `false or 8080` is 8080 and loses the
+-- answer you were given, `false ?? 8080` is false and keeps it.
+print("null coalescing")
+local configured = nil
+row([[configured ?? 8080]],        configured ?? 8080)
+row([[false ?? 8080]],             false ?? 8080)
+row([[false or 8080   (for contrast)]], false or 8080)
+
+-- `??=` assigns only when the target is nil. It is one of the compound
+-- assignments; `+= -= *= /= //= %= ^= ..= |= &= <<= >>=` are all here too,
+-- and each evaluates the target's prefix once.
+local port = nil
+port ??= 8080
+row([[port ??= 8080]],             port)
+print("")
+
+-- 3 --------------------------------------------------------------------
+-- Safe navigation short-circuits the *rest of the chain*, so nothing is
+-- indexed and no call happens once something is nil. Like `??` it tests
+-- for nil and not for falsiness: `false?.x` still raises, exactly as
+-- `false.x` does.
+print("safe navigation")
+local cfg = { server = { port = 9000 } }
+row([[cfg?.server?.port]],         cfg?.server?.port)
+row([[cfg?.logging?.level ?? "info"]], cfg?.logging?.level ?? "info")
+
+-- The skipping covers the arguments as well: this call is not made, and
+-- `mark()` never runs, so `evaluated` is still false afterwards.
+local evaluated = false
+local function mark() evaluated = true; return "x" end
+local handler = nil
+handler?.on_event(mark())
+row([[handler?.on_event(mark())]], $"not called; mark() ran: {evaluated}")
+
+-- There is no `?:`. A safe *method* call is a syntax error on this build,
+-- so reach a method through a nil-checked receiver the ordinary way.
+print("")
+
+-- 4 --------------------------------------------------------------------
+-- The subject is evaluated once, a case can list several values, and
+-- there is no fallthrough, so no `break`.
+--
+-- `switch` is a contextual keyword: code that already uses `switch` as a
+-- variable or field name keeps working. The price is that a subject may
+-- not start with `(`, because `switch (x)` is a function call in stock Lua
+-- and has to stay one. Write `switch x do`, as you would `if x then`.
+print("switch")
+local code, verdict = 302, nil
+switch code do
+    case 200, 201, 204 then
+        verdict = "ok"
+    case 301, 302 then
+        verdict = "redirected"
+    default
+        verdict = $"unexpected: {code}"
+end
+row([[switch 302 -> case 301, 302]],   verdict)
+print("")
+
+-- 5 --------------------------------------------------------------------
+-- `defer` runs when the block ends, however it ends: falling off the end,
+-- `break`, `goto`, `return`, or a raise. Deferred statements run in
+-- reverse order, so the cleanup nearest the acquisition runs first.
+print("defer")
+local trace = {}
+local function work()
+    defer trace[#trace + 1] = "released (registered first, runs last)"
+    defer trace[#trace + 1] = "closed"
+    trace[#trace + 1] = "working"
+    return "returned"
+end
+row([[work() with two defers]],    work())
+for _, line in ipairs(trace) do row("", line) end
+
+-- The raise is the case that earns it: the deferred statement still runs,
+-- and then the error carries on out.
+local raised = {}
+local ok, err = pcall(function()
+    defer raised[#raised + 1] = "ran anyway"
+    error("boom", 0)
+end)
+row([[defer + error("boom")]],     $"{raised[1]}, then pcall got: {err}")
+print("")
+
+-- 6 --------------------------------------------------------------------
+-- `with` binds a to-be-closed local scoped to the block, so the value must
+-- have a `__close` metamethod. `defer` is the one to reach for when the
+-- thing you are cleaning up has no `__close`; `with` is the one when it
+-- does, because then the closing belongs to the value rather than to the
+-- code that happened to use it.
+print("with")
+local log = {}
+local function resource(name)
+    return setmetatable({ name = name }, {
+        __close = function(self) log[#log + 1] = $"closed {self.name}" end,
+    })
+end
+with a = resource("a"), b = resource("b") do
+    log[#log + 1] = "inside the block"
+end
+row([[with a = ..., b = ... do]],  log[1])
+for i = 2, #log do row("", log[i]) end
+print("")
+
+-- 7 --------------------------------------------------------------------
+-- The trap, in place.
+--
+-- `time` is a library and it is loaded, so you find it, and then
+-- `time.now()` fails like a gap in it. It is not a gap. There is no clock
+-- in `time` because `time` is the pure calendar: arithmetic over a moment
+-- you already hold, needing no grant and no connector, and giving the same
+-- answer on every machine and every replay.
+--
+-- The clock is `host.time()`, because a clock is a capability. It costs a
+-- grant, a connector answers it, the answer arrives as a message, and so a
+-- replay replays the recorded moment instead of the replayer's.
+print("the clock is not in `time`")
+local _, err_now = pcall(function() return time.now() end)
+row([[time.now()]],                $"raises: {err_now}")
+row([[host.time()]],               $"a {type(host.time())}, milliseconds since the epoch")
+
+-- Which is the other half of the trap: `host.time()` answers in
+-- milliseconds and every `time` function speaks seconds -- the unit
+-- os.time and a JWT `exp` already use. Divide at the boundary, with
+-- `time.iso(host.time() // 1000)`, or you get the second row below.
+--
+-- Literals are used here rather than `host.time()` so this program's
+-- output is the same on every run.
+row([[time.iso(1786554000)]],      time.iso(1786554000))
+row([[time.iso(1786554000000)]],   $"{time.iso(1786554000000)}  <- ms into a seconds API")
+row([[time.fields(1786554000).year]], time.fields(1786554000).year)

@@ -1,0 +1,40 @@
+-- The half that needs a network, and the reason the example exists.
+--
+--   drt run live.dlua --config allowlist.json
+--
+-- IN v0.4.0 THIS ABORTS. The refusals in `app.dlua` are answered before
+-- anything is connected, so they work; a URL the allowlist permits reaches
+-- the part of the connector that opens a socket, and `drt run` drives
+-- connectors without the async runtime that part needs. The process ends
+-- with a panic rather than a reply. Nothing in this file or in the config
+-- works around it -- it is the runtime, not the program. The README says
+-- so too, and this comment goes away when it does.
+--
+-- Read it anyway, next to `allowlist.json`, because between them they are
+-- the whole lesson.
+
+-- One call. Note what is absent: no header, no token, no user-agent, and
+-- nothing that could obtain one. GitHub refuses a request that carries no
+-- user-agent, so this call does not work without a header -- and the
+-- header is in the deployment, injected on the way out by the connector
+-- and not echoed back in the reply. The program calls the API on terms it
+-- can neither read nor change.
+--
+-- Swap that injected `user-agent` for an `authorization` and nothing here
+-- changes. That is a capability model doing its actual job: not gating a
+-- call by name, but holding the credential on the other side of the
+-- boundary from the code that spends it.
+local resp, status, detail = host.try("rest/get", { url = "https://api.github.com/zen" })
+
+if status ~= "ok" then
+    print("rest/get  " .. status .. "  " .. tostring(detail))
+    return
+end
+
+-- `status` above is the reply's status -- whether the call was permitted
+-- and completed. `resp.status` is HTTP's, and a 404 or a 500 is a
+-- perfectly successful call that got an unhappy answer. Two different
+-- questions, deliberately not merged.
+print("http           " .. resp.status)
+print("content-type   " .. tostring(resp.content_type))
+print("body           " .. tostring(resp.body))

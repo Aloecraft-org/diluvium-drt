@@ -1,0 +1,7 @@
+{
+  "name": "00-install-methods",
+  "teaches": "Getting a drt binary, then asking it what it is with drt buildinfo instead of trusting the filename.",
+  "cmd": "drt buildinfo",
+  "needs_network": false,
+  "normalise": []
+}

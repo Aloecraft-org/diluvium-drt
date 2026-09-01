@@ -1,0 +1,11 @@
+{
+  "_comment": "A budget the job fits inside. The whole loop costs a little under 2.4 million instructions, so this run never comes near the ceiling and the bound is invisible in the output.",
+
+  "program": { "path": "app.dlua" },
+
+  "_budget": "Both fields are properties of the guest VM: instructions it may execute, kilobytes it may hold. Neither bounds wall-clock time -- a hostcall that parks for 85 seconds consumes no instructions -- and neither bounds how many children a lineage spawns.",
+  "budget": {
+    "instructions": 10000000,
+    "memory_kb": 4096
+  }
+}

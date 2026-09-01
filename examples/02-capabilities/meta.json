@@ -1,0 +1,7 @@
+{
+  "name": "02-capabilities",
+  "teaches": "One program, two apps: with no config every call is denied, and with a config that wires fs to a directory the same three calls answer ok, refused-on-the-resolved-path, and denied.",
+  "cmd": "echo '$ drt run app.dlua'; drt run app.dlua; echo; echo '$ drt run --config with-fs.json'; drt run --config with-fs.json",
+  "needs_network": false,
+  "normalise": []
+}

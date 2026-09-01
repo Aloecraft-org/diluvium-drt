@@ -1,0 +1,9 @@
+$ drt run app.dlua
+  fs/read note.txt          denied  no connector is wired for 'fs/read' in this process
+  fs/read ../../etc/passwd  denied  no connector is wired for 'fs/read' in this process
+  sql/query                 denied  no connector is wired for 'sql/query' in this process
+
+$ drt run --config with-fs.json
+  fs/read note.txt          ok      A file inside the granted directory.
+  fs/read ../../etc/passwd  error   '../../etc/passwd' resolves outside the granted scope; a program names files within what the host granted, and nothing beyond it
+  sql/query                 denied  'sql/query' is outside this instance's grants

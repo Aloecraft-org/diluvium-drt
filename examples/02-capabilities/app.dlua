@@ -1,0 +1,40 @@
+-- One program, two apps.
+--
+-- Run it both ways and compare:
+--   drt run app.dlua                 -- the program on its own
+--   drt run --config with-fs.json    -- the same program, plus a config
+--
+-- The bytes of this file do not change between those two runs. What changes
+-- is what the host wired and what the ceiling granted, and this program
+-- learns that as ordinary replies rather than as an error it has to catch.
+
+-- `host.try` is `host.call` without the raise: it hands back the reply's
+-- status instead of turning a non-ok status into an error. That is the shape
+-- you want wherever a refusal is a possible answer rather than a bug, which
+-- is every call below -- whether a family is wired is the deployment's
+-- decision, not the program's.
+--
+-- It returns three values, value first: `value, status, detail`. On `ok` the
+-- value is the answer and there is no detail; otherwise the detail is the
+-- sentence the refusing layer wrote for you.
+local function show(label, value, status, detail)
+    print(string.format("  %-25s %-7s %s", label, status, detail or value))
+end
+
+-- A file inside the directory the host granted. The config named the
+-- directory; this program names the file within it. Neither half knows the
+-- other's: nothing here says `workspace`, and nothing there says `note.txt`.
+show("fs/read note.txt", host.fs.try_read("note.txt"))
+
+-- The same call, aimed out of the granted directory. The refusal is on the
+-- path the filesystem resolves to, not on how it was spelled, so `..` buys
+-- nothing and neither would a symlink pointing out.
+--
+-- Note the status: this one is `error`, not `denied`. `denied` is the gate's
+-- word -- the call never reached a connector. Here it did reach one, and the
+-- fs connector refused it against its own scope. Two layers, two sentences.
+show("fs/read ../../etc/passwd", host.fs.try_read("../../etc/passwd"))
+
+-- A family neither app wires. Answered, not dropped: every drained request
+-- gets a reply, and "denied" is an ordinary one.
+show("sql/query", host.try("sql/query", { sql = "select 1" }))

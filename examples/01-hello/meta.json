@@ -1,0 +1,10 @@
+{
+  "name": "01-hello",
+  "teaches": "A single .dlua file is a runnable drt app: with no config, time and time/monotonic answer and every other family replies denied.",
+  "cmd": "drt run app.dlua",
+  "needs_network": false,
+  "normalise": [
+    "s|^  time  *[^ ]*$|  time             <ms>|",
+    "s|^  time/monotonic  *[^ ]*$|  time/monotonic   <ms>|"
+  ]
+}

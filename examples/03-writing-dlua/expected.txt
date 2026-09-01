@@ -1,0 +1,40 @@
+Diluvium is Lua. These are the additions, each one run.
+
+string interpolation
+  $"hi {user}"                        hi ana
+  $"{ratio::%.2f}"                    0.67
+  $"{#user::%3d} chars"                 3 chars
+  "hi {user}"  (no $)                 hi {user}
+
+null coalescing
+  configured ?? 8080                  8080
+  false ?? 8080                       false
+  false or 8080   (for contrast)      8080
+  port ??= 8080                       8080
+
+safe navigation
+  cfg?.server?.port                   9000
+  cfg?.logging?.level ?? "info"       info
+  handler?.on_event(mark())           not called; mark() ran: false
+
+switch
+  switch 302 -> case 301, 302         redirected
+
+defer
+  work() with two defers              returned
+                                      working
+                                      closed
+                                      released (registered first, runs last)
+  defer + error("boom")               ran anyway, then pcall got: boom
+
+with
+  with a = ..., b = ... do            inside the block
+                                      closed b
+                                      closed a
+
+the clock is not in `time`
+  time.now()                          raises: [string "app.dlua"]:157: attempt to call a nil value (field 'now')
+  host.time()                         a number, milliseconds since the epoch
+  time.iso(1786554000)                2026-08-12T17:00:00Z
+  time.iso(1786554000000)             58583-08-23T08:00:00Z  <- ms into a seconds API
+  time.fields(1786554000).year        2026

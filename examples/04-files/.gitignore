@@ -1,0 +1,7 @@
+# app.dlua writes both of these into the granted directory on every run.
+# report.txt is rewritten each time and left in place, scratch.txt is
+# removed before the run ends -- so neither is worth committing, and a
+# checkout that has never been run still produces the output in
+# expected.txt.
+workspace/report.txt
+workspace/scratch.txt

@@ -1,0 +1,57 @@
+-- The smallest complete drt app: this file, and nothing else.
+--
+--   drt run app.dlua
+--
+-- There is no config here, no project layout, nothing to install and
+-- nothing to build. A `.dlua` file and the binary are already a deployment,
+-- which is why `drt run` takes a program directly and why this directory
+-- has no second file for you to read first.
+
+print("A single .dlua file is a drt app. This one is running, with no config.")
+print("")
+
+-- The clock is a *capability*, not arithmetic. It costs a grant, a connector
+-- answers it, and the answer arrives as a message -- so it is in the log, and
+-- so a replay replays the same moment instead of the replayer's.
+--
+-- That is also why it is `host.time()` and not `time.now()`. `time` is the
+-- pure calendar library and there is no clock in it, because a clock is not
+-- pure.
+--
+-- These two are the families that answer with nothing configured, so they are
+-- the only calls in this file written in the direct form. The direct form
+-- raises if the answer is not `ok`, which is the right shape when a failure
+-- here would be a bug.
+print("answered, with no config at all:")
+print(string.format("  %-16s %s", "time", host.time()))
+print(string.format("  %-16s %s", "time/monotonic", host.monotonic()))
+print("")
+
+-- `host.try` is `host.call` without the raise: it hands back the reply's
+-- status instead of turning a non-ok status into an error. Use it wherever
+-- "no" is a legitimate answer rather than a bug -- which is the case for
+-- everything below, because whether a family is wired is the deployment's
+-- decision and not the program's.
+--
+-- It returns three values, value first: `value, status, detail`.
+local function show(label, _value, status, detail)
+    print(string.format("  %-16s %-7s %s", label, status, detail))
+end
+
+print("denied, because wiring a connector is a config's job:")
+show("crypto/random", host.try("crypto/random", { n = 16 }))
+show("fs/read",       host.try("fs/read", { path = "app.dlua" }))
+show("sql/query",     host.try("sql/query", { sql = "select 1" }))
+print("")
+
+-- Note what did not happen: no error, no timeout, no silence. Every request
+-- the host drains gets a reply, and "denied" is an ordinary one, carrying the
+-- connector layer's own sentence. The program above reads it the same way it
+-- would read a result.
+
+-- Nothing so far was arithmetic. This is. `time` the library is the pure
+-- calendar -- `time.iso`, `time.parse`, `time.fields`, `time.of` -- and pure
+-- code asks the host for nothing, so it needs no connector and no grant and
+-- works identically in a deployment that grants nothing at all.
+print("pure, so it asks the host for nothing:")
+print(string.format("  %-16s %s", "time.iso(0)", time.iso(0)))

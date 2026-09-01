@@ -1,0 +1,7 @@
+{
+  "name": "04-files",
+  "teaches": "fs/read, fs/write, fs/list and fs/remove against one granted directory, and the four things a scope constrains: access, max_bytes, the .. escape, and an absolute path.",
+  "cmd": "echo '$ drt run --config readwrite.json'; drt run --config readwrite.json; echo; echo '$ drt run --config read-only.json'; drt run --config read-only.json",
+  "needs_network": false,
+  "normalise": []
+}

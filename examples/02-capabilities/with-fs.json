@@ -1,0 +1,23 @@
+{
+  "_comment": "The second half of an app: the config. Same program, different reach.",
+
+  "program": { "path": "app.dlua" },
+
+  "_caps": "The ceiling. Nothing in this process, now or later, is outside it.",
+  "caps": [
+    { "capability": "host:time" },
+    { "capability": "host:fs/*" }
+  ],
+
+  "_connectors": "Off by default, all of them. A connector is wired to a PLACE -- here, one directory. The program names files inside it, and this file never carries an application's filenames.",
+  "connectors": {
+    "time": {},
+    "fs": {
+      "scope": {
+        "scope": "./workspace",
+        "access": "read",
+        "max_bytes": 65536
+      }
+    }
+  }
+}

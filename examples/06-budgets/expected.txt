@@ -1,0 +1,23 @@
+$ drt run app.dlua
+   100000 steps   acc = 36212
+   200000 steps   acc = 905564
+   300000 steps   acc = 742112
+   400000 steps   acc = 341711
+finished all 400000 steps, acc = 341711
+exit 0
+
+$ drt run --config bounded.json
+   100000 steps   acc = 36212
+   200000 steps   acc = 905564
+   300000 steps   acc = 742112
+   400000 steps   acc = 341711
+finished all 400000 steps, acc = 341711
+exit 0
+
+$ drt run --config tight.json
+   100000 steps   acc = 36212
+drt run: instruction budget of 1000000 exceeded
+stack traceback:
+	[string "app.dlua"]:27: in main chunk
+	[C]: in ?
+exit 1

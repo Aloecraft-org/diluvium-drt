@@ -1,0 +1,27 @@
+$ drt run --config readwrite.json
+the four verbs, against the directory the config granted:
+  fs/write report.txt      ok      wrote 80 bytes
+  fs/write scratch.txt     ok      wrote 40 bytes
+  fs/list .                ok      note.txt  report.txt  scratch.txt
+  fs/read report.txt       ok      Written by app.dlua. The config named the directory; the program named the file.
+  fs/remove scratch.txt    ok      removed
+  fs/list .                ok      note.txt  report.txt
+
+what the scope refuses, and in whose words:
+  fs/write big.txt         error   writing 'big.txt' would reach 4096 bytes, past the 1024-byte cap this scope allows
+  fs/read ../app.dlua      error   '../app.dlua' resolves outside the granted scope; a program names files within what the host granted, and nothing beyond it
+  fs/read /etc/hosts       error   '/etc/hosts' is absolute; name a path inside the granted scope
+
+$ drt run --config read-only.json
+the four verbs, against the directory the config granted:
+  fs/write report.txt      error   'fs/write' needs access = "readwrite"; this scope is read-only
+  fs/write scratch.txt     error   'fs/write' needs access = "readwrite"; this scope is read-only
+  fs/list .                ok      note.txt  report.txt
+  fs/read report.txt       ok      Written by app.dlua. The config named the directory; the program named the file.
+  fs/remove scratch.txt    error   'fs/remove' needs access = "readwrite"; this scope is read-only
+  fs/list .                ok      note.txt  report.txt
+
+what the scope refuses, and in whose words:
+  fs/write big.txt         error   'fs/write' needs access = "readwrite"; this scope is read-only
+  fs/read ../app.dlua      error   '../app.dlua' resolves outside the granted scope; a program names files within what the host granted, and nothing beyond it
+  fs/read /etc/hosts       error   '/etc/hosts' is absolute; name a path inside the granted scope

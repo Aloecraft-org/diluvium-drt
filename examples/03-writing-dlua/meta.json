@@ -1,0 +1,7 @@
+{
+  "name": "03-writing-dlua",
+  "teaches": "The Diluvium additions to Lua -- interpolation, ??, safe navigation, switch, defer, with -- and why the clock is host.time() and not time.now().",
+  "cmd": "drt run app.dlua",
+  "needs_network": false,
+  "normalise": []
+}

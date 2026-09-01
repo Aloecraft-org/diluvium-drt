@@ -1,0 +1,30 @@
+{
+  "_comment": "The other half of the app. The program names URLs; this file decides which origins exist for it, and carries the header the program is never allowed to see.",
+
+  "program": { "path": "app.dlua" },
+
+  "_caps": "The ceiling. `host:rest/*` is both rest calls and nothing else; no fs, no sql, no ssh.",
+  "caps": [
+    { "capability": "host:rest/*" }
+  ],
+
+  "_connectors": "Off by default, all of them. An unscoped outbound-HTTP connector reaches your metadata endpoint, your database on 10.x and your own control plane, so the rest connector's scope is an ORIGIN ALLOWLIST and an absent scope permits nothing rather than everything.",
+
+  "_headers": "`headers` are set by the connector on every request to this origin, and the guest can neither set them nor read them back. GitHub's API refuses a request without a user-agent, so the program below does not work without this line and does not contain it. Swap `user-agent` for `authorization` and the same mechanism calls an authenticated API with the credential living here, in the deployment, rather than in the program.",
+
+  "_allow_headers": "When present, the exhaustive set of header names the program may set on this origin. Absent would mean anything not reserved.",
+
+  "connectors": {
+    "rest": {
+      "scope": {
+        "allow": [
+          {
+            "origin": "https://api.github.com",
+            "headers": { "user-agent": "drt-example/0.4.0" },
+            "allow_headers": ["accept"]
+          }
+        ]
+      }
+    }
+  }
+}
