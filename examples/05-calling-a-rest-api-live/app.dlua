@@ -1,0 +1,22 @@
+-- The call that is permitted. `allowlist.json` grants this origin, so the
+-- connector opens a socket — which is why this example needs a network.
+--
+--   drt run --config allowlist.json
+--
+-- Note what is absent: no header, no token, and nothing that could obtain
+-- one. GitHub refuses a request carrying no user-agent, so this call does not
+-- work without one. That header is in the deployment, injected by the
+-- connector on the way out and not echoed back in the reply.
+-- example: omits timeout_ms, which the connector defaults for you
+local url = "https://api.github.com/zen"
+local resp, status, detail = host.try("rest/get", { url = url })
+
+-- Two statuses, deliberately not merged. `status` is the reply's — whether
+-- the call was permitted and completed. `resp.status` is HTTP's, and a 404 is
+-- a perfectly successful call that got an unhappy answer.
+-- example: omits resp.body, which /zen answers differently every call
+if status == "ok" then
+    print("reply  ok  " .. resp.status)
+else
+    print("reply  " .. status .. "  " .. detail)
+end

@@ -1,53 +1,32 @@
--- Outbound HTTP, and the shape of the grant that permits it.
+-- Outbound HTTP. `allowlist.json` wires the rest connector to exactly one
+-- origin; this file names URLs and never says which one was granted.
 --
 --   drt run --config allowlist.json
 --
--- `allowlist.json` wires the `rest` connector to exactly one origin. This
--- file does not say which one, and could not: the program names URLs, the
--- deployment decides which of them exist. Every call below is refused, and
--- the point is the six different ways of being refused -- each one a URL
--- that a human skimming it would read as the granted origin.
---
--- The call that succeeds is in `live.dlua`, because it needs a network.
+-- Every call below is refused. The point is the five ways of being refused —
+-- each a URL a human skimming a log line would read as the granted API.
 
--- `host.try` returns `value, status, detail`, so a refusal arrives as a
--- reply to be printed rather than an error to be caught. Outbound HTTP is
--- the family where that matters most: a refused URL is not a bug in the
--- program, it is the deployment saying where this program may go.
-local function show(call, url, label)
-    local _, status, detail = host.try(call, { url = url })
-    print(string.format("  %-40s %-6s %s", label or url, status, detail or ""))
-end
-
+-- host.try hands back value, status, detail, so a refusal arrives as a reply
+-- to print rather than an error to catch.
+-- example: omits the ok branch — nothing here is permitted, so the value is
+-- always nil; the `-live` example next door is the one that reads a reply
 local function get(url)
-    show("rest/get", url)
+    local _, status, detail = host.try("rest/get", { url = url })
+    print(string.format("  %-40s %-6s %s", url, status, detail))
 end
 
--- An origin is scheme + host + port, all three. The granted entry is an
--- origin, not a hostname, so http and https to the same name are two
--- different places and only one of them was granted.
+-- An origin is scheme + host + port, all three. http and https to the same
+-- name are two different places, and so is another port.
 get("http://api.github.com/zen")
 get("https://api.github.com:8443/zen")
 
--- Host matching is exact (or a `*.` wildcard over strict subdomains). A
--- name that merely *ends* with the granted one is a different name, which
--- is the oldest way to be handed a URL that looks right.
+-- A name that merely ends with the granted one is a different name.
 get("https://api.github.com.example.net/zen")
 
--- Userinfo is refused rather than ignored. Everything left of the `@` is
--- not the host, so this URL goes to `evil.example` while reading, to a
--- human and to a log line, as the granted API. Dropping it silently would
--- authorise the wrong origin; refusing by name says so.
+-- Everything left of the `@` is not the host: this one goes to evil.example.
+-- Refused by name, rather than quietly dropped.
 get("https://api.github.com@evil.example/zen")
 
--- The cloud metadata endpoint: the reason an unscoped outbound-HTTP grant
--- is not a small thing to hand out. It is refused here on the allowlist,
--- by name, before any address is looked up -- and there is a second check
--- on the resolved address for a granted name that points into private
--- space, which is the DNS rebinding shape an allowlist alone cannot see.
+-- The cloud metadata endpoint — the reason an unscoped outbound grant is not
+-- a small thing to hand out. Refused before any address is looked up.
 get("http://169.254.169.254/latest/meta-data/")
-
--- The surface is two calls. `rest/put` is inside the `host:rest/*` grant,
--- so it reaches the connector and the connector is the one to say no.
-show("rest/put", "https://api.github.com/zen",
-     "rest/put (not rest/get or rest/post)")

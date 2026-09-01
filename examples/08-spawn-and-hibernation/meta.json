@@ -1,0 +1,7 @@
+{
+  "name": "08-spawn-and-hibernation",
+  "teaches": "host.spawn gives a child a subset of the parent's grants and nothing more — a spawn asking for one the parent does not hold is refused by name — and a child parks itself with {op = 'hibernate'} rather than sitting resident.",
+  "cmd": "drt start --config app.json",
+  "needs_network": false,
+  "normalise": []
+}

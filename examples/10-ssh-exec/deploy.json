@@ -1,0 +1,23 @@
+{
+  "_comment": "The shape a real deployment has. One host, one user, one key, one trust anchor — pin them here and the program above can only ask for a command.",
+
+  "program": { "path": "app.dlua" },
+
+  "caps": [
+    { "capability": "host:ssh/exec" }
+  ],
+
+  "connectors": {
+    "ssh": {
+      "scope": {
+        "host": "build.example.com:22",
+        "user": "deploy",
+        "key_path": "deploy_key",
+        "host_fingerprint": "SHA256:hpMBqEwHtiOl3nEEQyDoxG2K6TVpGCJZpBhqCXLnKPo",
+        "timeout_ms": 10000
+      }
+    }
+  },
+
+  "_omits": "example: omits budget and max_output_bytes; 06-budgets shows a budget."
+}

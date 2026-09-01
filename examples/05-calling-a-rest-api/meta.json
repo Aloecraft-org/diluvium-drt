@@ -1,6 +1,6 @@
 {
   "name": "05-calling-a-rest-api",
-  "teaches": "The rest connector's scope is an origin allowlist refused by name before anything is resolved, and an allow entry can inject headers the program can neither set nor read.",
+  "teaches": "The rest connector's scope is an origin allowlist, and a URL outside it is refused by name before an address is looked up or a socket is opened.",
   "cmd": "drt run --config allowlist.json",
   "needs_network": false,
   "normalise": []

@@ -1,0 +1,18 @@
+-- Two commands the program would like run. Neither of them says where.
+--
+--   drt run --config deploy.json
+--   drt run app.dlua
+--   drt run --config no-exec.json
+
+-- example: omits the ok/refused branch — host.try answers value, status,
+-- detail, so one line prints whichever of the two came back.
+local function show(label, value, status, detail)
+    print(string.format("  %-9s %-7s %s", label, status, detail or value))
+end
+
+-- The command is the application's. The host, the user and the key are the
+-- deployment's, and nothing in this file can name them or reach past them.
+show("ssh/exec", host.try("ssh/exec", { command = "uptime" }))
+
+-- There is no local exec. Not unwired here — absent from every build.
+show("exec/run", host.try("exec/run", { command = "uptime" }))

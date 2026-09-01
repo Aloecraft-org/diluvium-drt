@@ -1,0 +1,23 @@
+$ drt netcheck
+relay — the UDP mapping could not be measured, and relay is the answer that works on every network
+  use: use a tunnel
+
+evidence
+  address    not measured (no reflect edge answered)
+  v6         none routable
+  udp map    not measured
+  tcp map    not measured
+  inbound    not tested (no --port given)
+exit 1
+
+$ drt netcheck --stun stun.l.google.com:19302
+relay — the UDP mapping could not be measured, and relay is the answer that works on every network
+  use: use a tunnel
+
+evidence
+  address    not measured (no reflect edge answered)
+  v6         none routable
+  udp map    not measured
+  tcp map    not measured
+  inbound    not tested (no --port given)
+exit 1

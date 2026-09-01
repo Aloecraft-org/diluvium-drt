@@ -1,6 +1,6 @@
 {
   "name": "02-capabilities",
-  "teaches": "One program, two apps: with no config every call is denied, and with a config that wires fs to a directory the same three calls answer ok, refused-on-the-resolved-path, and denied.",
+  "teaches": "One program, two apps: with no config all three calls are denied by the gate, and under a config that wires fs to a directory the same three answer ok, error from the connector, and denied by the caps ceiling.",
   "cmd": "echo '$ drt run app.dlua'; drt run app.dlua; echo; echo '$ drt run --config with-fs.json'; drt run --config with-fs.json",
   "needs_network": false,
   "normalise": []

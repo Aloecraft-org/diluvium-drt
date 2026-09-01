@@ -1,0 +1,6 @@
+{
+  "_comment": "Wiring a connector no build carries. Refused when the config loads, not at the call.",
+
+  "program": { "path": "app.dlua" },
+  "connectors": { "exec": {} }
+}

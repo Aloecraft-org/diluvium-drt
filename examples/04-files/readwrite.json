@@ -1,14 +1,14 @@
 {
-  "_comment": "The other half of the app: a config. This one and read-only.json differ in a single word, and that word is `access`.",
+  "_comment": "The other half of the app. This file and its neighbour differ in one word, and that word is `access`.",
 
   "program": { "path": "app.dlua" },
 
-  "_caps": "The ceiling. Nothing in this process, now or later, is outside it. `host:fs/*` covers all four verbs; it does not decide which of them the connector answers.",
+  "_caps": "The ceiling. `host:fs/*` covers all four verbs; it does not decide which of them the connector answers.",
   "caps": [
     { "capability": "host:fs/*" }
   ],
 
-  "_connectors": "A connector is wired to a PLACE. The directory is a machine fact and belongs here; the filenames are an application detail and belong in the program, so this file never carries one.",
+  "_connectors": "A connector is wired to a PLACE. The directory is a machine fact and belongs here; the filenames are the program's.",
   "connectors": {
     "fs": {
       "scope": {
@@ -17,5 +17,7 @@
         "max_bytes": 1024
       }
     }
-  }
+  },
+
+  "_omits": "example: omits budget, which a real deployment states; 06-budgets is the one that shows it."
 }

@@ -1,8 +1,8 @@
 # DRT examples
 
 A run-through for someone who has a `drt` binary on their PATH and has never
-run anything with it. Seven directories, meant in order, one sitting each:
-one idea, a command block you can paste, and an `expected.txt` that is the
+run anything with it. Seven sittings, meant in order: one idea each, a
+command block you can paste, and an `expected.txt` that is the
 real output of running it rather than a transcription of what it ought to
 say. This is not a reference — it is the shortest path to being oriented. A
 **drt app** is a config plus a program, and the first two examples are that
@@ -17,8 +17,10 @@ doing and not the program's. Everything here is v0.4.0.
 | [`02-capabilities`](02-capabilities) | One program, two apps. What a config wires, what it does not, and why `denied` and `error` are different words. | `drt run app.dlua`, then `drt run --config with-fs.json` |
 | [`03-writing-dlua`](03-writing-dlua) | The language: what `drt run` seals off, the additions to Lua, and why the clock is `host.time()` and not `time.now()`. | `drt run app.dlua` |
 | [`04-files`](04-files) | `fs/read`, `fs/write`, `fs/list`, `fs/remove` against one granted directory, and the four separate things a scope constrains. | `drt run --config readwrite.json`, then `drt run --config read-only.json` |
-| [`05-calling-a-rest-api`](05-calling-a-rest-api) | The `rest` scope is an origin allowlist, refused by name before anything is resolved. The header injection beside it is read as config: the half that connects does not run in v0.4.0. | `drt run --config allowlist.json` |
+| [`05-calling-a-rest-api`](05-calling-a-rest-api) | The `rest` scope is an origin allowlist, and a URL outside it is refused by name before an address is looked up. | `drt run --config allowlist.json` |
+| [`05-calling-a-rest-api-live`](05-calling-a-rest-api-live) | The other half: the URL the allowlist permits, over a real socket, carrying a header the deployment injects and the program can neither set nor read. Needs a network. | `drt run --config allowlist.json` |
 | [`06-budgets`](06-budgets) | What a budget bounds (VM instructions, VM memory), what it does not (wall time, spawns), and what running out looks like from outside. | `drt run app.dlua`, then `--config bounded.json`, then `--config tight.json` |
+| [`08-spawn-and-hibernation`](08-spawn-and-hibernation) | A program starting another: a child holds a subset of its parent's grants and nothing more, and parks itself when it has nothing to do. | `drt start --config app.json` |
 
 ## If you only do three
 
@@ -59,11 +61,11 @@ cd examples
 ```
 
 It runs each directory's `cmd`, applies that directory's `normalise`, and
-diffs against `expected.txt`. As of v0.4.0 nothing in the set needs a
-network — every `meta.json` says `needs_network: false` — so `--net` adds
-nothing yet. It is there for the examples below. One run inside `06` exits 1
-on purpose; that is part of what it is showing, and part of its expected
-output.
+diffs against `expected.txt`. One directory sets `needs_network: true` —
+`05-calling-a-rest-api-live`, the one that opens a socket — so without
+`--net` it is printed as skipped and named again in the summary, never
+counted as a pass. One run inside `06` exits 1 on purpose; that is part of
+what it is showing, and part of its expected output.
 
 ## Not covered yet
 
@@ -72,9 +74,8 @@ Named rather than omitted, so you are not left looking for them.
 - **`drt start`.** Every command in the tour is `drt run`, which runs one
   program to completion and exits. `drt start` runs the deployment — the
   root program, its swarm, and whatever listeners the config names — in the
-  foreground, and it is what brings the async reactor that `05`'s live half
-  and `ssh/exec` want. Nothing here needs it, because everything here is one
-  program that finishes.
+  foreground, and it is what a listener or a long-lived swarm wants. Nothing
+  here needs it, because everything here is one program that finishes.
 - **`drt repl`** starts and works, and has no line editor: no history, no
   arrow keys, no editing a line you have already typed. That is not a thing
   to put in front of someone on their first day, so the tour does not.
@@ -88,15 +89,13 @@ Named rather than omitted, so you are not left looking for them.
   unrecognised name is rather than by a rule written for it. A drt app
   cannot shell out. The nearest thing that exists is `ssh/exec`, which runs
   a command on a host the config named, through a connector, at the cost of
-  a grant — and like the live half of `05` it wants the reactor `drt start`
-  brings, so `drt run` is not where you would meet it.
+  a grant. There is no example for it yet.
 - **The browser tier.** The same swarm runs in a page over a JS host bridge
   (`doc/Browser.md`). Nothing here touches it; these examples are a terminal
   and a binary.
-- **A real outbound call.** `05` shows the `rest` connector's refusals, all
-  of which are decided before a socket is opened. The half that connects does
-  not work under `drt run` in v0.4.0, and `05`'s README says exactly why and
-  what that leaves standing.
+- **An outbound call to somewhere of your own.** `05-calling-a-rest-api-live`
+  reaches one origin, GitHub's, because it has to name one. Pointing it at
+  your own API is an edit to `allowlist.json` and nothing else.
 
 ## Still to come
 

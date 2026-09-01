@@ -1,0 +1,47 @@
+-- sql/exec and sql/query against one granted directory. One program, two
+-- apps; this file is the same bytes in both, so every difference between the
+-- two outputs is the deployment's:
+--
+--   drt run --config readwrite.json
+--   drt run --config read-only.json
+
+-- example: omits the ok/refused branch — try_exec and try_query answer
+-- value, status, detail, so one line prints whichever came back.
+local function row(statement, value, status, detail)
+    print(string.format("  %-44s %-7s %s", statement, status, detail or value or "-"))
+end
+
+-- The config granted a directory; which database in it is the program's to name.
+local db = host.sql.open("notes.db")
+
+local function exec(sql, ...)
+    local out, status, detail = db.try_exec(sql, ...)
+    row(sql, out and string.format("%d changed, rowid %d", out.changes, out.rowid), status, detail)
+end
+
+local function query(sql, ...)
+    local out, status, detail = db.try_query(sql, ...)
+    local rows = {}
+    for _, r in ipairs(out and out.rows or {}) do rows[#rows + 1] = table.concat(r, " ") end
+    row(sql, table.concat(rows, " | "), status, detail)
+end
+
+-- The database outlives the process; the drop is what makes a second run match.
+print("sql/exec, one writing statement at a time:")
+exec("drop table if exists notes")
+exec("create table notes (body text)")
+exec("insert into notes values (?), (?)", "first note", "second note")
+
+print("")
+print("sql/query, and ? binds on this side too:")
+query("select rowid, body from notes order by rowid")
+query("select body from notes where rowid = ?", 2)
+
+print("")
+print("what the connector refuses, and in whose words:")
+
+-- SQLite classifies the prepared statement; the split is not a word in the SQL.
+query("delete from notes")
+
+-- A database is opened rather than read, so its name is a filename, never a path.
+row("open 'sub/notes.db'", host.sql.open("sub/notes.db").try_query("select 1"))

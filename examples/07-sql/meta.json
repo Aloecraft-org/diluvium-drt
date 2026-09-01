@@ -1,0 +1,7 @@
+{
+  "name": "07-sql",
+  "teaches": "sql/exec and sql/query against a granted directory in which the program names its database, and the two refusals that come with the split: exec needs access = \"readwrite\", and a writing statement asked of query is refused by SQLite's own classification.",
+  "cmd": "echo '$ drt run --config readwrite.json'; drt run --config readwrite.json; echo; echo '$ drt run --config read-only.json'; drt run --config read-only.json",
+  "needs_network": false,
+  "normalise": []
+}

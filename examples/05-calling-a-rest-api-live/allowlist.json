@@ -1,0 +1,25 @@
+{
+  "program": { "path": "app.dlua" },
+
+  "caps": [
+    { "capability": "host:rest/*" }
+  ],
+
+  "_headers": "Set by the connector on every request to this origin. The program can neither set them — it is refused by name if it tries — nor read them back. GitHub refuses a request carrying no user-agent, so the program does not work without this line, and does not contain it. Swap `user-agent` for `authorization` and the credential lives here, in the deployment, rather than in the code that spends it.",
+  "_allow_headers": "When present, the exhaustive set of header names the program MAY set on this origin. Absent would mean anything not reserved.",
+  "connectors": {
+    "rest": {
+      "scope": {
+        "allow": [
+          {
+            "origin": "https://api.github.com",
+            "headers": { "user-agent": "drt-example/0.4.0" },
+            "allow_headers": ["accept"]
+          }
+        ]
+      }
+    }
+  },
+
+  "_omits": "example: omits budget, which a real deployment states; 06-budgets is the one that shows it."
+}

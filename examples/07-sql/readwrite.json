@@ -1,0 +1,22 @@
+{
+  "_comment": "One of the two apps. This file and its neighbour are the same but for `access`, and that one word decides whether `sql/exec` exists at all.",
+
+  "program": { "path": "app.dlua" },
+
+  "_caps": "The ceiling. `host:sql/*` covers both calls; it does not decide which of them the connector answers.",
+  "caps": [
+    { "capability": "host:sql/*" }
+  ],
+
+  "_connectors": "A connector is wired to a PLACE. The directory is a machine fact and belongs here; the database's name is the program's.",
+  "connectors": {
+    "sql": {
+      "scope": {
+        "scope": ".",
+        "access": "readwrite"
+      }
+    }
+  },
+
+  "_omits": "example: omits budget, which a real deployment states; 06-budgets is the one that shows it."
+}

@@ -1,43 +1,31 @@
 -- One program, two apps.
 --
 -- Run it both ways and compare:
---   drt run app.dlua                 -- the program on its own
---   drt run --config with-fs.json    -- the same program, plus a config
 --
--- The bytes of this file do not change between those two runs. What changes
--- is what the host wired and what the ceiling granted, and this program
--- learns that as ordinary replies rather than as an error it has to catch.
+--   drt run app.dlua
+--   drt run --config with-fs.json
+--
+-- The bytes of this file are the same in both runs. What differs is what the
+-- host wired, and this program learns that as an ordinary reply.
 
--- `host.try` is `host.call` without the raise: it hands back the reply's
--- status instead of turning a non-ok status into an error. That is the shape
--- you want wherever a refusal is a possible answer rather than a bug, which
--- is every call below -- whether a family is wired is the deployment's
--- decision, not the program's.
---
--- It returns three values, value first: `value, status, detail`. On `ok` the
--- value is the answer and there is no detail; otherwise the detail is the
--- sentence the refusing layer wrote for you.
+-- host.try is host.call without the raise: it hands back the reply's status
+-- instead of turning a non-ok one into an error. Value first, three values:
+-- value, status, detail. Reach for it wherever "no" is an answer, not a bug.
+-- example: omits the ok/refused branch, because an ok reply carries the value
+-- and a refusal carries the sentence, so one line prints whichever came back
 local function show(label, value, status, detail)
     print(string.format("  %-25s %-7s %s", label, status, detail or value))
 end
 
--- A file inside the directory the host granted. The config named the
--- directory; this program names the file within it. Neither half knows the
--- other's: nothing here says `workspace`, and nothing there says `note.txt`.
+-- The config named a directory; this program names a file inside it. Neither
+-- half carries the other's: nothing here says `workspace`.
 show("fs/read note.txt", host.fs.try_read("note.txt"))
 
--- The same call, aimed out of the granted directory. The path is checked
--- twice: a `..` that climbs above the scope is caught on the components as
--- typed, before the filesystem is touched, so this answers the same sentence
--- whether or not the file out there exists. A symlink inside the scope
--- pointing out is caught on the second check, against what the filesystem
--- resolved to.
---
--- Note the status: this one is `error`, not `denied`. `denied` is the gate's
--- word -- the call never reached a connector. Here it did reach one, and the
--- fs connector refused it against its own scope. Two layers, two sentences.
+-- The same call, aimed out of that directory. Note the status under the
+-- config: `error`, not `denied`. The call did reach the fs connector, which
+-- refused it against its own scope.
 show("fs/read ../../etc/passwd", host.fs.try_read("../../etc/passwd"))
 
--- A family neither app wires. Answered, not dropped: every drained request
--- gets a reply, and "denied" is an ordinary one.
+-- A family neither app wires. Answered, not dropped: every request gets a
+-- reply, and `denied` is an ordinary one.
 show("sql/query", host.try("sql/query", { sql = "select 1" }))

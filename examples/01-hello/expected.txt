@@ -8,6 +8,3 @@ denied, because wiring a connector is a config's job:
   crypto/random    denied  no connector is wired for 'crypto/random' in this process
   fs/read          denied  no connector is wired for 'fs/read' in this process
   sql/query        denied  no connector is wired for 'sql/query' in this process
-
-pure, so it asks the host for nothing:
-  time.iso(0)      1970-01-01T00:00:00Z

@@ -1,0 +1,6 @@
+{
+  "program": {"path": "parent.dlua"},
+  "connectors": {"time": {}},
+  "caps": [{"capability": "lifecycle"}, {"capability": "host:time"}],
+  "budget": {"instructions": 5000000}
+}

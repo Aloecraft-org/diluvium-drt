@@ -1,0 +1,24 @@
+-- A child is code plus the grants it may hold, and both are the parent's to
+-- give. This one parks itself when it is done instead of sitting resident.
+local child = host.spawn{
+  code = [[
+    local lifecycle = queue.declare('system/lifecycle', {capacity = 2})
+    local _, status = host.try('time')
+    print('  child: the time is ' .. status .. ' for me; parking')
+    queue.push(lifecycle, {op = 'hibernate', wake_on_message = true})
+    queue.wait({queue.lookup('inbox')})  -- example: omits the work a wake would start
+  ]],
+  caps   = {'lifecycle'},            -- narrower: the parent also holds host:time
+  budget = {instructions = 200000},  -- smaller: the parent's is 5000000
+}
+print('spawned instance ' .. child.id)
+
+local _, status = host.try('time')
+print('parent: the time is ' .. status .. ' for me')
+
+-- A grant the parent does not hold is refused, and the refusal names it.
+local _, why = pcall(host.spawn, {code = "print('never')", caps = {'host:fs/read'}})
+print(why)
+
+local ev = host.events(1000)  -- example: omits the loop a supervisor reads its children with
+print('event: ' .. ev.event .. ' ' .. ev.id)

@@ -1,0 +1,5 @@
+spawned instance 2
+parent: the time is ok for me
+  child: the time is denied for me; parking
+host.spawn: denied: host:fs/read
+event: hibernated 2

@@ -3,31 +3,24 @@
 -- change:
 --
 --   drt run app.dlua                 -- no config, so no bound is stated
---   drt run --config bounded.json    -- a bound the job fits inside
---   drt run --config tight.json      -- a bound the job does not
+--   drt run --config bounded.json    -- a bound this job fits inside
+--   drt run --config tight.json      -- a bound it does not
 --
--- Nothing below asks what its budget is, and there is no branch on how much
--- is left. A program does not negotiate its budget: it spends, and the VM
--- stops it when the number the config named runs out. That is the whole of
--- the contract from in here.
+-- Nothing below asks what its budget is, and nothing branches on how much is
+-- left. A program does not negotiate a budget: it spends, and the VM stops it
+-- when the number the config named runs out.
 
+-- example: omits every hostcall. `instructions` counts what the guest VM
+-- executes, so a program parked on a slow rest/get spends almost none of this
+-- budget; a pure loop is the only honest way to show one run out.
 local STEPS = 400000
 
--- Deliberately pure. No hostcalls, nothing parked, nothing waiting on a
--- connector -- because `instructions` counts what the guest VM executes and
--- nothing else. A program that spends a minute parked on a slow hostcall
--- spends almost none of this budget, so a loop is the only honest way to
--- show one being consumed.
 local acc = 0
 for i = 1, STEPS do
-    -- The arithmetic itself does not matter. That it is the *same*
-    -- arithmetic on every run does: a bound is worth stating only if
-    -- exceeding it is reproducible, and this loop costs the same number of
-    -- instructions on every machine and in every run.
     acc = (acc * 31 + i) % 1000003
 
-    -- Progress, so the run that exceeds its bound shows how far it got
-    -- first. It gets exactly that far every time.
+    -- Progress, so the run that exceeds its bound shows how far it got. The
+    -- arithmetic is the same every run, so it gets exactly that far.
     if i % 100000 == 0 then
         print(string.format("  %7d steps   acc = %d", i, acc))
     end

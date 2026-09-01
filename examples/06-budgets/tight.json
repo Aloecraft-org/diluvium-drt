@@ -1,10 +1,12 @@
 {
-  "_comment": "The same program, and the same file as bounded.json but for one number. 1,000,000 is well under the 2,400,001 the loop needs, so the run stops partway and the process exits 1.",
+  "_comment": "bounded.json with one number changed. 1,000,000 is well under the 2,400,001 the loop needs, so the run stops partway and the process exits 1.",
 
   "program": { "path": "app.dlua" },
 
   "budget": {
     "instructions": 1000000,
     "memory_kb": 4096
-  }
+  },
+
+  "_omits": "example: omits caps and connectors, which a real deployment states; 02-capabilities is the one that shows them."
 }

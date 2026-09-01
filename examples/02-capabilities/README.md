@@ -1,8 +1,8 @@
 # 02-capabilities
 
-One program, two apps. A drt app is a config plus a program; here the
-program is the same file both times and only the config around it changes,
-so every difference in the output is the deployment's doing.
+One program, two apps. A drt app is a config plus a program; here the program
+is the same file both times and only the config around it changes, so every
+difference in the output is the deployment's doing.
 
 ## Run it
 
@@ -13,7 +13,7 @@ drt run --config with-fs.json
 ```
 
 Paths inside a config resolve against the directory you run from, so start
-with the `cd`. `with-fs.json` names `./workspace`, the directory next to it.
+with the `cd`. `with-fs.json` names `./workspace`, the directory beside it.
 
 ## What you should see
 
@@ -34,45 +34,24 @@ Both runs exit 0 and write nothing. The output is the same every time.
 ## What it teaches
 
 **The program did not change; the app did.** `app.dlua` makes the same three
-calls in both runs. Nothing in it asks which deployment it is in, and there
-is no branch anywhere on `if fs is available`. It calls, and reads what came
-back. That is what makes one program deployable into deployments that wire
-different things.
+calls in both runs. Nothing in it asks which deployment it is in, and there is
+no branch on `if fs is available`. It calls, and reads what came back.
 
-**A config grants a place, not a filename.** `with-fs.json` says the `fs`
-connector may use `./workspace`, and says nothing about `note.txt`.
-`app.dlua` says `note.txt`, and says nothing about `workspace`. The two
-halves meet at the connector, which is why the same program can be pointed at
-another directory by editing the config and nothing else.
+**A config grants a place, not a filename.** `with-fs.json` names
+`./workspace` and never says `note.txt`; `app.dlua` names `note.txt` and never
+says `workspace`. They meet at the connector, which is why the same program
+can be aimed at another directory by editing the config alone.
 
-**`..` buys nothing, and neither does a symlink.** The path is checked
-twice. First on the components as typed: a `..` that climbs above the scope
-is refused before the filesystem is touched at all, which is why the answer
-above is the same sentence whether or not `/etc/passwd` is there — the
-refusal is not an existence oracle. Then again on what the filesystem
-actually resolved to, which is what catches a symlink inside the scope
-pointing out of it.
-
-**There are two layers that can say no, and they say it differently.**
-`denied` is the gate's word: the call was refused before any connector saw
-it, either because nothing is wired for that family (the first run) or
-because the grant ceiling in `caps` does not cover it at all (`sql/query` in
-the second run — the config grants `host:time` and `host:fs/*`, and that is
-the ceiling for the whole process). `error` means the call did reach a
-connector and the connector refused it against its own scope, which is the
-escape attempt above. Both arrive as replies, with a sentence you can print.
-
-**A stated ceiling is a ceiling; an unstated one is not.** `with-fs.json`
-names two grants, so `sql/query` is outside them and the gate says so. A
-config that omits `caps` — or that writes `caps: []` — does not thereby
-grant nothing: on v0.4.0 both leave no ceiling to enforce, and every call a
-wired connector answers goes through. `caps` narrows what `connectors`
-already turned on; it is not the thing that turns them on. The configs in
-`06` are the omitted shape, which is harmless there only because that
-program makes no calls at all. Write the grants you mean.
+**Two layers can say no, and they say it differently.** `denied` is the gate's
+word for a call that never reached a connector: nothing is wired for that
+family, or `caps` — the ceiling for the whole process — does not cover it.
+`error` means a connector did see the call and refused it against its own
+scope. That one is decided on the path as typed, before the filesystem is
+touched, so its sentence is the same whether or not `/etc/passwd` is there.
 
 **A refusal is a reply, not an exception.** `host.try(name, args)` returns
-`value, status, detail`, so all three outcomes — a result, a scope refusal,
-and a family that was never wired — are read by the same three lines of
-code. The direct forms (`host.fs.read`, `host.call`) raise instead, and are
-the right shape only where a refusal really would be a bug.
+`value, status, detail`, so all three outcomes are read by the same three
+lines. The direct forms (`host.fs.read`, `host.call`) raise instead, and are
+right only where a refusal really would be a bug.
+
+`04-files` is the same connector with a writable scope and all four verbs.

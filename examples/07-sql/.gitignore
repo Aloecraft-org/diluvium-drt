@@ -1,0 +1,3 @@
+# The readwrite app creates this in the granted directory, which is this one,
+# and drops its table on every run so the output does not change.
+notes.db

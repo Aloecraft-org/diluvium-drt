@@ -1,6 +1,6 @@
 {
   "name": "06-budgets",
-  "teaches": "A budget bounds the guest VM's instructions and memory -- not wall-clock time and not spawns: one program finishes under a bound it fits inside, and exits 1 partway through under one it does not.",
+  "teaches": "A budget bounds the guest VM's instructions and memory — not wall-clock time and not spawns: one program finishes under a bound it fits inside, and exits 1 partway through under one it does not.",
   "cmd": "echo '$ drt run app.dlua'; drt run app.dlua; echo \"exit $?\"; echo; echo '$ drt run --config bounded.json'; drt run --config bounded.json; echo \"exit $?\"; echo; echo '$ drt run --config tight.json'; drt run --config tight.json; echo \"exit $?\"",
   "needs_network": false,
   "normalise": []

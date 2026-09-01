@@ -1,97 +1,42 @@
--- Files: four verbs, one directory, and what a scope constrains.
+-- The four fs verbs against one granted directory, and what a scope
+-- constrains. One program, two apps; this file is the same bytes in both,
+-- so every difference between the two outputs is the deployment's:
 --
--- Run the same program under each of the two configs:
 --   drt run --config readwrite.json
 --   drt run --config read-only.json
---
--- Those two files differ in one word. This file does not differ at all, so
--- every difference between the two outputs belongs to the deployment.
---
--- The scope is a *place*. The config names `./workspace` and never names a
--- file inside it; this program names files and never names the directory.
--- Neither half can be read off the other, which is what lets the same
--- program be pointed at a different directory by editing the config alone.
 
--- Every call below goes through `host.try`, which is `host.call` without
--- the raise: it hands back `value, status, detail` instead of turning a
--- non-ok status into an error. Whether this process may write is the
--- config's decision and not this program's, so a refusal is an answer here
--- rather than a bug, and it is read by the same three lines as a result.
---
--- `host.fs.try_read` and `host.fs.try_write` are that call with the
--- arguments spelled out. There is no `host.fs.list` or `host.fs.remove`
--- helper on this build, so those two are named directly.
-local function row(label, status, detail, ok)
-    print(string.format("  %-24s %-7s %s", label, status, detail or ok or ""))
+-- host.try is host.call without the raise: value, status, detail.
+-- A refusal is a reply, not an exception.
+-- example: omits the ok/refused branch — an ok reply carries the value and a
+-- refusal carries the sentence, so one line prints whichever came back
+local function row(label, value, status, detail)
+    print(string.format("  %-24s %-7s %s", label, status, detail or value or "-"))
 end
 
--- The bytes are a literal, not a timestamp, because this example is run
--- twice in a row and diffed. Anything that changes between runs -- a clock,
--- a random value -- would have to be normalised back out again.
-local body = "Written by app.dlua. The config named the directory; the program named the file."
+-- host.fs spells out read and write; list and remove are called by name.
+local function list()
+    local names, status, detail = host.try("fs/list", { path = "." })
+    row("fs/list .", names and table.concat(names, "  "), status, detail)
+end
 
 print("the four verbs, against the directory the config granted:")
 
--- A write, which replaces the file rather than appending to it. The named
--- call also takes `append = true`; this example leaves it alone, because a
--- file that grew by a line on every run would make the second run disagree
--- with the first, and this directory is run twice and diffed.
---
--- This is first in the file, before anything lists the directory, so the
--- listing below is the same on a fresh checkout as on the tenth run.
-local _, status, detail = host.fs.try_write("report.txt", body)
-row("fs/write report.txt", status, detail, "wrote " .. #body .. " bytes")
+-- The config named ./workspace and no file in it; this program does the
+-- reverse, and they meet at the connector.
+row("fs/write scratch.txt", host.fs.try_write("scratch.txt", "gone by the end of the run"))
+list()
+row("fs/read note.txt", host.fs.try_read("note.txt"))
+row("fs/remove scratch.txt", host.try("fs/remove", { path = "scratch.txt" }))
+list()
 
-local scratch = "This one is removed before the run ends."
-local _, status, detail = host.fs.try_write("scratch.txt", scratch)
-row("fs/write scratch.txt", status, detail, "wrote " .. #scratch .. " bytes")
-
--- fs/list answers an array of names that the connector has already sorted,
--- so this line does not depend on what order the filesystem hands entries
--- back in. With no `path` it lists the root of the scope; `.` says the same
--- thing out loud.
-local names, status, detail = host.try("fs/list", { path = "." })
-row("fs/list .", status, detail, status == "ok" and table.concat(names, "  "))
-
-local text, status, detail = host.fs.try_read("report.txt")
-row("fs/read report.txt", status, detail, text)
-
--- fs/remove takes a file, not a directory, and like fs/write it is only
--- wired at all when `access` is `readwrite`.
-local _, status, detail = host.try("fs/remove", { path = "scratch.txt" })
-row("fs/remove scratch.txt", status, detail, "removed")
-
-local names, status, detail = host.try("fs/list", { path = "." })
-row("fs/list .", status, detail, status == "ok" and table.concat(names, "  "))
 print("")
-
--- The three refusals below are the scope doing its job. Each one names the
--- rule it enforced, so the sentence in the reply is the whole diagnosis.
 print("what the scope refuses, and in whose words:")
 
--- `max_bytes` is a host-side cap on a single file in either direction. A
--- guest cannot bound its own file sizes and the instruction budget does not
--- reach the filesystem, so this is the only bound there is. The file is
--- never created: the size is checked before the write.
-local _, status, detail = host.fs.try_write("big.txt", string.rep("x", 4096))
-row("fs/write big.txt", status, detail)
+-- max_bytes is checked before the write, so big.txt is never created.
+row("fs/write big.txt", host.fs.try_write("big.txt", string.rep("x", 4096)))
 
--- `..` buys nothing. This program's own source sits one level above the
--- granted directory, so the program cannot read itself -- and note that
--- `../app.dlua` is still a file in this same example directory. The scope
--- is the workspace, not the folder the app happens to live in.
---
--- The `..` is folded before the filesystem is touched, and a read then
--- checks again against the path that actually resolved, so a name that
--- reaches outside by way of a symlink is refused here too. (`fs/write`
--- resolves only the containing directory, so it does not catch a symlink
--- at the final name -- see the README.)
-local _, status, detail = host.fs.try_read("../app.dlua")
-row("fs/read ../app.dlua", status, detail)
+-- The grant is the workspace, not the directory the program lives in.
+row("fs/read ../app.dlua", host.fs.try_read("../app.dlua"))
 
--- An absolute path is refused before the filesystem is touched at all,
--- because a path inside a scope is by definition relative to it. Nothing
--- here reads /etc/hosts or needs it to exist; the string never gets that
--- far.
-local _, status, detail = host.fs.try_read("/etc/hosts")
-row("fs/read /etc/hosts", status, detail)
+-- Refused on the path as typed, before the filesystem is touched at all.
+row("fs/read /etc/hosts", host.fs.try_read("/etc/hosts"))

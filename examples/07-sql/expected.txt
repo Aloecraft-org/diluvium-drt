@@ -1,0 +1,27 @@
+$ drt run --config readwrite.json
+sql/exec, one writing statement at a time:
+  drop table if exists notes                   ok      0 changed, rowid 0
+  create table notes (body text)               ok      0 changed, rowid 0
+  insert into notes values (?), (?)            ok      2 changed, rowid 2
+
+sql/query, and ? binds on this side too:
+  select rowid, body from notes order by rowid ok      1 first note | 2 second note
+  select body from notes where rowid = ?       ok      second note
+
+what the connector refuses, and in whose words:
+  delete from notes                            error   'sql/query' is for statements that read; this one writes, which is 'sql/exec' and a different grant
+  open 'sub/notes.db'                          error   'sub/notes.db' contains a path separator; name a database inside the granted scope, not a path to one
+
+$ drt run --config read-only.json
+sql/exec, one writing statement at a time:
+  drop table if exists notes                   error   'sql/exec' needs access = "readwrite"; this scope is read-only
+  create table notes (body text)               error   'sql/exec' needs access = "readwrite"; this scope is read-only
+  insert into notes values (?), (?)            error   'sql/exec' needs access = "readwrite"; this scope is read-only
+
+sql/query, and ? binds on this side too:
+  select rowid, body from notes order by rowid ok      1 first note | 2 second note
+  select body from notes where rowid = ?       ok      second note
+
+what the connector refuses, and in whose words:
+  delete from notes                            error   'sql/query' is for statements that read; this one writes, which is 'sql/exec' and a different grant
+  open 'sub/notes.db'                          error   'sub/notes.db' contains a path separator; name a database inside the granted scope, not a path to one
