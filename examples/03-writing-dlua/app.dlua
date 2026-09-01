@@ -2,11 +2,13 @@
 --
 --   drt run app.dlua
 --
--- Diluvium is Lua 5.5 with a handful of additions, and it is backward
--- compatible: a .dlua file containing nothing but Lua is a valid program.
--- So none of this is something you have to adopt, and existing Lua you
--- paste in keeps working. Each section below is one addition, run rather
--- than described -- what you see is what this file produced.
+-- Diluvium is Lua 5.5 with a handful of additions, and the syntax is
+-- backward compatible: a .dlua file containing nothing but Lua parses and
+-- runs, so none of this is something you have to adopt. The library
+-- surface is a separate question, and section 1 answers it first, because
+-- it is the one that decides whether the Lua you already have runs here.
+-- Each section below is run rather than described -- what you see is what
+-- this file produced.
 --
 -- The last section is the one that costs people an hour, which is why it
 -- is in the program rather than in a FAQ.
@@ -18,10 +20,30 @@ local function row(syntax, result)
     print($"  {syntax::%-36s}{result}")
 end
 
-print("Diluvium is Lua. These are the additions, each one run.")
+print("Diluvium is Lua 5.5 -- what it adds, what drt seals. Each one run.")
 print("")
 
 -- 1 --------------------------------------------------------------------
+-- Backward compatible is a claim about the syntax, not about the library.
+-- `drt run` seals the standard library: no `os`, no `io`, no `package`,
+-- and so no `require`. Those are ambient authority -- a program that can
+-- open a file or shell out has a reach the config does not describe -- and
+-- the seal is what lets a run be replayed. Everything they did goes
+-- through `host.*` instead, where it costs a grant and a connector, which
+-- is the subject of the last section. There is no flag on `drt run` to
+-- unseal them.
+--
+-- So: paste in Lua and the syntax is fine; paste in Lua that requires a
+-- module or touches os/io and it is not. Worth knowing in minute one
+-- rather than minute forty.
+print("backward compatible is about the syntax")
+row([[type(require)]],             type(require))
+row([[type(os)]],                  type(os))
+row([[type(io)]],                  type(io))
+row([[("still Lua"):upper()]],     ("still Lua"):upper())
+print("")
+
+-- 2 --------------------------------------------------------------------
 -- Interpolation is a different literal, not a different string type: no
 -- `$` means an ordinary Lua string, where braces are just braces.
 --
@@ -35,7 +57,7 @@ row([[$"{#user::%3d} chars"]],     $"{#user::%3d} chars")
 row([["hi {user}"  (no $)]],       "hi {user}")
 print("")
 
--- 2 --------------------------------------------------------------------
+-- 3 --------------------------------------------------------------------
 -- `??` tests for nil specifically, not for falsiness. That is the whole
 -- reason it exists next to `or`: `false or 8080` is 8080 and loses the
 -- answer you were given, `false ?? 8080` is false and keeps it.
@@ -53,7 +75,7 @@ port ??= 8080
 row([[port ??= 8080]],             port)
 print("")
 
--- 3 --------------------------------------------------------------------
+-- 4 --------------------------------------------------------------------
 -- Safe navigation short-circuits the *rest of the chain*, so nothing is
 -- indexed and no call happens once something is nil. Like `??` it tests
 -- for nil and not for falsiness: `false?.x` still raises, exactly as
@@ -75,7 +97,7 @@ row([[handler?.on_event(mark())]], $"not called; mark() ran: {evaluated}")
 -- so reach a method through a nil-checked receiver the ordinary way.
 print("")
 
--- 4 --------------------------------------------------------------------
+-- 5 --------------------------------------------------------------------
 -- The subject is evaluated once, a case can list several values, and
 -- there is no fallthrough, so no `break`.
 --
@@ -96,7 +118,7 @@ end
 row([[switch 302 -> case 301, 302]],   verdict)
 print("")
 
--- 5 --------------------------------------------------------------------
+-- 6 --------------------------------------------------------------------
 -- `defer` runs when the block ends, however it ends: falling off the end,
 -- `break`, `goto`, `return`, or a raise. Deferred statements run in
 -- reverse order, so the cleanup nearest the acquisition runs first.
@@ -121,7 +143,7 @@ end)
 row([[defer + error("boom")]],     $"{raised[1]}, then pcall got: {err}")
 print("")
 
--- 6 --------------------------------------------------------------------
+-- 7 --------------------------------------------------------------------
 -- `with` binds a to-be-closed local scoped to the block, so the value must
 -- have a `__close` metamethod. `defer` is the one to reach for when the
 -- thing you are cleaning up has no `__close`; `with` is the one when it
@@ -141,7 +163,7 @@ row([[with a = ..., b = ... do]],  log[1])
 for i = 2, #log do row("", log[i]) end
 print("")
 
--- 7 --------------------------------------------------------------------
+-- 8 --------------------------------------------------------------------
 -- The trap, in place.
 --
 -- `time` is a library and it is loaded, so you find it, and then
@@ -159,8 +181,8 @@ row([[time.now()]],                $"raises: {err_now}")
 row([[host.time()]],               $"a {type(host.time())}, milliseconds since the epoch")
 
 -- Which is the other half of the trap: `host.time()` answers in
--- milliseconds and every `time` function speaks seconds -- the unit
--- os.time and a JWT `exp` already use. Divide at the boundary, with
+-- milliseconds and every `time` function speaks seconds -- the unit stock
+-- Lua's os.time and a JWT `exp` already use. Divide at the boundary, with
 -- `time.iso(host.time() // 1000)`, or you get the second row below.
 --
 -- Literals are used here rather than `host.time()` so this program's

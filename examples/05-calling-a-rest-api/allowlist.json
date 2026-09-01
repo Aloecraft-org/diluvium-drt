@@ -8,7 +8,7 @@
     { "capability": "host:rest/*" }
   ],
 
-  "_connectors": "Off by default, all of them. An unscoped outbound-HTTP connector reaches your metadata endpoint, your database on 10.x and your own control plane, so the rest connector's scope is an ORIGIN ALLOWLIST and an absent scope permits nothing rather than everything.",
+  "_connectors": "Off by default, all of them. An unscoped outbound-HTTP connector reaches your metadata endpoint, your database on 10.x and your own control plane, so the rest connector's scope is an ORIGIN ALLOWLIST, and an absent one is refused when the app starts rather than read as every origin.",
 
   "_headers": "`headers` are set by the connector on every request to this origin, and the guest can neither set them nor read them back. GitHub's API refuses a request without a user-agent, so the program below does not work without this line and does not contain it. Swap `user-agent` for `authorization` and the same mechanism calls an authenticated API with the credential living here, in the deployment, rather than in the program.",
 

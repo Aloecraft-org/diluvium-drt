@@ -18,8 +18,8 @@ print("")
 -- pure calendar library and there is no clock in it, because a clock is not
 -- pure.
 --
--- These two are the families that answer with nothing configured, so they are
--- the only calls in this file written in the direct form. The direct form
+-- These two calls are the whole of what answers with nothing configured, so
+-- they are the only calls in this file written in the direct form. That form
 -- raises if the answer is not `ok`, which is the right shape when a failure
 -- here would be a bug.
 print("answered, with no config at all:")

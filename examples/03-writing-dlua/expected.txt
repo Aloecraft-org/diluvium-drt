@@ -1,4 +1,10 @@
-Diluvium is Lua. These are the additions, each one run.
+Diluvium is Lua 5.5 -- what it adds, what drt seals. Each one run.
+
+backward compatible is about the syntax
+  type(require)                       nil
+  type(os)                            nil
+  type(io)                            nil
+  ("still Lua"):upper()               STILL LUA
 
 string interpolation
   $"hi {user}"                        hi ana
@@ -33,7 +39,7 @@ with
                                       closed a
 
 the clock is not in `time`
-  time.now()                          raises: [string "app.dlua"]:157: attempt to call a nil value (field 'now')
+  time.now()                          raises: [string "app.dlua"]:<line>: attempt to call a nil value (field 'now')
   host.time()                         a number, milliseconds since the epoch
   time.iso(1786554000)                2026-08-12T17:00:00Z
   time.iso(1786554000000)             58583-08-23T08:00:00Z  <- ms into a seconds API

@@ -1,6 +1,6 @@
 {
   "name": "01-hello",
-  "teaches": "A single .dlua file is a runnable drt app: with no config, time and time/monotonic answer and every other family replies denied.",
+  "teaches": "A single .dlua file is a runnable drt app: with no config the time connector answers time and time/monotonic, and every other family replies denied.",
   "cmd": "drt run app.dlua",
   "needs_network": false,
   "normalise": [

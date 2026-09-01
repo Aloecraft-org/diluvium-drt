@@ -45,9 +45,13 @@ connector may use `./workspace`, and says nothing about `note.txt`.
 halves meet at the connector, which is why the same program can be pointed at
 another directory by editing the config and nothing else.
 
-**`..` buys nothing.** The escape attempt is refused against the path the
-filesystem resolves to, not the string that was typed, so climbing out with
-`..` fails and so does a symlink inside the scope that points out of it.
+**`..` buys nothing, and neither does a symlink.** The path is checked
+twice. First on the components as typed: a `..` that climbs above the scope
+is refused before the filesystem is touched at all, which is why the answer
+above is the same sentence whether or not `/etc/passwd` is there -- the
+refusal is not an existence oracle. Then again on what the filesystem
+actually resolved to, which is what catches a symlink inside the scope
+pointing out of it.
 
 **There are two layers that can say no, and they say it differently.**
 `denied` is the gate's word: the call was refused before any connector saw

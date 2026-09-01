@@ -26,9 +26,12 @@ end
 -- other's: nothing here says `workspace`, and nothing there says `note.txt`.
 show("fs/read note.txt", host.fs.try_read("note.txt"))
 
--- The same call, aimed out of the granted directory. The refusal is on the
--- path the filesystem resolves to, not on how it was spelled, so `..` buys
--- nothing and neither would a symlink pointing out.
+-- The same call, aimed out of the granted directory. The path is checked
+-- twice: a `..` that climbs above the scope is caught on the components as
+-- typed, before the filesystem is touched, so this answers the same sentence
+-- whether or not the file out there exists. A symlink inside the scope
+-- pointing out is caught on the second check, against what the filesystem
+-- resolved to.
 --
 -- Note the status: this one is `error`, not `denied`. `denied` is the gate's
 -- word -- the call never reached a connector. Here it did reach one, and the

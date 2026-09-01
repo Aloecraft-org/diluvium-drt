@@ -38,8 +38,10 @@ Exits 0, writes nothing, and prints the same thing every time.
 **An unscoped outbound-HTTP grant is not a small thing to hand out.** A
 program that holds one can reach the cloud metadata endpoint at
 `169.254.169.254`, your database on `10.x`, or the host's own control plane.
-That is why `host:rest/*` alone buys nothing here: with no scope the
-connector permits no origin at all, rather than every origin.
+That is why the capability alone buys nothing here: `host:rest/*` with no
+`rest` entry in `connectors` denies every call, and a `rest` entry with no
+scope does not start at all — an absent scope is refused by name rather
+than read as every origin.
 
 **The scope is an origin allowlist, and an origin is scheme + host + port.**
 `allowlist.json` grants `https://api.github.com`. The first two rows above
@@ -61,9 +63,9 @@ rather than quietly dropped, because dropping it would authorise
 `evil.example` while the string still said `api.github.com`.
 
 **A refusal is a reply.** `host.try` hands back `value, status, detail`, so
-all six rows are printed by the same two lines of code. Which origins exist
-is the deployment's decision, not the program's, so a refused URL is not an
-exception — it is an answer.
+all six rows go through the same two lines of code — the two that would have
+printed a reply. Which origins exist is the deployment's decision, not the
+program's, so a refused URL is not an exception — it is an answer.
 
 **The program does not know the allowlist.** Nothing in `app.dlua` names
 `api.github.com` as granted or names the config at all. It names URLs; the
@@ -102,8 +104,11 @@ part of the connector that opens a socket, and `drt run` drives connectors
 without the async runtime that part needs, so the process aborts instead of
 answering. Nothing you can put in the program or the config works around it.
 
-It is worth saying which half of this example that leaves standing: all of
-it above. Every refusal is decided before a connection is attempted, so the
-allowlist, the origin comparison and the injected-header terms in the config
-are exactly as shown. What you cannot see today is a successful body coming
-back.
+It is worth saying exactly which half of this example that leaves standing.
+The six rows above are decided before a connection is attempted, so the
+origin comparison, the userinfo refusal and the two-verb surface are shown
+by a run. The header terms are not: the check that refuses a program's
+`authorization` sits past the same broken boundary, so a header the program
+may not set aborts the process too rather than being refused by name. Read
+that half in `allowlist.json`, as configuration, and take the mechanism
+from the connector rather than from an output line.

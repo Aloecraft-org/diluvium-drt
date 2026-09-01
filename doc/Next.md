@@ -101,7 +101,7 @@ quadratic today". That is not true: `Swarm::find` is O(1), a lookup in
 it. `ids()` plus N accessor calls is O(n). The real quadratic is on the
 teardown path, where a swarm that grows a leaf per pattern will meet it.
 
-### 5. Capability flags, wasmtime-style — ~half a day for `--dir`, and one policy decision
+### 5. Capability flags, wasmtime-style — ~half a day for `--dir`, precedence settled
 
 `drt --dir ./work run app.dlua`, `drt --listen http://127.0.0.1:8080 start` —
 grant a capability from the command line instead of writing a config, the way

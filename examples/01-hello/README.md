@@ -28,9 +28,9 @@ pure, so it asks the host for nothing:
   time.iso(0)      1970-01-01T00:00:00Z
 ```
 
-The two values in the first block come from the run that produced this text;
-yours will differ. Everything else matches line for line. The program writes
-no files and exits 0.
+The two numbers in the first block come from the run that produced this text:
+the wall clock will differ on yours, and the monotonic one may. Everything
+else matches line for line. The program writes no files and exits 0.
 
 ## What it teaches
 
@@ -40,8 +40,9 @@ directly, so one file you can read in a minute is already a thing you can
 run. There is no project to create and no build step in front of it.
 
 **What a program can reach is the deployment's decision, not the program's.**
-With no config, two hostcall families answer: `time` and `time/monotonic`.
-Every other family answers
+With no config, one connector is wired -- `time` -- and it answers two calls,
+`time` and `time/monotonic`. No other family is wired, so every call outside
+that one answers
 
 ```
 denied  no connector is wired for 'crypto/random' in this process

@@ -3,10 +3,15 @@
 The language, for someone who already writes Lua. One `.dlua` file, no
 config, nothing to install past the `drt` binary.
 
-Diluvium is Lua 5.5 plus a short list of additions, and it is backward
-compatible: a `.dlua` file containing nothing but Lua is a valid program.
-So none of this is something you have to adopt — it is there where it
-helps, and existing Lua you paste in keeps working.
+Diluvium is Lua 5.5 plus a short list of additions, and the syntax is
+backward compatible: a `.dlua` file containing nothing but Lua parses and
+runs, so none of this is something you have to adopt — it is there where
+it helps.
+
+The library surface is the other half of that question, and the program
+answers it first, because it is the half that decides whether the Lua you
+already have runs here. `drt run` seals the standard library: no `os`, no
+`io`, no `package`, and so no `require`.
 
 ## Run it
 
@@ -17,10 +22,15 @@ drt run app.dlua
 
 ## What you should see
 
-Six additions, each one run rather than described, then the trap.
-Abridged here; `expected.txt` is the whole of it:
+The seal, six additions, and then the trap — each one run rather than
+described. Abridged here; `expected.txt` is the whole of it:
 
 ```
+backward compatible is about the syntax
+  type(require)                       nil
+  type(os)                            nil
+  ("still Lua"):upper()               STILL LUA
+
 string interpolation
   $"hi {user}"                        hi ana
   $"{ratio::%.2f}"                    0.67
@@ -57,6 +67,15 @@ the one moment it formats is a literal.
 
 ## What it teaches
 
+**Backward compatible is a claim about the syntax, not about the
+library.** `os`, `io` and `package` — and so `require` — are ambient
+authority: a program holding them has a reach the config does not
+describe, and a run that shells out cannot be replayed. `drt run` seals
+them, with no flag to unseal, and what they did goes through `host.*`
+instead, where it costs a grant and a connector. So plain Lua syntax
+pastes in fine; plain Lua that requires a module or opens a file does
+not. This example is one file for that reason, not for tidiness.
+
 **The additions are small and each replaces a Lua idiom that loses
 something.** `??` tests for nil where `or` tests for falsiness, so
 `false ?? 8080` keeps the `false` you were handed and `false or 8080`
@@ -86,8 +105,8 @@ grant, a connector answers it, the answer arrives as a message, and that is
 what lets a replay replay the recorded moment instead of the replayer's.
 
 **The other half of that trap is units.** `host.time()` answers in
-milliseconds; every `time` function speaks seconds, the unit `os.time` and
-a JWT `exp` already use. Divide at the boundary —
+milliseconds; every `time` function speaks seconds, the unit stock Lua's
+`os.time` and a JWT `exp` already use. Divide at the boundary —
 `time.iso(host.time() // 1000)`. The program shows what you get when you do
 not: a date in the year 58583, with no error.
 

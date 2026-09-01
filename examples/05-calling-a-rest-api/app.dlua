@@ -14,9 +14,13 @@
 -- reply to be printed rather than an error to be caught. Outbound HTTP is
 -- the family where that matters most: a refused URL is not a bug in the
 -- program, it is the deployment saying where this program may go.
+local function show(call, url, label)
+    local _, status, detail = host.try(call, { url = url })
+    print(string.format("  %-40s %-6s %s", label or url, status, detail or ""))
+end
+
 local function get(url)
-    local _, status, detail = host.try("rest/get", { url = url })
-    print(string.format("  %-40s %-6s %s", url, status, detail or ""))
+    show("rest/get", url)
 end
 
 -- An origin is scheme + host + port, all three. The granted entry is an
@@ -45,5 +49,4 @@ get("http://169.254.169.254/latest/meta-data/")
 
 -- The surface is two calls. `rest/put` is inside the `host:rest/*` grant,
 -- so it reaches the connector and the connector is the one to say no.
-local _, status, detail = host.try("rest/put", { url = "https://api.github.com/zen" })
-print(string.format("  %-40s %-6s %s", "rest/put (not rest/get or rest/post)", status, detail or ""))
+show("rest/put", "https://api.github.com/zen", "rest/put (not rest/get or rest/post)")
