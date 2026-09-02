@@ -241,6 +241,52 @@ timer, so the class does not reach them. Every connector that can is covered.
 
 ## FM-4: a guest can hang the whole deployment, and there is no in-process mitigation
 
+### Does this affect you? Read this part first
+
+**FM-4 is a denial-of-service bug and only that.** No memory corruption, no
+data loss, no capability escape, no privilege gain, nothing read or written
+that the program was not already granted. The process stops doing work and
+does not die. Restart and you are whole. That one fact settles most of the
+question, because it means FM-4 can only reach you through *availability* —
+and availability has a supervisor.
+
+**The dividing line is whether a human read the program before it ran.**
+Not who or what wrote it: a program you generated and then read is yours.
+A program that goes from author to deployment unread is on the other side
+of the line, and not because anyone is hostile. `pcall` around a loop that
+does not terminate is an ordinary thing to write by accident, and **no
+grant catches it** — it needs no capability at all. The budget you would
+expect to stop it is the specific thing it defeats.
+
+- **Every program in the deployment is read and controlled.** Not a hazard.
+  It is a bug you can write by accident, like an infinite loop in any
+  language. The one thing to know is that the instruction budget will not
+  save you from it: a plain `while true do end` is stopped in milliseconds,
+  the `pcall`-wrapped one is not. If you were treating the budget as a net
+  under runaway programs, it is not one.
+- **The deployment runs programs nobody read, or programs from a party you
+  would not let restart your server.** A real hazard, trivially triggered:
+  one line, no capability, no skill. DRT cannot prevent it and neither can
+  any grant you write.
+
+**What to do, in the order that matters:**
+
+1. **Monitor liveness, not crashes.** Do this regardless of trust; it is
+   cheap and it is the whole difference between "restarted at 2am, restart
+   count alerted" and "stopped serving at 2am, discovered at 9". See the
+   `WatchdogSec` shape under *What to do until then*. `Restart=always`
+   alone does nothing here — the process never exits.
+2. **Give an unreviewed or untrusted program its own process.** The
+   exposure is per-process, so this is a complete mitigation, not a
+   partial one: such a guest hangs only itself, the monitor restarts it,
+   and nothing it shares a deployment with is affected. Needed only when
+   it would otherwise share a `drt start` with something you need up.
+
+With both in place, FM-4's worst case is a restart. That is an ordinary
+operational event. The rest of this entry is the measurement behind those
+two sentences, and is worth reading before you decide a deployment is in
+the first category.
+
 **Not a crash. The opposite, and worse to operate:** the process stays up,
 answers nothing, and exits nothing. Every restart-on-crash supervisor in the
 world sits there watching it.
