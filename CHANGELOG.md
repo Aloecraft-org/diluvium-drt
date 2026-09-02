@@ -78,6 +78,29 @@ is still ahead. See known issues.
 
 ### Fixed
 
+- **`netcheck` gave `v6-direct` on a network it had measured nothing
+  about, and let an inference override a measurement.** Found by
+  running the examples on a machine with routable IPv6 — the tree
+  being corrected by a network rather than by an argument, which the
+  module header says is how it will go wrong first.
+
+  Two faults in one rule. It sat **above** the decisive UDP read, so
+  a machine whose UDP mapping measured `independent` — punchable,
+  measured, over v4 — was told to use IPv6 instead. `routable_v6`
+  reads the routing table and sends nothing, so v6 reachability is
+  never measured here at all, and a routable address behind a v6
+  firewall is ordinary on consumer gear.
+
+  And its v4 half asked `!has_public_v4()`, which answers `false`
+  when no address was observed — so "no reflect edge answered" was
+  read as "IPv4 is hopeless", and the tree gave its most specific
+  verdict about a network it knew nothing of. Not measured is not a
+  finding; that is the one rule this module has.
+
+  The rule now sits below `punchable` and above `relay`, and asks
+  `v4_ruled_out()`: an address that came back and is unreachable, or
+  a mapping that came back symmetric. With nothing measured the
+  verdict falls through to `relay`, which works everywhere.
 - **Budgets attenuate at spawn, in both the ways they did not.**
   `Budget::fits_within` and `InstanceConfig::check_attenuation` were
   written, correct, tested, and called from nowhere; `do_spawn` took

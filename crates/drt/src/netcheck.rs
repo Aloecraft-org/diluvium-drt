@@ -166,8 +166,27 @@ impl Measurements {
         }
     }
 
+    /// Whether IPv4 was **measured** and found to have no inbound path —
+    /// the precondition for advising v6 instead.
+    ///
+    /// The distinction this exists to make: an address that came back and
+    /// is not publicly reachable is a finding; an address that never came
+    /// back is not. `has_public_v4()` cannot tell them apart, because
+    /// `None` and "a private address" both answer `false`, and reading the
+    /// first as the second is how an unmeasured network got the tree's most
+    /// specific verdict.
+    pub fn v4_ruled_out(&self) -> bool {
+        // Either an address came back and is unreachable, or the mapping
+        // came back symmetric — both are measurements. Neither being
+        // present means nothing is known and nothing should be claimed.
+        (self.observed_address.is_some() && !self.has_public_v4())
+            || matches!(self.udp_mapping, Some(UdpMapping::Symmetric))
+    }
+
     /// Whether the observed v4 address is a public one — not CGNAT, not
-    /// RFC1918, not loopback or link-local.
+    /// RFC1918, not loopback or link-local. **`false` also when nothing was
+    /// observed**, which is why [`v4_ruled_out`](Self::v4_ruled_out) exists
+    /// and why a rule must not ask this question on its own.
     pub fn has_public_v4(&self) -> bool {
         match self.observed_address {
             Some(IpAddr::V4(v4)) => {
@@ -230,25 +249,9 @@ pub static RULES: &[Rule] = &[
             m.has_public_v4() && matches!(m.inbound, Some((_, Inbound::Connected)))
         },
     },
-    // v6 before the v4 mapping verdicts: when v4 is hopeless and a routable
-    // v6 answers, the advice is "use the v6 address", which is different
-    // advice and not a weaker form of punchable.
-    Rule {
-        verdict: Verdict::V6Direct,
-        why: "a routable IPv6 address is present and IPv4 has no inbound path",
-        matches: |m| {
-            m.routable_v6.is_some()
-                && !m.has_public_v4()
-                && !matches!(m.inbound, Some((_, Inbound::Connected)))
-        },
-    },
-    // The decisive UDP read. Symmetric before independent, because
-    // symmetric is the one that forecloses on hole punching.
-    Rule {
-        verdict: Verdict::Relay,
-        why: "the UDP mapping is per-destination (symmetric), so what a STUN server sees says nothing about what a peer would see",
-        matches: |m| matches!(m.udp_mapping, Some(UdpMapping::Symmetric)),
-    },
+    // The decisive UDP read, and it outranks v6. Symmetric before
+    // independent, because symmetric is the one that forecloses on hole
+    // punching.
     Rule {
         verdict: Verdict::Punchable,
         why: "the UDP mapping is endpoint-independent, so the address a STUN server sees is the address a peer can reach",
@@ -258,6 +261,38 @@ pub static RULES: &[Rule] = &[
                 Some(UdpMapping::Independent) | Some(UdpMapping::Open)
             )
         },
+    },
+    // v6 sits BELOW punchable and ABOVE relay-by-symmetric, which is the
+    // only place it belongs, and it was above both until a real network
+    // said otherwise.
+    //
+    // On a machine with a routable v6 and no reflect edge, the old rule
+    // answered `v6-direct` while the UDP mapping said `independent` --
+    // an inference overriding a measurement, in a module whose first
+    // premise is that it does not do that. `routable_v6` reads the routing
+    // table and sends nothing (see `gather`), so v6 reachability is never
+    // measured here at all; a routable address behind a v6 firewall is
+    // common on consumer gear. Punching over v4 was *measured* and works.
+    //
+    // The second half is `v4_ruled_out`. The old rule asked
+    // `!has_public_v4()`, which is false when `observed_address` is `None`
+    // -- so "no edge answered" was read as "v4 is hopeless", and the module
+    // gave its most specific verdict on a network it had measured nothing
+    // about. Not measured is not a finding. With nothing measured this now
+    // falls through to relay, which is the answer that works everywhere.
+    Rule {
+        verdict: Verdict::V6Direct,
+        why: "a routable IPv6 address is present and IPv4 has no inbound path",
+        matches: |m| {
+            m.routable_v6.is_some()
+                && m.v4_ruled_out()
+                && !matches!(m.inbound, Some((_, Inbound::Connected)))
+        },
+    },
+    Rule {
+        verdict: Verdict::Relay,
+        why: "the UDP mapping is per-destination (symmetric), so what a STUN server sees says nothing about what a peer would see",
+        matches: |m| matches!(m.udp_mapping, Some(UdpMapping::Symmetric)),
     },
 ];
 
@@ -592,6 +627,55 @@ mod tests {
     }
 
     #[test]
+    /// Both shapes a real machine with routable IPv6 produced, and both
+    /// were wrong before. This is the tree being corrected by a network
+    /// rather than by an argument, which is what the module header says
+    /// will happen first.
+    #[test]
+    fn a_routable_v6_does_not_override_what_v4_actually_measured() {
+        // What `examples/13` runs: a local STUN pair measures the UDP
+        // mapping as independent, and no reflect edge answers. The old tree
+        // said `v6-direct` — an inference about v6, which is never
+        // measured here, beating a measurement of v4 that says punching
+        // works.
+        let punchable_with_v6 = Measurements {
+            routable_v6: Some("2605:59ca:6632:a610::1".parse().unwrap()),
+            udp_mapping: Some(UdpMapping::Independent),
+            ..Default::default()
+        };
+        assert_eq!(decide(&punchable_with_v6).0, Verdict::Punchable);
+
+        // What `examples/09` runs: nothing measured at all, on a machine
+        // that happens to have v6. The old tree read "no edge answered" as
+        // "v4 is hopeless" — because `has_public_v4()` answers false for
+        // `None` — and gave its most specific verdict about a network it
+        // knew nothing about. Relay is the answer that works everywhere,
+        // and not measuring something is not a finding about it.
+        let nothing_measured_with_v6 = Measurements {
+            routable_v6: Some("2605:59ca:6632:a610::1".parse().unwrap()),
+            ..Default::default()
+        };
+        assert_eq!(decide(&nothing_measured_with_v6).0, Verdict::Relay);
+
+        // But a measured symmetric mapping *is* v4 ruled out, so v6 is the
+        // better advice there and still wins over relay.
+        let symmetric_with_v6 = Measurements {
+            routable_v6: Some("2605:59ca:6632:a610::1".parse().unwrap()),
+            udp_mapping: Some(UdpMapping::Symmetric),
+            ..Default::default()
+        };
+        assert_eq!(decide(&symmetric_with_v6).0, Verdict::V6Direct);
+
+        // And CGNAT still outranks everything, v6 included: the address is
+        // shared and no v6 finding changes that.
+        let cgnat_with_v6 = Measurements {
+            observed_address: cgnat_v4(),
+            routable_v6: Some("2605:59ca:6632:a610::1".parse().unwrap()),
+            ..Default::default()
+        };
+        assert_eq!(decide(&cgnat_with_v6).0, Verdict::Relay);
+    }
+
     fn every_rule_is_reachable() {
         // A table whose row never fires is a row nobody maintains. Each
         // verdict must be selectable by some measurement set; this fails
@@ -607,6 +691,13 @@ mod tests {
                 ..Default::default()
             },
             Measurements {
+                observed_address: public_v4(),
+                udp_mapping: Some(UdpMapping::Independent),
+                ..Default::default()
+            },
+            // v6-direct needs v4 *measured* and ruled out, not merely
+            // unmeasured — a private observed address is a measurement.
+            Measurements {
                 observed_address: Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5))),
                 routable_v6: Some("2001:db8::1".parse().unwrap()),
                 ..Default::default()
@@ -614,11 +705,6 @@ mod tests {
             Measurements {
                 observed_address: public_v4(),
                 udp_mapping: Some(UdpMapping::Symmetric),
-                ..Default::default()
-            },
-            Measurements {
-                observed_address: public_v4(),
-                udp_mapping: Some(UdpMapping::Independent),
                 ..Default::default()
             },
         ];

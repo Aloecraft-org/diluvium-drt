@@ -4,7 +4,7 @@ relay — the UDP mapping could not be measured, and relay is the answer that wo
 
 evidence
   address    not measured (no reflect edge answered)
-  v6         none routable
+  v6         <v6, this machine's>
   udp map    not measured
   tcp map    not measured
   inbound    not measured (no inbound test in this build)
@@ -16,7 +16,7 @@ relay — the UDP mapping could not be measured, and relay is the answer that wo
 
 evidence
   address    not measured (no reflect edge answered)
-  v6         none routable
+  v6         <v6, this machine's>
   udp map    not measured
   tcp map    not measured
   inbound    not measured (no inbound test in this build)

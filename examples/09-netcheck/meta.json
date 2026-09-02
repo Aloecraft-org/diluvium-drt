@@ -4,5 +4,7 @@
   "cmd": "echo '$ drt netcheck'; drt netcheck; echo \"exit $?\"; echo; echo '$ drt netcheck --stun stun.l.google.com:19302'; drt netcheck --stun stun.l.google.com:19302; echo \"exit $?\"",
   "needs_network": false,
   "needs_build": "full",
-  "normalise": []
+  "normalise": [
+    "s|^  v6         .*|  v6         <v6, this machine's>|"
+  ]
 }
