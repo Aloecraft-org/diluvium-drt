@@ -137,6 +137,29 @@ enum Command {
         /// reached, and it is `curl --resolve` by another name.
         #[arg(long = "reflect-at", value_name = "ADDRESS")]
         reflect_at: Vec<String>,
+        /// **Experimental.** Ask a probe edge to connect back to the
+        /// address it observes, and report whether it reached this port.
+        /// Repeatable, asked sequentially and bounded, because the prober
+        /// rate-limits per address.
+        ///
+        /// Probes the service already listening on the port. It binds
+        /// nothing: a diagnostic that opened a socket would be a different
+        /// and more surprising thing, and would want a differently named
+        /// flag saying so.
+        ///
+        /// Needs `--probe-at`. The server half is not deployed yet.
+        #[arg(long = "port", value_name = "N")]
+        port: Vec<u16>,
+        /// The edge the probe's SYN should come from — one this run has not
+        /// contacted for reflect.
+        ///
+        /// `NETCHECK-SPEC.md` §3: with a prober on both gates the original
+        /// asymmetry becomes a client obligation, because a SYN from an
+        /// address the caller just contacted can traverse the mapping the
+        /// caller's own request created and answer `connected` when nothing
+        /// out there can reach them.
+        #[arg(long = "probe-at", value_name = "ADDRESS")]
+        probe_at: Option<String>,
         /// Send every `--reflect` request from the **same local source
         /// port**, which is what turns two edges into a TCP mapping
         /// comparison rather than two unrelated observations.
@@ -555,6 +578,8 @@ fn main() -> ExitCode {
             stun,
             reflect,
             reflect_at,
+            port,
+            probe_at,
             pin_source_port,
             json,
         } => {
@@ -570,6 +595,14 @@ fn main() -> ExitCode {
                 // with it is recorded as a disagreement rather than
                 // overwriting it.
                 drt::netcheck::gather::reflect(&mut m, &edges, &at, pin_source_port).await;
+                // Last: it needs the reflect views to know which vantages
+                // this run has already contacted.
+                if let Some(first) = edges.first() {
+                    drt::netcheck::gather::probe(&mut m, first, probe_at.as_deref(), &port).await;
+                } else if !port.is_empty() {
+                    m.inbound_why =
+                        Some("--port needs a --reflect edge to derive the probe host from".into());
+                }
             });
             // The same leak as `stun`/`relay`/`tunnel`, for the same reason:
             // FM-1, tokio 1.53.1's use-after-free in runtime teardown, and

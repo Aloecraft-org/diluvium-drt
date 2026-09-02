@@ -344,3 +344,173 @@ fn reflect_at_names_the_vantage_when_dns_names_only_one() {
     ]);
     assert!(bad.contains("is not an address"), "{bad}");
 }
+
+// --- the inbound probe -------------------------------------------------
+
+/// An echoing reflect edge on a chosen address.
+fn echoing_edge_on(ip: &str, edge_name: &str) -> String {
+    let listener = TcpListener::bind(format!("{ip}:0")).unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    let name = edge_name.to_string();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let seen = stream.peer_addr().unwrap();
+            let mut scratch = [0u8; 2048];
+            let _ = stream.read(&mut scratch);
+            let body = format!(
+                "{{\"observed\":{{\"address\":\"{}\",\"port\":{},\"edge\":\"{name}\"}}}}",
+                seen.ip(),
+                seen.port()
+            );
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    url
+}
+
+/// A prober on a chosen address AND port, so one URL derives both legs.
+fn prober_on(ip: &str, port: u16, result: &'static str) -> std::net::SocketAddr {
+    let listener = TcpListener::bind(format!("{ip}:{port}")).unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let seen = stream.peer_addr().unwrap();
+            let mut scratch = [0u8; 2048];
+            let n = stream.read(&mut scratch).unwrap_or(0);
+            let req = String::from_utf8_lossy(&scratch[..n]).into_owned();
+            if result == "429" {
+                let _ = stream
+                    .write_all(b"HTTP/1.1 429 Too Many Requests\r\ncontent-length: 0\r\n\r\n");
+                continue;
+            }
+            let p: u16 = req
+                .split("port=")
+                .nth(1)
+                .and_then(|t| t.split(|c: char| !c.is_ascii_digit()).next())
+                .and_then(|t| t.parse().ok())
+                .unwrap_or(0);
+            let body = format!(
+                "{{\"service\":\"probe\",\"edge\":\"gate2\",\"address\":\"{}\",\
+                 \"port\":{p},\"result\":\"{result}\"}}",
+                seen.ip()
+            );
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    addr
+}
+
+/// **The client obligation, enforced rather than documented.**
+///
+/// `NETCHECK-SPEC.md` §3: with a prober on both gates the asymmetry that
+/// made the probe safe becomes the client's job. A SYN from an address the
+/// caller just contacted can traverse the mapping the caller's own request
+/// created and answer `connected` when nothing out there can reach them —
+/// and `connected` is the only result that reaches `direct`, whose advice is
+/// "forward the port". The most expensive wrong answer available here.
+#[test]
+fn a_probe_from_an_edge_we_already_contacted_is_refused() {
+    // Reflect and probe must share a port for one URL to derive both, so
+    // bind the prober on a different address at the reflect port.
+    let a = echoing_edge_on("127.0.0.1", "gate1");
+    let port: u16 = a
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .trim_end_matches('/')
+        .parse()
+        .unwrap();
+    let _ = prober_on("127.0.0.3", port, "connected");
+    let url = format!("http://reflect.test:{port}/");
+
+    // Same vantage for both legs: refused, with the reason.
+    let same = netcheck(&[
+        "--reflect",
+        &url,
+        "--reflect-at",
+        "127.0.0.1",
+        "--port",
+        "22",
+        "--probe-at",
+        "127.0.0.1",
+    ]);
+    assert!(
+        same.contains("already contacted for reflect"),
+        "the obligation must be enforced, not documented: {same}"
+    );
+    assert!(!same.contains("port 22: connected"), "{same}");
+
+    // No probe vantage named at all.
+    let none = netcheck(&[
+        "--reflect",
+        &url,
+        "--reflect-at",
+        "127.0.0.1",
+        "--port",
+        "22",
+    ]);
+    assert!(none.contains("needs --probe-at"), "{none}");
+
+    // A distinct vantage is the legal shape, and measures.
+    let ok = netcheck(&[
+        "--reflect",
+        &url,
+        "--reflect-at",
+        "127.0.0.1",
+        "--port",
+        "22",
+        "--probe-at",
+        "127.0.0.3",
+    ]);
+    assert!(ok.contains("port 22: connected"), "{ok}");
+}
+
+/// A rate limit is silence, never a finding about the network. The prober
+/// limits per observed address (30/min by default), and rendering a 429 as
+/// `refused` would be a confidently wrong answer about someone's firewall.
+#[test]
+fn a_rate_limited_probe_is_not_measured_never_refused() {
+    let a = echoing_edge_on("127.0.0.1", "gate1");
+    let port: u16 = a
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .trim_end_matches('/')
+        .parse()
+        .unwrap();
+    let _ = prober_on("127.0.0.3", port, "429");
+    let url = format!("http://reflect.test:{port}/");
+
+    let text = netcheck(&[
+        "--reflect",
+        &url,
+        "--reflect-at",
+        "127.0.0.1",
+        "--port",
+        "22",
+        "--probe-at",
+        "127.0.0.3",
+    ]);
+    assert!(text.contains("inbound    not measured"), "{text}");
+    assert!(
+        text.contains("rate limited"),
+        "and it says which silence: {text}"
+    );
+    assert!(!text.contains("refused"), "never a finding: {text}");
+}

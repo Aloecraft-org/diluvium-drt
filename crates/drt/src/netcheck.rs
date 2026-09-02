@@ -168,6 +168,22 @@ pub struct Measurements {
     /// and why rather than leaving the reader to guess between a rate limit,
     /// a name that would not resolve, and an edge that is simply down.
     pub reflect_why: Vec<String>,
+    /// Every port the probe was asked about, in the order asked.
+    /// `inbound` is the one the verdict reads; this is what is rendered.
+    pub inbound_all: Vec<(u16, Inbound)>,
+    /// Why the inbound test did not happen. Most often the client
+    /// obligation below being unmeetable, which is a refusal to measure
+    /// rather than a failure to reach anything.
+    pub inbound_why: Option<String>,
+    /// An opaque blob a reflect edge handed over, carried to the probe and
+    /// never parsed.
+    ///
+    /// No minting exists yet. When it does it is one more query parameter
+    /// and the response shape is unchanged, so this slot is the whole cost
+    /// of being ready: a parser for `<expiry>:<address>` would couple DRT to
+    /// a format discofetch may rotate, which the 0.5.0 ask asked us not to
+    /// build.
+    pub probe_token: Option<String>,
     /// A vantage that saw a different address from the one already
     /// measured, rendered beside it.
     ///
@@ -328,6 +344,11 @@ impl Measurements {
         Some(ports.windows(2).all(|w| w[0] == w[1]))
     }
 }
+
+/// How many ports one run may ask about. The prober rate-limits per
+/// observed address (30/min by default) and a diagnostic that walks a range
+/// is the thing that limit exists for.
+pub const MAX_PROBE_PORTS: usize = 8;
 
 /// One row of the verdict table: a predicate, the verdict it selects, and
 /// the sentence that justifies it.
@@ -526,17 +547,23 @@ pub fn render_text(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
         out.push_str(&format!("  tcp map    {}{}\n", pairs.join(", "), label));
     }
 
-    match m.inbound {
-        Some((port, r)) => out.push_str(&format!(
-            "  inbound    port {}: {}\n",
-            port,
-            match r {
-                Inbound::Connected => "connected",
-                Inbound::Refused => "refused",
-                Inbound::Timeout => "timeout",
-            }
-        )),
-        None => out.push_str("  inbound    not measured (no inbound test in this build)\n"),
+    let name = |r: Inbound| match r {
+        Inbound::Connected => "connected",
+        Inbound::Refused => "refused",
+        Inbound::Timeout => "timeout",
+    };
+    if !m.inbound_all.is_empty() {
+        let each: Vec<String> = m
+            .inbound_all
+            .iter()
+            .map(|(p, r)| format!("port {p}: {}", name(*r)))
+            .collect();
+        out.push_str(&format!("  inbound    {}\n", each.join(", ")));
+    } else {
+        match &m.inbound_why {
+            Some(why) => out.push_str(&format!("  inbound    not measured ({why})\n")),
+            None => out.push_str("  inbound    not measured (no --port given)\n"),
+        }
     }
 
     out
@@ -550,7 +577,7 @@ pub fn render_text(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
 /// and is tested without it.
 #[cfg(feature = "stun")]
 pub mod gather {
-    use super::{EdgeView, Measurements, UdpMapping};
+    use super::{EdgeView, Inbound, Measurements, UdpMapping, MAX_PROBE_PORTS};
     use ego_transport::stun::{detect_mapping, NatMapping, ProbeConfig};
     use std::net::IpAddr;
 
@@ -656,6 +683,137 @@ pub mod gather {
     /// A failed STUN probe leaves `udp_mapping` as `None`, which `decide`
     /// reads as "not measured" and answers `relay` — the verdict that works
     /// on every network — rather than abstaining.
+    /// Ask a probe edge to connect back, filling [`Measurements::inbound`].
+    ///
+    /// **The client obligation, enforced rather than documented.**
+    /// `NETCHECK-SPEC.md` §3: the original design was asymmetric on purpose
+    /// -- *"request lands on one edge, SYN fires from the other"* -- and the
+    /// asymmetry was the safety property. A SYN from the address the caller
+    /// just contacted can traverse the mapping the caller's own request
+    /// created and return a false `connected`. With a prober on both gates
+    /// that hazard does not go away; avoiding it becomes the client's job.
+    ///
+    /// So the probe vantage must be one this run has **not** already
+    /// contacted for reflect, and a run that cannot establish two distinct
+    /// vantages reports `not measured` rather than trusting a same-edge
+    /// probe. `connected` is the only result that reaches [`Verdict::Direct`],
+    /// so a false one is the most expensive wrong answer available here.
+    ///
+    /// The token is carried and never parsed. No minting exists yet; when it
+    /// does it is one more opaque query parameter and the response shape is
+    /// unchanged, so nothing here has to know what it says.
+    pub async fn probe(
+        m: &mut Measurements,
+        reflect_url: &str,
+        probe_at: Option<&str>,
+        ports: &[u16],
+    ) {
+        if ports.is_empty() {
+            return;
+        }
+        let Some(url) = probe_url(reflect_url) else {
+            m.inbound_why = Some("the reflect url has no label to derive a probe host from".into());
+            return;
+        };
+        // Two distinct vantages, or nothing. `probe_at` names the probe's;
+        // every reflect view names one already contacted.
+        let Some(at) = probe_at else {
+            m.inbound_why = Some(
+                "no probe vantage named; --port needs --probe-at so the SYN comes from an edge \
+                 this run did not just contact"
+                    .into(),
+            );
+            return;
+        };
+        if m.tcp_views.iter().any(|v| v.dest.starts_with(at)) {
+            m.inbound_why = Some(format!(
+                "the probe would come from {at}, which this run already contacted for reflect; \
+                 a SYN from there can traverse the mapping our own request made"
+            ));
+            return;
+        }
+        if m.tcp_views.is_empty() {
+            m.inbound_why =
+                Some("no reflect edge answered, so there is no observed address to probe".into());
+            return;
+        }
+        let addresses = match crate::reflect::addresses_at(&url, &[at]) {
+            Ok(a) => a,
+            Err(why) => {
+                m.inbound_why = Some(why);
+                return;
+            }
+        };
+        let Some(dest) = addresses.first().copied() else {
+            m.inbound_why = Some(format!("'{at}' named no address"));
+            return;
+        };
+
+        // Sequential and bounded: the prober rate-limits per observed
+        // address (30/min by default), and a client that walks a range
+        // faster than a diagnostic needs is the thing that limit exists for.
+        for port in ports.iter().take(MAX_PROBE_PORTS) {
+            let query = match &m.probe_token {
+                Some(token) => format!("{url}?port={port}&token={token}"),
+                None => format!("{url}?port={port}"),
+            };
+            match crate::reflect::get(&query, dest, None).await {
+                Ok((body, _)) => match parse_probe(&body) {
+                    Ok(result) => m.inbound_all.push((*port, result)),
+                    Err(why) => {
+                        m.inbound_why.get_or_insert(why);
+                    }
+                },
+                // A rate limit is silence. Rendering it as a closed port
+                // would be a confidently wrong answer about the network,
+                // which is the one thing this module exists not to do.
+                Err(why) => {
+                    m.inbound_why.get_or_insert(format!("port {port}: {why}"));
+                }
+            }
+        }
+        // The verdict reads one result, and `connected` is the only one that
+        // can move it, so a connected port is the one to hand it.
+        m.inbound = m
+            .inbound_all
+            .iter()
+            .find(|(_, r)| matches!(r, Inbound::Connected))
+            .or(m.inbound_all.first())
+            .copied();
+    }
+
+    /// `reflect.discofetch.link` -> `reflect--probe.discofetch.link`.
+    ///
+    /// The `<label>--probe` shape is the prober's, and the same one the zone
+    /// and mail pullers use (`deploy/probe/README.md`).
+    fn probe_url(reflect_url: &str) -> Option<String> {
+        let (scheme, rest) = reflect_url.split_once("://")?;
+        let (authority, _) = rest.split_once('/').unwrap_or((rest, ""));
+        let (host, port) = match authority.rsplit_once(':') {
+            Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) && !p.is_empty() => {
+                (h, format!(":{p}"))
+            }
+            _ => (authority, String::new()),
+        };
+        let (label, domain) = host.split_once('.')?;
+        if label.is_empty() {
+            return None;
+        }
+        Some(format!("{scheme}://{label}--probe.{domain}{port}/"))
+    }
+
+    fn parse_probe(body: &str) -> Result<Inbound, String> {
+        let json: serde_json::Value =
+            serde_json::from_str(body).map_err(|_| "the prober did not answer JSON".to_string())?;
+        match json.get("result").and_then(|v| v.as_str()) {
+            Some("connected") => Ok(Inbound::Connected),
+            Some("refused") => Ok(Inbound::Refused),
+            Some("timeout") => Ok(Inbound::Timeout),
+            Some(other) => Err(format!("the prober answered result {other:?}")),
+            None => Err("the prober answered without a result".into()),
+        }
+    }
+
     /// Ask each reflect edge what it saw, filling [`Measurements::tcp_views`]
     /// and — where STUN did not already answer — the observed address.
     ///
@@ -738,6 +896,9 @@ pub mod gather {
                             Some(_) => {}
                         }
                     }
+                    if view.token.is_some() {
+                        m.probe_token = view.token.clone();
+                    }
                     m.tcp_views.push(EdgeView {
                         edge: view.edge,
                         port: view.port,
@@ -764,6 +925,7 @@ pub mod gather {
         edge: String,
         port: Option<u16>,
         address: Option<IpAddr>,
+        token: Option<String>,
     }
 
     async fn one_edge(
@@ -787,6 +949,13 @@ pub mod gather {
             .get("address")
             .and_then(|v| v.as_str())
             .and_then(|a| a.parse::<IpAddr>().ok());
+        // An opaque blob, if the edge ever hands one over. Read as text and
+        // never parsed: the shape is discofetch's to change.
+        let token = observed
+            .get("token")
+            .or_else(|| json.get("token"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         // The edge names itself; where it does not, the URL is the only
         // honest name for the vantage and is better than inventing one.
         let edge = observed
@@ -799,6 +968,7 @@ pub mod gather {
                 edge,
                 port,
                 address,
+                token,
             },
             used_port,
         ))
@@ -1201,6 +1371,42 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(one.tcp_agrees(), None);
+    }
+
+    /// `direct` was unreachable from the CLI in v0.4.0 — the verdict that
+    /// requires an inbound connect, with no flag that could produce one.
+    /// `--port` is what closes that, so this asserts the whole path the
+    /// verdict now has.
+    #[test]
+    fn an_inbound_connect_on_a_public_address_reaches_direct() {
+        let m = Measurements {
+            observed_address: public_v4(),
+            inbound: Some((22, Inbound::Connected)),
+            inbound_all: vec![(22, Inbound::Connected)],
+            ..Default::default()
+        };
+        assert_eq!(decide(&m).0, Verdict::Direct);
+        let (v, why) = decide(&m);
+        assert!(render_text(&m, v, why).contains("inbound    port 22: connected"));
+
+        // Refused and timeout match no rule, so they cannot inflate a
+        // verdict — only `connected` can, and only behind a public address.
+        for r in [Inbound::Refused, Inbound::Timeout] {
+            let closed = Measurements {
+                inbound: Some((22, r)),
+                inbound_all: vec![(22, r)],
+                ..m.clone()
+            };
+            assert_ne!(decide(&closed).0, Verdict::Direct);
+        }
+
+        // And a connect observed against a private address means the prober
+        // shares our network, which is not reachability from the internet.
+        let private = Measurements {
+            observed_address: Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5))),
+            ..m.clone()
+        };
+        assert_ne!(decide(&private).0, Verdict::Direct);
     }
 
     /// The guard on `tcp_agrees`: two views must be two *destinations*.

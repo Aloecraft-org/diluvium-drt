@@ -128,6 +128,35 @@ releases:
         port and edge together, so it is one request rather than two, and
         two requests would be two connections reporting two source ports.
       - |
+        **`drt netcheck --port <n>`, experimental, and `direct` is
+        reachable at last.** The verdict that requires an inbound connect
+        had no flag in v0.4.0 that could produce one. `--port` asks a probe
+        edge to connect back to the address it observes and reports
+        `connected` / `refused` / `timeout`, against the contract
+        `deploy/probe/test-probe.sh` already tests. Repeatable, sequential,
+        bounded at 8 — the prober rate-limits per observed address and a
+        diagnostic that walks a range is what that limit is for.
+
+        **The client obligation is enforced, not documented.**
+        `NETCHECK-SPEC.md` §3: with a prober on both gates, the asymmetry
+        that made the probe safe becomes the client's job, because a SYN
+        from an address the caller just contacted can traverse the mapping
+        the caller's own request created and answer `connected` when
+        nothing out there can reach them. So `--probe-at` names a vantage,
+        and a probe from an edge this run already used for reflect is
+        **refused by name** rather than trusted. `connected` is the only
+        result that reaches `direct`, whose advice is "forward the port",
+        so a false one is the most expensive answer this tool can give.
+
+        A 429 is silence: rate-limited reads `not measured`, never
+        `refused`. And the token is a slot, carried and never parsed — no
+        minting exists, and when it does it is one more query parameter
+        with the response shape unchanged, so a parser for it would only
+        couple DRT to a format discofetch may rotate.
+
+        Experimental because the server half is not deployed: the prober is
+        not on gate2 yet.
+      - |
         **`rest` sent no `User-Agent`, which Cloudflare blocks.**
         `api.discofetch.net` is behind Cloudflare, whose rule 1010 refuses
         unidentified client signatures — so a guest calling that API got an
