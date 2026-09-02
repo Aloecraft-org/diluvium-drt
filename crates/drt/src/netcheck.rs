@@ -626,7 +626,6 @@ mod tests {
         assert_ne!(decide(&m).0, Verdict::Direct);
     }
 
-    #[test]
     /// Both shapes a real machine with routable IPv6 produced, and both
     /// were wrong before. This is the tree being corrected by a network
     /// rather than by an argument, which is what the module header says
@@ -676,6 +675,7 @@ mod tests {
         assert_eq!(decide(&cgnat_with_v6).0, Verdict::Relay);
     }
 
+    #[test]
     fn every_rule_is_reachable() {
         // A table whose row never fires is a row nobody maintains. Each
         // verdict must be selectable by some measurement set; this fails
