@@ -361,7 +361,9 @@ pub fn render_text(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
             a,
             if m.is_cgnat() { " (CGNAT)" } else { "" }
         )),
-        None => out.push_str("  address    not measured (no reflect edge answered)\n"),
+        None => {
+            out.push_str("  address    not measured (no STUN server or reflect edge answered)\n")
+        }
     }
 
     match m.routable_v6 {
@@ -434,6 +436,7 @@ pub fn render_text(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
 pub mod gather {
     use super::{Measurements, UdpMapping};
     use ego_transport::stun::{detect_mapping, NatMapping, ProbeConfig};
+    use std::net::IpAddr;
 
     /// Ask two or more STUN servers what they see of **one** socket, and
     /// classify the mapping.
@@ -444,7 +447,31 @@ pub mod gather {
     /// servers rather than guessing — so a caller that supplies one gets an
     /// error here and "not measured" in the evidence, never a confident
     /// wrong answer.
-    pub async fn udp_mapping(servers: &[&str]) -> Result<(UdpMapping, Vec<(String, u16)>), String> {
+    /// The reflexive address every probe agreed on, or `None`.
+    ///
+    /// STUN's entire job is telling a caller the address the world sees, and
+    /// this was being thrown away: only `.port()` was kept, `observed_address`
+    /// stayed `None`, and the evidence line said "no reflect edge answered"
+    /// while a STUN server had just answered exactly that question.
+    ///
+    /// That mattered far more than a missing line. [`Measurements::is_cgnat`]
+    /// reads `observed_address`, and the CGNAT rule is the one that outranks
+    /// every other — so in the only configuration this build supports, the
+    /// highest-priority rule in the table could never fire, and a machine
+    /// behind a carrier NAT was told `punchable`.
+    ///
+    /// **Only when every probe agrees.** Two servers reporting different
+    /// addresses means different egress paths, and picking one would be a
+    /// guess about which. This module does not guess.
+    fn agreed_address(report: &ego_transport::stun::MappingReport) -> Option<IpAddr> {
+        let mut seen = report.probes.iter().map(|p| p.reflexive.ip());
+        let first = seen.next()?;
+        seen.all(|a| a == first).then_some(first)
+    }
+
+    pub async fn udp_mapping(
+        servers: &[&str],
+    ) -> Result<(UdpMapping, Vec<(String, u16)>, Option<IpAddr>), String> {
         if servers.len() < 2 {
             return Err(format!(
                 "classifying a NAT mapping needs two servers on separate addresses; {} given",
@@ -467,7 +494,7 @@ pub mod gather {
             .zip(report.probes.iter())
             .map(|(s, p)| ((*s).to_string(), p.reflexive.port()))
             .collect();
-        Ok((mapping, ports))
+        Ok((mapping, ports, agreed_address(&report)))
     }
 
     /// A routable IPv6 address on a local interface, if there is one.
@@ -516,9 +543,13 @@ pub mod gather {
     pub async fn local_and_udp(m: &mut Measurements, stun_servers: &[&str]) {
         m.routable_v6 = routable_v6();
         match udp_mapping(stun_servers).await {
-            Ok((mapping, ports)) => {
+            Ok((mapping, ports, address)) => {
                 m.udp_mapping = Some(mapping);
                 m.udp_ports = ports;
+                // Only when a caller has not already supplied one: a reflect
+                // edge is the richer source (it sees the TCP path too), so it
+                // wins where both exist.
+                m.observed_address = m.observed_address.or(address);
             }
             // Kept, not discarded. This used to be `if let Ok(..)`, and the
             // reason the decisive probe failed went nowhere -- so a run
@@ -775,6 +806,44 @@ mod tests {
         let silent = Measurements::default();
         let (v, why) = decide(&silent);
         assert!(render_text(&silent, v, why).contains("udp map    not measured\n"));
+    }
+
+    /// The CGNAT rule outranks everything, and until STUN's own answer was
+    /// kept it could not fire at all in the only configuration this build
+    /// supports — so a machine behind a carrier NAT was told `punchable`,
+    /// which is the single most consequential wrong answer this tool can
+    /// give. It is what the whole verdict table is ordered around.
+    #[test]
+    fn a_cgnat_address_from_stun_alone_is_relay_not_punchable() {
+        // Exactly the shape a STUN-only run now produces: an endpoint-
+        // independent mapping — which on its own reads `punchable` — and
+        // the reflexive address the same probes reported.
+        let behind_cgnat = Measurements {
+            observed_address: cgnat_v4(),
+            udp_mapping: Some(UdpMapping::Independent),
+            ..Default::default()
+        };
+        assert_eq!(decide(&behind_cgnat).0, Verdict::Relay);
+        assert!(behind_cgnat.is_cgnat());
+
+        // The same mapping on a public address is genuinely punchable, so
+        // the assertion above is measuring CGNAT and not refusing all
+        // independent mappings.
+        let public = Measurements {
+            observed_address: public_v4(),
+            udp_mapping: Some(UdpMapping::Independent),
+            ..Default::default()
+        };
+        assert_eq!(decide(&public).0, Verdict::Punchable);
+
+        // And the address is now a measurement, so a STUN-only run reports
+        // success rather than "nothing could be asked".
+        assert!(behind_cgnat.probed_anything());
+        let rendered = {
+            let (v, why) = decide(&behind_cgnat);
+            render_text(&behind_cgnat, v, why)
+        };
+        assert!(rendered.contains("(CGNAT)"), "{rendered}");
     }
 
     #[test]

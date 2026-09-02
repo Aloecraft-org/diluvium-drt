@@ -47,8 +47,13 @@ the evidence printed underneath it. `udp map` is the decisive line; if
 `udp map` says `endpoint-independent` and the verdict says `relay`, or
 the reverse, the table is wrong and I want the block that produced it.
 
-**A non-failure that will look like one:** `address`, `tcp map` and
-`inbound` all say `not measured` on every network. That is correct for
+**`address` is filled by STUN now**, so a two-server run reports the address
+the world sees — and with it, whether you are behind CGNAT. That is the
+answer §7 of the discofetch ask wants from the XPS, and it no longer waits
+on the reflect edge.
+
+**A non-failure that will look like one:** `tcp map` and `inbound` say
+`not measured` on every network. That is correct for
 this build — they are the reflect edges' half and there is no edge to
 ask. `09-netcheck/README.md` says so.
 

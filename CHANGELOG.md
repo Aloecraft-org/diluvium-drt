@@ -78,6 +78,26 @@ is still ahead. See known issues.
 
 ### Fixed
 
+- **`netcheck` threw away the address STUN gave it, so the CGNAT rule
+  could never fire.** `detect_mapping` returns each probe's reflexive
+  address and only `.port()` was kept. `observed_address` stayed
+  `None`, the evidence line read "no reflect edge answered" while a
+  STUN server had just answered exactly that question — and
+  `is_cgnat()` reads `observed_address`.
+
+  CGNAT is the rule that outranks every other in the table, so in the
+  only configuration this build supports it could not fire at all: a
+  machine behind a carrier NAT with an endpoint-independent mapping
+  was told `punchable`, which is the most consequential wrong answer
+  this tool can give. The whole table is ordered around that rule.
+
+  The address is now taken from STUN when every probe agrees, and
+  only then — two servers reporting different addresses means
+  different egress paths, and picking one would be a guess. A reflect
+  edge still wins where both exist, because it sees the TCP path too.
+
+  The practical consequence: one two-server run now answers "is this
+  network behind CGNAT", with no reflect edge and no TLS stack.
 - **`netcheck`'s exit status called a run successful when nothing had
   been asked of the network.** The rule was "fail only if there is no
   UDP mapping *and* no routable v6" -- but `routable_v6()` reads the

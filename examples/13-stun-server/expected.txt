@@ -2,7 +2,7 @@ punchable — the UDP mapping is endpoint-independent, so the address a STUN ser
   use: use a rendezvous; peers will connect to you directly
 
 evidence
-  address    not measured (no reflect edge answered)
+  address    127.0.0.1
   v6         <v6, this machine's>
   udp map    <port> (127.0.0.1:34780), <port> (127.0.0.1:34781)  independent
   tcp map    not measured

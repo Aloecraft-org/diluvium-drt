@@ -23,7 +23,7 @@ relay — the UDP mapping could not be measured, and relay is the answer that wo
   use: use a tunnel
 
 evidence
-  address    not measured (no reflect edge answered)
+  address    not measured (no STUN server or reflect edge answered)
   v6         <v6, this machine's>
   udp map    not measured (classifying a NAT mapping needs two servers on separate addresses; 0 given)
   tcp map    not measured
