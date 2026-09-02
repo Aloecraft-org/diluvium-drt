@@ -707,6 +707,17 @@ async fn fetch(
     if url.tls {
         let mut roots = tokio_rustls::rustls::RootCertStore::empty();
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        // `builder()` resolves the crypto provider from rustls's own enabled
+        // features and panics if more than one is on. Checked, not assumed:
+        // `cargo tree -e features -i rustls` shows exactly `ring`, `std`,
+        // `tls12` on this workspace. `aws-lc-rs` IS in the graph -- russh
+        // pulls it -- but not as a rustls provider feature, so there is no
+        // ambiguity to resolve and no panic to hit.
+        //
+        // It would become one the moment something enables rustls's
+        // `aws-lc-rs` feature, and the failure would be a runtime panic in a
+        // shipped connector rather than a build error. If that ever happens,
+        // the fix is `builder_with_provider(ring::default_provider())`.
         let config = tokio_rustls::rustls::ClientConfig::builder()
             .with_root_certificates(roots)
             .with_no_client_auth();
@@ -756,7 +767,18 @@ async fn exchange<S: AsyncReadExt + AsyncWriteExt + Unpin>(
     let Some((status, headers, consumed)) = head.or(parse_head(&buf)?) else {
         return Err("status: the response head never completed".into());
     };
-    let body = buf[consumed.min(buf.len())..].to_vec();
+    let raw = &buf[consumed.min(buf.len())..];
+    // A chunked response is framing, not content. `connection: close` makes
+    // read-to-EOF terminate, which is why this went unnoticed -- the bytes
+    // all arrive, and then the guest is handed the chunk headers along with
+    // them: `5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n` instead of
+    // "hello world", answered `ok`. A server may choose chunked for any
+    // response and it is the only way to answer without knowing the length
+    // in advance, so this is not an exotic path.
+    let chunked = headers
+        .iter()
+        .any(|(n, v)| n == "transfer-encoding" && v.to_ascii_lowercase().contains("chunked"));
+    let body = if chunked { dechunk(raw)? } else { raw.to_vec() };
     if body.len() > limits::MAX_BODY {
         return Err("too_large".into());
     }
@@ -765,6 +787,52 @@ async fn exchange<S: AsyncReadExt + AsyncWriteExt + Unpin>(
         headers,
         body,
     })
+}
+
+// depth: chunked transfer decoding (RFC 9112 §7.1)
+//
+// Deliberately strict. A frame this cannot read is an error rather than a
+// best-effort salvage, because the failure being fixed here is exactly a
+// body that looked fine and was not -- answering half a decode with `ok`
+// would be the same bug wearing a different hat. Trailers are read and
+// discarded: they are headers, the head is already parsed, and admitting a
+// second header block after the bounds were applied would let a response
+// past `RESP_HDRS`.
+fn dechunk(mut raw: &[u8]) -> Result<Vec<u8>, String> {
+    fn line(raw: &[u8]) -> Option<(&[u8], &[u8])> {
+        let at = raw.windows(2).position(|w| w == b"\r\n")?;
+        Some((&raw[..at], &raw[at + 2..]))
+    }
+    let mut out = Vec::new();
+    loop {
+        let Some((head, rest)) = line(raw) else {
+            return Err("chunked: a chunk header never ended".into());
+        };
+        // `size` may carry chunk extensions after a `;`, which are ignored.
+        let size_text = match head.iter().position(|&b| b == b';') {
+            Some(at) => &head[..at],
+            None => head,
+        };
+        let size_text = std::str::from_utf8(size_text)
+            .map_err(|_| "chunked: a chunk size was not text".to_string())?
+            .trim();
+        let size = usize::from_str_radix(size_text, 16)
+            .map_err(|_| format!("chunked: '{size_text}' is not a chunk size"))?;
+        if size == 0 {
+            return Ok(out);
+        }
+        if out.len() + size > limits::MAX_BODY {
+            return Err("too_large".into());
+        }
+        if rest.len() < size + 2 {
+            return Err("chunked: a chunk was shorter than its size".into());
+        }
+        out.extend_from_slice(&rest[..size]);
+        if &rest[size..size + 2] != b"\r\n" {
+            return Err("chunked: a chunk did not end where its size said".into());
+        }
+        raw = &rest[size + 2..];
+    }
 }
 
 #[cfg(test)]
@@ -1183,6 +1251,94 @@ mod tests {
         let c = RestConnector::new();
         let e = c.call("rest/put", None, None).await.unwrap_err();
         assert!(e.0.contains("is not a rest call"), "{}", e.0);
+    }
+
+    /// Chunked responses were handed to the guest as framing.
+    ///
+    /// `exchange` read to EOF and took everything after the head verbatim,
+    /// so a chunked body arrived as `5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n`
+    /// — answered `ok`. The same silent-corruption shape as the SQL
+    /// transaction bug: every layer above believes the reply.
+    ///
+    /// Reproduced against a real socket before this was written; these pin
+    /// the decoder itself, including the frames it must refuse rather than
+    /// salvage, because a half-decode answered `ok` is the bug again.
+    #[test]
+    fn chunked_bodies_are_decoded_and_bad_frames_refused() {
+        assert_eq!(
+            dechunk(b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n").unwrap(),
+            b"hello world"
+        );
+
+        // A single chunk, and the empty body, which is a bare terminator.
+        assert_eq!(dechunk(b"3\r\nabc\r\n0\r\n\r\n").unwrap(), b"abc");
+        assert_eq!(dechunk(b"0\r\n\r\n").unwrap(), b"");
+
+        // Chunk extensions after `;` are ignored, per RFC 9112.
+        assert_eq!(
+            dechunk(b"3;name=value\r\nabc\r\n0\r\n\r\n").unwrap(),
+            b"abc"
+        );
+
+        // Hex, and upper case hex, because a size is base 16 and servers
+        // differ on case. 16 bytes.
+        assert_eq!(
+            dechunk(b"10\r\n0123456789abcdef\r\n0\r\n\r\n")
+                .unwrap()
+                .len(),
+            16
+        );
+        assert_eq!(dechunk(b"A\r\n0123456789\r\n0\r\n\r\n").unwrap().len(), 10);
+
+        // Trailers after the terminator are read and discarded: the head is
+        // already parsed and bounded, and a second header block arriving
+        // here would slip past RESP_HDRS.
+        assert_eq!(
+            dechunk(b"3\r\nabc\r\n0\r\nx-trailer: v\r\n\r\n").unwrap(),
+            b"abc"
+        );
+
+        // And the refusals. Each of these used to be handed to the guest as
+        // a body with `ok` beside it.
+        for bad in [
+            &b"3\r\nab\r\n0\r\n\r\n"[..],   // shorter than its size
+            &b"3\r\nabcX0\r\n\r\n"[..],     // no CRLF where the size said
+            &b"zz\r\nabc\r\n0\r\n\r\n"[..], // not a hex size
+            &b"3\r\nabc\r\n"[..],           // truncated: no terminator
+            &b"3"[..],                      // a header that never ended
+        ] {
+            assert!(
+                dechunk(bad).is_err(),
+                "must refuse rather than salvage: {:?}",
+                String::from_utf8_lossy(bad)
+            );
+        }
+    }
+
+    /// A response that is not chunked is untouched, so the decoder cannot
+    /// corrupt the ordinary path.
+    #[tokio::test]
+    async fn a_content_length_body_is_not_dechunked() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut scratch = [0u8; 1024];
+            let _ = sock.read(&mut scratch).await;
+            sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 11\r\n\r\nhello world")
+                .await
+                .unwrap();
+        });
+        let sock = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        let r = exchange(
+            sock,
+            b"GET / HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.body, b"hello world");
     }
 
     /// The v0.4.0 bug, kept red-able.

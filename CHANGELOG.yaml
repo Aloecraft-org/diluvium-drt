@@ -129,6 +129,28 @@ releases:
         the unknown verb, and both halves of FM-3.
     fixed:
       - |
+        **The `rest` connector handed chunked responses to the guest as
+        framing.** `exchange` read to EOF and took everything after the head
+        verbatim, so a `transfer-encoding: chunked` response arrived as
+
+            5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n
+
+        where the body was `hello world` — and it was answered `ok`. The
+        same silent-corruption shape as the SQL transaction bug: every layer
+        above believes the reply.
+
+        Not an exotic path. A server may choose chunked for any response and
+        it is the only way to answer without knowing the length in advance,
+        which is what nginx does for anything dynamic. `connection: close`
+        is why it went unnoticed — read-to-EOF terminates, so all the bytes
+        arrive and only their framing is wrong.
+
+        The decoder refuses a frame it cannot read rather than salvaging
+        it: a half-decode answered `ok` would be the same bug wearing a
+        different hat. Reproduced against a real socket before the fix, and
+        pinned by tests covering extensions, upper-case hex sizes, trailers
+        and five malformed frames.
+      - |
         **`netcheck` threw away the address STUN gave it, so the CGNAT rule
         could never fire.** `detect_mapping` returns each probe's reflexive
         address and only `.port()` was kept. `observed_address` stayed
