@@ -153,6 +153,26 @@ releases:
         vantage**, which is discofetch's fetch2 and a box not yet bought.
         This is the DRT half, finished and tested against two local edges
         that echo the source port they saw.
+
+        With one edge it still answers a question worth asking first: name
+        that edge **twice** and the run says whether the NAT held its
+        mapping across two sequential connections. If it did not, the
+        two-edge comparison can never answer `independent` whatever the NAT
+        really does — so a second vantage would buy nothing, which is worth
+        knowing before buying a box.
+      - |
+        **`tcp_agrees()` called two views of ONE edge an
+        endpoint-comparison.** Endpoint-independent means the same external
+        port regardless of *destination*, and two connections to one
+        destination reusing a mapping is what every NAT does — symmetric
+        ones included. So `--reflect URL --reflect URL`, one name typed
+        twice, answered `independent`: a symmetric NAT told that it punches,
+        which is the most consequential wrong answer this tool can give,
+        reached by an obvious command.
+
+        The comparison now requires two *distinct* edges. The same-edge run
+        is not discarded but renamed: it measures whether the mapping held,
+        which is the precondition for the two-edge test ever working.
       - |
         **`tcp_agrees()` called two vantages a comparison, which they are
         not.** Each reflect fetch is its own TCP connection with its own

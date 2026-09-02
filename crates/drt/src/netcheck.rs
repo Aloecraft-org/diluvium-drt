@@ -262,6 +262,51 @@ impl Measurements {
         if !self.tcp_same_source_port {
             return None;
         }
+        // And it must be two *destinations*. Endpoint-independent means the
+        // same external port regardless of where you are going, so two
+        // connections to the SAME edge measure nothing about it -- every
+        // NAT, symmetric ones included, ordinarily reuses a mapping for a
+        // second connection to a destination it already has one for.
+        //
+        // Reachable by an obvious command: `--reflect URL --reflect URL`
+        // with one name typed twice, which answered `independent` and would
+        // have told a symmetric NAT it punches. What that run really
+        // measures is [`tcp_mapping_stable`](Self::tcp_mapping_stable).
+        let mut edges: Vec<&str> = self.tcp_views.iter().map(|v| v.edge.as_str()).collect();
+        edges.sort_unstable();
+        edges.dedup();
+        if edges.len() < 2 {
+            return None;
+        }
+        let ports: Vec<u16> = self.tcp_views.iter().filter_map(|v| v.port).collect();
+        if ports.len() < 2 {
+            return None;
+        }
+        Some(ports.windows(2).all(|w| w[0] == w[1]))
+    }
+
+    /// Whether one edge, asked twice from one pinned source port, saw the
+    /// same external port both times.
+    ///
+    /// A different question from [`tcp_agrees`](Self::tcp_agrees) and a
+    /// useful one on its own: it says whether the NAT holds a mapping
+    /// across two sequential connections at all. If it does not — a fresh
+    /// external port for every connection, even to the same destination —
+    /// then the two-edge comparison can *never* answer `independent`
+    /// whatever the NAT's real mapping behaviour is, and standing up a
+    /// second vantage to run it would buy nothing.
+    ///
+    /// So it is worth measuring before there is a second edge, with one.
+    pub fn tcp_mapping_stable(&self) -> Option<bool> {
+        if !self.tcp_same_source_port {
+            return None;
+        }
+        let mut edges: Vec<&str> = self.tcp_views.iter().map(|v| v.edge.as_str()).collect();
+        edges.sort_unstable();
+        edges.dedup();
+        if edges.len() != 1 {
+            return None;
+        }
         let ports: Vec<u16> = self.tcp_views.iter().filter_map(|v| v.port).collect();
         if ports.len() < 2 {
             return None;
@@ -450,6 +495,15 @@ pub fn render_text(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
             // Two vantages over two connections is still not a comparison,
             // and saying so is the difference between this line and a wrong
             // answer about the network.
+            // One edge asked more than once is a different measurement, and
+            // it is the one that says whether a second edge would be worth
+            // standing up.
+            None if m.tcp_mapping_stable() == Some(true) => {
+                "  one edge twice: the mapping held (a second vantage would measure something)"
+            }
+            None if m.tcp_mapping_stable() == Some(false) => {
+                "  one edge twice: the mapping CHANGED, so no two-edge comparison can succeed here"
+            }
             None if m.tcp_views.len() > 1 => {
                 "  (separate connections, so separate source ports; not a comparison)"
             }
@@ -1086,6 +1140,72 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(one.tcp_agrees(), None);
+    }
+
+    /// The guard on `tcp_agrees`: two views must be two *destinations*.
+    #[test]
+    fn two_views_of_one_edge_are_not_an_endpoint_comparison() {
+        let twice = |edge: &str| Measurements {
+            tcp_same_source_port: true,
+            tcp_views: vec![
+                EdgeView {
+                    edge: edge.into(),
+                    port: Some(51823),
+                },
+                EdgeView {
+                    edge: edge.into(),
+                    port: Some(51823),
+                },
+            ],
+            ..Default::default()
+        };
+        let same = twice("gate1");
+        assert_eq!(
+            same.tcp_agrees(),
+            None,
+            "one destination says nothing about endpoint-independence"
+        );
+        assert_eq!(
+            same.tcp_mapping_stable(),
+            Some(true),
+            "but it does say the mapping held"
+        );
+
+        // A mapping that changed between two connections to one destination
+        // means no two-edge comparison can ever succeed here.
+        let moved = Measurements {
+            tcp_views: vec![
+                EdgeView {
+                    edge: "gate1".into(),
+                    port: Some(51823),
+                },
+                EdgeView {
+                    edge: "gate1".into(),
+                    port: Some(51999),
+                },
+            ],
+            ..twice("gate1")
+        };
+        assert_eq!(moved.tcp_agrees(), None);
+        assert_eq!(moved.tcp_mapping_stable(), Some(false));
+
+        // Two distinct edges are the measurement, and stability is then not
+        // the question being asked.
+        let two = Measurements {
+            tcp_views: vec![
+                EdgeView {
+                    edge: "gate1".into(),
+                    port: Some(51823),
+                },
+                EdgeView {
+                    edge: "fetch2".into(),
+                    port: Some(51823),
+                },
+            ],
+            ..twice("gate1")
+        };
+        assert_eq!(two.tcp_agrees(), Some(true));
+        assert_eq!(two.tcp_mapping_stable(), None);
     }
 
     /// An edge that did not answer says why, on the line where its absence

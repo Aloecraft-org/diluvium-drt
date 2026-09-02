@@ -80,6 +80,42 @@ fn pinning_the_source_port_is_what_makes_two_edges_a_comparison() {
     assert_eq!(ports[0], ports[1], "one source port, seen twice: {pinned}");
 }
 
+/// One edge named twice is not a comparison, and used to say it was.
+///
+/// Endpoint-independent means the same external port regardless of
+/// *destination*. Two connections to one destination reusing a mapping is
+/// what every NAT does, symmetric ones included — so `--reflect URL
+/// --reflect URL`, one name typed twice, answered `independent` and would
+/// have told a symmetric NAT that it punches. That is the most consequential
+/// wrong answer this tool can give, reached by an obvious command.
+///
+/// What the run really measures is whether the mapping held, which is worth
+/// knowing on its own: if it did not, no two-edge comparison can ever
+/// succeed on this network and standing up a second vantage buys nothing.
+#[test]
+fn one_edge_asked_twice_is_a_stability_check_not_a_comparison() {
+    let a = echoing_edge("gate1");
+    let text = netcheck(&["--pin-source-port", "--reflect", &a, "--reflect", &a]);
+    assert!(
+        !text.contains("independent (pinned"),
+        "two views of ONE destination say nothing about endpoint-independence: {text}"
+    );
+    assert!(!text.contains("per-destination"), "{text}");
+    assert!(
+        text.contains("one edge twice: the mapping held"),
+        "and it is a real measurement, so it says what it found: {text}"
+    );
+
+    // Two genuinely different edges still compare, so the guard is about
+    // distinct destinations rather than refusing everything.
+    let b = echoing_edge("fetch2");
+    let both = netcheck(&["--pin-source-port", "--reflect", &a, "--reflect", &b]);
+    assert!(
+        both.contains("independent (pinned source port, sequential)"),
+        "{both}"
+    );
+}
+
 /// Pinning with one edge measures nothing, and must not claim otherwise.
 #[test]
 fn pinning_one_edge_is_still_one_vantage() {

@@ -184,6 +184,31 @@ nothing. What you are checking is that it did not say
 `could not leave from port N`, which is a bind that failed and the one
 platform difference that would sink this.
 
+**The pre-flight, and it answers a purchasing question.** Name the one edge
+you have **twice**:
+
+```sh
+drt netcheck --pin-source-port \
+  --reflect https://reflect.discofetch.link/ \
+  --reflect https://reflect.discofetch.link/
+```
+
+Two connections from one source port to one destination. This says nothing
+about endpoint-independence — every NAT reuses a mapping for a second
+connection to a destination it already has one for — but it says whether
+the mapping **held**, and that is the precondition for the two-edge test:
+
+- `the mapping held (a second vantage would measure something)` — good.
+  When fetch2 exists, the comparison will produce an answer.
+- `the mapping CHANGED, so no two-edge comparison can succeed here` — this
+  network assigns a fresh external port per connection, so the two-edge run
+  can never answer `independent` whatever the NAT really does. **Standing up
+  a second vantage would buy nothing on this network**, and that is worth
+  knowing before buying a box.
+
+Worth running from the XPS at your parents' as well as the laptop: it is
+the CGNAT case, and it is the one where the answer might differ.
+
 **And what the two-edge measurement will say, once fetch2 exists.** With
 two reflect names:
 
