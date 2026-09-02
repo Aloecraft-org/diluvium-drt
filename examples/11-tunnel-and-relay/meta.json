@@ -1,7 +1,8 @@
 {
   "name": "11-tunnel-and-relay",
-  "teaches": "The rendezvous relay and drt tunnel: a machine with no inbound address parks an outbound WSS leg by label, a caller opens a second one, and the relay splices them so ssh rides over the top. The two lines that run without a second machine are refusals — tunnel naming its three shapes, and a relay refusing a blank key at load, before anything listens.",
+  "teaches": "The rendezvous relay and drt tunnel: a machine with no inbound address parks an outbound WSS leg by label, a caller opens a second one, and the relay splices them so ssh rides over the top. The two lines that run without a second machine are refusals \u2014 tunnel naming its three shapes, and a relay refusing a blank key at load, before anything listens.",
   "cmd": "echo '$ drt tunnel'; drt tunnel; echo \"exit $?\"; echo; echo '$ drt relay --config rendezvous.host.lua'; drt relay --config rendezvous.host.lua; echo \"exit $?\"",
   "needs_network": false,
+  "needs_build": "full",
   "normalise": []
 }

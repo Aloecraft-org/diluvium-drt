@@ -19,7 +19,8 @@ version: 0.4.0
 profile: full
 dv_abi: 1
 dv_abi_expected: 1
-connectors: time,fs,crypto,sql,ssh,rest,listen
+diluvium: f137b308c4dce917b24c71ab41add61606945e58
+connectors: time,fs,crypto,sql,ssh,rest,ssmtp,listen
 verbs: buildinfo,netcheck,ps,relay,repl,run,start,stun,tunnel
 ```
 
@@ -34,6 +35,11 @@ same content on one line, which is the form a deploy script reads.
 - **`connectors` is what *can* be wired, not what is running.** A config
   turns them on one at a time, and a connector missing from this line cannot
   be wired at any grant, whatever the config says.
+- **`diluvium`** — the git revision of the language core inside. A
+  revision, not a version: the core exposes no version string, and what has
+  actually mattered between the two — whether a named defect is present —
+  is a revision fact. This is what a package's `requires.diluvium` is
+  checked against.
 - **`dv_abi` against `dv_abi_expected`** — the diluvium ABI this binary
   speaks, and the one it was built against. When those two differ, fix that
   before reading any other error.

@@ -3,5 +3,6 @@
   "teaches": "The rest connector's scope is an origin allowlist, and a URL outside it is refused by name before an address is looked up or a socket is opened.",
   "cmd": "drt run --config allowlist.json",
   "needs_network": false,
+  "needs_build": "full",
   "normalise": []
 }

@@ -1,0 +1,8 @@
+{
+  "name": "15-sending-mail",
+  "teaches": "The ssmtp connector's scope holds the relay, the credential and the sender, so a program sends mail without ever holding the password and cannot choose who the mail is from. Recipients are an allowlist; a header carrying a newline is refused.",
+  "cmd": "./demo.sh",
+  "needs_network": false,
+  "needs_build": "full",
+  "normalise": []
+}

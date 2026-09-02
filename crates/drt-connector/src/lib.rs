@@ -55,6 +55,25 @@ pub trait Connector: Send + Sync {
         args: Option<rmpv::Value>,
         scope: Option<&Scope>,
     ) -> CallResult;
+
+    /// Last call before the process goes away. A connector holding state
+    /// that outlives a hostcall says here whether that state ended well,
+    /// and each string it returns is one thing that did not.
+    ///
+    /// It exists because of `sql`. Its handles are cached across calls, so a
+    /// guest can open a transaction in one hostcall and never close it, and
+    /// SQLite's own behaviour on a dropped connection is to roll back --
+    /// correctly, silently, with the writes gone and the exit status still
+    /// zero. Every layer above believed the `ok` it was given. A connector
+    /// that can lose work at teardown has to be able to say so.
+    ///
+    /// Most connectors hold nothing across calls and take the default.
+    /// Answering `Vec::new()` means "nothing was lost", which is a claim,
+    /// not a shrug: do not implement this to report success you did not
+    /// check.
+    fn finish(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// One wired connector: a backing plus the scope it was granted.
@@ -125,6 +144,20 @@ pub struct Dispatcher {
 impl Dispatcher {
     pub fn new(registry: Registry) -> Self {
         Dispatcher { registry }
+    }
+
+    /// Tell every wired connector the process is ending, and collect what
+    /// each says went wrong. Empty means every connector ended cleanly.
+    ///
+    /// The caller decides what to do with a non-empty answer; `drt run`
+    /// refuses to exit zero. Connectors are visited in registry order, which
+    /// is name order, so the report is stable between runs.
+    pub fn finish(&self) -> Vec<String> {
+        self.registry
+            .wired
+            .values()
+            .flat_map(|w| w.connector.finish())
+            .collect()
     }
 
     /// Answer one drained request against one guest's capability set.

@@ -230,3 +230,39 @@ fn a_program_inside_its_budget_still_exits_zero() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// `drt buildinfo` reports which diluvium is inside it.
+///
+/// The fact used to live only in `BUILDINFO.txt`, which the release
+/// workflow writes by grepping `Cargo.lock` — so a binary someone copied
+/// off a machine carried no answer at all, and a package's
+/// `requires.diluvium` had nothing in the artifact to check against.
+/// `doc/Release.md`'s rule is that the compatibility fact travels with the
+/// bytes; a fact in a file beside the bytes does not travel with them.
+///
+/// A **revision**, deliberately, not a version. The core exposes no version
+/// string at runtime, and the distinctions that have mattered between the
+/// two projects are revision facts.
+#[test]
+fn buildinfo_reports_the_embedded_diluvium_revision() {
+    let out = drt().arg("buildinfo").output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text
+        .lines()
+        .find_map(|l| l.strip_prefix("diluvium: "))
+        .expect("buildinfo names the embedded diluvium");
+    assert!(
+        line.len() >= 7 && line.chars().all(|c| c.is_ascii_hexdigit()),
+        "a git revision, or nothing — never a version-shaped string that \
+         cannot be checked: {line:?}"
+    );
+
+    // And the same fact in the machine-readable form, since that is what a
+    // package manager reads.
+    let out = drt().arg("buildinfo").arg("--json").output().unwrap();
+    let json = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        json.contains(&format!("\"diluvium\":\"{line}\"")),
+        "the two forms must agree: {json}"
+    );
+}

@@ -36,6 +36,10 @@ tokio-tungstenite = { version = "0.24", optional = true }
 futures-util = { version = "0.3", default-features = false, optional = true }
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "io-std", "io-util", "net", "sync", "time", "macros"], optional = true }
 serde_json = "1"
+# The reflect fetch's TLS. Pinned to what `connectors/rest` already builds,
+# so `full` links one stack rather than two and `netcheck` costs it nothing.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"], optional = true }
+webpki-roots = { version = "0.26", optional = true }
 drt-config = { workspace = true }
 drt-caps = { workspace = true }
 drt-hostcall = { workspace = true }
@@ -47,6 +51,7 @@ drt-connector-fs = { workspace = true, optional = true }
 drt-connector-sql = { workspace = true, optional = true }
 drt-connector-crypto = { workspace = true, optional = true }
 drt-connector-rest = { workspace = true, optional = true }
+drt-connector-ssmtp = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -63,7 +68,7 @@ futures-util = { version = "0.3", default-features = false }
 # connector is its own gate so a profile is a feature list, not a fork.
 default = ["slim"]
 slim = ["connector-time", "connector-fs", "connector-crypto", "listen"]
-full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "tunnel", "relay", "stun"]
+full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "tunnel", "relay", "stun", "netcheck"]
 connector-time = ["dep:drt-connector-time"]
 connector-ssh = ["dep:drt-connector-ssh"]
 connector-fs = ["dep:drt-connector-fs"]
@@ -74,6 +79,12 @@ connector-crypto = ["dep:drt-connector-crypto"]
 # and a notebook profile that cannot reach the network is a smaller
 # artifact and a smaller thing to trust.
 connector-rest = ["dep:drt-connector-rest"]
+# Outbound mail: `host:ssmtp/send`. `full` only, on rest's argument and for
+# rest's reason -- it links the same TLS stack. The scope holds the relay
+# credential and the envelope sender, so a program sends mail without ever
+# holding the password and cannot forge its From line; that is the whole
+# reason this is a connector and not something a guest reaches via `rest`.
+connector-ssmtp = ["dep:drt-connector-ssmtp"]
 # The http listener (dhost_http.c's contract). In slim because the C host
 # always carries its listener, and a runtime that cannot serve a fetchpoint
 # is not the runtime discofetch is waiting for.
@@ -93,3 +104,16 @@ relay = ["listen", "dep:tokio", "dep:tokio-tungstenite", "dep:futures-util"]
 # unlike the relay it needs no listener and no WebSocket stack — just a
 # runtime to own the socket.
 stun = ["dep:tokio", "dep:ego_transport"]
+# `drt netcheck`, the verb. Its own feature rather than riding `stun`,
+# because asking a reflect edge means an HTTP client and a TLS stack and the
+# STUN *server* has no business carrying either -- the server is the thing a
+# small deployment runs. `full` only, on `rest`'s argument.
+#
+# It implies `stun`: the decisive measurement is the UDP mapping, so a
+# netcheck that could not take it would be a verdict built on the
+# informational half. The crates below are already in `full` behind `rest`,
+# so this adds none.
+#
+# Priced and accepted: a `--features stun` build has the STUN server and no
+# longer has the verb.
+netcheck = ["stun", "dep:tokio-rustls", "dep:webpki-roots"]

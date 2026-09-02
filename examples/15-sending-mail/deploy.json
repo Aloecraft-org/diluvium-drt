@@ -1,0 +1,26 @@
+{
+  "_comment": "The operator's file. Everything a program must not choose lives here.",
+
+  "program": { "path": "app.dlua" },
+
+  "_caps": "The ceiling. `host:ssmtp/*` is sending mail and nothing else.",
+  "caps": [
+    { "capability": "host:ssmtp/*" }
+  ],
+
+  "_connectors": "A connector is wired to a PLACE. The relay is a machine fact; so is the credential, and so is the sender. The program names recipients within what `allow` grants and can read none of the rest.",
+  "connectors": {
+    "ssmtp": {
+      "scope": {
+        "host": "127.0.0.1",
+        "port": 2525,
+        "starttls": false,
+        "from": "Notifications <no-reply@example.com>",
+        "allow": ["@example.com"]
+      }
+    }
+  },
+
+  "_omits": "example: omits user/pass, which a real relay wants — the fake one here trusts its caller. A scope naming a user with starttls off is refused at startup, so a credential never reaches the wire in the clear.",
+  "_budget": "example: omits budget, which a real deployment states; 06-budgets is the one that shows it."
+}

@@ -108,7 +108,7 @@ enum Command {
     /// `relay` included: a network that needs a tunnel is a successful
     /// measurement, not an error. Non-zero means nothing could be
     /// measured.
-    #[cfg(feature = "stun")]
+    #[cfg(feature = "netcheck")]
     Netcheck {
         /// A STUN server, repeatable. Two on separate addresses are needed
         /// to classify a mapping; `detect_mapping` refuses below two rather
@@ -116,6 +116,60 @@ enum Command {
         /// relay fallback, never a confident wrong answer.
         #[arg(long = "stun", value_name = "HOST:PORT")]
         stun: Vec<String>,
+        /// A reflect edge, repeatable. Fills the `address` and `tcp map`
+        /// lines from what an edge saw over TCP, keyed by the `edge` it
+        /// names itself. An edge that does not answer stays "not
+        /// measured", with the reason — never a guess and never a zero.
+        ///
+        /// Two edges do not yet make a comparison: each fetch is its own
+        /// connection with its own source port, and comparing those
+        /// compares nothing. See `Measurements::tcp_agrees`.
+        #[arg(long = "reflect", value_name = "URL")]
+        reflect: Vec<String>,
+        /// Ask `--reflect` at this address rather than at the one its name
+        /// resolves to. Repeatable: each is one vantage, and the `Host`
+        /// stays the name, so one fetchpoint answers from several edges.
+        ///
+        /// The design is one name discriminated by `observed.edge`, so
+        /// this becomes unnecessary the moment the second A record lands —
+        /// which discofetch is deliberately holding until the measurement
+        /// is trusted. Until then this is how the second vantage is
+        /// reached, and it is `curl --resolve` by another name.
+        #[arg(long = "reflect-at", value_name = "ADDRESS")]
+        reflect_at: Vec<String>,
+        /// **Experimental.** Ask a probe edge to connect back to the
+        /// address it observes, and report whether it reached this port.
+        /// Repeatable, asked sequentially and bounded, because the prober
+        /// rate-limits per address.
+        ///
+        /// Probes the service already listening on the port. It binds
+        /// nothing: a diagnostic that opened a socket would be a different
+        /// and more surprising thing, and would want a differently named
+        /// flag saying so.
+        ///
+        /// Needs `--probe-at`. The server half is not deployed yet.
+        #[arg(long = "port", value_name = "N")]
+        port: Vec<u16>,
+        /// The edge the probe's SYN should come from — one this run has not
+        /// contacted for reflect.
+        ///
+        /// `NETCHECK-SPEC.md` §3: with a prober on both gates the original
+        /// asymmetry becomes a client obligation, because a SYN from an
+        /// address the caller just contacted can traverse the mapping the
+        /// caller's own request created and answer `connected` when nothing
+        /// out there can reach them.
+        #[arg(long = "probe-at", value_name = "ADDRESS")]
+        probe_at: Option<String>,
+        /// Send every `--reflect` request from the **same local source
+        /// port**, which is what turns two edges into a TCP mapping
+        /// comparison rather than two unrelated observations.
+        ///
+        /// Sequential, so a NAT may rebind between the requests; the
+        /// evidence line says so. Off by default because it binds a
+        /// specific port, which can fail, and because with fewer than two
+        /// edges it measures nothing.
+        #[arg(long = "pin-source-port")]
+        pin_source_port: bool,
         /// Machine-readable output. The default is human text, because the
         /// primary consumer is a person deciding what to do next.
         #[arg(long)]
@@ -132,7 +186,9 @@ enum Command {
         feature = "connector-fs",
         feature = "connector-sql",
         feature = "connector-crypto",
-        feature = "connector-rest"
+        feature = "connector-rest",
+        feature = "connector-ssmtp",
+        feature = "netcheck"
     )),
     allow(unused_mut, unused_variables)
 )]
@@ -166,6 +222,9 @@ fn buildinfo(json: bool) -> String {
     if cfg!(feature = "connector-rest") {
         connectors.push("rest");
     }
+    if cfg!(feature = "connector-ssmtp") {
+        connectors.push("ssmtp");
+    }
     if cfg!(feature = "listen") {
         connectors.push("listen");
     }
@@ -174,11 +233,11 @@ fn buildinfo(json: bool) -> String {
     if cfg!(feature = "relay") {
         verbs.push("relay");
     }
+    if cfg!(feature = "netcheck") {
+        verbs.push("netcheck");
+    }
     if cfg!(feature = "stun") {
         verbs.push("stun");
-        // netcheck rides the same gate: its decisive measurement is
-        // `detect_mapping` across two STUN servers.
-        verbs.push("netcheck");
     }
     if cfg!(feature = "tunnel") {
         verbs.push("tunnel");
@@ -202,14 +261,25 @@ fn buildinfo(json: bool) -> String {
     // than as a zero a consumer would read as a real ABI number.
     let abi = drt_swarm::engine::abi_versions();
 
+    // Which diluvium is inside, stamped at build time from `Cargo.lock`
+    // (build.rs). A **revision**, deliberately, not a version: the core
+    // exposes no version string at runtime, and the distinctions that have
+    // actually mattered between DRT and diluvium — FM-2 affected or fixed,
+    // the budget escape open or closed — are revision facts that a semver
+    // range could not express even if one existed. `unknown` on a build
+    // that does not pin it by revision.
+    let diluvium_rev = env!("DRT_DILUVIUM_REV");
+
     if json {
         format!(
             "{{\"version\":\"{}\",\"profile\":\"{}\",\"dv_abi\":{},\
-             \"dv_abi_expected\":{},\"connectors\":[{}],\"verbs\":[{}]}}\n",
+             \"dv_abi_expected\":{},\"diluvium\":\"{}\",\
+             \"connectors\":[{}],\"verbs\":[{}]}}\n",
             env!("CARGO_PKG_VERSION"),
             profile,
             abi.map_or("null".into(), |(l, _)| l.to_string()),
             abi.map_or("null".into(), |(_, e)| e.to_string()),
+            diluvium_rev,
             connectors
                 .iter()
                 .map(|c| format!("\"{c}\""))
@@ -224,11 +294,12 @@ fn buildinfo(json: bool) -> String {
     } else {
         format!(
             "version: {}\nprofile: {}\ndv_abi: {}\ndv_abi_expected: {}\n\
-             connectors: {}\nverbs: {}\n",
+             diluvium: {}\nconnectors: {}\nverbs: {}\n",
             env!("CARGO_PKG_VERSION"),
             profile,
             abi.map_or("unknown".into(), |(l, _)| l.to_string()),
             abi.map_or("unknown".into(), |(_, e)| e.to_string()),
+            diluvium_rev,
             connectors.join(","),
             verbs.join(","),
         )
@@ -308,6 +379,17 @@ fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
                 .wire(
                     "rest",
                     std::sync::Arc::new(drt_connector_rest::RestConnector::new()),
+                    wiring.scope.clone(),
+                )
+                .map_err(|e| e.to_string())?,
+            // The scope carries what the guest must never hold: the relay
+            // credential and the envelope sender. A program sends mail
+            // without the password and cannot choose who it is from.
+            #[cfg(feature = "connector-ssmtp")]
+            "ssmtp" => registry
+                .wire(
+                    "ssmtp",
+                    std::sync::Arc::new(drt_connector_ssmtp::SsmtpConnector::new()),
                     wiring.scope.clone(),
                 )
                 .map_err(|e| e.to_string())?,
@@ -492,11 +574,36 @@ fn main() -> ExitCode {
             }
         }
         #[cfg(feature = "stun")]
-        Command::Netcheck { stun, json } => {
+        Command::Netcheck {
+            stun,
+            reflect,
+            reflect_at,
+            port,
+            probe_at,
+            pin_source_port,
+            json,
+        } => {
             let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
             let mut m = drt::netcheck::Measurements::default();
             let servers: Vec<&str> = stun.iter().map(String::as_str).collect();
-            runtime.block_on(drt::netcheck::gather::local_and_udp(&mut m, &servers));
+            let edges: Vec<&str> = reflect.iter().map(String::as_str).collect();
+            let at: Vec<&str> = reflect_at.iter().map(String::as_str).collect();
+            runtime.block_on(async {
+                drt::netcheck::gather::local_and_udp(&mut m, &servers).await;
+                // After the UDP half on purpose: STUN's address is the one
+                // the decisive measurement saw, and an edge that disagrees
+                // with it is recorded as a disagreement rather than
+                // overwriting it.
+                drt::netcheck::gather::reflect(&mut m, &edges, &at, pin_source_port).await;
+                // Last: it needs the reflect views to know which vantages
+                // this run has already contacted.
+                if let Some(first) = edges.first() {
+                    drt::netcheck::gather::probe(&mut m, first, probe_at.as_deref(), &port).await;
+                } else if !port.is_empty() {
+                    m.inbound_why =
+                        Some("--port needs a --reflect edge to derive the probe host from".into());
+                }
+            });
             // The same leak as `stun`/`relay`/`tunnel`, for the same reason:
             // FM-1, tokio 1.53.1's use-after-free in runtime teardown, and
             // `detect_mapping` resolves through `lookup_host`, so there is
@@ -518,7 +625,15 @@ fn main() -> ExitCode {
             // be measured at all" is a failure, and that is the case where
             // there was no network to ask rather than a network that
             // answered badly.
-            if m.udp_mapping.is_none() && m.routable_v6.is_none() {
+            //
+            // `probed_anything` and not `udp_mapping.is_none() &&
+            // routable_v6.is_none()`, which is what this was: holding a
+            // routable v6 address is read off the routing table and costs no
+            // packet, so a machine with v6 whose STUN probes all failed
+            // exited 0 while every evidence line that involved asking the
+            // network said `not measured`. The exit status is what a script
+            // reads, so it has to mean what it says.
+            if !m.probed_anything() {
                 return ExitCode::FAILURE;
             }
             ExitCode::SUCCESS

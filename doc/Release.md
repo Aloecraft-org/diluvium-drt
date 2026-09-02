@@ -70,14 +70,54 @@ does the same dispatch with `tag` set and `publish=true` touch the
 Releases page. The publish job depends on tests and builds, so a failure
 anywhere means no release rather than a partial one.
 
+### Push the tag yourself. Do not publish from a dispatch.
+
+**This is the one operational rule on this page, and getting it wrong has
+cost two releases.** To publish:
+
+```sh
+git tag v0.4.0rc1 && git push origin v0.4.0rc1
+```
+
+The tag push triggers the workflow with `publish=true` and everything
+downstream works. What does *not* work is a `workflow_dispatch` with
+`tag:` set to a tag that does not exist yet, because then
+`action-gh-release` has to create the ref as well as the release, and the
+Actions token is not permitted to create it — 403, `Resource not
+accessible by integration`. A human account is not subject to that, which
+is why pushing the tag by hand is the whole fix rather than a workaround.
+
+Use a dispatch for a *rehearsal* (`publish` off, no tag), which is what
+it is for. Only push the tag once that is green.
+
 ## v0.3.1 — published by hand, three days late
 
 **Corrected 2026-09-01.** An earlier version of this section said v0.3.1 was
 never published and had been superseded by v0.4.0. That was true when written
 and stopped being true on 2026-08-31 at 22:49 UTC, when the release was
-created by hand from the Releases page — the workaround this document
-recommends, since the 403 is the App token's refusal and a human account is
-not subject to it.
+created by hand from the Releases page.
+
+**Diagnosed 2026-09-01, by publishing v0.4.0rc1.** The 403 was never about
+release creation. Same token, same `permissions: contents: write`, same
+action, same repository: v0.3.1's publish failed and v0.4.0rc1's succeeded,
+and the only variable between them was whether the *tag already existed*.
+v0.3.1 was dispatched with a tag that did not, so `action-gh-release` had
+to create the ref; v0.4.0rc1's tag was pushed by hand first, so it only had
+to create a release. That rules out an org-level workflow-permissions cap,
+which would have failed both identically, and leaves a restriction on
+creating tags that the Actions token does not bypass.
+
+The log line that gives it away, if this ever recurs, is the fallback ref:
+
+```
+⚠️ Unexpected error fetching GitHub release for tag refs/heads/claude/...
+```
+
+A branch ref there means the tag was not found, which means the workflow
+was being asked to create one. Push the tag first and the error does not
+arise. If it ever needs fixing properly rather than avoiding, it is
+**Settings → Rules → Rulesets**, on the ruleset targeting tags: either add
+the Actions app to its bypass list, or turn off "Restrict creations".
 
 So v0.3.1 exists, is tagged at `00460fe`, and carries STUN, the C host's
 `access` spelling, FM-1 and FM-2's mitigation. It does **not** carry `rest`

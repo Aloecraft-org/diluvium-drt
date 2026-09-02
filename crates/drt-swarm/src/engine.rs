@@ -450,9 +450,13 @@ pub mod diluvium_engine {
             // This lock is kept anyway, on purpose, so nobody reading it
             // later has to reconstruct why:
             //
-            //   * v0.4.0rc1 still pins `f137b30`, which is pre-build12 and
-            //     named by upstream as affected. Until the pin moves, this
-            //     lock is the only thing closing FM-2 for DRT.
+            //   * **The condition is now met.** The pin is 5.5.1_build12p1,
+            //     which carries `src/dsync.h`, so this lock is redundant and
+            //     may be deleted. It is kept for the release that moves the
+            //     pin, deliberately: removing a mitigation in the same
+            //     change that moves the thing it mitigates leaves nothing to
+            //     compare against if the crash comes back. Delete it in the
+            //     release after this one.
             //   * The examples gate was captured against that pin. Bumping
             //     the pin and dropping the lock in one change would mean a
             //     release candidate nobody had run the gate against.

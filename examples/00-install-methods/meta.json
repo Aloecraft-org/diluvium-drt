@@ -3,5 +3,8 @@
   "teaches": "Getting a drt binary, then asking it what it is with drt buildinfo instead of trusting the filename.",
   "cmd": "drt buildinfo",
   "needs_network": false,
-  "normalise": []
+  "needs_build": "full",
+  "normalise": [
+    "s|^diluvium: [0-9a-f]\\{7,\\}$|diluvium: <revision>|"
+  ]
 }

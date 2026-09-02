@@ -155,7 +155,7 @@ Summarised because they change who does what, not just what is true.
 | §1.2 pcall escape | DRT, `reported` | **diluvium**, `src/dv.c:219`, reproduced, not fixed in build12 |
 | §1.3 SQL | implement transactions, or refuse `begin` | transactions already work; the defect is silent rollback at exit |
 | `host.exec` | unreproduced; README appears right | both readings correct — see below; README right, unedited |
-| FM-2 | (not in the ask) | fixed upstream in build12; the rc still pins `f137b30`, so DRT's mutex stays |
+| FM-2 | (not in the ask) | fixed upstream in build12; 0.4.0 takes the bump, and the mutex is kept one release longer on purpose |
 
 **On `host.exec`, since the ask asked to have it read closely.** Your grep
 is correct: there is no `exec` in `crates/drt-swarm/` or
@@ -299,15 +299,28 @@ document neither side can check before shipping.
 
 Against the corrected picture.
 
+**§1 and most of §2 shipped in 0.4.0**, ahead of this table. §2 is done
+bar the config-dialect item: `--reflect` (with `--reflect-at` for the
+deferred A record), `--pin-source-port`, and an experimental `--port`
+enforcing §3's client obligation. `§2.2b` needed no `socket2` —
+`tokio::net::TcpSocket` binds and sets `SO_REUSEADDR` natively.
+
+Original note, kept: `check_attenuation`'s rule
+is enforced at spawn (and the unstated-budget hole nobody had named is
+closed with it), `sql` rolls back explicitly and names it, `connectors/ssh`
+has tests, and FM-3 is a named class in `Failure-Modes.md` with a
+red-provable regression test in both connectors. What remains below is §2
+and §3.
+
 | section | where | size | blocked on |
 |---|---|---|---|
-| §1.1 attenuation | DRT | small — call site, refusal, tests, example | nothing |
-| §1.2 pcall escape | **diluvium** | small upstream; exit-code half is small here | a diluvium session |
-| §1.3 SQL | DRT | small once decided | §3.1 |
-| §1.4 tests + Failure-Modes | DRT | small | nothing |
-| §2.1/§2.2 address + `--port` | DRT | medium | §3.2, and stun1/stun2 up |
-| §2.2b TCP EIM (`socket2`) | DRT | medium, separable, defer | nothing — but it decides nothing, so it goes last |
-| §2.3 config dialects | DRT | small | nothing |
+| §1.1 attenuation | DRT | **done** | — |
+| §1.2 pcall escape | **diluvium** | exit-code half **done**; enforcement is upstream | a diluvium session |
+| §1.3 SQL | DRT | **done** | — |
+| §1.4 tests + Failure-Modes | DRT | **done** | — |
+| §2.1/§2.2 address + `--port` | DRT | **done** in 0.4.0 | — |
+| §2.2b TCP EIM | DRT | **done**, and it needed no `socket2` | — |
+| §2.3 config dialects | DRT | small | nothing — the one §2 item still open |
 | §3 the punch | DRT + ego-transport | large, and correctly last | §2's measurement |
 
 **What I need from you, concretely:**

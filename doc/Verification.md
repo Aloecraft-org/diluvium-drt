@@ -1,7 +1,7 @@
 # What only you can verify
 
 **Audience: whoever is running the examples on a real machine.** Written
-2026-09-01 against `v0.4.0rc1`.
+against `v0.4.0rc1`, current as of `v0.4.0`.
 
 Everything in `examples/` runs green in this container (`run-all.sh`: 15
 ok, 0 failed, 1 skipped). That number is worth less than it looks, because
@@ -18,9 +18,10 @@ by *succeeding wrongly*.
 ## surface block
 
 1. §1 — the four that block the rc's honesty. Do these first.
-2. §2 — the network half of `examples/`. Needs real addresses.
-3. §3 — the two-machine examples. Needs two machines.
-4. §4 — what is already confirmed and needs nothing from you.
+2. §1.5 — the deployment that blocks all of `--reflect`. One command.
+3. §2 — the network half of `examples/`. Needs real addresses.
+4. §3 — the two-machine examples. Needs two machines.
+5. §4 — what is already confirmed and needs nothing from you.
 
 ---
 
@@ -47,10 +48,31 @@ the evidence printed underneath it. `udp map` is the decisive line; if
 `udp map` says `endpoint-independent` and the verdict says `relay`, or
 the reverse, the table is wrong and I want the block that produced it.
 
-**A non-failure that will look like one:** `address`, `tcp map` and
-`inbound` all say `not measured` on every network. That is correct for
+**`address` is filled by STUN now**, so a two-server run reports the address
+the world sees — and with it, whether you are behind CGNAT. That is the
+answer §7 of the discofetch ask wants from the XPS, and it no longer waits
+on the reflect edge.
+
+**A non-failure that will look like one:** `tcp map` and `inbound` say
+`not measured` on every network. That is correct for
 this build — they are the reflect edges' half and there is no edge to
 ask. `09-netcheck/README.md` says so.
+
+**If `udp map` says `not measured`, read the reason in the brackets.** It
+names which of four different problems you have:
+
+```
+(… needs two servers on separate addresses; 1 given)  -> pass both --stun flags
+(could not resolve STUN server address '…')           -> DNS, or a typo
+(no STUN response from … after 3 attempt(s))          -> the server is down,
+                                                         or UDP is blocked on
+                                                         the path
+```
+
+That last one is worth knowing before you blame the servers: a devcontainer
+or a corporate network commonly drops outbound UDP, and `13-stun-server`
+passing (it uses a *local* pair) while a remote pair fails is exactly that
+shape. Testing from the host rather than inside a container separates them.
 
 **The pre-condition.** This needs stun1 and stun2 on **separate
 addresses**. One STUN server yields `not measured` and the relay
@@ -121,6 +143,178 @@ custom CA bundle, which is not the shape a fetchpoint sees.
 
 **A failure looks like** exit 101 and `there is no reactor running`. That
 is the original bug and it would mean the fallback did not take.
+
+---
+
+## 1.5 reflect is deployed — one thing left to confirm
+
+**Retired 2026-09-02.** `observed.port`, `observed.edge` and
+`?format=addr-port` are all live; the edge is sending `x-real-port`, which
+was the second step below and the one that would otherwise have cost a day.
+Kept because the three states it names are still how you read a failure.
+
+**What I could not check, and you can in one command.** This container's
+outbound HTTPS goes through a proxy with its own CA, so every `--reflect`
+from here answers `tls: invalid peer certificate: UnknownIssuer`. That is
+the proxy, not reflect. Whether reflect's real chain validates against the
+**Mozilla root set** (`webpki-roots`, which is what DRT ships rather than
+the system store) is unverified:
+
+```sh
+drt netcheck --reflect https://reflect.discofetch.link/
+```
+
+`tcp map  <port> (gate1)` means the chain validates. A `tls:` reason means
+it does not, and an internal or non-Mozilla CA would make **every**
+`--reflect` fail identically on every network — worth knowing before it is
+mistaken for a network finding.
+
+### Two more one-command checks, now that `--reflect` exists
+
+**Does the pinning work on a real machine?** It works here; the failure
+modes are platform-specific and worth ruling out on yours. One edge is
+enough to prove the mechanism:
+
+```sh
+drt netcheck --pin-source-port --reflect https://reflect.discofetch.link/
+```
+
+`(one vantage; not a comparison)` is the right answer — one edge measures
+nothing. What you are checking is that it did not say
+`could not leave from port N`, which is a bind that failed and the one
+platform difference that would sink this.
+
+**The pre-flight, and it answers a purchasing question.** Name the one edge
+you have **twice**:
+
+```sh
+drt netcheck --pin-source-port \
+  --reflect https://reflect.discofetch.link/ \
+  --reflect https://reflect.discofetch.link/
+```
+
+Two connections from one source port to one destination. This says nothing
+about endpoint-independence — every NAT reuses a mapping for a second
+connection to a destination it already has one for — but it says whether
+the mapping **held**, and that is the precondition for the two-edge test:
+
+- `the mapping held (a second vantage would measure something)` — good.
+  When a second vantage exists, the comparison will produce an answer.
+- `the mapping CHANGED, so no two-edge comparison can succeed here` — this
+  network assigns a fresh external port per connection, so the two-edge run
+  can never answer `independent` whatever the NAT really does. **Standing up
+  a second vantage would buy nothing on this network**, and that is worth
+  knowing before buying a box.
+
+Worth running from the XPS at your parents' as well as the laptop: it is
+the CGNAT case, and it is the one where the answer might differ.
+
+**And what the two-edge measurement will say, once there are two vantages.**
+One name, not two — see below:
+
+```sh
+drt netcheck --pin-source-port --reflect https://reflect.discofetch.link/
+```
+
+**One flag, not two, and one name.** `NETCHECK-SPEC.md` §2 corrected this on
+31 Aug: *"One name, two A records. The client resolves
+`reflect.discofetch.link`, connects to each returned address from the same
+local port with the same `Host`, and reads `observed.edge` to know which
+vantage answered."* So `--reflect` resolves the name and asks **every**
+address it gets. Add gate2's A record to `reflect` and the command above
+starts comparing, with nothing to change on this side.
+
+**Today, with the second A record still held back**, name gate2's address:
+
+```sh
+drt netcheck --pin-source-port \
+  --stun stun1.discofetch.link:3478 --stun stun2.discofetch.link:3478 \
+  --reflect https://reflect.discofetch.link/ \
+  --reflect-at 108.165.121.165 --reflect-at 172.237.132.87
+```
+
+That is the whole diagnostic in one command: the decisive UDP mapping from
+the live STUN pair, and the TCP mapping from both vantages of one name. The
+`edge` field names which answered, so `tcp map` should read
+`<port> (gate1), <port> (gate2)` with a verdict after it.
+
+**And it is not blocked on the box.** The same section names a cheaper
+intermediate available today: *"A second listen port on gate1 for the same
+reflect path … two destination vantages on one box distinguishes
+port-dependent (symmetric) mapping before gate2 exists."* Two ports on gate1
+is a real two-vantage measurement — DRT keys the comparison on the
+destination, not the edge name, so both answering `edge: "gate1"` is fine.
+
+`independent (pinned source port, sequential)` means the TCP mapping is
+endpoint-independent. `per-destination` means it is not. Without
+`--pin-source-port` the same command answers *"separate connections, so
+separate source ports; not a comparison"*, which is the honest reading of
+two ephemeral ports and is what it does by default.
+
+`sequential` is in the label on purpose: `SO_REUSEADDR` permits reusing a
+port, not holding two concurrent connections on one, so the fetches happen
+one after the other and a NAT can rebind between them. Two runs agreeing is
+worth more than one run.
+
+### The three states, and how to read them
+
+---
+
+## 1.6 The old blocker, kept for its diagnosis
+
+**Checked against the live service on 2026-09-02, and this is the finding
+that decides when `--reflect` can be built.**
+
+`api/supervisor.lua` at discofetch HEAD implements `?format=addr-port`,
+`observed.port` and `observed.edge` (commit `e7bddc4`). **The deployed
+service does not.** Three requests pin it:
+
+```sh
+curl -sS "https://reflect.discofetch.link/?format=text"
+# -> text/plain, "160.79.106.134"          the `text` branch IS deployed
+
+curl -sS "https://reflect.discofetch.link/?format=addr-port"
+# -> application/json, the full body, query echoed back
+#    HEAD would answer text/plain with "ADDRESS PORT" or an empty line
+
+curl -sS "https://reflect.discofetch.link/"
+# -> observed = { forwarded, address }     no `port`, no `edge`
+```
+
+So the running code has the `text` branch and not the `addr-port` branch:
+it predates `e7bddc4`. `doc/REFLECT-NAT.md` says *"`curl -s
+https://reflect.discofetch.link/` shows `observed.port` … `observed.edge =
+"gate1"`"*, and that is not what it shows today.
+
+**What you need to do, in order:**
+
+1. **Deploy the current `api/supervisor.lua`.** Until then `--reflect` has
+   nothing to talk to, and any DRT client for it is written against a
+   document rather than a service.
+2. **Then check the edge actually sets `x-real-port`.** `observed_port(req)`
+   reads that header and nothing else, so if nginx is not sending it the
+   port stays unobserved *forever* and — by the all-or-nothing rule —
+   `?format=addr-port` answers an **empty line** on every request. The
+   check is one command, and it distinguishes "not deployed" from
+   "deployed, header missing":
+
+   ```sh
+   curl -sS "https://reflect.discofetch.link/?format=addr-port"
+   # empty line      -> deployed, but the edge is not sending x-real-port
+   # "ADDR PORT"     -> deployed and observing; --reflect can be built
+   # JSON            -> not deployed yet
+   ```
+
+3. **`observed.edge` needs the same treatment**, and it is what keys the
+   two-edge comparison. One edge that never names itself is one vantage.
+
+**The probe (inbound test) is a separate and larger gap.** `deploy/probe/`
+is a written kit, `REFLECT-NAT.md` §5 calls the probe *"an edge service, not
+a Lua call"* and lists it as a seam arriving with gate2, and the 0.5.0 ask
+says the written kit does the *wrong thing* (it probes back from the edge
+the caller just talked to). So `--port` is not blocked on DRT: it is blocked
+on an endpoint that does not exist in any form DRT should be written
+against. Nothing in DRT should guess its shape.
 
 ---
 

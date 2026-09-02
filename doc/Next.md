@@ -266,6 +266,10 @@ call and its context rather than a place.
 - **Time of day**, and this one generalises: any capability could carry
   "only between 09:00 and 18:00", not just email.
 - **Email (`ssmtp`)** scoped by recipient domain or specific address.
+  **Built** — `connectors/ssmtp`, `full` only. It turned out to be the one
+  of the four that needed nothing from the extension below: a recipient
+  allowlist answers *where*, at startup, exactly as `rest`'s origin
+  allowlist does. See the note under its heading.
 - **Geofence** — the host supplies a location, the scope evaluates a radius
   around a point or a simple polygon. Explicitly not to be built; recorded so
   the shape below is designed with it in mind rather than retrofitted.
@@ -314,7 +318,7 @@ model. Worth keeping in the eventual arg names: a scope saying
 behaviour, whereas one saying `debounce(500)` is a queue asking to be
 misfiled as a permission.
 
-### `ssmtp` is the cheapest of the four, and it is nearly built
+### `ssmtp` is the cheapest of the four, and it is now built
 
 It is `rest`'s sibling. `connectors/rest`'s scope is an origin allowlist
 checked twice — against the URL, then against the resolved address — and an
@@ -328,6 +332,18 @@ sender — the app sends mail without ever holding the password, and cannot
 forge the From line. That is the capability model doing its actual job, and
 it is the argument for `ssmtp` being a connector rather than something a
 program reaches through `rest`.
+
+**Landed as written, and it needed none of the predicate work below.** The
+sizing above was right about the shape and wrong about the grouping: a
+recipient allowlist answers *where*, once, at startup — the same question
+every scope DRT already had — so `ssmtp` was never really a member of the
+call-time family. What it did need, and what the sizing did not mention,
+was the part that has nothing to do with capabilities: SMTP header
+injection, dot-stuffing a body line of `.`, and refusing a scope that would
+send AUTH before STARTTLS. Those are three-quarters of the connector.
+
+The other three items below are unaffected and still want the shared
+predicate.
 
 ### If this is built, build the predicate once
 

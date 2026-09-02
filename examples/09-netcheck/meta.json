@@ -1,7 +1,10 @@
 {
   "name": "09-netcheck",
-  "teaches": "drt netcheck answers with one of four verdicts and the evidence that produced it. The decisive measurement is the UDP mapping across two STUN servers, so with none given — or with one, which is not a comparison — it reports 'not measured', falls back to relay, and exits non-zero.",
+  "teaches": "drt netcheck answers with one of four verdicts and the evidence that produced it. The decisive measurement is the UDP mapping across two STUN servers, so with none given \u2014 or with one, which is not a comparison \u2014 it reports 'not measured', falls back to relay, and exits non-zero.",
   "cmd": "echo '$ drt netcheck'; drt netcheck; echo \"exit $?\"; echo; echo '$ drt netcheck --stun stun.l.google.com:19302'; drt netcheck --stun stun.l.google.com:19302; echo \"exit $?\"",
   "needs_network": false,
-  "normalise": []
+  "needs_build": "full",
+  "normalise": [
+    "s|^  v6         .*|  v6         <v6, this machine's>|"
+  ]
 }

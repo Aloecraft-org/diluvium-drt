@@ -116,10 +116,15 @@ write-up, with the interleaving and the fix options, in
 
 **Fixed upstream 2026-09-01**, in diluvium 5.5.1_build12: `src/dsync.h`
 guards both registries, and that release names `f137b30` and earlier as
-affected. DRT has not taken the bump — v0.4.0rc1 pins `f137b30` on
-purpose, because the examples gate was captured against it — so for a
-binary built from this tree the mitigation below is still what closes
-FM-2, not a leftover.
+affected. **The bump is taken**: this tree pins `515160f`
+(5.5.1_build12p1), which carries `src/dsync.h`. v0.4.0rc1 shipped on
+`f137b30` on purpose — the examples gate was captured against it — and
+0.4.0 moves.
+
+So the mitigation below is now redundant, and is kept for exactly one
+release. Removing a mitigation in the same change that moves the pin it
+mitigates leaves nothing to compare against if the crash returns; it goes
+in the release after this one.
 
 **Why it never reproduced, which is the part worth keeping.** `addcont`
 writes only when a name is not already present, so once every name is
@@ -152,8 +157,8 @@ diluvium pin carries the upstream repair — `grep -A2 'name = "diluvium"'
 Cargo.lock` showing build12 or later is the whole condition, and the
 comment at the lock's use site says so too.
 
-**Fixed upstream, not yet pinned here.** build12 carries the repair; this
-tree does not carry build12. So the mitigation is still the thing holding,
+**Fixed upstream and pinned here.** build12 carries the repair and this
+tree now carries build12p1. So the mitigation is still the thing holding,
 and any *other* host embedding `f137b30` — drt-web included, once it hosts
 more than one instance — has the bug unmitigated.
 
@@ -163,6 +168,155 @@ running `drt start` belongs under a supervisor that restarts it
 absorbed.
 
 ---
+
+---
+
+## FM-3: a connector that needs a reactor, called where there is none — a class, not two bugs
+
+**Two connectors have shipped with this and neither was found by a test.**
+`rest` in v0.4.0 (found by writing `examples/05` against it), `ssh` in
+v0.3.1 (shipped unable to answer a single call, for three days, unnoticed).
+discofetch's 0.5.0 ask names it correctly: *"that is a pattern, not two
+bugs, and the third one is cheaper to prevent than to find."*
+
+**The mechanism.** `drt start` drives connectors on a tokio runtime.
+`drt run`, `drt repl` and the pump use `pollster::block_on` (`run.rs:67`,
+`repl.rs:73`, `pump.rs:47`), which is a bare executor with **no tokio
+reactor**. Any connector that touches `tokio::net` or `tokio::time` under
+that caller panics:
+
+```
+there is no reactor running, must be called from the context of a Tokio 1.x runtime
+```
+
+A panic, not a refusal — a Rust backtrace and exit 101, which is the worst
+failure shape in this codebase: not something a program can read, not even
+something an operator can act on.
+
+**Why every existing test missed it, which is the part worth keeping.**
+Both connectors had tests. Every one of them was a `#[tokio::test]`, so
+every one ran *with* a reactor. The connectors were tested in the one
+configuration where the bug cannot appear, and `rest` had twenty-four of
+them.
+
+**And why the obvious test still misses it.** Dialing a *closed* port does
+not reproduce this. The connection is refused immediately, the future never
+pends, and `tokio::time::timeout` therefore never arms its timer and never
+touches the reactor. The first version of the `rest` regression test did
+exactly this and passed with the fix removed. The request has to actually
+wait on something: bind a listener and never accept it, so the handshake
+completes from the backlog and the response never comes.
+
+**The fix, in both.** The connector carries its own runtime for callers that
+have none:
+
+```rust
+match tokio::runtime::Handle::try_current() {
+    Ok(_) => work.await,
+    Err(_) => own_runtime().block_on(work),
+}
+```
+
+`own_runtime` is a `OnceLock`, built on first use and never dropped — leaked
+for FM-1's reason.
+
+**The rule for the next connector.** Any connector that can reach a socket
+or a timer needs both halves, and the plain-`#[test]` half is the one that
+matters:
+
+- `a_call_with_no_reactor_refuses_rather_than_panicking` — a plain `#[test]`,
+  against something that pends.
+- the same call under a real runtime, which is `drt start`'s shape.
+
+`connectors/rest/src/lib.rs` and `connectors/ssh/tests/scope.rs` both carry
+this pair, and both were confirmed to fail with the fix reverted rather than
+assumed to.
+
+**Residual risk.** `time`, `fs`, `crypto` and `sql` touch no socket and no
+timer, so the class does not reach them. Every connector that can is covered.
+
+---
+
+## FM-4: a guest can hang the whole deployment, and there is no in-process mitigation
+
+**Not a crash. The opposite, and worse to operate:** the process stays up,
+answers nothing, and exits nothing. Every restart-on-crash supervisor in the
+world sits there watching it.
+
+**The program.** One line, and it needs no capability at all:
+
+```lua
+while true do pcall(function() while true do end end) end
+```
+
+**What it does, measured on this tree.** Under `drt start` with a root that
+spawns it: the root prints two ticks and then the deployment freezes. Killed
+at 15s, exit 124. Not the child pinned and the rest running — *nothing* runs.
+No other instance steps, no listener is served, the relay stops, the control
+queue stops. The control case, the same child without the `pcall`, is stopped
+by its budget in milliseconds and the root carries on to a clean exit.
+
+**Why the budget does not stop it**, at the pin and after the fix alike.
+Instruction exhaustion is an ordinary catchable Lua error. Before diluvium
+`build12p1` the hook cleared itself on first firing, so one catch disabled
+the budget permanently. build12p1 leaves the hook armed, which is the right
+fix and closes the *accounting* hole — but each catch still buys
+`DV_HOOK_STEP` (1000) instructions, and a loop of catches repeats that
+forever. Verified against the fixed build: still spinning at 25s.
+
+So build12p1 changes this from "unbounded work while reporting perfect
+health" to "unbounded work, honestly counted". That is a real improvement —
+`dv_usage` is trustworthy again — and it is not a bound.
+
+**Why DRT cannot fix it from here.** Three walls, all of them real:
+
+- `dv.h` exposes no interrupt. A host inside `dv_run` has no way to ask the
+  VM to stop, from this thread or any other.
+- The one hook slot is the budget's. `debug.sethook` is refused to guests
+  for exactly this reason (`src/dlibs.c:132`), and DRT setting a second one
+  would switch the budget off.
+- `dv_exceeded()` is readable but useless here: a CPU-bound guest never
+  returns to the host, so there is no resume to refuse. This is why the
+  `drt run` exit-status check (which *is* worth having) does not touch this
+  case.
+
+**The real fix is upstream and is a core-file patch**: `pcall` refusing to
+catch once `exceeded` is set. Lua has no uncatchable error, so nothing
+smaller works. diluvium's own commit for the build12p1 fix says the same and
+names it a `CORE_PATCH_ALLOWLIST` decision.
+
+### What to do until then
+
+**Operationally, today, and this is the part that matters.** `Restart=always`
+does not help — the process never dies. The supervisor needs a *liveness*
+check, not a crash check:
+
+```ini
+# systemd, the shape that actually fires
+WatchdogSec=30
+Restart=always
+```
+
+with the deployment pinging `sd_notify(WATCHDOG=1)`, or failing that an
+external probe against the listener with a restart action. A fetchpoint
+behind HAProxy already has the probe; wire its failure to a restart.
+
+**By deployment.** The exposure is per-process, so a guest you do not trust
+belongs in a process you can kill. One `drt start` per tenant is the whole
+mitigation, and it is a real one.
+
+**In DRT, sized not built.** A watchdog thread that aborts the process when
+one step exceeds a wall-clock bound. It converts an invisible hang into a
+crash, which is what the supervisor was always ready to handle. Crude — it
+takes the deployment's other instances with it, which is why the bound is a
+deployment's number to state and not a default — and it is the only thing
+available without an upstream interrupt. `doc/Next.md` sizes the `wall_ms`
+budget this belongs with.
+
+**What is NOT a mitigation**, said plainly because each looks like one:
+capability restriction (this needs no capability), the instruction budget
+(it is the thing being escaped), a memory budget (the loop allocates
+nothing), and `Restart=always` on its own.
 
 ## What ego-proc does and does not cover
 

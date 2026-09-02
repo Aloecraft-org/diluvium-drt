@@ -122,6 +122,16 @@ pub enum Inbound {
 pub struct EdgeView {
     pub edge: String,
     pub port: Option<u16>,
+    /// The destination this view was gathered from, as `addr:port`.
+    ///
+    /// **This, and not `edge`, is what makes two views a comparison.**
+    /// Endpoint-independence is about the destination, and two vantages can
+    /// share an edge name: `NETCHECK-SPEC.md` §2 offers "a second listen
+    /// port on gate1 for the same reflect path" as the cheap intermediate
+    /// before a second box, and both of those answer `edge: "gate1"`.
+    /// Keying on the name would refuse that measurement; keying on the
+    /// destination takes it.
+    pub dest: String,
 }
 
 /// Everything measured, and nothing derived. `decide` reads only this.
@@ -140,8 +150,49 @@ pub struct Measurements {
     pub udp_mapping: Option<UdpMapping>,
     /// The mapped port each STUN server reported, for the evidence block.
     pub udp_ports: Vec<(String, u16)>,
+    /// Why the UDP mapping is absent, when it is. Rendered beside "not
+    /// measured", because the decisive measurement failing is the one
+    /// failure an operator has to be able to act on: servers down, DNS
+    /// unresolvable, UDP blocked on the path and "you gave me one server"
+    /// are four different problems with four different fixes, and a bare
+    /// "not measured" sends the reader to guess between them.
+    pub udp_why: Option<String>,
     /// What each reflect edge saw. Informational: the TCP half.
     pub tcp_views: Vec<EdgeView>,
+    /// Whether every entry in `tcp_views` was gathered from the **same
+    /// local source port**. Without that, comparing their ports compares
+    /// nothing — see [`tcp_agrees`](Self::tcp_agrees).
+    pub tcp_same_source_port: bool,
+    /// Why an edge is missing from `tcp_views`, when one is. One entry per
+    /// edge that was asked and did not answer, so "not measured" says which
+    /// and why rather than leaving the reader to guess between a rate limit,
+    /// a name that would not resolve, and an edge that is simply down.
+    pub reflect_why: Vec<String>,
+    /// Every port the probe was asked about, in the order asked.
+    /// `inbound` is the one the verdict reads; this is what is rendered.
+    pub inbound_all: Vec<(u16, Inbound)>,
+    /// Why the inbound test did not happen. Most often the client
+    /// obligation below being unmeetable, which is a refusal to measure
+    /// rather than a failure to reach anything.
+    pub inbound_why: Option<String>,
+    /// An opaque blob a reflect edge handed over, carried to the probe and
+    /// never parsed.
+    ///
+    /// No minting exists yet. When it does it is one more query parameter
+    /// and the response shape is unchanged, so this slot is the whole cost
+    /// of being ready: a parser for `<expiry>:<address>` would couple DRT to
+    /// a format discofetch may rotate, which the 0.5.0 ask asked us not to
+    /// build.
+    pub probe_token: Option<String>,
+    /// A vantage that saw a different address from the one already
+    /// measured, rendered beside it.
+    ///
+    /// Its own field rather than an entry in `reflect_why`, because it
+    /// belongs on a different line: `reflect_why` explains an absence in
+    /// `tcp map`, and this explains a presence in `address`. Recorded in
+    /// `reflect_why` instead, it was written down and never shown, which is
+    /// the same as not recording it.
+    pub address_why: Option<String>,
     /// The inbound test. Filled by a caller that can arrange an
     /// unsolicited inbound connect; nothing in this build can, so it is
     /// always `None` here and the renderer says "not measured" rather
@@ -166,8 +217,45 @@ impl Measurements {
         }
     }
 
+    /// Whether any measurement here involved actually asking the network.
+    ///
+    /// This is what the exit status turns on, and `routable_v6` is
+    /// deliberately not in it. `routable_v6()` reads the routing table and
+    /// sends nothing (see [`gather`]), so a machine that holds a v6 address
+    /// and could not reach a single STUN server has measured *nothing* —
+    /// but the old rule counted the v6 address and exited 0, reporting
+    /// success for a run whose decisive probe failed. Every evidence line
+    /// but one said `not measured` directly above it.
+    ///
+    /// A verdict that rests on a real measurement still exits 0, `relay`
+    /// included: `v6-direct` requires [`v4_ruled_out`](Self::v4_ruled_out),
+    /// which requires an observed address or a symmetric mapping, and both
+    /// of those cost a packet.
+    pub fn probed_anything(&self) -> bool {
+        self.udp_mapping.is_some() || self.observed_address.is_some() || self.inbound.is_some()
+    }
+
+    /// Whether IPv4 was **measured** and found to have no inbound path —
+    /// the precondition for advising v6 instead.
+    ///
+    /// The distinction this exists to make: an address that came back and
+    /// is not publicly reachable is a finding; an address that never came
+    /// back is not. `has_public_v4()` cannot tell them apart, because
+    /// `None` and "a private address" both answer `false`, and reading the
+    /// first as the second is how an unmeasured network got the tree's most
+    /// specific verdict.
+    pub fn v4_ruled_out(&self) -> bool {
+        // Either an address came back and is unreachable, or the mapping
+        // came back symmetric — both are measurements. Neither being
+        // present means nothing is known and nothing should be claimed.
+        (self.observed_address.is_some() && !self.has_public_v4())
+            || matches!(self.udp_mapping, Some(UdpMapping::Symmetric))
+    }
+
     /// Whether the observed v4 address is a public one — not CGNAT, not
-    /// RFC1918, not loopback or link-local.
+    /// RFC1918, not loopback or link-local. **`false` also when nothing was
+    /// observed**, which is why [`v4_ruled_out`](Self::v4_ruled_out) exists
+    /// and why a rule must not ask this question on its own.
     pub fn has_public_v4(&self) -> bool {
         match self.observed_address {
             Some(IpAddr::V4(v4)) => {
@@ -186,6 +274,69 @@ impl Measurements {
     /// second gate exists, and is reported as "not measured" rather than
     /// guessed.
     pub fn tcp_agrees(&self) -> Option<bool> {
+        // The guard that makes this mean anything. Each reflect fetch is a
+        // separate TCP connection with its own ephemeral source port, so two
+        // edges asked over two connections report two different ports on
+        // *every* network — and reading that as "per-destination" would be a
+        // confident statement about a NAT built on nothing.
+        //
+        // `REFLECT-NAT.md` §5 is explicit that the measurement is "same-
+        // local-port connections to reflect through both edges". Until DRT
+        // can pin an outbound source port (doc/Next.md; it needs `socket2`),
+        // nothing sets this and this method answers `None` — which the
+        // renderer prints as the non-comparison it is.
+        if !self.tcp_same_source_port {
+            return None;
+        }
+        // And it must be two *destinations*. Endpoint-independent means the
+        // same external port regardless of where you are going, so two
+        // connections to one destination measure nothing about it -- every
+        // NAT, symmetric ones included, ordinarily reuses a mapping for a
+        // second connection to a destination it already has one for. That
+        // run answered `independent` once, which would have told a symmetric
+        // NAT it punches; what it really measures is
+        // [`tcp_mapping_stable`](Self::tcp_mapping_stable).
+        //
+        // Destination and not edge NAME, because two vantages may share a
+        // name: `NETCHECK-SPEC.md` §2's cheap intermediate is a second
+        // listen port on gate1, and both ports answer `edge: "gate1"`.
+        if self.distinct_destinations() < 2 {
+            return None;
+        }
+        let ports: Vec<u16> = self.tcp_views.iter().filter_map(|v| v.port).collect();
+        if ports.len() < 2 {
+            return None;
+        }
+        Some(ports.windows(2).all(|w| w[0] == w[1]))
+    }
+
+    /// How many distinct destinations the TCP views came from.
+    pub fn distinct_destinations(&self) -> usize {
+        let mut seen: Vec<&str> = self.tcp_views.iter().map(|v| v.dest.as_str()).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        seen.len()
+    }
+
+    /// Whether one edge, asked twice from one pinned source port, saw the
+    /// same external port both times.
+    ///
+    /// A different question from [`tcp_agrees`](Self::tcp_agrees) and a
+    /// useful one on its own: it says whether the NAT holds a mapping
+    /// across two sequential connections at all. If it does not — a fresh
+    /// external port for every connection, even to the same destination —
+    /// then the two-edge comparison can *never* answer `independent`
+    /// whatever the NAT's real mapping behaviour is, and standing up a
+    /// second vantage to run it would buy nothing.
+    ///
+    /// So it is worth measuring before there is a second edge, with one.
+    pub fn tcp_mapping_stable(&self) -> Option<bool> {
+        if !self.tcp_same_source_port {
+            return None;
+        }
+        if self.distinct_destinations() != 1 {
+            return None;
+        }
         let ports: Vec<u16> = self.tcp_views.iter().filter_map(|v| v.port).collect();
         if ports.len() < 2 {
             return None;
@@ -193,6 +344,11 @@ impl Measurements {
         Some(ports.windows(2).all(|w| w[0] == w[1]))
     }
 }
+
+/// How many ports one run may ask about. The prober rate-limits per
+/// observed address (30/min by default) and a diagnostic that walks a range
+/// is the thing that limit exists for.
+pub const MAX_PROBE_PORTS: usize = 8;
 
 /// One row of the verdict table: a predicate, the verdict it selects, and
 /// the sentence that justifies it.
@@ -230,25 +386,9 @@ pub static RULES: &[Rule] = &[
             m.has_public_v4() && matches!(m.inbound, Some((_, Inbound::Connected)))
         },
     },
-    // v6 before the v4 mapping verdicts: when v4 is hopeless and a routable
-    // v6 answers, the advice is "use the v6 address", which is different
-    // advice and not a weaker form of punchable.
-    Rule {
-        verdict: Verdict::V6Direct,
-        why: "a routable IPv6 address is present and IPv4 has no inbound path",
-        matches: |m| {
-            m.routable_v6.is_some()
-                && !m.has_public_v4()
-                && !matches!(m.inbound, Some((_, Inbound::Connected)))
-        },
-    },
-    // The decisive UDP read. Symmetric before independent, because
-    // symmetric is the one that forecloses on hole punching.
-    Rule {
-        verdict: Verdict::Relay,
-        why: "the UDP mapping is per-destination (symmetric), so what a STUN server sees says nothing about what a peer would see",
-        matches: |m| matches!(m.udp_mapping, Some(UdpMapping::Symmetric)),
-    },
+    // The decisive UDP read, and it outranks v6. Symmetric before
+    // independent, because symmetric is the one that forecloses on hole
+    // punching.
     Rule {
         verdict: Verdict::Punchable,
         why: "the UDP mapping is endpoint-independent, so the address a STUN server sees is the address a peer can reach",
@@ -258,6 +398,38 @@ pub static RULES: &[Rule] = &[
                 Some(UdpMapping::Independent) | Some(UdpMapping::Open)
             )
         },
+    },
+    // v6 sits BELOW punchable and ABOVE relay-by-symmetric, which is the
+    // only place it belongs, and it was above both until a real network
+    // said otherwise.
+    //
+    // On a machine with a routable v6 and no reflect edge, the old rule
+    // answered `v6-direct` while the UDP mapping said `independent` --
+    // an inference overriding a measurement, in a module whose first
+    // premise is that it does not do that. `routable_v6` reads the routing
+    // table and sends nothing (see `gather`), so v6 reachability is never
+    // measured here at all; a routable address behind a v6 firewall is
+    // common on consumer gear. Punching over v4 was *measured* and works.
+    //
+    // The second half is `v4_ruled_out`. The old rule asked
+    // `!has_public_v4()`, which is false when `observed_address` is `None`
+    // -- so "no edge answered" was read as "v4 is hopeless", and the module
+    // gave its most specific verdict on a network it had measured nothing
+    // about. Not measured is not a finding. With nothing measured this now
+    // falls through to relay, which is the answer that works everywhere.
+    Rule {
+        verdict: Verdict::V6Direct,
+        why: "a routable IPv6 address is present and IPv4 has no inbound path",
+        matches: |m| {
+            m.routable_v6.is_some()
+                && m.v4_ruled_out()
+                && !matches!(m.inbound, Some((_, Inbound::Connected)))
+        },
+    },
+    Rule {
+        verdict: Verdict::Relay,
+        why: "the UDP mapping is per-destination (symmetric), so what a STUN server sees says nothing about what a peer would see",
+        matches: |m| matches!(m.udp_mapping, Some(UdpMapping::Symmetric)),
     },
 ];
 
@@ -297,11 +469,17 @@ pub fn render_text(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
 
     match m.observed_address {
         Some(a) => out.push_str(&format!(
-            "  address    {}{}\n",
+            "  address    {}{}{}\n",
             a,
-            if m.is_cgnat() { " (CGNAT)" } else { "" }
+            if m.is_cgnat() { " (CGNAT)" } else { "" },
+            match &m.address_why {
+                Some(why) => format!(" ({why})"),
+                None => String::new(),
+            }
         )),
-        None => out.push_str("  address    not measured (no reflect edge answered)\n"),
+        None => {
+            out.push_str("  address    not measured (no STUN server or reflect edge answered)\n")
+        }
     }
 
     match m.routable_v6 {
@@ -310,7 +488,10 @@ pub fn render_text(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
     }
 
     if m.udp_ports.is_empty() {
-        out.push_str("  udp map    not measured\n");
+        match &m.udp_why {
+            Some(why) => out.push_str(&format!("  udp map    not measured ({why})\n")),
+            None => out.push_str("  udp map    not measured\n"),
+        }
     } else {
         let pairs: Vec<String> = m
             .udp_ports
@@ -327,7 +508,10 @@ pub fn render_text(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
     }
 
     if m.tcp_views.is_empty() {
-        out.push_str("  tcp map    not measured\n");
+        match m.reflect_why.first() {
+            Some(why) => out.push_str(&format!("  tcp map    not measured ({why})\n")),
+            None => out.push_str("  tcp map    not measured\n"),
+        }
     } else {
         let pairs: Vec<String> = m
             .tcp_views
@@ -338,24 +522,48 @@ pub fn render_text(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
             })
             .collect();
         let label = match m.tcp_agrees() {
-            Some(true) => "  independent",
-            Some(false) => "  per-destination",
+            // Named with its caveat, because the two connections were
+            // sequential and a NAT can rebind between them. A reader
+            // deciding whether to trust this needs to know that.
+            Some(true) => "  independent (pinned source port, sequential)",
+            Some(false) => "  per-destination (pinned source port, sequential)",
+            // Two vantages over two connections is still not a comparison,
+            // and saying so is the difference between this line and a wrong
+            // answer about the network.
+            // One edge asked more than once is a different measurement, and
+            // it is the one that says whether a second edge would be worth
+            // standing up.
+            None if m.tcp_mapping_stable() == Some(true) => {
+                "  one edge twice: the mapping held (a second vantage would measure something)"
+            }
+            None if m.tcp_mapping_stable() == Some(false) => {
+                "  one edge twice: the mapping CHANGED, so no two-edge comparison can succeed here"
+            }
+            None if m.tcp_views.len() > 1 => {
+                "  (separate connections, so separate source ports; not a comparison)"
+            }
             None => "  (one vantage; not a comparison)",
         };
         out.push_str(&format!("  tcp map    {}{}\n", pairs.join(", "), label));
     }
 
-    match m.inbound {
-        Some((port, r)) => out.push_str(&format!(
-            "  inbound    port {}: {}\n",
-            port,
-            match r {
-                Inbound::Connected => "connected",
-                Inbound::Refused => "refused",
-                Inbound::Timeout => "timeout",
-            }
-        )),
-        None => out.push_str("  inbound    not measured (no inbound test in this build)\n"),
+    let name = |r: Inbound| match r {
+        Inbound::Connected => "connected",
+        Inbound::Refused => "refused",
+        Inbound::Timeout => "timeout",
+    };
+    if !m.inbound_all.is_empty() {
+        let each: Vec<String> = m
+            .inbound_all
+            .iter()
+            .map(|(p, r)| format!("port {p}: {}", name(*r)))
+            .collect();
+        out.push_str(&format!("  inbound    {}\n", each.join(", ")));
+    } else {
+        match &m.inbound_why {
+            Some(why) => out.push_str(&format!("  inbound    not measured ({why})\n")),
+            None => out.push_str("  inbound    not measured (no --port given)\n"),
+        }
     }
 
     out
@@ -369,8 +577,9 @@ pub fn render_text(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
 /// and is tested without it.
 #[cfg(feature = "stun")]
 pub mod gather {
-    use super::{Measurements, UdpMapping};
+    use super::{EdgeView, Inbound, Measurements, UdpMapping, MAX_PROBE_PORTS};
     use ego_transport::stun::{detect_mapping, NatMapping, ProbeConfig};
+    use std::net::IpAddr;
 
     /// Ask two or more STUN servers what they see of **one** socket, and
     /// classify the mapping.
@@ -381,7 +590,31 @@ pub mod gather {
     /// servers rather than guessing — so a caller that supplies one gets an
     /// error here and "not measured" in the evidence, never a confident
     /// wrong answer.
-    pub async fn udp_mapping(servers: &[&str]) -> Result<(UdpMapping, Vec<(String, u16)>), String> {
+    /// The reflexive address every probe agreed on, or `None`.
+    ///
+    /// STUN's entire job is telling a caller the address the world sees, and
+    /// this was being thrown away: only `.port()` was kept, `observed_address`
+    /// stayed `None`, and the evidence line said "no reflect edge answered"
+    /// while a STUN server had just answered exactly that question.
+    ///
+    /// That mattered far more than a missing line. [`Measurements::is_cgnat`]
+    /// reads `observed_address`, and the CGNAT rule is the one that outranks
+    /// every other — so in the only configuration this build supports, the
+    /// highest-priority rule in the table could never fire, and a machine
+    /// behind a carrier NAT was told `punchable`.
+    ///
+    /// **Only when every probe agrees.** Two servers reporting different
+    /// addresses means different egress paths, and picking one would be a
+    /// guess about which. This module does not guess.
+    fn agreed_address(report: &ego_transport::stun::MappingReport) -> Option<IpAddr> {
+        let mut seen = report.probes.iter().map(|p| p.reflexive.ip());
+        let first = seen.next()?;
+        seen.all(|a| a == first).then_some(first)
+    }
+
+    pub async fn udp_mapping(
+        servers: &[&str],
+    ) -> Result<(UdpMapping, Vec<(String, u16)>, Option<IpAddr>), String> {
         if servers.len() < 2 {
             return Err(format!(
                 "classifying a NAT mapping needs two servers on separate addresses; {} given",
@@ -404,7 +637,7 @@ pub mod gather {
             .zip(report.probes.iter())
             .map(|(s, p)| ((*s).to_string(), p.reflexive.port()))
             .collect();
-        Ok((mapping, ports))
+        Ok((mapping, ports, agreed_address(&report)))
     }
 
     /// A routable IPv6 address on a local interface, if there is one.
@@ -450,11 +683,313 @@ pub mod gather {
     /// A failed STUN probe leaves `udp_mapping` as `None`, which `decide`
     /// reads as "not measured" and answers `relay` — the verdict that works
     /// on every network — rather than abstaining.
+    /// Ask a probe edge to connect back, filling [`Measurements::inbound`].
+    ///
+    /// **The client obligation, enforced rather than documented.**
+    /// `NETCHECK-SPEC.md` §3: the original design was asymmetric on purpose
+    /// -- *"request lands on one edge, SYN fires from the other"* -- and the
+    /// asymmetry was the safety property. A SYN from the address the caller
+    /// just contacted can traverse the mapping the caller's own request
+    /// created and return a false `connected`. With a prober on both gates
+    /// that hazard does not go away; avoiding it becomes the client's job.
+    ///
+    /// So the probe vantage must be one this run has **not** already
+    /// contacted for reflect, and a run that cannot establish two distinct
+    /// vantages reports `not measured` rather than trusting a same-edge
+    /// probe. `connected` is the only result that reaches [`Verdict::Direct`],
+    /// so a false one is the most expensive wrong answer available here.
+    ///
+    /// The token is carried and never parsed. No minting exists yet; when it
+    /// does it is one more opaque query parameter and the response shape is
+    /// unchanged, so nothing here has to know what it says.
+    pub async fn probe(
+        m: &mut Measurements,
+        reflect_url: &str,
+        probe_at: Option<&str>,
+        ports: &[u16],
+    ) {
+        if ports.is_empty() {
+            return;
+        }
+        let Some(url) = probe_url(reflect_url) else {
+            m.inbound_why = Some("the reflect url has no label to derive a probe host from".into());
+            return;
+        };
+        // Two distinct vantages, or nothing. `probe_at` names the probe's;
+        // every reflect view names one already contacted.
+        let Some(at) = probe_at else {
+            m.inbound_why = Some(
+                "no probe vantage named; --port needs --probe-at so the SYN comes from an edge \
+                 this run did not just contact"
+                    .into(),
+            );
+            return;
+        };
+        if m.tcp_views.iter().any(|v| v.dest.starts_with(at)) {
+            m.inbound_why = Some(format!(
+                "the probe would come from {at}, which this run already contacted for reflect; \
+                 a SYN from there can traverse the mapping our own request made"
+            ));
+            return;
+        }
+        if m.tcp_views.is_empty() {
+            m.inbound_why =
+                Some("no reflect edge answered, so there is no observed address to probe".into());
+            return;
+        }
+        let addresses = match crate::reflect::addresses_at(&url, &[at]) {
+            Ok(a) => a,
+            Err(why) => {
+                m.inbound_why = Some(why);
+                return;
+            }
+        };
+        let Some(dest) = addresses.first().copied() else {
+            m.inbound_why = Some(format!("'{at}' named no address"));
+            return;
+        };
+
+        // Sequential and bounded: the prober rate-limits per observed
+        // address (30/min by default), and a client that walks a range
+        // faster than a diagnostic needs is the thing that limit exists for.
+        for port in ports.iter().take(MAX_PROBE_PORTS) {
+            let query = match &m.probe_token {
+                Some(token) => format!("{url}?port={port}&token={token}"),
+                None => format!("{url}?port={port}"),
+            };
+            match crate::reflect::get(&query, dest, None).await {
+                Ok((body, _)) => match parse_probe(&body) {
+                    Ok(result) => m.inbound_all.push((*port, result)),
+                    Err(why) => {
+                        m.inbound_why.get_or_insert(why);
+                    }
+                },
+                // A rate limit is silence. Rendering it as a closed port
+                // would be a confidently wrong answer about the network,
+                // which is the one thing this module exists not to do.
+                Err(why) => {
+                    m.inbound_why.get_or_insert(format!("port {port}: {why}"));
+                }
+            }
+        }
+        // The verdict reads one result, and `connected` is the only one that
+        // can move it, so a connected port is the one to hand it.
+        m.inbound = m
+            .inbound_all
+            .iter()
+            .find(|(_, r)| matches!(r, Inbound::Connected))
+            .or(m.inbound_all.first())
+            .copied();
+    }
+
+    /// `reflect.discofetch.link` -> `reflect--probe.discofetch.link`.
+    ///
+    /// The `<label>--probe` shape is the prober's, and the same one the zone
+    /// and mail pullers use (`deploy/probe/README.md`).
+    fn probe_url(reflect_url: &str) -> Option<String> {
+        let (scheme, rest) = reflect_url.split_once("://")?;
+        let (authority, _) = rest.split_once('/').unwrap_or((rest, ""));
+        let (host, port) = match authority.rsplit_once(':') {
+            Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) && !p.is_empty() => {
+                (h, format!(":{p}"))
+            }
+            _ => (authority, String::new()),
+        };
+        let (label, domain) = host.split_once('.')?;
+        if label.is_empty() {
+            return None;
+        }
+        Some(format!("{scheme}://{label}--probe.{domain}{port}/"))
+    }
+
+    fn parse_probe(body: &str) -> Result<Inbound, String> {
+        let json: serde_json::Value =
+            serde_json::from_str(body).map_err(|_| "the prober did not answer JSON".to_string())?;
+        match json.get("result").and_then(|v| v.as_str()) {
+            Some("connected") => Ok(Inbound::Connected),
+            Some("refused") => Ok(Inbound::Refused),
+            Some("timeout") => Ok(Inbound::Timeout),
+            Some(other) => Err(format!("the prober answered result {other:?}")),
+            None => Err("the prober answered without a result".into()),
+        }
+    }
+
+    /// Ask each reflect edge what it saw, filling [`Measurements::tcp_views`]
+    /// and — where STUN did not already answer — the observed address.
+    ///
+    /// **The JSON form, not `?format=addr-port`.** discofetch's
+    /// `doc/REFLECT-NAT.md` §5 says to key these by the `edge` field, and
+    /// `addr-port` does not carry one: it is `ADDRESS PORT` and nothing
+    /// else. One JSON fetch gives address, port and edge together, so it is
+    /// one request rather than two — and two requests would be two TCP
+    /// connections reporting two different source ports, which is the
+    /// measurement error this whole line is guarded against.
+    ///
+    /// An edge that does not answer becomes a line in
+    /// [`Measurements::reflect_why`] and never a guess. A rate limit
+    /// (HAProxy answers 429 here) is "not measured" like any other silence:
+    /// rendering it as a closed port would be a confidently wrong answer
+    /// about the user's network, which is the one thing this module exists
+    /// not to do.
+    pub async fn reflect(m: &mut Measurements, edges: &[&str], at: &[&str], pin: bool) {
+        // The first fetch takes an ephemeral port and reports it; every
+        // fetch after it leaves from that same port. Sequential on purpose
+        // -- see `reflect::connect_from`.
+        let mut pinned: Option<u16> = None;
+        let mut all_pinned = true;
+        // One name, every address it resolves to. `NETCHECK-SPEC.md` §2:
+        // "One name, two A records. The client resolves
+        // reflect.discofetch.link, connects to each returned address from
+        // the same local port with the same Host, and reads observed.edge
+        // to know which vantage answered."
+        //
+        // So one `--reflect` can be two vantages, and taking only the first
+        // address -- which this did -- would ask one vantage and call it the
+        // set.
+        //
+        // `at` overrides that resolution -- `curl --resolve` by another
+        // name. It exists because the second A record is deliberately held
+        // back until the measurement is trusted, so today the two vantages
+        // are one name reached at two addresses. When the record lands, the
+        // override stops being needed and nothing else changes.
+        let mut targets: Vec<(&str, std::net::SocketAddr)> = Vec::new();
+        for url in edges {
+            let found = if at.is_empty() {
+                crate::reflect::addresses(url).await
+            } else {
+                crate::reflect::addresses_at(url, at)
+            };
+            match found {
+                Ok(found) => targets.extend(found.into_iter().map(|a| (*url, a))),
+                Err(why) => {
+                    all_pinned = false;
+                    m.reflect_why.push(format!("{url}: {why}"));
+                }
+            }
+        }
+        for (url, dest) in targets {
+            match one_edge(url, dest, if pin { pinned } else { None }).await {
+                Ok((view, used_port)) => {
+                    if pin {
+                        match pinned {
+                            None => pinned = Some(used_port),
+                            // A bind that did not take is not a comparison.
+                            Some(want) if want != used_port => all_pinned = false,
+                            Some(_) => {}
+                        }
+                    }
+                    // The address an edge saw over TCP. STUN's is over UDP,
+                    // and a network may egress differently per protocol, so
+                    // a disagreement is recorded rather than resolved.
+                    if let Some(seen) = view.address {
+                        match m.observed_address {
+                            None => m.observed_address = Some(seen),
+                            // Different protocols may egress differently,
+                            // so this is a finding to show and not a
+                            // conflict to resolve. First one wins the field;
+                            // a second disagreement is the same story.
+                            Some(known) if known != seen => {
+                                m.address_why.get_or_insert_with(|| {
+                                    format!("{} saw {seen}, over TCP", view.edge)
+                                });
+                            }
+                            Some(_) => {}
+                        }
+                    }
+                    if view.token.is_some() {
+                        m.probe_token = view.token.clone();
+                    }
+                    m.tcp_views.push(EdgeView {
+                        edge: view.edge,
+                        port: view.port,
+                        dest: dest.to_string(),
+                    });
+                }
+                Err(why) => {
+                    all_pinned = false;
+                    m.reflect_why.push(format!("{url} via {dest}: {why}"));
+                }
+            }
+        }
+        // Only a run where EVERY view left from one port is a comparison.
+        // One failed bind, or one edge that did not answer, and these are
+        // separate observations again.
+        m.tcp_same_source_port = pin && all_pinned && m.tcp_views.len() > 1;
+        // A vantage that answered but names itself nothing new is still a
+        // vantage; the destination is what counted it.
+        let _ = &m.tcp_views;
+    }
+
+    /// What one edge answered.
+    struct EdgeAnswer {
+        edge: String,
+        port: Option<u16>,
+        address: Option<IpAddr>,
+        token: Option<String>,
+    }
+
+    async fn one_edge(
+        url: &str,
+        dest: std::net::SocketAddr,
+        from_port: Option<u16>,
+    ) -> Result<(EdgeAnswer, u16), String> {
+        let (body, used_port) = crate::reflect::get(url, dest, from_port).await?;
+        let json: serde_json::Value =
+            serde_json::from_str(&body).map_err(|_| "the edge did not answer JSON".to_string())?;
+        let observed = json
+            .get("observed")
+            .ok_or("the edge answered JSON with no `observed` block")?;
+        // Absent is not measured, never zero -- NETCHECK-SPEC.md is explicit
+        // about the port, and the same rule is right for all three.
+        let port = observed
+            .get("port")
+            .and_then(|v| v.as_u64())
+            .and_then(|p| u16::try_from(p).ok());
+        let address = observed
+            .get("address")
+            .and_then(|v| v.as_str())
+            .and_then(|a| a.parse::<IpAddr>().ok());
+        // An opaque blob, if the edge ever hands one over. Read as text and
+        // never parsed: the shape is discofetch's to change.
+        let token = observed
+            .get("token")
+            .or_else(|| json.get("token"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        // The edge names itself; where it does not, the URL is the only
+        // honest name for the vantage and is better than inventing one.
+        let edge = observed
+            .get("edge")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| url.to_string());
+        Ok((
+            EdgeAnswer {
+                edge,
+                port,
+                address,
+                token,
+            },
+            used_port,
+        ))
+    }
+
     pub async fn local_and_udp(m: &mut Measurements, stun_servers: &[&str]) {
         m.routable_v6 = routable_v6();
-        if let Ok((mapping, ports)) = udp_mapping(stun_servers).await {
-            m.udp_mapping = Some(mapping);
-            m.udp_ports = ports;
+        match udp_mapping(stun_servers).await {
+            Ok((mapping, ports, address)) => {
+                m.udp_mapping = Some(mapping);
+                m.udp_ports = ports;
+                // Only when a caller has not already supplied one: a reflect
+                // edge is the richer source (it sees the TCP path too), so it
+                // wins where both exist.
+                m.observed_address = m.observed_address.or(address);
+            }
+            // Kept, not discarded. This used to be `if let Ok(..)`, and the
+            // reason the decisive probe failed went nowhere -- so a run
+            // against two real STUN servers that answered nothing looked
+            // exactly like a run with no servers named.
+            Err(why) => m.udp_why = Some(why),
         }
     }
 }
@@ -503,18 +1038,26 @@ mod tests {
         // The trap the spec singles out, and the reason the UDP half is
         // decisive. A verdict read off the TCP columns would say punchable
         // here and be wrong.
+        //
+        // `tcp_same_source_port` because the fixture is describing a real
+        // TCP finding, and endpoint-independent is only a finding when both
+        // views came from one pinned source port. Two equal ports from two
+        // separate connections would be a coincidence, not a measurement.
         let m = Measurements {
             observed_address: public_v4(),
             udp_mapping: Some(UdpMapping::Symmetric),
             udp_ports: vec![("stun1".into(), 51823), ("stun2".into(), 40119)],
+            tcp_same_source_port: true,
             tcp_views: vec![
                 EdgeView {
                     edge: "gate1".into(),
                     port: Some(51823),
+                    dest: "203.0.113.1:443".into(),
                 },
                 EdgeView {
                     edge: "gate2".into(),
                     port: Some(51823),
+                    dest: "203.0.113.2:443".into(),
                 },
             ],
             ..Default::default()
@@ -557,10 +1100,12 @@ mod tests {
                 EdgeView {
                     edge: "gate1".into(),
                     port: Some(51823),
+                    dest: "203.0.113.1:443".into(),
                 },
                 EdgeView {
                     edge: "gate2".into(),
                     port: None,
+                    dest: "203.0.113.2:443".into(),
                 },
             ],
             ..Default::default()
@@ -591,6 +1136,397 @@ mod tests {
         assert_ne!(decide(&m).0, Verdict::Direct);
     }
 
+    /// Both shapes a real machine with routable IPv6 produced, and both
+    /// were wrong before. This is the tree being corrected by a network
+    /// rather than by an argument, which is what the module header says
+    /// will happen first.
+    #[test]
+    fn a_routable_v6_does_not_override_what_v4_actually_measured() {
+        // What `examples/13` runs: a local STUN pair measures the UDP
+        // mapping as independent, and no reflect edge answers. The old tree
+        // said `v6-direct` — an inference about v6, which is never
+        // measured here, beating a measurement of v4 that says punching
+        // works.
+        let punchable_with_v6 = Measurements {
+            routable_v6: Some("2605:59ca:6632:a610::1".parse().unwrap()),
+            udp_mapping: Some(UdpMapping::Independent),
+            ..Default::default()
+        };
+        assert_eq!(decide(&punchable_with_v6).0, Verdict::Punchable);
+
+        // What `examples/09` runs: nothing measured at all, on a machine
+        // that happens to have v6. The old tree read "no edge answered" as
+        // "v4 is hopeless" — because `has_public_v4()` answers false for
+        // `None` — and gave its most specific verdict about a network it
+        // knew nothing about. Relay is the answer that works everywhere,
+        // and not measuring something is not a finding about it.
+        let nothing_measured_with_v6 = Measurements {
+            routable_v6: Some("2605:59ca:6632:a610::1".parse().unwrap()),
+            ..Default::default()
+        };
+        assert_eq!(decide(&nothing_measured_with_v6).0, Verdict::Relay);
+
+        // But a measured symmetric mapping *is* v4 ruled out, so v6 is the
+        // better advice there and still wins over relay.
+        let symmetric_with_v6 = Measurements {
+            routable_v6: Some("2605:59ca:6632:a610::1".parse().unwrap()),
+            udp_mapping: Some(UdpMapping::Symmetric),
+            ..Default::default()
+        };
+        assert_eq!(decide(&symmetric_with_v6).0, Verdict::V6Direct);
+
+        // And CGNAT still outranks everything, v6 included: the address is
+        // shared and no v6 finding changes that.
+        let cgnat_with_v6 = Measurements {
+            observed_address: cgnat_v4(),
+            routable_v6: Some("2605:59ca:6632:a610::1".parse().unwrap()),
+            ..Default::default()
+        };
+        assert_eq!(decide(&cgnat_with_v6).0, Verdict::Relay);
+    }
+
+    /// The exit status has to mean what it says, on a machine with IPv6.
+    #[test]
+    fn holding_a_v6_address_is_not_a_measurement() {
+        // The shape a real machine produced: routable v6, and every probe
+        // that costs a packet failed. Verdict `relay` from ignorance, and
+        // the old exit rule called that a success because v6 was present.
+        let v6_only = Measurements {
+            routable_v6: Some("2605:59ca:6632:a610::1".parse().unwrap()),
+            udp_why: Some("no STUN response".into()),
+            ..Default::default()
+        };
+        assert_eq!(decide(&v6_only).0, Verdict::Relay);
+        assert!(
+            !v6_only.probed_anything(),
+            "reading the routing table is not asking the network"
+        );
+
+        // Anything that cost a packet is a measurement, whatever it found.
+        for m in [
+            Measurements {
+                udp_mapping: Some(UdpMapping::Symmetric),
+                ..Default::default()
+            },
+            Measurements {
+                observed_address: public_v4(),
+                ..Default::default()
+            },
+            Measurements {
+                inbound: Some((22, Inbound::Refused)),
+                ..Default::default()
+            },
+        ] {
+            assert!(m.probed_anything(), "{m:?}");
+        }
+
+        // And the verdict that *does* rest on v6 still reports success,
+        // because reaching it needs v4 measured and ruled out.
+        let v6_direct = Measurements {
+            routable_v6: Some("2605:59ca:6632:a610::1".parse().unwrap()),
+            udp_mapping: Some(UdpMapping::Symmetric),
+            ..Default::default()
+        };
+        assert_eq!(decide(&v6_direct).0, Verdict::V6Direct);
+        assert!(v6_direct.probed_anything());
+    }
+
+    /// A failed decisive probe says why. Four different problems with four
+    /// different fixes used to render identically.
+    #[test]
+    fn an_unmeasured_udp_mapping_carries_its_reason() {
+        let m = Measurements {
+            udp_why: Some("could not resolve STUN server address 'stun1.example:3478'".into()),
+            ..Default::default()
+        };
+        let (v, why) = decide(&m);
+        let text = render_text(&m, v, why);
+        assert!(
+            text.contains("udp map    not measured (could not resolve"),
+            "{text}"
+        );
+
+        // Absent reason, absent parenthetical — no empty "()" to explain.
+        let silent = Measurements::default();
+        let (v, why) = decide(&silent);
+        assert!(render_text(&silent, v, why).contains("udp map    not measured\n"));
+    }
+
+    /// The CGNAT rule outranks everything, and until STUN's own answer was
+    /// kept it could not fire at all in the only configuration this build
+    /// supports — so a machine behind a carrier NAT was told `punchable`,
+    /// which is the single most consequential wrong answer this tool can
+    /// give. It is what the whole verdict table is ordered around.
+    #[test]
+    fn a_cgnat_address_from_stun_alone_is_relay_not_punchable() {
+        // Exactly the shape a STUN-only run now produces: an endpoint-
+        // independent mapping — which on its own reads `punchable` — and
+        // the reflexive address the same probes reported.
+        let behind_cgnat = Measurements {
+            observed_address: cgnat_v4(),
+            udp_mapping: Some(UdpMapping::Independent),
+            ..Default::default()
+        };
+        assert_eq!(decide(&behind_cgnat).0, Verdict::Relay);
+        assert!(behind_cgnat.is_cgnat());
+
+        // The same mapping on a public address is genuinely punchable, so
+        // the assertion above is measuring CGNAT and not refusing all
+        // independent mappings.
+        let public = Measurements {
+            observed_address: public_v4(),
+            udp_mapping: Some(UdpMapping::Independent),
+            ..Default::default()
+        };
+        assert_eq!(decide(&public).0, Verdict::Punchable);
+
+        // And the address is now a measurement, so a STUN-only run reports
+        // success rather than "nothing could be asked".
+        assert!(behind_cgnat.probed_anything());
+        let rendered = {
+            let (v, why) = decide(&behind_cgnat);
+            render_text(&behind_cgnat, v, why)
+        };
+        assert!(rendered.contains("(CGNAT)"), "{rendered}");
+    }
+
+    /// Two vantages are not a comparison, and the line must not pretend
+    /// otherwise.
+    ///
+    /// Each reflect fetch is its own TCP connection with its own ephemeral
+    /// source port, so two edges report two different ports on *every*
+    /// network. `tcp_agrees` used to read that as `Some(false)` —
+    /// "per-destination" — which is a confident statement about a NAT built
+    /// on nothing at all, in the module whose first premise is that it does
+    /// not do that. Measured live: two fetches to the same edge answered
+    /// ports 3075 and 56304.
+    #[test]
+    fn two_edges_over_two_connections_are_not_a_tcp_comparison() {
+        let two_vantages = Measurements {
+            tcp_views: vec![
+                EdgeView {
+                    edge: "gate1".into(),
+                    port: Some(51823),
+                    dest: "203.0.113.1:443".into(),
+                },
+                EdgeView {
+                    edge: "gate2".into(),
+                    port: Some(51999),
+                    dest: "203.0.113.2:443".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            two_vantages.tcp_agrees(),
+            None,
+            "different ports from different connections say nothing"
+        );
+        let (v, why) = decide(&two_vantages);
+        let text = render_text(&two_vantages, v, why);
+        assert!(
+            text.contains("separate source ports; not a comparison"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("per-destination"),
+            "the one answer this must never give here: {text}"
+        );
+
+        // Pinned, the same two ports ARE the measurement, and differing
+        // ports then genuinely mean per-destination.
+        let pinned = Measurements {
+            tcp_same_source_port: true,
+            ..two_vantages.clone()
+        };
+        assert_eq!(pinned.tcp_agrees(), Some(false));
+
+        // And pinned with equal ports is endpoint-independent.
+        let agreeing = Measurements {
+            tcp_same_source_port: true,
+            tcp_views: vec![
+                EdgeView {
+                    edge: "gate1".into(),
+                    port: Some(51823),
+                    dest: "203.0.113.1:443".into(),
+                },
+                EdgeView {
+                    edge: "gate2".into(),
+                    port: Some(51823),
+                    dest: "203.0.113.2:443".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(agreeing.tcp_agrees(), Some(true));
+
+        // One vantage is never a comparison however it was gathered.
+        let one = Measurements {
+            tcp_same_source_port: true,
+            tcp_views: vec![EdgeView {
+                edge: "gate1".into(),
+                port: Some(51823),
+                dest: "203.0.113.1:443".into(),
+            }],
+            ..Default::default()
+        };
+        assert_eq!(one.tcp_agrees(), None);
+    }
+
+    /// `direct` was unreachable from the CLI in v0.4.0 — the verdict that
+    /// requires an inbound connect, with no flag that could produce one.
+    /// `--port` is what closes that, so this asserts the whole path the
+    /// verdict now has.
+    #[test]
+    fn an_inbound_connect_on_a_public_address_reaches_direct() {
+        let m = Measurements {
+            observed_address: public_v4(),
+            inbound: Some((22, Inbound::Connected)),
+            inbound_all: vec![(22, Inbound::Connected)],
+            ..Default::default()
+        };
+        assert_eq!(decide(&m).0, Verdict::Direct);
+        let (v, why) = decide(&m);
+        assert!(render_text(&m, v, why).contains("inbound    port 22: connected"));
+
+        // Refused and timeout match no rule, so they cannot inflate a
+        // verdict — only `connected` can, and only behind a public address.
+        for r in [Inbound::Refused, Inbound::Timeout] {
+            let closed = Measurements {
+                inbound: Some((22, r)),
+                inbound_all: vec![(22, r)],
+                ..m.clone()
+            };
+            assert_ne!(decide(&closed).0, Verdict::Direct);
+        }
+
+        // And a connect observed against a private address means the prober
+        // shares our network, which is not reachability from the internet.
+        let private = Measurements {
+            observed_address: Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5))),
+            ..m.clone()
+        };
+        assert_ne!(decide(&private).0, Verdict::Direct);
+    }
+
+    /// The guard on `tcp_agrees`: two views must be two *destinations*.
+    #[test]
+    fn two_views_of_one_edge_are_not_an_endpoint_comparison() {
+        let twice = |edge: &str| Measurements {
+            tcp_same_source_port: true,
+            tcp_views: vec![
+                EdgeView {
+                    edge: edge.into(),
+                    port: Some(51823),
+                    dest: "203.0.113.1:443".into(),
+                },
+                EdgeView {
+                    edge: edge.into(),
+                    port: Some(51823),
+                    dest: "203.0.113.1:443".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        let same = twice("gate1");
+        assert_eq!(
+            same.tcp_agrees(),
+            None,
+            "one destination says nothing about endpoint-independence"
+        );
+        assert_eq!(
+            same.tcp_mapping_stable(),
+            Some(true),
+            "but it does say the mapping held"
+        );
+
+        // A mapping that changed between two connections to one destination
+        // means no two-edge comparison can ever succeed here.
+        let moved = Measurements {
+            tcp_views: vec![
+                EdgeView {
+                    edge: "gate1".into(),
+                    port: Some(51823),
+                    dest: "203.0.113.1:443".into(),
+                },
+                EdgeView {
+                    edge: "gate1".into(),
+                    port: Some(51999),
+                    dest: "203.0.113.1:443".into(),
+                },
+            ],
+            ..twice("gate1")
+        };
+        assert_eq!(moved.tcp_agrees(), None);
+        assert_eq!(moved.tcp_mapping_stable(), Some(false));
+
+        // Two distinct destinations are the measurement, and stability is
+        // then not the question being asked.
+        let two = Measurements {
+            tcp_views: vec![
+                EdgeView {
+                    edge: "gate1".into(),
+                    port: Some(51823),
+                    dest: "203.0.113.1:443".into(),
+                },
+                EdgeView {
+                    edge: "gate2".into(),
+                    port: Some(51823),
+                    dest: "203.0.113.2:443".into(),
+                },
+            ],
+            ..twice("gate1")
+        };
+        assert_eq!(two.tcp_agrees(), Some(true));
+        assert_eq!(two.tcp_mapping_stable(), None);
+
+        // And the case the edge NAME would have refused: `NETCHECK-SPEC.md`
+        // §2's cheap intermediate is a second listen port on gate1, so two
+        // real vantages that both answer `edge: "gate1"`. Keying on the
+        // destination takes the measurement; keying on the name would have
+        // called it a stability check and thrown it away.
+        let two_ports = Measurements {
+            tcp_views: vec![
+                EdgeView {
+                    edge: "gate1".into(),
+                    port: Some(51823),
+                    dest: "203.0.113.1:443".into(),
+                },
+                EdgeView {
+                    edge: "gate1".into(),
+                    port: Some(51823),
+                    dest: "203.0.113.1:8443".into(),
+                },
+            ],
+            ..twice("gate1")
+        };
+        assert_eq!(two_ports.tcp_agrees(), Some(true));
+        assert_eq!(two_ports.tcp_mapping_stable(), None);
+    }
+
+    /// An edge that did not answer says why, on the line where its absence
+    /// shows — the same rule the udp line already follows.
+    #[test]
+    fn an_edge_that_did_not_answer_says_why() {
+        let m = Measurements {
+            reflect_why: vec!["https://reflect.example/: rate limited by the edge".into()],
+            ..Default::default()
+        };
+        let (v, why) = decide(&m);
+        let text = render_text(&m, v, why);
+        assert!(
+            text.contains("tcp map    not measured (https://reflect.example/: rate limited"),
+            "{text}"
+        );
+        // A rate limit is silence, not a finding about the network. It must
+        // not reach the verdict.
+        assert_eq!(v, Verdict::Relay);
+        assert!(
+            !m.probed_anything(),
+            "an edge that refused measured nothing"
+        );
+    }
+
     #[test]
     fn every_rule_is_reachable() {
         // A table whose row never fires is a row nobody maintains. Each
@@ -607,6 +1543,13 @@ mod tests {
                 ..Default::default()
             },
             Measurements {
+                observed_address: public_v4(),
+                udp_mapping: Some(UdpMapping::Independent),
+                ..Default::default()
+            },
+            // v6-direct needs v4 *measured* and ruled out, not merely
+            // unmeasured — a private observed address is a measurement.
+            Measurements {
                 observed_address: Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5))),
                 routable_v6: Some("2001:db8::1".parse().unwrap()),
                 ..Default::default()
@@ -614,11 +1557,6 @@ mod tests {
             Measurements {
                 observed_address: public_v4(),
                 udp_mapping: Some(UdpMapping::Symmetric),
-                ..Default::default()
-            },
-            Measurements {
-                observed_address: public_v4(),
-                udp_mapping: Some(UdpMapping::Independent),
                 ..Default::default()
             },
         ];

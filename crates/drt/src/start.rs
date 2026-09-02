@@ -321,7 +321,7 @@ pub fn serve_with_observer(
             // The program chose to exit; ports serving a drained swarm
             // would answer 503 forever, and a supervisor should see the
             // exit instead.
-            return Ok(());
+            return crate::run::finish(sw.host().dispatcher());
         }
         let sleep = next_deadline(sw.host().inner())
             .map(|d| d.saturating_duration_since(Instant::now()).min(IDLE_TICK))
@@ -344,7 +344,7 @@ fn serve_swarm_only(config: &RootConfig, dispatcher: Dispatcher) -> Result<(), S
             enforce_residency(&mut sw, root, residency.max_resident);
         }
         if alive == 0 {
-            return Ok(());
+            return crate::run::finish(sw.host().dispatcher());
         }
         let sleep = next_deadline(sw.host().inner())
             .map(|d| d.saturating_duration_since(Instant::now()).min(IDLE_TICK))

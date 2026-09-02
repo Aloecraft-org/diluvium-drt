@@ -61,6 +61,14 @@ impl<H: SwarmHost> PumpHost<H> {
     pub fn inner(&self) -> &H {
         &self.inner
     }
+
+    /// The dispatcher this pump answers through, so a host that owns a
+    /// swarm can still reach its connectors — `Dispatcher::finish` at
+    /// shutdown is the reason, and a caller that has handed its dispatcher
+    /// to a swarm has no other way back to it.
+    pub fn dispatcher(&self) -> &Dispatcher {
+        &self.dispatcher
+    }
 }
 
 impl<H: SwarmHost> SwarmHost for PumpHost<H> {

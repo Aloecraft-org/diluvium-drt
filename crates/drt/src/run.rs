@@ -78,7 +78,7 @@ pub fn run(
                      nothing else can ({BUDGET_ESCAPE_DOC})."
                 ))
             }
-            Step::Done => return Ok(()),
+            Step::Done => return finish(dispatcher),
             Step::Parked(wait) => wait,
         };
 
@@ -123,6 +123,28 @@ pub fn run(
             );
         };
     }
+}
+
+/// The run ended; ask the connectors whether it ended cleanly.
+///
+/// A connector that holds state across hostcalls can lose work at teardown
+/// without any call having failed -- `sql` is the one that does, and its
+/// answer names the databases and what happened to them. The program is
+/// already over, so this changes nothing about what ran; it decides whether
+/// the process reports success for it.
+///
+/// Reporting it as an error rather than a warning is the point. A warning
+/// on stderr is a thing a supervisor does not act on.
+///
+/// `drt start` calls this too, at the two places its swarm drains, because
+/// a long-running deployment is the shape where an abandoned transaction is
+/// most likely and least visible.
+pub fn finish(dispatcher: &Dispatcher) -> Result<(), String> {
+    let lost = dispatcher.finish();
+    if lost.is_empty() {
+        return Ok(());
+    }
+    Err(lost.join("; "))
 }
 
 fn guest_error(e: EngineError) -> String {

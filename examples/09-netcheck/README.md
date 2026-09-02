@@ -23,11 +23,11 @@ relay — the UDP mapping could not be measured, and relay is the answer that wo
   use: use a tunnel
 
 evidence
-  address    not measured (no reflect edge answered)
-  v6         none routable
-  udp map    not measured
+  address    not measured (no STUN server or reflect edge answered)
+  v6         <v6, this machine's>
+  udp map    not measured (classifying a NAT mapping needs two servers on separate addresses; 0 given)
   tcp map    not measured
-  inbound    not measured (no inbound test in this build)
+  inbound    not measured (no --port given)
 exit 1
 
 $ drt netcheck --stun stun.l.google.com:19302
@@ -52,6 +52,18 @@ reports `not measured` instead of guessing.
 endpoint-independent for TCP and symmetric for UDP, and it is the UDP
 behaviour a hole punch lands on. A verdict built on `tcp map` would be
 confidently wrong on exactly the networks where being right matters.
+
+**`not measured` says why, when it can.** The decisive probe failing is the
+one failure you have to be able to act on, and "the servers are down", "the
+name did not resolve", "UDP is blocked on this path" and "you gave me one
+server" are four problems with four different fixes that used to render
+identically. Compare:
+
+```
+udp map    not measured (classifying a NAT mapping needs two servers on separate addresses; 1 given)
+udp map    not measured (could not resolve STUN server address 'stun1.example:3478')
+udp map    not measured (no STUN response from stun1.example:3478 after 3 attempt(s))
+```
 
 **`not measured` is a finding, so it gets a line.** A silently missing one
 reads as a measurement that passed. `address`, `tcp map` and `inbound` are an
