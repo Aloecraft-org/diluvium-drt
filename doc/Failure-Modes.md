@@ -80,7 +80,7 @@ site that dropped a runtime now leaks it or never had one.
 
 ---
 
-## FM-2: a data race in diluvium's continuation registries — NAMED, mitigated here, fixed upstream in build12, pin not yet moved
+## FM-2: a data race in diluvium's continuation registries — NAMED, mitigated here, fixed upstream in build12, pin moved in v0.4.0
 
 **Do not read FM-1 as covering this.** `host_lua` constructs no tokio
 runtime — no `tokio`, no `async`, no `Runtime` anywhere in the binary, and
@@ -122,9 +122,9 @@ affected. **The bump is taken**: this tree pins `515160f`
 0.4.0 moves.
 
 So the mitigation below is now redundant, and is kept for exactly one
-release. Removing a mitigation in the same change that moves the pin it
-mitigates leaves nothing to compare against if the crash returns; it goes
-in the release after this one.
+release — v0.4.0, the release that moved the pin. Removing a mitigation in
+the same change that moves the pin it mitigates leaves nothing to compare
+against if the crash returns; it comes out in the release after v0.4.0.
 
 **Why it never reproduced, which is the part worth keeping.** `addcont`
 writes only when a name is not already present, so once every name is
@@ -152,15 +152,17 @@ this tree that calls `dv_new` from several threads at once.
 instance *creation* behind a `Mutex`. Creation is rare and cheap next to
 running a program, and the lock covers only creation — instances still run
 concurrently, one per thread. This closes the cold-start window completely
-for DRT. It is a mitigation in one host, not the fix; remove it when the
-diluvium pin carries the upstream repair — `grep -A2 'name = "diluvium"'
-Cargo.lock` showing build12 or later is the whole condition, and the
-comment at the lock's use site says so too.
+for DRT. It is a mitigation in one host, not the fix. Its removal condition was
+that the diluvium pin carry the upstream repair — `grep -A2 'name =
+"diluvium"' Cargo.lock` showing build12 or later — and **that condition is
+met** as of v0.4.0. The comment at the lock's use site says the same, and
+says why the deletion waits one release.
 
 **Fixed upstream and pinned here.** build12 carries the repair and this
-tree now carries build12p1. So the mitigation is still the thing holding,
-and any *other* host embedding `f137b30` — drt-web included, once it hosts
-more than one instance — has the bug unmitigated.
+tree now carries build12p1, so what holds this bug shut in DRT is the
+upstream fix, not the mutex; the mutex is a redundant second layer awaiting
+deletion. Any *other* host still embedding `f137b30` — drt-web included,
+once it hosts more than one instance — has the bug unmitigated.
 
 **Operational stance.** Unchanged and still worth doing: a fetchpoint
 running `drt start` belongs under a supervisor that restarts it
