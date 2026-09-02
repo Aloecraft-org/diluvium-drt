@@ -76,6 +76,23 @@ pub async fn addresses(url: &str) -> Result<Vec<std::net::SocketAddr>, String> {
     Ok(found)
 }
 
+/// The same, at addresses the caller named instead of the ones DNS would.
+///
+/// The port comes from the URL, so `--reflect-at` names a host address and
+/// not a socket: two vantages of one service are two machines serving the
+/// same port, and letting the flag carry a port would invite pointing it at
+/// something that is not this service at all.
+pub fn addresses_at(url: &str, at: &[&str]) -> Result<Vec<std::net::SocketAddr>, String> {
+    let (_, (_, port), _) = split(url)?;
+    at.iter()
+        .map(|a| {
+            a.parse::<std::net::IpAddr>()
+                .map(|ip| std::net::SocketAddr::new(ip, port))
+                .map_err(|_| format!("'{a}' is not an address"))
+        })
+        .collect()
+}
+
 /// Split a URL into (tls, (host, port), path).
 #[allow(clippy::type_complexity)]
 fn split(url: &str) -> Result<(bool, (String, u16), String), String> {

@@ -224,6 +224,20 @@ vantage answered."* So `--reflect` resolves the name and asks **every**
 address it gets. Add gate2's A record to `reflect` and the command above
 starts comparing, with nothing to change on this side.
 
+**Today, with the second A record still held back**, name gate2's address:
+
+```sh
+drt netcheck --pin-source-port \
+  --stun stun1.discofetch.link:3478 --stun stun2.discofetch.link:3478 \
+  --reflect https://reflect.discofetch.link/ \
+  --reflect-at 108.165.121.165 --reflect-at 172.237.132.87
+```
+
+That is the whole diagnostic in one command: the decisive UDP mapping from
+the live STUN pair, and the TCP mapping from both vantages of one name. The
+`edge` field names which answered, so `tcp map` should read
+`<port> (gate1), <port> (gate2)` with a verdict after it.
+
 **And it is not blocked on the box.** The same section names a cheaper
 intermediate available today: *"A second listen port on gate1 for the same
 reflect path … two destination vantages on one box distinguishes

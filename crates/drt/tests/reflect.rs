@@ -275,3 +275,72 @@ fn a_reflect_address_never_silently_replaces_one_already_measured() {
         "a disagreement recorded and not rendered is a disagreement not recorded: {text}"
     );
 }
+
+/// `--reflect-at` is how the second vantage is reached before the second A
+/// record lands.
+///
+/// The design is one name discriminated by `observed.edge`, and discofetch
+/// is deliberately holding the second A record until the measurement is
+/// trusted — so today `reflect.discofetch.link` resolves to gate1 alone and
+/// gate2 is reached by naming its address. `curl --resolve` by another name.
+#[test]
+fn reflect_at_names_the_vantage_when_dns_names_only_one() {
+    // Two addresses, one port, one name: the gate1/gate2 shape exactly.
+    let bind = |ip: &str, edge: &str| {
+        let listener = TcpListener::bind(format!("{ip}:0")).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let name = edge.to_string();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let seen = stream.peer_addr().unwrap();
+                let mut scratch = [0u8; 2048];
+                let _ = stream.read(&mut scratch);
+                let body = format!(
+                    "{{\"observed\":{{\"address\":\"{}\",\"port\":{},\"edge\":\"{name}\"}}}}",
+                    seen.ip(),
+                    seen.port()
+                );
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                         content-length: {}\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        port
+    };
+    // Same port on both, which a real deployment also has; the loopback
+    // range gives two addresses without a second machine.
+    let port = bind("127.0.0.1", "gate1");
+    let _ = bind("127.0.0.2", "gate2");
+    // A second listener on 127.0.0.2 needs the same port to model this, and
+    // binding :0 twice cannot guarantee it — so ask only for what we got.
+    let text = netcheck(&[
+        "--pin-source-port",
+        "--reflect",
+        &format!("http://reflect.test:{port}/"),
+        "--reflect-at",
+        "127.0.0.1",
+    ]);
+    // The Host stayed the name and the address was ours: one vantage, named
+    // by what the edge called itself rather than by the URL.
+    assert!(text.contains("(gate1)"), "{text}");
+    assert!(
+        text.contains("(one vantage; not a comparison)"),
+        "one address is one vantage: {text}"
+    );
+
+    // And an address that is not one is refused by name rather than
+    // silently resolving the URL instead.
+    let bad = netcheck(&[
+        "--reflect",
+        &format!("http://reflect.test:{port}/"),
+        "--reflect-at",
+        "gate2.example",
+    ]);
+    assert!(bad.contains("is not an address"), "{bad}");
+}

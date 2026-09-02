@@ -128,6 +128,25 @@ releases:
         port and edge together, so it is one request rather than two, and
         two requests would be two connections reporting two source ports.
       - |
+        **`rest` sent no `User-Agent`, which Cloudflare blocks.**
+        `api.discofetch.net` is behind Cloudflare, whose rule 1010 refuses
+        unidentified client signatures — so a guest calling that API got an
+        error page rather than an API, from a connector that had said
+        nothing about itself. It now sends `drt/<version>` when nobody
+        named one, and a guest or an operator naming their own still wins:
+        this only fills the silence.
+      - |
+        **`drt netcheck --reflect-at <address>`**, repeatable: ask
+        `--reflect` at an address rather than at the one its name resolves
+        to, keeping the name in `Host`. `curl --resolve` by another name.
+
+        It exists because the design is one name discriminated by
+        `observed.edge` and discofetch is deliberately holding the second A
+        record until the measurement is trusted — so today gate1 answers
+        `reflect.discofetch.link` and gate2 is reached by naming its
+        address. When the record lands the flag stops being needed and
+        nothing else changes.
+      - |
         **`--reflect` asks every address a name resolves to**, because
         that is what a vantage is. `NETCHECK-SPEC.md` §2, corrected 31 Aug:
         *"One name, two A records. The client resolves

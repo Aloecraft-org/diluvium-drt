@@ -673,7 +673,7 @@ pub mod gather {
     /// rendering it as a closed port would be a confidently wrong answer
     /// about the user's network, which is the one thing this module exists
     /// not to do.
-    pub async fn reflect(m: &mut Measurements, edges: &[&str], pin: bool) {
+    pub async fn reflect(m: &mut Measurements, edges: &[&str], at: &[&str], pin: bool) {
         // The first fetch takes an ephemeral port and reports it; every
         // fetch after it leaves from that same port. Sequential on purpose
         // -- see `reflect::connect_from`.
@@ -688,9 +688,20 @@ pub mod gather {
         // So one `--reflect` can be two vantages, and taking only the first
         // address -- which this did -- would ask one vantage and call it the
         // set.
+        //
+        // `at` overrides that resolution -- `curl --resolve` by another
+        // name. It exists because the second A record is deliberately held
+        // back until the measurement is trusted, so today the two vantages
+        // are one name reached at two addresses. When the record lands, the
+        // override stops being needed and nothing else changes.
         let mut targets: Vec<(&str, std::net::SocketAddr)> = Vec::new();
         for url in edges {
-            match crate::reflect::addresses(url).await {
+            let found = if at.is_empty() {
+                crate::reflect::addresses(url).await
+            } else {
+                crate::reflect::addresses_at(url, at)
+            };
+            match found {
                 Ok(found) => targets.extend(found.into_iter().map(|a| (*url, a))),
                 Err(why) => {
                     all_pinned = false;

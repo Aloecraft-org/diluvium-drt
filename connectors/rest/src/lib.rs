@@ -629,6 +629,28 @@ pub fn request_bytes(
     for (name, value) in &entry.headers {
         out.push_str(&format!("{name}: {value}\r\n"));
     }
+    // A default identity, only when nobody named one. Not politeness: a
+    // request with NO user-agent is the signature Cloudflare's rule 1010
+    // blocks, and `api.discofetch.net` is behind Cloudflare — so a guest
+    // calling it got an error page rather than an API, from a connector
+    // that had sent no identity at all.
+    //
+    // Overridable, deliberately: a guest that names its own is naming
+    // itself, and an operator can pin one through the scope's `headers`
+    // like any other. This only fills the silence.
+    let named_agent = headers
+        .as_ref()
+        .is_some_and(|h| h.keys().any(|k| k.eq_ignore_ascii_case("user-agent")))
+        || entry
+            .headers
+            .keys()
+            .any(|k| k.eq_ignore_ascii_case("user-agent"));
+    if !named_agent {
+        out.push_str(&format!(
+            "user-agent: drt/{}\r\n",
+            env!("CARGO_PKG_VERSION")
+        ));
+    }
     if let Some(b) = body {
         out.push_str(&format!("content-length: {}\r\n", b.len()));
     }
@@ -1339,6 +1361,47 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(r.body, b"hello world");
+    }
+
+    /// A request with no identity is a request Cloudflare blocks.
+    ///
+    /// `api.discofetch.net` is behind Cloudflare, whose rule 1010 refuses
+    /// signatures like an unidentified client's — and this connector sent
+    /// no `user-agent` at all, so a guest calling that API got an error page
+    /// rather than an API from a connector that had said nothing about
+    /// itself.
+    #[test]
+    fn a_default_user_agent_is_sent_and_can_be_overridden() {
+        let entry = open_entry("https://api.example");
+        let out = String::from_utf8(
+            request_bytes(
+                &Url::parse("https://api.example/x").unwrap(),
+                "GET",
+                &None,
+                None,
+                &entry,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(out.contains("user-agent: drt/"), "{out}");
+
+        // A guest naming its own is naming itself; this only fills silence.
+        let mut named = Headers::new();
+        named.insert("user-agent".into(), "mine/1".into());
+        let out = String::from_utf8(
+            request_bytes(
+                &Url::parse("https://api.example/x").unwrap(),
+                "GET",
+                &Some(named),
+                None,
+                &entry,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(out.contains("user-agent: mine/1"), "{out}");
+        assert_eq!(out.matches("user-agent").count(), 1, "not both: {out}");
     }
 
     /// The v0.4.0 bug, kept red-able.

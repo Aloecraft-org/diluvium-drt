@@ -126,6 +126,17 @@ enum Command {
         /// compares nothing. See `Measurements::tcp_agrees`.
         #[arg(long = "reflect", value_name = "URL")]
         reflect: Vec<String>,
+        /// Ask `--reflect` at this address rather than at the one its name
+        /// resolves to. Repeatable: each is one vantage, and the `Host`
+        /// stays the name, so one fetchpoint answers from several edges.
+        ///
+        /// The design is one name discriminated by `observed.edge`, so
+        /// this becomes unnecessary the moment the second A record lands —
+        /// which discofetch is deliberately holding until the measurement
+        /// is trusted. Until then this is how the second vantage is
+        /// reached, and it is `curl --resolve` by another name.
+        #[arg(long = "reflect-at", value_name = "ADDRESS")]
+        reflect_at: Vec<String>,
         /// Send every `--reflect` request from the **same local source
         /// port**, which is what turns two edges into a TCP mapping
         /// comparison rather than two unrelated observations.
@@ -543,6 +554,7 @@ fn main() -> ExitCode {
         Command::Netcheck {
             stun,
             reflect,
+            reflect_at,
             pin_source_port,
             json,
         } => {
@@ -550,13 +562,14 @@ fn main() -> ExitCode {
             let mut m = drt::netcheck::Measurements::default();
             let servers: Vec<&str> = stun.iter().map(String::as_str).collect();
             let edges: Vec<&str> = reflect.iter().map(String::as_str).collect();
+            let at: Vec<&str> = reflect_at.iter().map(String::as_str).collect();
             runtime.block_on(async {
                 drt::netcheck::gather::local_and_udp(&mut m, &servers).await;
                 // After the UDP half on purpose: STUN's address is the one
                 // the decisive measurement saw, and an edge that disagrees
                 // with it is recorded as a disagreement rather than
                 // overwriting it.
-                drt::netcheck::gather::reflect(&mut m, &edges, pin_source_port).await;
+                drt::netcheck::gather::reflect(&mut m, &edges, &at, pin_source_port).await;
             });
             // The same leak as `stun`/`relay`/`tunnel`, for the same reason:
             // FM-1, tokio 1.53.1's use-after-free in runtime teardown, and
