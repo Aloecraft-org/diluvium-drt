@@ -91,6 +91,26 @@ releases:
         It exists for `sql` and is written so the next one does not need a
         new seam.
       - |
+        **`drt buildinfo` reports the embedded diluvium revision.** It was
+        in `BUILDINFO.txt` only -- a sidecar the release workflow writes by
+        grepping `Cargo.lock` -- so a binary someone copied off a machine
+        could not say which language core was inside it, and a package's
+        `requires.diluvium` had nothing in the artifact to check against.
+        `doc/Release.md`'s rule is that the compatibility fact travels with
+        the bytes, and a fact in a file *beside* the bytes does not.
+
+        Stamped at build time from the lockfile (`crates/drt/build.rs`),
+        `unknown` for a build that does not pin diluvium by revision. The
+        release workflow now reads it off the artifact like every other
+        BUILDINFO field, with the lockfile grep kept as the fallback.
+
+        A **revision**, deliberately, not a version. The core exposes no
+        version string at runtime; and the distinctions that have actually
+        mattered here -- FM-2 present or fixed, the budget escape open or
+        closed -- separate `build12` from `build12p1`, which any semver
+        comparison treats as equal because it ignores build metadata. A
+        version field would be a field nothing could check.
+      - |
         **`connectors/ssh` has tests.** It had none, which is how a
         connector that could not answer a single call shipped in v0.3.1 and
         went unnoticed for three days. Five now: scope validation by name,

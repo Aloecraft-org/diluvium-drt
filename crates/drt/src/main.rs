@@ -202,14 +202,25 @@ fn buildinfo(json: bool) -> String {
     // than as a zero a consumer would read as a real ABI number.
     let abi = drt_swarm::engine::abi_versions();
 
+    // Which diluvium is inside, stamped at build time from `Cargo.lock`
+    // (build.rs). A **revision**, deliberately, not a version: the core
+    // exposes no version string at runtime, and the distinctions that have
+    // actually mattered between DRT and diluvium — FM-2 affected or fixed,
+    // the budget escape open or closed — are revision facts that a semver
+    // range could not express even if one existed. `unknown` on a build
+    // that does not pin it by revision.
+    let diluvium_rev = env!("DRT_DILUVIUM_REV");
+
     if json {
         format!(
             "{{\"version\":\"{}\",\"profile\":\"{}\",\"dv_abi\":{},\
-             \"dv_abi_expected\":{},\"connectors\":[{}],\"verbs\":[{}]}}\n",
+             \"dv_abi_expected\":{},\"diluvium\":\"{}\",\
+             \"connectors\":[{}],\"verbs\":[{}]}}\n",
             env!("CARGO_PKG_VERSION"),
             profile,
             abi.map_or("null".into(), |(l, _)| l.to_string()),
             abi.map_or("null".into(), |(_, e)| e.to_string()),
+            diluvium_rev,
             connectors
                 .iter()
                 .map(|c| format!("\"{c}\""))
@@ -224,11 +235,12 @@ fn buildinfo(json: bool) -> String {
     } else {
         format!(
             "version: {}\nprofile: {}\ndv_abi: {}\ndv_abi_expected: {}\n\
-             connectors: {}\nverbs: {}\n",
+             diluvium: {}\nconnectors: {}\nverbs: {}\n",
             env!("CARGO_PKG_VERSION"),
             profile,
             abi.map_or("unknown".into(), |(l, _)| l.to_string()),
             abi.map_or("unknown".into(), |(_, e)| e.to_string()),
+            diluvium_rev,
             connectors.join(","),
             verbs.join(","),
         )

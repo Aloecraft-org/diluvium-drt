@@ -235,7 +235,6 @@ jobs:
           # read below reaches it; before the `cd` it was one level ABOVE the
           # workspace, so this cp failed the step under `set -eu`.
           cp ../install.sh install.sh
-          DILUVIUM_REV=$( (grep -A2 'name = "diluvium"' ../Cargo.lock || true) | sed -n 's/.*#\([0-9a-f]*\)".*/\1/p' | head -1)
           # Asked of the artifact rather than guessed in YAML. The linux
           # binaries are native here, so they can report the dv ABI they
           # actually speak and the connectors actually compiled in; a
@@ -247,6 +246,19 @@ jobs:
           # first element — which is exactly what a dry run of the JSON
           # version produced here.
           bi() { ./"$1" buildinfo 2>/dev/null | sed -n "s/^$2: //p" ; }
+          # Read off the artifact too, and for the same reason. It used to
+          # be grepped out of ../Cargo.lock, which put the fact beside the
+          # bytes rather than in them: a binary someone copied off a machine
+          # could not say which diluvium was inside it. `drt buildinfo` now
+          # answers, stamped at build time (crates/drt/build.rs).
+          #
+          # This has to sit BELOW the chmod above -- above it the binary is
+          # not executable yet, the read fails silently, and the fallback
+          # takes every time while looking like it never does.
+          DILUVIUM_REV=$(bi drt_linux_static_x86_64 diluvium)
+          if [ -z "${DILUVIUM_REV:-}" ] || [ "$DILUVIUM_REV" = unknown ]; then
+            DILUVIUM_REV=$( (grep -A2 'name = "diluvium"' ../Cargo.lock || true) | sed -n 's/.*#\([0-9a-f]*\)".*/\1/p' | head -1)
+          fi
           DV_ABI=$(bi drt_linux_static_x86_64 dv_abi)
           FULL_CONNECTORS=$(bi drt_linux_static_x86_64 connectors)
           SLIM_CONNECTORS=$(bi drt_slim_linux_static_x86_64 connectors)
