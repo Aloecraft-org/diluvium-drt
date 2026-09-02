@@ -81,6 +81,11 @@ is still ahead. See known issues.
   are both ways leaving it implicit can fail, and only one of them is
   recoverable.
 
+  `drt start` does this as well as `drt run`, at both the places its
+  swarm drains. That is the shape a fetchpoint actually runs in, and
+  the one where an abandoned transaction is likeliest and least
+  visible.
+
   Note what was **not** wrong, since the ask was written believing
   otherwise: `begin`, `commit` and `rollback` work, and a committed
   transaction survives. The module header saying "autocommit only"

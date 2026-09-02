@@ -135,7 +135,11 @@ pub fn run(
 ///
 /// Reporting it as an error rather than a warning is the point. A warning
 /// on stderr is a thing a supervisor does not act on.
-fn finish(dispatcher: &Dispatcher) -> Result<(), String> {
+///
+/// `drt start` calls this too, at the two places its swarm drains, because
+/// a long-running deployment is the shape where an abandoned transaction is
+/// most likely and least visible.
+pub fn finish(dispatcher: &Dispatcher) -> Result<(), String> {
     let lost = dispatcher.finish();
     if lost.is_empty() {
         return Ok(());
