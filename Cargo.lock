@@ -921,7 +921,7 @@ dependencies = [
 [[package]]
 name = "diluvium"
 version = "0.1.0"
-source = "git+https://github.com/Aloecraft-org/diluvium#f137b308c4dce917b24c71ab41add61606945e58"
+source = "git+https://github.com/Aloecraft-org/diluvium#515160f645874fc82de001fea7f68803f47bbc58"
 dependencies = [
  "diluvium-sys",
  "rmp-serde",
@@ -931,7 +931,7 @@ dependencies = [
 [[package]]
 name = "diluvium-sys"
 version = "0.1.0"
-source = "git+https://github.com/Aloecraft-org/diluvium#f137b308c4dce917b24c71ab41add61606945e58"
+source = "git+https://github.com/Aloecraft-org/diluvium#515160f645874fc82de001fea7f68803f47bbc58"
 
 [[package]]
 name = "displaydoc"

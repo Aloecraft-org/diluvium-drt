@@ -155,7 +155,7 @@ Summarised because they change who does what, not just what is true.
 | §1.2 pcall escape | DRT, `reported` | **diluvium**, `src/dv.c:219`, reproduced, not fixed in build12 |
 | §1.3 SQL | implement transactions, or refuse `begin` | transactions already work; the defect is silent rollback at exit |
 | `host.exec` | unreproduced; README appears right | both readings correct — see below; README right, unedited |
-| FM-2 | (not in the ask) | fixed upstream in build12; the rc still pins `f137b30`, so DRT's mutex stays |
+| FM-2 | (not in the ask) | fixed upstream in build12; 0.4.0 takes the bump, and the mutex is kept one release longer on purpose |
 
 **On `host.exec`, since the ask asked to have it read closely.** Your grep
 is correct: there is no `exec` in `crates/drt-swarm/` or

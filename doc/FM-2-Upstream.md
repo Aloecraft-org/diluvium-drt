@@ -12,9 +12,10 @@ that asked for it, kept as written: the diagnosis, the evidence and the
 constraints are still the record of *why* the fix is shaped the way it
 is, and the reproduction recipe is still how you would check a build.
 
-Read the rest as history with one live consequence: **DRT has not taken
-the pin bump yet.** v0.4.0rc1 ships on `f137b30`, so the mitigation in
-`drt-swarm` is still load-bearing for DRT today. See the last section.
+Read the rest as history. **The pin bump is taken**: this tree carries
+`515160f` (5.5.1_build12p1), so nothing here is outstanding. The
+`drt-swarm` mitigation is kept for one more release rather than because it
+is needed; the last section says why.
 
 Verified facts and reconstruction are kept apart throughout, because the
 history of this bug is four days of confident wrong answers built on
@@ -404,13 +405,12 @@ is a mitigation in one host, not a fix: it costs nothing because creation
 is rare, and it makes DRT's test suite honest again. It does not protect
 any other host.
 
-It is still there, and deliberately so. The upstream fix landed but the
-DRT pin did not move with it — v0.4.0rc1 is `f137b30`, which build12
-names as affected — so removing the mutex now would reopen FM-2 for DRT
-rather than close it. The condition for removal is one line in
-`Cargo.lock`: `grep -A2 'name = "diluvium"' Cargo.lock` showing build12
-or later. The comment at the lock's use site says the same thing, so a
-future reader hits it wherever they start.
+It is still there, and the condition for removing it is now met: `grep -A2
+'name = "diluvium"' Cargo.lock` shows build12p1. It is kept for the release
+that moves the pin and goes in the one after, deliberately — removing a
+mitigation in the same change that moves the thing it mitigates leaves
+nothing to compare against if the crash returns. The comment at the lock's
+use site says the same, so a future reader hits it wherever they start.
 
 DRT's shipped exposure was nil either way — `drt run`, `drt start` and
 `drt repl` create instances only on the drive-loop thread — so this was a

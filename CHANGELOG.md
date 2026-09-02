@@ -14,7 +14,7 @@ carries in the release. See `doc/Release.md`.
 
 ## [0.4.0] - unreleased
 
-`v0.4.0` &middot; dv ABI 1 &middot; diluvium `f137b308c4dc`
+`v0.4.0` &middot; dv ABI 1 &middot; diluvium `515160f64587`
 
 The three §1 items from discofetch's 0.5.0 ask, which are the ones
 where the runtime contradicted a documented guarantee.
@@ -406,6 +406,22 @@ is still ahead. See known issues.
 
 ### Known issues
 
+- **The diluvium pin moves to 5.5.1_build12p1**, which is what
+  v0.4.0rc1 deliberately deferred. It carries both upstream fixes
+  this repository was waiting on: FM-2's data race (`src/dsync.h`,
+  build12) and the instruction budget being switched off by its own
+  first firing (`src/dv.c`, build12p1).
+
+  Verified rather than assumed, twice: the whole gate was run against
+  this revision before the bump was taken, and the two-line escape
+  that ran unbounded on `f137b30` now exits 1.
+
+  **`drt-swarm`'s creation mutex could now be removed** — that was
+  always the stated condition, and `grep -A2 'name = "diluvium"'
+  Cargo.lock` now shows build12p1. It is kept for this release
+  anyway: removing a mitigation in the same change that moves the pin
+  it mitigates leaves nothing to compare against if a crash returns.
+  The comment at the lock says the condition is met.
 - **A guest can hang the whole deployment (FM-4).** One line, needing
   no capability:
 
@@ -416,11 +432,11 @@ is still ahead. See known issues.
   no listener is served. Measured, with the control case (the same
   child without the `pcall`) stopped by its budget in milliseconds.
 
-  diluvium 5.5.1_build12p1 fixes the *accounting* half -- the hook
-  stays armed, so an escaped instance can no longer report perfect
-  health while running on -- and each catch still buys
-  `DV_HOOK_STEP` instructions, so a loop of catches is still
-  unbounded. Verified against the fixed build.
+  The pin now carries build12p1, which fixes the *accounting* half
+  -- the hook stays armed, so an escaped instance can no longer
+  report perfect health while running on -- and each catch still
+  buys `DV_HOOK_STEP` instructions, so a loop of catches is still
+  unbounded. Verified against the pinned build.
 
   DRT cannot close this from here: `dv.h` exposes no interrupt, the
   one hook slot is the budget's, and a CPU-bound guest never returns

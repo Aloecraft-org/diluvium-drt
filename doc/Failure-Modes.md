@@ -116,10 +116,15 @@ write-up, with the interleaving and the fix options, in
 
 **Fixed upstream 2026-09-01**, in diluvium 5.5.1_build12: `src/dsync.h`
 guards both registries, and that release names `f137b30` and earlier as
-affected. DRT has not taken the bump — v0.4.0rc1 pins `f137b30` on
-purpose, because the examples gate was captured against it — so for a
-binary built from this tree the mitigation below is still what closes
-FM-2, not a leftover.
+affected. **The bump is taken**: this tree pins `515160f`
+(5.5.1_build12p1), which carries `src/dsync.h`. v0.4.0rc1 shipped on
+`f137b30` on purpose — the examples gate was captured against it — and
+0.4.0 moves.
+
+So the mitigation below is now redundant, and is kept for exactly one
+release. Removing a mitigation in the same change that moves the pin it
+mitigates leaves nothing to compare against if the crash returns; it goes
+in the release after this one.
 
 **Why it never reproduced, which is the part worth keeping.** `addcont`
 writes only when a name is not already present, so once every name is
@@ -152,8 +157,8 @@ diluvium pin carries the upstream repair — `grep -A2 'name = "diluvium"'
 Cargo.lock` showing build12 or later is the whole condition, and the
 comment at the lock's use site says so too.
 
-**Fixed upstream, not yet pinned here.** build12 carries the repair; this
-tree does not carry build12. So the mitigation is still the thing holding,
+**Fixed upstream and pinned here.** build12 carries the repair and this
+tree now carries build12p1. So the mitigation is still the thing holding,
 and any *other* host embedding `f137b30` — drt-web included, once it hosts
 more than one instance — has the bug unmitigated.
 
