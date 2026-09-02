@@ -299,12 +299,19 @@ document neither side can check before shipping.
 
 Against the corrected picture.
 
+**§1 is done and pushed**, ahead of this table. `check_attenuation`'s rule
+is enforced at spawn (and the unstated-budget hole nobody had named is
+closed with it), `sql` rolls back explicitly and names it, `connectors/ssh`
+has tests, and FM-3 is a named class in `Failure-Modes.md` with a
+red-provable regression test in both connectors. What remains below is §2
+and §3.
+
 | section | where | size | blocked on |
 |---|---|---|---|
-| §1.1 attenuation | DRT | small — call site, refusal, tests, example | nothing |
-| §1.2 pcall escape | **diluvium** | small upstream; exit-code half is small here | a diluvium session |
-| §1.3 SQL | DRT | small once decided | §3.1 |
-| §1.4 tests + Failure-Modes | DRT | small | nothing |
+| §1.1 attenuation | DRT | **done** | — |
+| §1.2 pcall escape | **diluvium** | exit-code half **done**; enforcement is upstream | a diluvium session |
+| §1.3 SQL | DRT | **done** | — |
+| §1.4 tests + Failure-Modes | DRT | **done** | — |
 | §2.1/§2.2 address + `--port` | DRT | medium | §3.2, and stun1/stun2 up |
 | §2.2b TCP EIM (`socket2`) | DRT | medium, separable, defer | nothing — but it decides nothing, so it goes last |
 | §2.3 config dialects | DRT | small | nothing |

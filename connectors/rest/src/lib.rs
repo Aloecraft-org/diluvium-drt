@@ -1184,4 +1184,54 @@ mod tests {
         let e = c.call("rest/put", None, None).await.unwrap_err();
         assert!(e.0.contains("is not a rest call"), "{}", e.0);
     }
+
+    /// The v0.4.0 bug, kept red-able.
+    ///
+    /// Every other test in this file is a `#[tokio::test]`, so every one of
+    /// them runs with a reactor — which is why none of them caught a
+    /// connector that could not run without one. `drt run` drives connectors
+    /// under `pollster::block_on` (run.rs:67), and an allowed URL died with
+    /// "there is no reactor running" and exit 101 while every *refusal*
+    /// worked, because a refusal is decided before a socket is touched.
+    ///
+    /// So this one is a plain `#[test]`, and what it asserts is the shape of
+    /// the failure rather than its content: dialing a closed port must
+    /// return `Err`. Reaching the assertion means it did not panic.
+    #[test]
+    fn a_call_with_no_reactor_refuses_rather_than_panicking() {
+        // A listener that never accepts, rather than a closed port. The
+        // distinction is the test: a refused connection returns immediately
+        // and `tokio::time::timeout` never has to arm its timer, so it never
+        // touches the reactor and the bug does not appear. The request has to
+        // actually *wait* on something. The kernel completes the handshake
+        // from the backlog, the response never comes, and the timer arms.
+        //
+        // Leaked deliberately: dropping the listener would close the port and
+        // turn this back into the case that proves nothing.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::mem::forget(listener);
+        let origin = format!("http://127.0.0.1:{port}");
+        let sc = scope_of(rmpv::Value::Map(vec![
+            (
+                rmpv::Value::from("allow"),
+                rmpv::Value::Array(vec![rmpv::Value::from(origin.as_str())]),
+            ),
+            // Loopback is private space, so the allowlist would refuse this
+            // before reaching a socket -- which is exactly the path that
+            // never showed the bug.
+            (rmpv::Value::from("allow_private"), rmpv::Value::from(true)),
+        ]));
+        let args = rmpv::Value::Map(vec![
+            (
+                rmpv::Value::from("url"),
+                rmpv::Value::from(format!("{origin}/anything").as_str()),
+            ),
+            // Short, because the timeout firing is the pass condition.
+            (rmpv::Value::from("timeout_ms"), rmpv::Value::from(300u64)),
+        ]);
+
+        let out = pollster::block_on(RestConnector::new().call("rest/get", Some(args), Some(&sc)));
+        out.expect_err("nothing is listening; this cannot succeed");
+    }
 }

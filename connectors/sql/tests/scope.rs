@@ -384,3 +384,94 @@ fn the_grant_splits_with_the_verbs() {
         Status::Ok
     );
 }
+
+/// Transactions work, and the one that does not close is the whole finding.
+///
+/// The 0.5.0 ask was written believing `begin` was answered `ok` by a
+/// connector that had no transactions — so its preferred fix was to
+/// implement them, and its fallback was to refuse `begin` by name. Both are
+/// wrong about this code: `begin`/`commit`/`rollback` pass through to
+/// SQLite on a held connection and a committed row survives. What is real
+/// is narrower and worse: leave the transaction open and the writes vanish
+/// at exit with nothing said.
+#[test]
+fn a_committed_transaction_survives_and_an_abandoned_one_is_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let sc = scope(dir.path(), "readwrite", 64);
+
+    // Committed: the row is there, and `finish` has nothing to report.
+    let c = SqlConnector::new();
+    for sql in [
+        "CREATE TABLE t (a INTEGER)",
+        "BEGIN",
+        "INSERT INTO t VALUES (1)",
+        "COMMIT",
+    ] {
+        call(&c, &sc, "sql/exec", args("t.db", sql, vec![])).unwrap();
+    }
+    assert!(
+        c.finish().is_empty(),
+        "a committed transaction leaves nothing to report"
+    );
+    drop(c);
+
+    let rows = |c: &SqlConnector| {
+        let out = call(c, &sc, "sql/query", args("t.db", "SELECT a FROM t", vec![])).unwrap();
+        field(&out, "rows").as_array().unwrap().len()
+    };
+
+    let c = SqlConnector::new();
+    assert_eq!(rows(&c), 1, "the committed row outlived its connection");
+
+    // Abandoned: the write is answered `ok`, is visible in-process, and is
+    // gone afterwards — which is exactly why it has to be said out loud.
+    call(&c, &sc, "sql/exec", args("t.db", "BEGIN", vec![])).unwrap();
+    call(
+        &c,
+        &sc,
+        "sql/exec",
+        args("t.db", "INSERT INTO t VALUES (2)", vec![]),
+    )
+    .unwrap();
+    assert_eq!(rows(&c), 2, "the guest sees its own uncommitted write");
+
+    let lost = c.finish();
+    assert_eq!(lost.len(), 1, "one database lost work, and it says so");
+    assert!(lost[0].contains("t.db"), "names the database: {}", lost[0]);
+    assert!(
+        lost[0].contains("rolled back"),
+        "says what happened to the writes: {}",
+        lost[0]
+    );
+    drop(c);
+
+    let c = SqlConnector::new();
+    assert_eq!(rows(&c), 1, "the abandoned write did not survive");
+}
+
+/// `finish` is not a warning generator: a connector that lost nothing says
+/// nothing, so a caller can treat any output as a real problem.
+#[test]
+fn a_connector_that_lost_nothing_reports_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = SqlConnector::new();
+    let sc = scope(dir.path(), "readwrite", 64);
+    call(
+        &c,
+        &sc,
+        "sql/exec",
+        args("t.db", "CREATE TABLE t (a INTEGER)", vec![]),
+    )
+    .unwrap();
+    call(
+        &c,
+        &sc,
+        "sql/exec",
+        args("t.db", "INSERT INTO t VALUES (1)", vec![]),
+    )
+    .unwrap();
+    assert!(c.finish().is_empty());
+
+    // And on a connector that never opened anything at all.
+    assert!(SqlConnector::new().finish().is_empty());
+}

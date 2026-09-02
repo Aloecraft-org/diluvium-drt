@@ -164,6 +164,72 @@ absorbed.
 
 ---
 
+---
+
+## FM-3: a connector that needs a reactor, called where there is none — a class, not two bugs
+
+**Two connectors have shipped with this and neither was found by a test.**
+`rest` in v0.4.0 (found by writing `examples/05` against it), `ssh` in
+v0.3.1 (shipped unable to answer a single call, for three days, unnoticed).
+discofetch's 0.5.0 ask names it correctly: *"that is a pattern, not two
+bugs, and the third one is cheaper to prevent than to find."*
+
+**The mechanism.** `drt start` drives connectors on a tokio runtime.
+`drt run`, `drt repl` and the pump use `pollster::block_on` (`run.rs:67`,
+`repl.rs:73`, `pump.rs:47`), which is a bare executor with **no tokio
+reactor**. Any connector that touches `tokio::net` or `tokio::time` under
+that caller panics:
+
+```
+there is no reactor running, must be called from the context of a Tokio 1.x runtime
+```
+
+A panic, not a refusal — a Rust backtrace and exit 101, which is the worst
+failure shape in this codebase: not something a program can read, not even
+something an operator can act on.
+
+**Why every existing test missed it, which is the part worth keeping.**
+Both connectors had tests. Every one of them was a `#[tokio::test]`, so
+every one ran *with* a reactor. The connectors were tested in the one
+configuration where the bug cannot appear, and `rest` had twenty-four of
+them.
+
+**And why the obvious test still misses it.** Dialing a *closed* port does
+not reproduce this. The connection is refused immediately, the future never
+pends, and `tokio::time::timeout` therefore never arms its timer and never
+touches the reactor. The first version of the `rest` regression test did
+exactly this and passed with the fix removed. The request has to actually
+wait on something: bind a listener and never accept it, so the handshake
+completes from the backlog and the response never comes.
+
+**The fix, in both.** The connector carries its own runtime for callers that
+have none:
+
+```rust
+match tokio::runtime::Handle::try_current() {
+    Ok(_) => work.await,
+    Err(_) => own_runtime().block_on(work),
+}
+```
+
+`own_runtime` is a `OnceLock`, built on first use and never dropped — leaked
+for FM-1's reason.
+
+**The rule for the next connector.** Any connector that can reach a socket
+or a timer needs both halves, and the plain-`#[test]` half is the one that
+matters:
+
+- `a_call_with_no_reactor_refuses_rather_than_panicking` — a plain `#[test]`,
+  against something that pends.
+- the same call under a real runtime, which is `drt start`'s shape.
+
+`connectors/rest/src/lib.rs` and `connectors/ssh/tests/scope.rs` both carry
+this pair, and both were confirmed to fail with the fix reverted rather than
+assumed to.
+
+**Residual risk.** `time`, `fs`, `crypto` and `sql` touch no socket and no
+timer, so the class does not reach them. Every connector that can is covered.
+
 ## What ego-proc does and does not cover
 
 ego-proc is **not** a DRT dependency yet — `Cargo.toml` names it as work

@@ -954,7 +954,34 @@ impl<H: SwarmHost> Swarm<H> {
                     return;
                 }
             };
-        let budget = field_budget(request);
+        // Budgets attenuate, exactly as capabilities do, and for the same
+        // reason: to a program a budget refusal and a capability refusal are
+        // the same kind of event, so they arrive the same way -- `denied`,
+        // with the reason named. `GUARANTEES.md` promises "a child holds a
+        // subset of its parent's grants and nothing more"; before this,
+        // that was true of caps and false of budgets.
+        //
+        // Two halves, and the second is the one easier to miss. A child that
+        // *states* a looser bound is refused. A child that states nothing
+        // resolves to the parent's ceiling rather than to unlimited -- saying
+        // nothing was the cheaper escape of the two, because it needed no
+        // intent at all. `fits_within` already reads an unstated bound as
+        // inheriting, and `resolved_against` is what makes that true of the
+        // budget actually enforced.
+        let parent_budget = self.slots[parent_index].budget;
+        let requested = field_budget(request);
+        if !requested.fits_within(&parent_budget) {
+            self.emit(
+                parent_id,
+                "denied",
+                0,
+                Some(
+                    "budget: a child may state a smaller budget than its parent's, never a larger",
+                ),
+            );
+            return;
+        }
+        let budget = requested.resolved_against(&parent_budget);
         let Some(child_index) = self.claim() else {
             self.emit(parent_id, "denied", 0, Some("the instance table is full"));
             return;

@@ -29,9 +29,17 @@
 //!   a grant of `host:sql/query` against a read deployment is exactly what
 //!   it says, and the family wildcard on a readwrite one is the bigger
 //!   thing it says.
-//! - One statement per call, autocommit only. State *between* hostcalls
-//!   means a handle the host holds against the guest — real design (the
-//!   endpoint token shape), deliberately not smuggled in through v1.
+//! - One statement per call. **Not autocommit only** — this line used to say
+//!   that and it was wrong, which cost a downstream consumer a wrong plan:
+//!   handles are cached, so `BEGIN`, the writes and `COMMIT` reach the same
+//!   connection across separate hostcalls and a committed transaction
+//!   survives. What v1 does not have is a *handle the host holds against the
+//!   guest* — the endpoint-token shape — which is why a transaction is
+//!   scoped to the process rather than to anything the guest can name.
+//!   [`SqlConnector::finish`] is what makes the difference visible: a
+//!   transaction still open when the process ends is rolled back **by name**
+//!   rather than silently by SQLite, because every write inside it was
+//!   already answered `ok`.
 //! - The row cap **refuses rather than truncates**: a truncated result is a
 //!   silent lie, and a guest can page with LIMIT/OFFSET like anything else
 //!   that reads a database.
@@ -304,6 +312,58 @@ impl SqlConnector {
 impl Connector for SqlConnector {
     fn scope_type(&self) -> Box<dyn ScopeType> {
         Box::new(SqlScopeType)
+    }
+
+    /// depth: teardown, and the one thing this connector can lose
+    ///
+    /// Handles are cached across hostcalls, so `begin` in one call and no
+    /// `commit` in any later one leaves a transaction open when the process
+    /// ends. SQLite rolls that back when the connection drops -- correctly,
+    /// and invisibly. Every layer above has already been told `ok`.
+    ///
+    /// So the rollback is issued here rather than left to happen. Not because
+    /// the outcome differs -- it does not -- but because "the writes are gone"
+    /// should not depend on a connection teardown nobody in this repository
+    /// controls, and because the only way to *name* the loss is to be the one
+    /// performing it. A silent rollback and an accidental commit are both ways
+    /// leaving it implicit can fail, and only one of those is recoverable.
+    fn finish(&self) -> Vec<String> {
+        let Ok(open) = self.open.lock() else {
+            return vec!["the sql connector's handle cache is poisoned; whether \
+                         a transaction was open cannot be established"
+                .into()];
+        };
+        let mut lost = Vec::new();
+        for (path, conn) in open.iter() {
+            // The question SQLite answers directly: outside a transaction a
+            // connection is in autocommit, inside one it is not. No parsing
+            // of statements, no counter of our own to get out of step.
+            if conn.is_autocommit() {
+                continue;
+            }
+            let db = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            let detail = match conn.execute_batch("ROLLBACK") {
+                Ok(()) => format!(
+                    "'{db}': a transaction was still open at exit and has been rolled \
+                     back. Writes since `begin` are gone. Every one of them \
+                     was answered `ok`"
+                ),
+                // Failing to roll back does not mean it committed -- the
+                // connection still drops -- but this connector no longer
+                // knows what happened, and saying so is the only honest
+                // answer left.
+                Err(e) => format!(
+                    "'{db}': a transaction was still open at exit and the rollback \
+                     failed ({e}). The state of writes since `begin` is \
+                     unknown"
+                ),
+            };
+            lost.push(detail);
+        }
+        lost
     }
 
     async fn call(

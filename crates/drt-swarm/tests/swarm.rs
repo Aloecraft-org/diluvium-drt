@@ -89,6 +89,14 @@ const SUPERVISOR: &str = r#"
     end
 "#;
 
+/// A child that parks forever, so its slot is still there to be read. A
+/// child that returns is released the moment it does, and `Swarm::budget`
+/// answers `None` for a slot that no longer exists.
+const PARKS: &str = r#"
+    local q = queue.declare("idle", { capacity = 1 })
+    queue.wait({q})
+"#;
+
 fn spawn_request(code: &str, caps: &[&str], budget: Option<(u64, u64)>) -> rmpv::Value {
     let mut map = vec![
         ("op".into(), "spawn".into()),
@@ -834,5 +842,157 @@ fn a_program_waiting_for_space_is_resumed_when_the_queue_drains() {
         vec![1, 2, 3, 4, 5],
         "the blocked pushes never landed — the space-park was answered as a \
          message-park, or not at all"
+    );
+}
+
+/// Budgets attenuate, and the two ways they did not.
+///
+/// `GUARANTEES.md` says a child holds a subset of its parent's grants and
+/// nothing more, and `08-spawn-and-hibernation` teaches that sentence. It
+/// was true of capabilities and false of budgets: `do_spawn` took the
+/// requested budget verbatim.
+#[test]
+fn a_child_may_not_state_a_budget_larger_than_its_parent_s() {
+    let mut sw = swarm();
+    let root = sw
+        .root(
+            SUPERVISOR.as_bytes(),
+            lifecycle_caps(),
+            Budget {
+                instructions: Some(1_000_000),
+                memory_kb: Some(4096),
+            },
+        )
+        .unwrap();
+    sw.step();
+
+    // Asking for more instructions than the parent holds is refused by name,
+    // as a reply rather than a fault -- the same shape as a capability the
+    // parent does not hold.
+    push_value(
+        &mut sw,
+        root,
+        "requests",
+        &spawn_request("return 1", &[], Some((9_000_000, 1024))),
+    );
+    settle(&mut sw, 10);
+    let log = drain_out(&mut sw, root, "log");
+    assert_eq!(event_name(&log[0]), "denied");
+    assert!(
+        detail(&log[0]).contains("budget"),
+        "the refusal must name the budget, not just refuse: {}",
+        detail(&log[0])
+    );
+
+    // Memory is the other bound and is checked the same way.
+    push_value(
+        &mut sw,
+        root,
+        "requests",
+        &spawn_request("return 1", &[], Some((1000, 999_999))),
+    );
+    settle(&mut sw, 10);
+    let log = drain_out(&mut sw, root, "log");
+    assert_eq!(event_name(&log[0]), "denied");
+
+    // Narrowing is the whole point and still works.
+    push_value(
+        &mut sw,
+        root,
+        "requests",
+        &spawn_request("return 1", &[], Some((1000, 512))),
+    );
+    settle(&mut sw, 10);
+    let log = drain_out(&mut sw, root, "log");
+    assert_eq!(event_name(&log[0]), "spawned");
+}
+
+/// The cheaper escape: a child that states no budget at all.
+///
+/// It needed no intent — `budget = nil` is what a spawn request looks like
+/// when nobody thought about it — and it produced an unlimited child under a
+/// bounded parent. An unstated bound now resolves to the parent's ceiling,
+/// which is what `fits_within` always claimed it meant.
+#[test]
+fn a_child_that_states_no_budget_inherits_its_parent_s_ceiling() {
+    let mut sw = swarm();
+    let parent_budget = Budget {
+        instructions: Some(1_000_000),
+        memory_kb: Some(4096),
+    };
+    let root = sw
+        .root(SUPERVISOR.as_bytes(), lifecycle_caps(), parent_budget)
+        .unwrap();
+    sw.step();
+
+    // A runaway child with no stated budget. Under the old behaviour this
+    // spawned unlimited and ran until the step loop gave up on it; now the
+    // parent's ceiling applies and it is reported `exceeded`.
+    push_value(
+        &mut sw,
+        root,
+        "requests",
+        &spawn_request("while true do end", &[], None),
+    );
+    settle(&mut sw, 20);
+    let log = drain_out(&mut sw, root, "log");
+    let names: Vec<_> = log.iter().map(event_name).collect();
+    assert_eq!(
+        names,
+        ["spawned", "exceeded"],
+        "an unstated budget must inherit, not become unlimited"
+    );
+
+    // And the ceiling it inherited is the parent's, read back off the slot.
+    // A *parked* child, because a finished one has already been released and
+    // there is no slot left to read.
+    push_value(
+        &mut sw,
+        root,
+        "requests",
+        &spawn_request(PARKS, &["queue:*"], None),
+    );
+    settle(&mut sw, 10);
+    let log = drain_out(&mut sw, root, "log");
+    assert_eq!(event_name(&log[0]), "spawned");
+    let child = InstanceId(field(&log[0], "id").and_then(|v| v.as_u64()).unwrap() as u32);
+    assert_eq!(sw.budget(child), Some(parent_budget));
+}
+
+/// A partially stated budget takes the parent's ceiling for the half it did
+/// not name. Stating one bound must not silently unbound the other.
+#[test]
+fn a_half_stated_budget_inherits_the_other_half() {
+    let mut sw = swarm();
+    let root = sw
+        .root(
+            SUPERVISOR.as_bytes(),
+            lifecycle_caps(),
+            Budget {
+                instructions: Some(1_000_000),
+                memory_kb: Some(4096),
+            },
+        )
+        .unwrap();
+    sw.step();
+
+    let mut request = spawn_request(PARKS, &["queue:*"], None);
+    if let rmpv::Value::Map(ref mut map) = request {
+        map.push((
+            "budget".into(),
+            rmpv::Value::Map(vec![("instructions".into(), rmpv::Value::from(500u64))]),
+        ));
+    }
+    push_value(&mut sw, root, "requests", &request);
+    settle(&mut sw, 10);
+    let log = drain_out(&mut sw, root, "log");
+    assert_eq!(event_name(&log[0]), "spawned");
+    let child = InstanceId(field(&log[0], "id").and_then(|v| v.as_u64()).unwrap() as u32);
+    assert_eq!(
+        sw.budget(child),
+        Some(Budget {
+            instructions: Some(500),
+            memory_kb: Some(4096),
+        })
     );
 }

@@ -12,6 +12,119 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
+## [0.4.0] - unreleased
+
+`v0.4.0` &middot; dv ABI 1 &middot; diluvium `f137b308c4dc`
+
+The three §1 items from discofetch's 0.5.0 ask, which are the ones
+where the runtime contradicted a documented guarantee.
+
+Everything here is a promise DRT already made and did not keep. Two
+of the three were found twice independently -- once by this
+repository's own examples pass, once by discofetch reading the code
+-- which is the argument for doing them before any feature.
+
+The diluvium pin is unchanged from v0.4.0rc1 and the bump to build12
+is still ahead. See known issues.
+
+### Connectors
+
+- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `listen`
+- `slim`: `time`, `fs`, `crypto`, `listen`
+
+### Added
+
+- **`Connector::finish`**, and `Dispatcher::finish` over it. A
+  connector holding state that outlives a hostcall says at teardown
+  whether that state ended well; each string it returns is one thing
+  that did not. Most connectors hold nothing and take the default.
+
+  It exists for `sql` and is written so the next one does not need a
+  new seam.
+- **`connectors/ssh` has tests.** It had none, which is how a
+  connector that could not answer a single call shipped in v0.3.1 and
+  went unnoticed for three days. Five now: scope validation by name,
+  the unknown verb, and both halves of FM-3.
+
+### Fixed
+
+- **Budgets attenuate at spawn, in both the ways they did not.**
+  `Budget::fits_within` and `InstanceConfig::check_attenuation` were
+  written, correct, tested, and called from nowhere; `do_spawn` took
+  the requested budget verbatim. A child could grant itself more
+  instructions and more memory than its parent held. It is now
+  refused by name -- `denied`, a reply rather than a fault, the same
+  shape as a capability the parent does not hold.
+
+  The second way is the one nobody had named, and it was the cheaper
+  escape of the two because it took no intent at all: a child that
+  stated *no* budget got `Budget::default()`, which is unlimited,
+  under a bounded parent. `budget = nil` is what a spawn request
+  looks like when nobody thought about it. An unstated bound now
+  resolves to the parent's ceiling, which is what `fits_within`
+  always claimed it meant, and a half-stated budget inherits the half
+  it did not name.
+
+  `08-spawn-and-hibernation` teaches "a child holds a subset of its
+  parent's grants and nothing more". That sentence is now true of
+  budgets as well as capabilities.
+- **`sql` no longer discards an open transaction silently.** A
+  program that opened a transaction and exited without committing got
+  `ok` on every call, saw its own writes in-process, and lost them at
+  exit with no error and exit 0.
+
+  The connector now rolls back **explicitly**, names the database,
+  and the process reports non-zero. SQLite would roll back anyway on
+  teardown, so no outcome changes -- what changes is that the outcome
+  no longer depends on a connection drop nobody here controls, and
+  that the loss is *said*. A silent rollback and an accidental commit
+  are both ways leaving it implicit can fail, and only one of them is
+  recoverable.
+
+  Note what was **not** wrong, since the ask was written believing
+  otherwise: `begin`, `commit` and `rollback` work, and a committed
+  transaction survives. The module header saying "autocommit only"
+  was the false part, and it is gone.
+- **FM-3 is named, and both connectors that had it are covered.** A
+  connector reaching `tokio::net` or `tokio::time` under
+  `pollster::block_on` panics with "there is no reactor running" --
+  `rest` in 0.4.0, `ssh` in v0.3.1, the same bug twice.
+
+  Both fixes were already in; what was missing was any test that
+  could fail. Every existing connector test was a `#[tokio::test]`,
+  so all of them ran in the one configuration where the bug cannot
+  appear -- `rest` had twenty-four. Both connectors now carry a plain
+  `#[test]`, and both were confirmed to fail with the fix reverted
+  rather than assumed to.
+
+  The subtlety is recorded because the first attempt got it wrong:
+  dialing a *closed* port does not reproduce this. The connection is
+  refused immediately, the future never pends, and the timeout never
+  arms its timer. The test needs something that actually waits.
+
+### Known issues
+
+- **The instruction budget is still escapable, and the pin is still
+  pre-build12.** Both carried forward from v0.4.0rc1 unchanged; see
+  that entry. The budget escape is upstream (`src/dv.c:219`) and not
+  fixed in build12 either, so the pin bump does not close it.
+- **`crypto/random` is not answered with no config**, and **wasm32 is
+  not in the release matrix**, and **`drt ps` is a stub**. All
+  unchanged from v0.4.0rc1.
+
+### Upgrading
+
+Two behaviour changes can turn a previously-zero exit non-zero, both
+deliberately:
+
+A spawn naming a budget larger than its parent's is now `denied`
+rather than granted. If a supervisor relied on that, it was relying
+on the bug -- but it will see a refusal it did not see before.
+
+A program that leaves a SQL transaction open at exit now fails. It
+was already losing the writes; it just was not told.
+
+
 ## [0.4.0rc1] - 2026-09-01 (prerelease)
 
 `v0.4.0rc1` &middot; dv ABI 1 &middot; diluvium `f137b308c4dc`

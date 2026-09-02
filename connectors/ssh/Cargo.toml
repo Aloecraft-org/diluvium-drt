@@ -19,3 +19,10 @@ drt-connector = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 tempfile = "3"
 drt-hostcall = { workspace = true }
+# Tests generate a throwaway key rather than carrying one. A private key
+# committed to a repository is a private key committed to a repository, even
+# a test fixture's, and it would be the first thing a secret scanner found.
+# Pinned to the revision russh already resolves so this adds no new crate.
+ssh-key = { version = "=0.7.0-rc.11", features = ["ed25519"] }
+getrandom = "0.3"
+pollster = "0.4"
