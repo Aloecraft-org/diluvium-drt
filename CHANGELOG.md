@@ -12,20 +12,41 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
-## [0.4.0] - unreleased
+## [0.4.0] - 2026-09-02
 
 `v0.4.0` &middot; dv ABI 1 &middot; diluvium `515160f64587`
 
-The three §1 items from discofetch's 0.5.0 ask, which are the ones
-where the runtime contradicted a documented guarantee.
+The capability model made true where it was not, a NAT diagnostic
+that finishes, outbound mail, and four ways of being confidently
+wrong that this release stopped being.
 
-Everything here is a promise DRT already made and did not keep. Two
-of the three were found twice independently -- once by this
-repository's own examples pass, once by discofetch reading the code
--- which is the argument for doing them before any feature.
+**The guarantees first.** Budgets did not attenuate at spawn, `sql`
+discarded an open transaction in silence, and the no-reactor panic
+that shipped an uncallable connector in v0.3.1 had no test that
+could fail. Those are promises DRT already made and did not keep,
+and two of the three were found twice independently -- once by this
+repository's own examples pass, once by discofetch reading the code.
+That is the argument for doing them before any feature, and it is
+why they are at the top of this list.
 
-The diluvium pin is unchanged from v0.4.0rc1 and the bump to build12
-is still ahead. See known issues.
+**`netcheck` grew the half it was missing and lost four wrong
+answers.** It can now ask a reflect edge what it saw, pin a source
+port so two vantages are a measurement rather than two numbers, and
+probe a port from an edge it has not contacted -- which makes
+`direct` reachable for the first time. Along the way it stopped
+giving `v6-direct` to networks it had measured nothing about,
+stopped calling two ephemeral ports a comparison, stopped calling
+two views of one destination an endpoint comparison, and started
+saying *why* a measurement is missing. Every one of those was found
+by running it on a real network rather than by reading it.
+
+**`ssmtp`**, `rest`'s sibling: a recipient allowlist, and the relay
+credential and envelope sender held by the deployment so a program
+sends mail without the password and cannot forge its From line.
+
+**The diluvium pin moves to 5.5.1_build12p1**, which v0.4.0rc1
+deliberately deferred. It closes FM-2 and the instruction budget
+switching itself off; the pcall *loop* remains, and FM-4 says so.
 
 ### Connectors
 
