@@ -122,8 +122,9 @@ switching itself off; the pcall *loop* remains, and FM-4 says so.
   with the response shape unchanged, so a parser for it would only
   couple DRT to a format discofetch may rotate.
 
-  Experimental because the server half is not deployed: the prober is
-  not on gate2 yet.
+  Experimental because the server half is not live yet: the prober
+  is being wired onto gate2 and had answered no `--port` run when
+  this was cut.
 - **`rest` sent no `User-Agent`, which Cloudflare blocks.**
   `api.discofetch.net` is behind Cloudflare, whose rule 1010 refuses
   unidentified client signatures — so a guest calling that API got an
@@ -177,9 +178,11 @@ switching itself off; the pcall *loop* remains, and FM-4 says so.
   the fetches are sequential and a NAT may rebind between them.
 
   Nothing measures anything until there is a **second reflect
-  vantage**, which is discofetch's gate2, a box not yet bought.
-  This is the DRT half, finished and tested against two local edges
-  that echo the source port they saw.
+  vantage**. gate2 exists; what is held back is its A record on
+  `reflect.discofetch.link`, so today the second vantage is named
+  with `--reflect-at` rather than resolved. This is the DRT half,
+  finished and tested against two local edges that echo the source
+  port they saw.
 
   With one edge it still answers a question worth asking first: name
   that edge **twice** and the run says whether the NAT held its
@@ -466,10 +469,12 @@ switching itself off; the pcall *loop* remains, and FM-4 says so.
   operational answer, which is not `Restart=always` -- the process
   never dies -- but a liveness watchdog, and one process per tenant
   you do not trust.
-- **The instruction budget is still escapable, and the pin is still
-  pre-build12.** Both carried forward from v0.4.0rc1 unchanged; see
-  that entry. The budget escape is upstream (`src/dv.c:219`);
-  `build12p1` fixes the single-catch case and not the looping one.
+- **The instruction budget is still escapable.** Carried forward
+  from v0.4.0rc1; see that entry. The escape is upstream
+  (`src/dv.c:219`), and the pin this release moves to — `build12p1`
+  — fixes the single-catch case and not the looping one. Whether it
+  is a hazard for a given deployment is answered at the top of
+  `doc/Failure-Modes.md` FM-4.
 - **`crypto/random` is not answered with no config**, and **wasm32 is
   not in the release matrix**, and **`drt ps` is a stub**. All
   unchanged from v0.4.0rc1.
