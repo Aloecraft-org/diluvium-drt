@@ -46,9 +46,15 @@ environment:
   DRT          The drt binary to test.  Defaults to "drt" from PATH.  It is
                resolved to an absolute path and put on PATH under the name
                "drt", so a meta.json "cmd" always spells the command the
-               README spells, and CI can point this at a build:
+               README spells, and CI can point this at a build.
 
-                   DRT=../target/debug/drt ./$SELF
+               Build it with --all-features.  A bare `cargo build` is a
+               SLIM binary -- no sql, ssh, rest, netcheck, tunnel or relay
+               -- and eight of these examples need those, so they are
+               skipped rather than run and diffed:
+
+                   cargo build --release --all-features
+                   DRT=../target/release/drt ./$SELF
 
   TIMEOUT      Seconds any one example may run before it is killed and
                reported as timed out.  Default 120; 0 disables.  Needs
@@ -67,6 +73,9 @@ meta.json:
     "teaches":       "...",               # informational
     "cmd":           "drt run app.dlua",  # run by bash, stdout+stderr captured
     "needs_network": false,               # true => skipped unless --net
+    "needs_build":   "full",              # skipped unless `drt buildinfo`
+                                          # reports that profile.  `cargo
+                                          # build` with no flags is SLIM.
     "normalise":     ["s|a|b|"]           # sed -e, applied to BOTH sides
   }
 
@@ -177,6 +186,7 @@ j_skip() {
 parse_meta() {
     local file=$1 key
     meta_cmd=""; meta_net="false"; meta_name=""; meta_norm=(); j_err=""
+    meta_build=""
 
     _j_s=$(cat -- "$file") || { j_err="cannot read it"; return 1; }
     _j_n=${#_j_s}; _j_i=0
@@ -199,6 +209,7 @@ parse_meta() {
             cmd)           j_string  || return 1; meta_cmd=$REPLY ;;
             name)          j_string  || return 1; meta_name=$REPLY ;;
             needs_network) j_literal || return 1; meta_net=$REPLY ;;
+            needs_build)   j_string  || return 1; meta_build=$REPLY ;;
             normalise|normalize)
                 [ "${_j_s:$_j_i:1}" = '[' ] || { j_err="\"$key\" is not an array"; return 1; }
                 _j_i=$((_j_i + 1))
@@ -362,6 +373,19 @@ fi
 
 printf 'drt: %s\n' "$drt_abs"
 "$drt_abs" buildinfo 2>/dev/null | sed -n 's/^\(version\|profile\): /     \1: /p'
+
+# Which profile this binary is, for the needs_build gate below. `unknown`
+# when buildinfo cannot be read at all, and an unknown profile runs
+# everything rather than skipping everything -- a gate that silently stops
+# checking is worse than one that reports a diff.
+drt_profile=$("$drt_abs" buildinfo 2>/dev/null | sed -n 's/^profile: //p')
+drt_profile=${drt_profile:-unknown}
+if [ "$drt_profile" != full ] && [ "$drt_profile" != unknown ]; then
+    printf '\n%s: this is a %s build, so examples needing the full connector\n' "$SELF" "$drt_profile"
+    printf '%s  set are skipped.  For the whole set:\n\n' "${SELF//?/ }"
+    printf '    cargo build --release --all-features\n'
+    printf '    DRT=../target/release/drt ./%s\n' "$SELF"
+fi
 printf '\n'
 
 # ---------------------------------------------------------------------------
@@ -373,6 +397,7 @@ n_ok=0
 n_fail=0
 failed=()
 skipped=()
+wrong_build=()
 
 for name in ${examples[@]+"${examples[@]}"}; do
     dir=$HERE/$name
@@ -392,6 +417,22 @@ for name in ${examples[@]+"${examples[@]}"}; do
     if [ "$meta_net" = "true" ] && [ "$want_net" != 1 ]; then
         printf 'skipped  %-24s (needs network) — pass --net to run it\n' "$name"
         skipped[${#skipped[@]}]=$name
+        continue
+    fi
+
+    # An example that needs connectors or verbs this binary does not carry
+    # cannot be run, and running it anyway produces a diff that reads like a
+    # regression.  `cargo build` with no flags is a SLIM build, and slim is
+    # missing sql, ssh, rest, netcheck, tunnel and relay -- so the obvious
+    # invocation used to fail eight examples at once, each with a diff whose
+    # real content was "this build does not carry that".
+    #
+    # Skipped, named, and never a pass.  Same rule as the network skip.
+    if [ -n "$meta_build" ] && [ "$meta_build" != "$drt_profile" ] \
+       && [ "$drt_profile" != unknown ]; then
+        printf 'skipped  %-24s (needs a %s build; this drt is %s)\n' \
+            "$name" "$meta_build" "$drt_profile"
+        wrong_build[${#wrong_build[@]}]=$name
         continue
     fi
 
@@ -456,7 +497,7 @@ done
 # Summary
 # ---------------------------------------------------------------------------
 
-n_skip=${#skipped[@]}
+n_skip=$((${#skipped[@]} + ${#wrong_build[@]}))
 n_bare=${#uncovered[@]}
 
 for n in ${uncovered[@]+"${uncovered[@]}"}; do
@@ -469,9 +510,15 @@ printf '\n'
 printf '%d example(s): %d ok, %d failed, %d skipped, %d without a meta.json\n' \
     "$total" "$n_ok" "$n_fail" "$n_skip" "$n_bare"
 
-if [ "$n_skip" -gt 0 ]; then
+# Each skip reason names itself. A skip is never a pass, and a summary that
+# says only "1 skipped" makes the reader go and find out which and why.
+if [ ${#skipped[@]} -gt 0 ]; then
     printf 'skipped for needing a network (NOT a pass): %s\n' "${skipped[*]}"
     printf 'run with --net to include them.\n'
+fi
+if [ ${#wrong_build[@]} -gt 0 ]; then
+    printf 'skipped for needing a full build (NOT a pass): %s\n' "${wrong_build[*]}"
+    printf 'rebuild with --all-features to include them.\n'
 fi
 if [ "$n_bare" -gt 0 ]; then
     printf 'no meta.json, so unchecked: %s\n' "${uncovered[*]}"

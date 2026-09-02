@@ -230,6 +230,89 @@ assumed to.
 **Residual risk.** `time`, `fs`, `crypto` and `sql` touch no socket and no
 timer, so the class does not reach them. Every connector that can is covered.
 
+---
+
+## FM-4: a guest can hang the whole deployment, and there is no in-process mitigation
+
+**Not a crash. The opposite, and worse to operate:** the process stays up,
+answers nothing, and exits nothing. Every restart-on-crash supervisor in the
+world sits there watching it.
+
+**The program.** One line, and it needs no capability at all:
+
+```lua
+while true do pcall(function() while true do end end) end
+```
+
+**What it does, measured on this tree.** Under `drt start` with a root that
+spawns it: the root prints two ticks and then the deployment freezes. Killed
+at 15s, exit 124. Not the child pinned and the rest running — *nothing* runs.
+No other instance steps, no listener is served, the relay stops, the control
+queue stops. The control case, the same child without the `pcall`, is stopped
+by its budget in milliseconds and the root carries on to a clean exit.
+
+**Why the budget does not stop it**, at the pin and after the fix alike.
+Instruction exhaustion is an ordinary catchable Lua error. Before diluvium
+`build12p1` the hook cleared itself on first firing, so one catch disabled
+the budget permanently. build12p1 leaves the hook armed, which is the right
+fix and closes the *accounting* hole — but each catch still buys
+`DV_HOOK_STEP` (1000) instructions, and a loop of catches repeats that
+forever. Verified against the fixed build: still spinning at 25s.
+
+So build12p1 changes this from "unbounded work while reporting perfect
+health" to "unbounded work, honestly counted". That is a real improvement —
+`dv_usage` is trustworthy again — and it is not a bound.
+
+**Why DRT cannot fix it from here.** Three walls, all of them real:
+
+- `dv.h` exposes no interrupt. A host inside `dv_run` has no way to ask the
+  VM to stop, from this thread or any other.
+- The one hook slot is the budget's. `debug.sethook` is refused to guests
+  for exactly this reason (`src/dlibs.c:132`), and DRT setting a second one
+  would switch the budget off.
+- `dv_exceeded()` is readable but useless here: a CPU-bound guest never
+  returns to the host, so there is no resume to refuse. This is why the
+  `drt run` exit-status check (which *is* worth having) does not touch this
+  case.
+
+**The real fix is upstream and is a core-file patch**: `pcall` refusing to
+catch once `exceeded` is set. Lua has no uncatchable error, so nothing
+smaller works. diluvium's own commit for the build12p1 fix says the same and
+names it a `CORE_PATCH_ALLOWLIST` decision.
+
+### What to do until then
+
+**Operationally, today, and this is the part that matters.** `Restart=always`
+does not help — the process never dies. The supervisor needs a *liveness*
+check, not a crash check:
+
+```ini
+# systemd, the shape that actually fires
+WatchdogSec=30
+Restart=always
+```
+
+with the deployment pinging `sd_notify(WATCHDOG=1)`, or failing that an
+external probe against the listener with a restart action. A fetchpoint
+behind HAProxy already has the probe; wire its failure to a restart.
+
+**By deployment.** The exposure is per-process, so a guest you do not trust
+belongs in a process you can kill. One `drt start` per tenant is the whole
+mitigation, and it is a real one.
+
+**In DRT, sized not built.** A watchdog thread that aborts the process when
+one step exceeds a wall-clock bound. It converts an invisible hang into a
+crash, which is what the supervisor was always ready to handle. Crude — it
+takes the deployment's other instances with it, which is why the bound is a
+deployment's number to state and not a default — and it is the only thing
+available without an upstream interrupt. `doc/Next.md` sizes the `wall_ms`
+budget this belongs with.
+
+**What is NOT a mitigation**, said plainly because each looks like one:
+capability restriction (this needs no capability), the instruction budget
+(it is the thing being escaped), a memory budget (the loop allocates
+nothing), and `Restart=always` on its own.
+
 ## What ego-proc does and does not cover
 
 ego-proc is **not** a DRT dependency yet — `Cargo.toml` names it as work

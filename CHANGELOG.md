@@ -41,6 +41,17 @@ is still ahead. See known issues.
 
   It exists for `sql` and is written so the next one does not need a
   new seam.
+- **`examples/run-all.sh` skips what a build cannot run, instead of
+  failing it.** `cargo build` with no flags is a **slim** binary, and
+  eight examples need connectors or verbs slim does not carry -- so
+  the obvious invocation failed eight examples at once, each with a
+  diff whose real content was "this build does not carry that".
+
+  `meta.json` gains `needs_build`, the runner reads the profile from
+  `drt buildinfo`, and a mismatch is a named skip that is never
+  counted as a pass -- the same rule `needs_network` already had. It
+  also says the command to get the whole set, up front, rather than
+  after eight diffs.
 - **`drt buildinfo` reports the embedded diluvium revision.** It was
   in `BUILDINFO.txt` only -- a sidecar the release workflow writes by
   grepping `Cargo.lock` -- so a binary someone copied off a machine
@@ -128,10 +139,33 @@ is still ahead. See known issues.
 
 ### Known issues
 
+- **A guest can hang the whole deployment (FM-4).** One line, needing
+  no capability:
+
+      while true do pcall(function() while true do end end) end
+
+  Under `drt start` the deployment freezes -- not the child pinned
+  and the rest running, but nothing running: no other instance steps,
+  no listener is served. Measured, with the control case (the same
+  child without the `pcall`) stopped by its budget in milliseconds.
+
+  diluvium 5.5.1_build12p1 fixes the *accounting* half -- the hook
+  stays armed, so an escaped instance can no longer report perfect
+  health while running on -- and each catch still buys
+  `DV_HOOK_STEP` instructions, so a loop of catches is still
+  unbounded. Verified against the fixed build.
+
+  DRT cannot close this from here: `dv.h` exposes no interrupt, the
+  one hook slot is the budget's, and a CPU-bound guest never returns
+  to the host for `dv_exceeded()` to be acted on. The fix is a
+  core-file patch upstream. `doc/Failure-Modes.md` FM-4 has the
+  operational answer, which is not `Restart=always` -- the process
+  never dies -- but a liveness watchdog, and one process per tenant
+  you do not trust.
 - **The instruction budget is still escapable, and the pin is still
   pre-build12.** Both carried forward from v0.4.0rc1 unchanged; see
-  that entry. The budget escape is upstream (`src/dv.c:219`) and not
-  fixed in build12 either, so the pin bump does not close it.
+  that entry. The budget escape is upstream (`src/dv.c:219`);
+  `build12p1` fixes the single-catch case and not the looping one.
 - **`crypto/random` is not answered with no config**, and **wasm32 is
   not in the release matrix**, and **`drt ps` is a stub**. All
   unchanged from v0.4.0rc1.

@@ -51,6 +51,16 @@ cd examples && ./run-all.sh                       # all, skipping the networked 
 cd examples && ./run-all.sh --net                 # all
 ```
 
+Against a build rather than an installed `drt`, use `--all-features`. A bare
+`cargo build` is a **slim** binary — no `sql`, `ssh`, `rest`, `netcheck`,
+`tunnel` or `relay` — and eight of these need those, so they are skipped and
+named rather than run:
+
+```
+cargo build --release --all-features
+cd examples && DRT=../target/release/drt ./run-all.sh
+```
+
 Every directory is self-contained: it runs from inside itself and touches
 nothing outside itself. Start with the `cd` — paths inside a config resolve
 against the directory you are standing in, so a config naming `./workspace`

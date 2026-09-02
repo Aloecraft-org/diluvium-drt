@@ -3,6 +3,7 @@
   "teaches": "The other half of 05: a URL the allowlist permits, answered over a real socket, carrying a user-agent the deployment injects and the program can neither set nor read.",
   "cmd": "drt run --config allowlist.json",
   "needs_network": true,
+  "needs_build": "full",
   "normalise": [
     "s|^reply  ok  200$|reply  <what the network in front of you answered>|",
     "s|^reply  error  tls$|reply  <what the network in front of you answered>|"

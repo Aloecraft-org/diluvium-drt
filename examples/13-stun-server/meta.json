@@ -3,5 +3,8 @@
   "teaches": "run two STUN binding servers and classify this machine's NAT from what they answer; one server is never enough",
   "cmd": "./demo.sh",
   "needs_network": false,
-  "normalise": ["s|[0-9][0-9]* (127\\.0\\.0\\.1|<port> (127.0.0.1|g"]
+  "needs_build": "full",
+  "normalise": [
+    "s|[0-9][0-9]* (127\\.0\\.0\\.1|<port> (127.0.0.1|g"
+  ]
 }
