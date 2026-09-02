@@ -29,7 +29,7 @@ is still ahead. See known issues.
 
 ### Connectors
 
-- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `listen`
+- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `listen`
 - `slim`: `time`, `fs`, `crypto`, `listen`
 
 ### Added
@@ -52,6 +52,45 @@ is still ahead. See known issues.
   counted as a pass -- the same rule `needs_network` already had. It
   also says the command to get the whole set, up front, rather than
   after eight diffs.
+- **The `ssmtp` connector: `host:ssmtp/send`.** `rest`'s sibling, and
+  built as one -- `rest`'s scope is an origin allowlist, this one is a
+  recipient allowlist, `@example.com` or an exact address, refused by
+  name. `full` only, on `rest`'s argument and for `rest`'s reason: it
+  links the same TLS stack and adds no new dependency to the profile.
+
+  It carries the part of `rest` worth having. The relay credential and
+  the envelope sender live in the scope, so **a program sends mail
+  without ever holding the password and cannot forge its From line**.
+  That is the argument for this being a connector rather than
+  something a guest reaches through `rest`, and it is the whole reason
+  it exists.
+
+  Modelled on discofetch's `deploy/mail/df-mail-puller`, which exists
+  because "a guest has no SMTP": same relay options, same STARTTLS
+  default, same 587, so a deployment can move from that daemon to this
+  without re-learning its relay.
+
+  Three-quarters of the work is the part that is not about
+  capabilities at all, and each is a test:
+
+  - **Header injection** — a CR or LF in `to` or `subject` ends the
+    header and starts whatever came next: a second `Bcc:`, a forged
+    `From:`. Refused by name rather than escaped, because a header
+    value that wanted a newline wanted something else.
+  - **Dot-stuffing** — a body line of exactly `.` ends DATA, so
+    without it a guest closes the message early and has the rest of
+    its body read as SMTP commands. Bare LF is normalised to CRLF in
+    the same pass.
+  - **AUTH before TLS** — a scope naming a user with `starttls: false`
+    is refused *at startup*. AUTH PLAIN is base64, not encryption, and
+    a deployment that would put a password on the wire should not
+    discover that at 3am.
+
+  `doc/Next.md` had this as one of four "scopes that decide at call
+  time" and that grouping was wrong: a recipient allowlist answers
+  *where*, once, at startup, exactly as every scope DRT already had.
+  It needed none of the shared-predicate work the other three still
+  want.
 - **`drt buildinfo` reports the embedded diluvium revision.** It was
   in `BUILDINFO.txt` only -- a sidecar the release workflow writes by
   grepping `Cargo.lock` -- so a binary someone copied off a machine

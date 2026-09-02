@@ -47,6 +47,7 @@ drt-connector-fs = { workspace = true, optional = true }
 drt-connector-sql = { workspace = true, optional = true }
 drt-connector-crypto = { workspace = true, optional = true }
 drt-connector-rest = { workspace = true, optional = true }
+drt-connector-ssmtp = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -63,7 +64,7 @@ futures-util = { version = "0.3", default-features = false }
 # connector is its own gate so a profile is a feature list, not a fork.
 default = ["slim"]
 slim = ["connector-time", "connector-fs", "connector-crypto", "listen"]
-full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "tunnel", "relay", "stun"]
+full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "tunnel", "relay", "stun"]
 connector-time = ["dep:drt-connector-time"]
 connector-ssh = ["dep:drt-connector-ssh"]
 connector-fs = ["dep:drt-connector-fs"]
@@ -74,6 +75,12 @@ connector-crypto = ["dep:drt-connector-crypto"]
 # and a notebook profile that cannot reach the network is a smaller
 # artifact and a smaller thing to trust.
 connector-rest = ["dep:drt-connector-rest"]
+# Outbound mail: `host:ssmtp/send`. `full` only, on rest's argument and for
+# rest's reason -- it links the same TLS stack. The scope holds the relay
+# credential and the envelope sender, so a program sends mail without ever
+# holding the password and cannot forge its From line; that is the whole
+# reason this is a connector and not something a guest reaches via `rest`.
+connector-ssmtp = ["dep:drt-connector-ssmtp"]
 # The http listener (dhost_http.c's contract). In slim because the C host
 # always carries its listener, and a runtime that cannot serve a fetchpoint
 # is not the runtime discofetch is waiting for.

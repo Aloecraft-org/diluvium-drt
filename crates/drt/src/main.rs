@@ -132,7 +132,8 @@ enum Command {
         feature = "connector-fs",
         feature = "connector-sql",
         feature = "connector-crypto",
-        feature = "connector-rest"
+        feature = "connector-rest",
+        feature = "connector-ssmtp"
     )),
     allow(unused_mut, unused_variables)
 )]
@@ -165,6 +166,9 @@ fn buildinfo(json: bool) -> String {
     }
     if cfg!(feature = "connector-rest") {
         connectors.push("rest");
+    }
+    if cfg!(feature = "connector-ssmtp") {
+        connectors.push("ssmtp");
     }
     if cfg!(feature = "listen") {
         connectors.push("listen");
@@ -320,6 +324,17 @@ fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
                 .wire(
                     "rest",
                     std::sync::Arc::new(drt_connector_rest::RestConnector::new()),
+                    wiring.scope.clone(),
+                )
+                .map_err(|e| e.to_string())?,
+            // The scope carries what the guest must never hold: the relay
+            // credential and the envelope sender. A program sends mail
+            // without the password and cannot choose who it is from.
+            #[cfg(feature = "connector-ssmtp")]
+            "ssmtp" => registry
+                .wire(
+                    "ssmtp",
+                    std::sync::Arc::new(drt_connector_ssmtp::SsmtpConnector::new()),
                     wiring.scope.clone(),
                 )
                 .map_err(|e| e.to_string())?,

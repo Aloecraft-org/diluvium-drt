@@ -20,7 +20,7 @@ profile: full
 dv_abi: 1
 dv_abi_expected: 1
 diluvium: f137b308c4dce917b24c71ab41add61606945e58
-connectors: time,fs,crypto,sql,ssh,rest,listen
+connectors: time,fs,crypto,sql,ssh,rest,ssmtp,listen
 verbs: buildinfo,netcheck,ps,relay,repl,run,start,stun,tunnel
 ```
 
