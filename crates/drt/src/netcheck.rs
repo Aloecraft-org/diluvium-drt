@@ -140,6 +140,13 @@ pub struct Measurements {
     pub udp_mapping: Option<UdpMapping>,
     /// The mapped port each STUN server reported, for the evidence block.
     pub udp_ports: Vec<(String, u16)>,
+    /// Why the UDP mapping is absent, when it is. Rendered beside "not
+    /// measured", because the decisive measurement failing is the one
+    /// failure an operator has to be able to act on: servers down, DNS
+    /// unresolvable, UDP blocked on the path and "you gave me one server"
+    /// are four different problems with four different fixes, and a bare
+    /// "not measured" sends the reader to guess between them.
+    pub udp_why: Option<String>,
     /// What each reflect edge saw. Informational: the TCP half.
     pub tcp_views: Vec<EdgeView>,
     /// The inbound test. Filled by a caller that can arrange an
@@ -164,6 +171,24 @@ impl Measurements {
             }
             _ => false,
         }
+    }
+
+    /// Whether any measurement here involved actually asking the network.
+    ///
+    /// This is what the exit status turns on, and `routable_v6` is
+    /// deliberately not in it. `routable_v6()` reads the routing table and
+    /// sends nothing (see [`gather`]), so a machine that holds a v6 address
+    /// and could not reach a single STUN server has measured *nothing* —
+    /// but the old rule counted the v6 address and exited 0, reporting
+    /// success for a run whose decisive probe failed. Every evidence line
+    /// but one said `not measured` directly above it.
+    ///
+    /// A verdict that rests on a real measurement still exits 0, `relay`
+    /// included: `v6-direct` requires [`v4_ruled_out`](Self::v4_ruled_out),
+    /// which requires an observed address or a symmetric mapping, and both
+    /// of those cost a packet.
+    pub fn probed_anything(&self) -> bool {
+        self.udp_mapping.is_some() || self.observed_address.is_some() || self.inbound.is_some()
     }
 
     /// Whether IPv4 was **measured** and found to have no inbound path —
@@ -345,7 +370,10 @@ pub fn render_text(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
     }
 
     if m.udp_ports.is_empty() {
-        out.push_str("  udp map    not measured\n");
+        match &m.udp_why {
+            Some(why) => out.push_str(&format!("  udp map    not measured ({why})\n")),
+            None => out.push_str("  udp map    not measured\n"),
+        }
     } else {
         let pairs: Vec<String> = m
             .udp_ports
@@ -487,9 +515,16 @@ pub mod gather {
     /// on every network — rather than abstaining.
     pub async fn local_and_udp(m: &mut Measurements, stun_servers: &[&str]) {
         m.routable_v6 = routable_v6();
-        if let Ok((mapping, ports)) = udp_mapping(stun_servers).await {
-            m.udp_mapping = Some(mapping);
-            m.udp_ports = ports;
+        match udp_mapping(stun_servers).await {
+            Ok((mapping, ports)) => {
+                m.udp_mapping = Some(mapping);
+                m.udp_ports = ports;
+            }
+            // Kept, not discarded. This used to be `if let Ok(..)`, and the
+            // reason the decisive probe failed went nowhere -- so a run
+            // against two real STUN servers that answered nothing looked
+            // exactly like a run with no servers named.
+            Err(why) => m.udp_why = Some(why),
         }
     }
 }
@@ -673,6 +708,73 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(decide(&cgnat_with_v6).0, Verdict::Relay);
+    }
+
+    /// The exit status has to mean what it says, on a machine with IPv6.
+    #[test]
+    fn holding_a_v6_address_is_not_a_measurement() {
+        // The shape a real machine produced: routable v6, and every probe
+        // that costs a packet failed. Verdict `relay` from ignorance, and
+        // the old exit rule called that a success because v6 was present.
+        let v6_only = Measurements {
+            routable_v6: Some("2605:59ca:6632:a610::1".parse().unwrap()),
+            udp_why: Some("no STUN response".into()),
+            ..Default::default()
+        };
+        assert_eq!(decide(&v6_only).0, Verdict::Relay);
+        assert!(
+            !v6_only.probed_anything(),
+            "reading the routing table is not asking the network"
+        );
+
+        // Anything that cost a packet is a measurement, whatever it found.
+        for m in [
+            Measurements {
+                udp_mapping: Some(UdpMapping::Symmetric),
+                ..Default::default()
+            },
+            Measurements {
+                observed_address: public_v4(),
+                ..Default::default()
+            },
+            Measurements {
+                inbound: Some((22, Inbound::Refused)),
+                ..Default::default()
+            },
+        ] {
+            assert!(m.probed_anything(), "{m:?}");
+        }
+
+        // And the verdict that *does* rest on v6 still reports success,
+        // because reaching it needs v4 measured and ruled out.
+        let v6_direct = Measurements {
+            routable_v6: Some("2605:59ca:6632:a610::1".parse().unwrap()),
+            udp_mapping: Some(UdpMapping::Symmetric),
+            ..Default::default()
+        };
+        assert_eq!(decide(&v6_direct).0, Verdict::V6Direct);
+        assert!(v6_direct.probed_anything());
+    }
+
+    /// A failed decisive probe says why. Four different problems with four
+    /// different fixes used to render identically.
+    #[test]
+    fn an_unmeasured_udp_mapping_carries_its_reason() {
+        let m = Measurements {
+            udp_why: Some("could not resolve STUN server address 'stun1.example:3478'".into()),
+            ..Default::default()
+        };
+        let (v, why) = decide(&m);
+        let text = render_text(&m, v, why);
+        assert!(
+            text.contains("udp map    not measured (could not resolve"),
+            "{text}"
+        );
+
+        // Absent reason, absent parenthetical — no empty "()" to explain.
+        let silent = Measurements::default();
+        let (v, why) = decide(&silent);
+        assert!(render_text(&silent, v, why).contains("udp map    not measured\n"));
     }
 
     #[test]

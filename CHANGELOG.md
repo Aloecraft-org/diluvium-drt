@@ -78,6 +78,28 @@ is still ahead. See known issues.
 
 ### Fixed
 
+- **`netcheck`'s exit status called a run successful when nothing had
+  been asked of the network.** The rule was "fail only if there is no
+  UDP mapping *and* no routable v6" -- but `routable_v6()` reads the
+  routing table and sends nothing, so a machine holding a v6 address
+  whose STUN probes all failed exited 0 with every packet-costing
+  evidence line reading `not measured`. The exit status is what a
+  script reads.
+
+  It now turns on `probed_anything()`: a UDP mapping, an observed
+  address, or an inbound result. `v6-direct` still exits 0, because
+  reaching that verdict requires v4 measured and ruled out, and that
+  costs a packet.
+- **`netcheck` said `not measured` for a failed UDP probe and never
+  why.** The error from `detect_mapping` was discarded at the call
+  site, so a run against two real STUN servers that answered nothing
+  rendered identically to a run with no servers named. Four problems
+  with four different fixes -- servers down, name unresolvable, UDP
+  blocked on the path, one server given -- looked the same.
+
+  The reason now rides in the evidence line. This is the difference
+  between a diagnostic and a shrug, on the one measurement the
+  verdict actually turns on.
 - **`netcheck` gave `v6-direct` on a network it had measured nothing
   about, and let an inference override a measurement.** Found by
   running the examples on a machine with routable IPv6 — the tree

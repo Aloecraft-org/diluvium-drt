@@ -5,7 +5,7 @@ relay — the UDP mapping could not be measured, and relay is the answer that wo
 evidence
   address    not measured (no reflect edge answered)
   v6         <v6, this machine's>
-  udp map    not measured
+  udp map    not measured (classifying a NAT mapping needs two servers on separate addresses; 0 given)
   tcp map    not measured
   inbound    not measured (no inbound test in this build)
 exit 1
@@ -17,7 +17,7 @@ relay — the UDP mapping could not be measured, and relay is the answer that wo
 evidence
   address    not measured (no reflect edge answered)
   v6         <v6, this machine's>
-  udp map    not measured
+  udp map    not measured (classifying a NAT mapping needs two servers on separate addresses; 1 given)
   tcp map    not measured
   inbound    not measured (no inbound test in this build)
 exit 1

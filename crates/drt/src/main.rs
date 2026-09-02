@@ -530,7 +530,15 @@ fn main() -> ExitCode {
             // be measured at all" is a failure, and that is the case where
             // there was no network to ask rather than a network that
             // answered badly.
-            if m.udp_mapping.is_none() && m.routable_v6.is_none() {
+            //
+            // `probed_anything` and not `udp_mapping.is_none() &&
+            // routable_v6.is_none()`, which is what this was: holding a
+            // routable v6 address is read off the routing table and costs no
+            // packet, so a machine with v6 whose STUN probes all failed
+            // exited 0 while every evidence line that involved asking the
+            // network said `not measured`. The exit status is what a script
+            // reads, so it has to mean what it says.
+            if !m.probed_anything() {
                 return ExitCode::FAILURE;
             }
             ExitCode::SUCCESS

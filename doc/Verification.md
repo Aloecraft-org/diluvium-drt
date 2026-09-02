@@ -52,6 +52,22 @@ the reverse, the table is wrong and I want the block that produced it.
 this build — they are the reflect edges' half and there is no edge to
 ask. `09-netcheck/README.md` says so.
 
+**If `udp map` says `not measured`, read the reason in the brackets.** It
+names which of four different problems you have:
+
+```
+(… needs two servers on separate addresses; 1 given)  -> pass both --stun flags
+(could not resolve STUN server address '…')           -> DNS, or a typo
+(no STUN response from … after 3 attempt(s))          -> the server is down,
+                                                         or UDP is blocked on
+                                                         the path
+```
+
+That last one is worth knowing before you blame the servers: a devcontainer
+or a corporate network commonly drops outbound UDP, and `13-stun-server`
+passing (it uses a *local* pair) while a remote pair fails is exactly that
+shape. Testing from the host rather than inside a container separates them.
+
 **The pre-condition.** This needs stun1 and stun2 on **separate
 addresses**. One STUN server yields `not measured` and the relay
 fallback, by design — `detect_mapping` refuses below two rather than
