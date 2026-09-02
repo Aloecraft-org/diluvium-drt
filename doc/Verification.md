@@ -18,9 +18,10 @@ by *succeeding wrongly*.
 ## surface block
 
 1. §1 — the four that block the rc's honesty. Do these first.
-2. §2 — the network half of `examples/`. Needs real addresses.
-3. §3 — the two-machine examples. Needs two machines.
-4. §4 — what is already confirmed and needs nothing from you.
+2. §1.5 — the deployment that blocks all of `--reflect`. One command.
+3. §2 — the network half of `examples/`. Needs real addresses.
+4. §3 — the two-machine examples. Needs two machines.
+5. §4 — what is already confirmed and needs nothing from you.
 
 ---
 
@@ -142,6 +143,64 @@ custom CA bundle, which is not the shape a fetchpoint sees.
 
 **A failure looks like** exit 101 and `there is no reactor running`. That
 is the original bug and it would mean the fallback did not take.
+
+---
+
+## 1.5 The one that blocks §2: reflect is not deployed
+
+**Checked against the live service on 2026-09-02, and this is the finding
+that decides when `--reflect` can be built.**
+
+`api/supervisor.lua` at discofetch HEAD implements `?format=addr-port`,
+`observed.port` and `observed.edge` (commit `e7bddc4`). **The deployed
+service does not.** Three requests pin it:
+
+```sh
+curl -sS "https://reflect.discofetch.link/?format=text"
+# -> text/plain, "160.79.106.134"          the `text` branch IS deployed
+
+curl -sS "https://reflect.discofetch.link/?format=addr-port"
+# -> application/json, the full body, query echoed back
+#    HEAD would answer text/plain with "ADDRESS PORT" or an empty line
+
+curl -sS "https://reflect.discofetch.link/"
+# -> observed = { forwarded, address }     no `port`, no `edge`
+```
+
+So the running code has the `text` branch and not the `addr-port` branch:
+it predates `e7bddc4`. `doc/REFLECT-NAT.md` says *"`curl -s
+https://reflect.discofetch.link/` shows `observed.port` … `observed.edge =
+"gate1"`"*, and that is not what it shows today.
+
+**What you need to do, in order:**
+
+1. **Deploy the current `api/supervisor.lua`.** Until then `--reflect` has
+   nothing to talk to, and any DRT client for it is written against a
+   document rather than a service.
+2. **Then check the edge actually sets `x-real-port`.** `observed_port(req)`
+   reads that header and nothing else, so if nginx is not sending it the
+   port stays unobserved *forever* and — by the all-or-nothing rule —
+   `?format=addr-port` answers an **empty line** on every request. The
+   check is one command, and it distinguishes "not deployed" from
+   "deployed, header missing":
+
+   ```sh
+   curl -sS "https://reflect.discofetch.link/?format=addr-port"
+   # empty line      -> deployed, but the edge is not sending x-real-port
+   # "ADDR PORT"     -> deployed and observing; --reflect can be built
+   # JSON            -> not deployed yet
+   ```
+
+3. **`observed.edge` needs the same treatment**, and it is what keys the
+   two-edge comparison. One edge that never names itself is one vantage.
+
+**The probe (inbound test) is a separate and larger gap.** `deploy/probe/`
+is a written kit, `REFLECT-NAT.md` §5 calls the probe *"an edge service, not
+a Lua call"* and lists it as a seam arriving with fetch2, and the 0.5.0 ask
+says the written kit does the *wrong thing* (it probes back from the edge
+the caller just talked to). So `--port` is not blocked on DRT: it is blocked
+on an endpoint that does not exist in any form DRT should be written
+against. Nothing in DRT should guess its shape.
 
 ---
 
