@@ -28,6 +28,7 @@ reference. Everything here is v0.4.0.
 | [`12-under-the-hood`](12-under-the-hood) | What every `host.*` call is underneath: the `host/calls` and `host/replies` pair, a token the host echoes back, and a reply of four fields. | `drt run app.dlua` |
 | [`13-stun-server`](13-stun-server) | Run two STUN binding servers and classify this machine's NAT from what they answer. One server is never enough. | `./demo.sh` |
 | [`14-ssh-through-a-tunnel`](14-ssh-through-a-tunnel) | Use your own `ssh` client through DRT with OpenSSH's `ProxyCommand`. `scp`, `rsync`, `sftp` and `-L` come free. | `drt tunnel` |
+| [`15-sending-mail`](15-sending-mail) | Send mail without holding the relay's password, and without being able to choose who the mail is from. | `./demo.sh` |
 
 `drt run` executes one program to completion and exits — no swarm, no
 listeners, no second instance — and it is what `01`–`07`, `10` and `12` use.
@@ -67,10 +68,11 @@ against the directory you are standing in, so a config naming `./workspace`
 means somewhere else if you run it from somewhere else. Where you do see a
 `..`, in `02` and `04`, it is a path the run refuses.
 
-Two examples write a file: `04` removes what it wrote before it exits, and
-`07` leaves its database on disk and drops the table at the top of every run.
-Both list what they write in their own `.gitignore`, so a second run and a
-fresh checkout print what the first run printed.
+Some examples write a file: `04` removes what it wrote before it exits, `07`
+leaves its database on disk and drops the table at the top of every run, and
+`13` and `15` leave a log beside the servers they start. Each lists what it
+writes in its own `.gitignore`, so a second run and a fresh checkout print
+what the first run printed.
 
 `run-all.sh --help` is the gate in full — what `meta.json` holds, why
 `05-calling-a-rest-api-live` is skipped without `--net` and never counted as a

@@ -41,6 +41,12 @@ is still ahead. See known issues.
 
   It exists for `sql` and is written so the next one does not need a
   new seam.
+- **`examples/15-sending-mail`.** The `ssmtp` connector as a
+  run-through, and the one example whose point is best made by the
+  wire rather than the output: the body's lone `.` arrives as `..`,
+  and a subject asking to be `From: me@evil.example` lands *below*
+  the deployment's real `From:` line. Ships a fake relay so it runs
+  with no account and no network.
 - **`examples/run-all.sh` skips what a build cannot run, instead of
   failing it.** `cargo build` with no flags is a **slim** binary, and
   eight examples need connectors or verbs slim does not carry -- so
@@ -367,7 +373,7 @@ argument.
 
   Reflect and the prober — the edges' half — are not implemented
   here; the inbound test reports "not measured" until they exist.
-- **`examples/`, a run-through that is also a gate.** Sixteen
+- **`examples/`, a run-through that is also a gate.** Seventeen
   self-contained directories, each run from inside its own folder,
   each carrying an `expected.txt` captured from a real run, and
   `run-all.sh` to diff them. One needs the open internet and is
