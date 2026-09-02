@@ -128,6 +128,32 @@ releases:
         port and edge together, so it is one request rather than two, and
         two requests would be two connections reporting two source ports.
       - |
+        **`--pin-source-port`, which is what makes two edges a
+        measurement.** `REFLECT-NAT.md` §5 defines the TCP mapping test as
+        *"same-local-port connections to reflect through both edges"*, and
+        nothing in the tree could bind an outbound source port. Now the
+        first fetch reports the ephemeral port it took and every fetch after
+        it leaves from that one.
+
+        **It needed no new dependency.** The work was sized against adding
+        `socket2`; `tokio::net::TcpSocket` binds and sets `SO_REUSEADDR`
+        natively and tokio is already here, so the answer was a smaller
+        change than the question.
+
+        Off by default, and it degrades to honesty rather than to a guess:
+        a bind that fails is reported (`could not leave from port N`) rather
+        than silently falling back to an ephemeral port, and one edge that
+        does not answer drops the whole run back to "not a comparison"
+        instead of leaving half of one. The verdict label carries its
+        caveat — `independent (pinned source port, sequential)` — because
+        `SO_REUSEADDR` permits reuse and not two concurrent connections, so
+        the fetches are sequential and a NAT may rebind between them.
+
+        Nothing measures anything until there is a **second reflect
+        vantage**, which is discofetch's fetch2 and a box not yet bought.
+        This is the DRT half, finished and tested against two local edges
+        that echo the source port they saw.
+      - |
         **`tcp_agrees()` called two vantages a comparison, which they are
         not.** Each reflect fetch is its own TCP connection with its own
         ephemeral source port, so two edges report two different ports on

@@ -126,6 +126,16 @@ enum Command {
         /// compares nothing. See `Measurements::tcp_agrees`.
         #[arg(long = "reflect", value_name = "URL")]
         reflect: Vec<String>,
+        /// Send every `--reflect` request from the **same local source
+        /// port**, which is what turns two edges into a TCP mapping
+        /// comparison rather than two unrelated observations.
+        ///
+        /// Sequential, so a NAT may rebind between the requests; the
+        /// evidence line says so. Off by default because it binds a
+        /// specific port, which can fail, and because with fewer than two
+        /// edges it measures nothing.
+        #[arg(long = "pin-source-port")]
+        pin_source_port: bool,
         /// Machine-readable output. The default is human text, because the
         /// primary consumer is a person deciding what to do next.
         #[arg(long)]
@@ -533,6 +543,7 @@ fn main() -> ExitCode {
         Command::Netcheck {
             stun,
             reflect,
+            pin_source_port,
             json,
         } => {
             let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
@@ -545,7 +556,7 @@ fn main() -> ExitCode {
                 // the decisive measurement saw, and an edge that disagrees
                 // with it is recorded as a disagreement rather than
                 // overwriting it.
-                drt::netcheck::gather::reflect(&mut m, &edges).await;
+                drt::netcheck::gather::reflect(&mut m, &edges, pin_source_port).await;
             });
             // The same leak as `stun`/`relay`/`tunnel`, for the same reason:
             // FM-1, tokio 1.53.1's use-after-free in runtime teardown, and

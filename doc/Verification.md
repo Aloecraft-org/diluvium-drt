@@ -169,6 +169,41 @@ it does not, and an internal or non-Mozilla CA would make **every**
 `--reflect` fail identically on every network — worth knowing before it is
 mistaken for a network finding.
 
+### Two more one-command checks, now that `--reflect` exists
+
+**Does the pinning work on a real machine?** It works here; the failure
+modes are platform-specific and worth ruling out on yours. One edge is
+enough to prove the mechanism:
+
+```sh
+drt netcheck --pin-source-port --reflect https://reflect.discofetch.link/
+```
+
+`(one vantage; not a comparison)` is the right answer — one edge measures
+nothing. What you are checking is that it did not say
+`could not leave from port N`, which is a bind that failed and the one
+platform difference that would sink this.
+
+**And what the two-edge measurement will say, once fetch2 exists.** With
+two reflect names:
+
+```sh
+drt netcheck --pin-source-port \
+  --reflect https://reflect.discofetch.link/ \
+  --reflect https://reflect2.discofetch.link/
+```
+
+`independent (pinned source port, sequential)` means the TCP mapping is
+endpoint-independent. `per-destination` means it is not. Without
+`--pin-source-port` the same command answers *"separate connections, so
+separate source ports; not a comparison"*, which is the honest reading of
+two ephemeral ports and is what it does by default.
+
+`sequential` is in the label on purpose: `SO_REUSEADDR` permits reusing a
+port, not holding two concurrent connections on one, so the fetches happen
+one after the other and a NAT can rebind between them. Two runs agreeing is
+worth more than one run.
+
 ### The three states, and how to read them
 
 ---

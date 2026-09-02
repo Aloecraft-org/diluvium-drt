@@ -442,8 +442,11 @@ pub fn render_text(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
             })
             .collect();
         let label = match m.tcp_agrees() {
-            Some(true) => "  independent",
-            Some(false) => "  per-destination",
+            // Named with its caveat, because the two connections were
+            // sequential and a NAT can rebind between them. A reader
+            // deciding whether to trust this needs to know that.
+            Some(true) => "  independent (pinned source port, sequential)",
+            Some(false) => "  per-destination (pinned source port, sequential)",
             // Two vantages over two connections is still not a comparison,
             // and saying so is the difference between this line and a wrong
             // answer about the network.
@@ -602,10 +605,23 @@ pub mod gather {
     /// rendering it as a closed port would be a confidently wrong answer
     /// about the user's network, which is the one thing this module exists
     /// not to do.
-    pub async fn reflect(m: &mut Measurements, edges: &[&str]) {
+    pub async fn reflect(m: &mut Measurements, edges: &[&str], pin: bool) {
+        // The first fetch takes an ephemeral port and reports it; every
+        // fetch after it leaves from that same port. Sequential on purpose
+        // -- see `reflect::connect_from`.
+        let mut pinned: Option<u16> = None;
+        let mut all_pinned = true;
         for url in edges {
-            match one_edge(url).await {
-                Ok(view) => {
+            match one_edge(url, if pin { pinned } else { None }).await {
+                Ok((view, used_port)) => {
+                    if pin {
+                        match pinned {
+                            None => pinned = Some(used_port),
+                            // A bind that did not take is not a comparison.
+                            Some(want) if want != used_port => all_pinned = false,
+                            Some(_) => {}
+                        }
+                    }
                     // The address an edge saw over TCP. STUN's is over UDP,
                     // and a network may egress differently per protocol, so
                     // a disagreement is recorded rather than resolved.
@@ -629,9 +645,16 @@ pub mod gather {
                         port: view.port,
                     });
                 }
-                Err(why) => m.reflect_why.push(format!("{url}: {why}")),
+                Err(why) => {
+                    all_pinned = false;
+                    m.reflect_why.push(format!("{url}: {why}"));
+                }
             }
         }
+        // Only a run where EVERY view left from one port is a comparison.
+        // One failed bind, or one edge that did not answer, and these are
+        // separate observations again.
+        m.tcp_same_source_port = pin && all_pinned && m.tcp_views.len() > 1;
     }
 
     /// What one edge answered.
@@ -641,8 +664,8 @@ pub mod gather {
         address: Option<IpAddr>,
     }
 
-    async fn one_edge(url: &str) -> Result<EdgeAnswer, String> {
-        let body = crate::reflect::get(url).await?;
+    async fn one_edge(url: &str, from_port: Option<u16>) -> Result<(EdgeAnswer, u16), String> {
+        let (body, used_port) = crate::reflect::get(url, from_port).await?;
         let json: serde_json::Value =
             serde_json::from_str(&body).map_err(|_| "the edge did not answer JSON".to_string())?;
         let observed = json
@@ -665,11 +688,14 @@ pub mod gather {
             .and_then(|v| v.as_str())
             .map(str::to_string)
             .unwrap_or_else(|| url.to_string());
-        Ok(EdgeAnswer {
-            edge,
-            port,
-            address,
-        })
+        Ok((
+            EdgeAnswer {
+                edge,
+                port,
+                address,
+            },
+            used_port,
+        ))
     }
 
     pub async fn local_and_udp(m: &mut Measurements, stun_servers: &[&str]) {

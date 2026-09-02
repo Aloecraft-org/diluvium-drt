@@ -11,6 +11,100 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::process::Command;
 
+/// An edge that reports the source port the connection actually came from,
+/// which is what an edge's `x-real-port` carries. Anything testing the
+/// pinning needs the real port, not a canned one.
+fn echoing_edge(edge_name: &str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    let name = edge_name.to_string();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let seen = stream.peer_addr().unwrap();
+            let mut scratch = [0u8; 2048];
+            let _ = stream.read(&mut scratch);
+            let body = format!(
+                "{{\"observed\":{{\"address\":\"{}\",\"port\":{},\"edge\":\"{name}\"}}}}",
+                seen.ip(),
+                seen.port()
+            );
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    url
+}
+
+/// `--pin-source-port` is what turns two vantages into a measurement.
+///
+/// Without it, two fetches leave from two ephemeral ports and the line
+/// refuses to compare them. With it, both leave from one port, both edges
+/// observe that port, and the comparison is real — which on loopback means
+/// `independent`, there being no NAT to be otherwise.
+///
+/// This is the mechanism, proven on this platform with no new dependency:
+/// `tokio::net::TcpSocket` binds and sets `SO_REUSEADDR` natively, so the
+/// `socket2` the work was sized against was never needed.
+#[test]
+fn pinning_the_source_port_is_what_makes_two_edges_a_comparison() {
+    let a = echoing_edge("gate1");
+    let b = echoing_edge("fetch2");
+
+    let loose = netcheck(&["--reflect", &a, "--reflect", &b]);
+    assert!(
+        loose.contains("separate source ports; not a comparison"),
+        "{loose}"
+    );
+
+    let pinned = netcheck(&["--pin-source-port", "--reflect", &a, "--reflect", &b]);
+    assert!(
+        pinned.contains("independent (pinned source port, sequential)"),
+        "{pinned}"
+    );
+    // Both vantages observed ONE port, which is the whole measurement.
+    let ports: Vec<&str> = pinned
+        .lines()
+        .find(|l| l.contains("tcp map"))
+        .unwrap()
+        .split_whitespace()
+        .filter(|t| t.chars().all(|c| c.is_ascii_digit()) && t.len() > 3)
+        .collect();
+    assert_eq!(ports.len(), 2, "{pinned}");
+    assert_eq!(ports[0], ports[1], "one source port, seen twice: {pinned}");
+}
+
+/// Pinning with one edge measures nothing, and must not claim otherwise.
+#[test]
+fn pinning_one_edge_is_still_one_vantage() {
+    let a = echoing_edge("gate1");
+    let text = netcheck(&["--pin-source-port", "--reflect", &a]);
+    assert!(text.contains("(one vantage; not a comparison)"), "{text}");
+}
+
+/// An edge that does not answer breaks the pinning run, and the remaining
+/// view is one vantage again rather than half a comparison.
+#[test]
+fn a_failed_edge_in_a_pinned_run_is_not_half_a_comparison() {
+    let a = echoing_edge("gate1");
+    let dead = {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let p = l.local_addr().unwrap().port();
+        drop(l);
+        format!("http://127.0.0.1:{p}/")
+    };
+    let text = netcheck(&["--pin-source-port", "--reflect", &a, "--reflect", &dead]);
+    assert!(!text.contains("per-destination"), "{text}");
+    assert!(!text.contains("independent"), "{text}");
+    assert!(text.contains("(one vantage; not a comparison)"), "{text}");
+}
+
 /// An edge that answers one request with the shape `api/supervisor.lua`
 /// builds, then stops. `port`/`edge`/`address` are `Option` so a test can
 /// leave one unobserved, which is the case the spec is loudest about.

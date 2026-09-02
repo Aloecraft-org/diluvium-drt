@@ -32,14 +32,26 @@ const MAX_BODY: usize = 64 * 1024;
 /// answers. The whole point of `netcheck` is to finish and say something.
 const TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Fetch a URL and return its body as text.
-pub async fn get(url: &str) -> Result<String, String> {
-    tokio::time::timeout(TIMEOUT, fetch(url))
+/// Fetch a URL and return its body, and the **local source port** the
+/// request went out on.
+///
+/// `from_port` pins that port. `None` takes an ephemeral one, which is the
+/// ordinary case; `Some(p)` binds `p` with `SO_REUSEADDR` so a second
+/// request can leave from the same port a first one did — which is the
+/// entire TCP endpoint-independence measurement (`REFLECT-NAT.md` §5:
+/// *"client holds same-local-port connections to reflect through both edges
+/// and compares `observed.port`"*). Two ephemeral ports compare nothing.
+///
+/// No `socket2`. `tokio::net::TcpSocket` binds and sets `SO_REUSEADDR`
+/// natively and is already a dependency, so the pinning that looked like a
+/// new crate costs none.
+pub async fn get(url: &str, from_port: Option<u16>) -> Result<(String, u16), String> {
+    tokio::time::timeout(TIMEOUT, fetch(url, from_port))
         .await
         .map_err(|_| format!("no answer within {}s", TIMEOUT.as_secs()))?
 }
 
-async fn fetch(url: &str) -> Result<String, String> {
+async fn fetch(url: &str, from_port: Option<u16>) -> Result<(String, u16), String> {
     let (tls, rest) = match url.split_once("://") {
         Some(("https", rest)) => (true, rest),
         Some(("http", rest)) => (false, rest),
@@ -65,9 +77,7 @@ async fn fetch(url: &str) -> Result<String, String> {
          accept: application/json\r\nconnection: close\r\n\r\n"
     );
 
-    let stream = tokio::net::TcpStream::connect((host.as_str(), port))
-        .await
-        .map_err(|e| format!("connect: {e}"))?;
+    let (stream, local_port) = connect_from(&host, port, from_port).await?;
 
     if tls {
         let mut roots = tokio_rustls::rustls::RootCertStore::empty();
@@ -81,10 +91,72 @@ async fn fetch(url: &str) -> Result<String, String> {
             .connect(name, stream)
             .await
             .map_err(|e| format!("tls: {e}"))?;
-        exchange(io, request.as_bytes()).await
+        exchange(io, request.as_bytes())
+            .await
+            .map(|b| (b, local_port))
     } else {
-        exchange(stream, request.as_bytes()).await
+        exchange(stream, request.as_bytes())
+            .await
+            .map(|b| (b, local_port))
     }
+}
+
+// depth: connecting from a chosen source port
+//
+// The measurement needs two connections leaving from ONE local port. Two
+// things make that less simple than it sounds, and both are why the caller
+// is told what actually happened rather than trusted to assume:
+//
+//   * `SO_REUSEADDR` permits rebinding a port in TIME_WAIT; it does not
+//     promise two CONCURRENT outbound connections from one port (that is
+//     `SO_REUSEPORT`, and its semantics differ across platforms). So the
+//     fetches are SEQUENTIAL, and a NAT may rebind between them -- which the
+//     evidence line says out loud rather than hiding.
+//   * A pinned bind can simply fail: the port may be taken by something
+//     else. That is reported, not worked around, because silently falling
+//     back to an ephemeral port would produce two numbers that look like a
+//     comparison and are not.
+async fn connect_from(
+    host: &str,
+    port: u16,
+    from_port: Option<u16>,
+) -> Result<(tokio::net::TcpStream, u16), String> {
+    let addr = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|e| format!("dns: {e}"))?
+        .next()
+        .ok_or_else(|| format!("dns: '{host}' resolved to nothing"))?;
+
+    let socket = if addr.is_ipv4() {
+        tokio::net::TcpSocket::new_v4()
+    } else {
+        tokio::net::TcpSocket::new_v6()
+    }
+    .map_err(|e| format!("socket: {e}"))?;
+
+    if let Some(pinned) = from_port {
+        socket
+            .set_reuseaddr(true)
+            .map_err(|e| format!("socket: SO_REUSEADDR: {e}"))?;
+        let local: std::net::SocketAddr = if addr.is_ipv4() {
+            (std::net::Ipv4Addr::UNSPECIFIED, pinned).into()
+        } else {
+            (std::net::Ipv6Addr::UNSPECIFIED, pinned).into()
+        };
+        socket
+            .bind(local)
+            .map_err(|e| format!("could not leave from port {pinned}: {e}"))?;
+    }
+
+    let stream = socket
+        .connect(addr)
+        .await
+        .map_err(|e| format!("connect: {e}"))?;
+    let local_port = stream
+        .local_addr()
+        .map_err(|e| format!("socket: {e}"))?
+        .port();
+    Ok((stream, local_port))
 }
 
 // depth: read the whole response, then split it
