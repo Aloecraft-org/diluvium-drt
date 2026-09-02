@@ -122,6 +122,16 @@ pub enum Inbound {
 pub struct EdgeView {
     pub edge: String,
     pub port: Option<u16>,
+    /// The destination this view was gathered from, as `addr:port`.
+    ///
+    /// **This, and not `edge`, is what makes two views a comparison.**
+    /// Endpoint-independence is about the destination, and two vantages can
+    /// share an edge name: `NETCHECK-SPEC.md` §2 offers "a second listen
+    /// port on gate1 for the same reflect path" as the cheap intermediate
+    /// before a second box, and both of those answer `edge: "gate1"`.
+    /// Keying on the name would refuse that measurement; keying on the
+    /// destination takes it.
+    pub dest: String,
 }
 
 /// Everything measured, and nothing derived. `decide` reads only this.
@@ -264,18 +274,17 @@ impl Measurements {
         }
         // And it must be two *destinations*. Endpoint-independent means the
         // same external port regardless of where you are going, so two
-        // connections to the SAME edge measure nothing about it -- every
+        // connections to one destination measure nothing about it -- every
         // NAT, symmetric ones included, ordinarily reuses a mapping for a
-        // second connection to a destination it already has one for.
+        // second connection to a destination it already has one for. That
+        // run answered `independent` once, which would have told a symmetric
+        // NAT it punches; what it really measures is
+        // [`tcp_mapping_stable`](Self::tcp_mapping_stable).
         //
-        // Reachable by an obvious command: `--reflect URL --reflect URL`
-        // with one name typed twice, which answered `independent` and would
-        // have told a symmetric NAT it punches. What that run really
-        // measures is [`tcp_mapping_stable`](Self::tcp_mapping_stable).
-        let mut edges: Vec<&str> = self.tcp_views.iter().map(|v| v.edge.as_str()).collect();
-        edges.sort_unstable();
-        edges.dedup();
-        if edges.len() < 2 {
+        // Destination and not edge NAME, because two vantages may share a
+        // name: `NETCHECK-SPEC.md` §2's cheap intermediate is a second
+        // listen port on gate1, and both ports answer `edge: "gate1"`.
+        if self.distinct_destinations() < 2 {
             return None;
         }
         let ports: Vec<u16> = self.tcp_views.iter().filter_map(|v| v.port).collect();
@@ -283,6 +292,14 @@ impl Measurements {
             return None;
         }
         Some(ports.windows(2).all(|w| w[0] == w[1]))
+    }
+
+    /// How many distinct destinations the TCP views came from.
+    pub fn distinct_destinations(&self) -> usize {
+        let mut seen: Vec<&str> = self.tcp_views.iter().map(|v| v.dest.as_str()).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        seen.len()
     }
 
     /// Whether one edge, asked twice from one pinned source port, saw the
@@ -301,10 +318,7 @@ impl Measurements {
         if !self.tcp_same_source_port {
             return None;
         }
-        let mut edges: Vec<&str> = self.tcp_views.iter().map(|v| v.edge.as_str()).collect();
-        edges.sort_unstable();
-        edges.dedup();
-        if edges.len() != 1 {
+        if self.distinct_destinations() != 1 {
             return None;
         }
         let ports: Vec<u16> = self.tcp_views.iter().filter_map(|v| v.port).collect();
@@ -665,8 +679,27 @@ pub mod gather {
         // -- see `reflect::connect_from`.
         let mut pinned: Option<u16> = None;
         let mut all_pinned = true;
+        // One name, every address it resolves to. `NETCHECK-SPEC.md` §2:
+        // "One name, two A records. The client resolves
+        // reflect.discofetch.link, connects to each returned address from
+        // the same local port with the same Host, and reads observed.edge
+        // to know which vantage answered."
+        //
+        // So one `--reflect` can be two vantages, and taking only the first
+        // address -- which this did -- would ask one vantage and call it the
+        // set.
+        let mut targets: Vec<(&str, std::net::SocketAddr)> = Vec::new();
         for url in edges {
-            match one_edge(url, if pin { pinned } else { None }).await {
+            match crate::reflect::addresses(url).await {
+                Ok(found) => targets.extend(found.into_iter().map(|a| (*url, a))),
+                Err(why) => {
+                    all_pinned = false;
+                    m.reflect_why.push(format!("{url}: {why}"));
+                }
+            }
+        }
+        for (url, dest) in targets {
+            match one_edge(url, dest, if pin { pinned } else { None }).await {
                 Ok((view, used_port)) => {
                     if pin {
                         match pinned {
@@ -697,11 +730,12 @@ pub mod gather {
                     m.tcp_views.push(EdgeView {
                         edge: view.edge,
                         port: view.port,
+                        dest: dest.to_string(),
                     });
                 }
                 Err(why) => {
                     all_pinned = false;
-                    m.reflect_why.push(format!("{url}: {why}"));
+                    m.reflect_why.push(format!("{url} via {dest}: {why}"));
                 }
             }
         }
@@ -709,6 +743,9 @@ pub mod gather {
         // One failed bind, or one edge that did not answer, and these are
         // separate observations again.
         m.tcp_same_source_port = pin && all_pinned && m.tcp_views.len() > 1;
+        // A vantage that answered but names itself nothing new is still a
+        // vantage; the destination is what counted it.
+        let _ = &m.tcp_views;
     }
 
     /// What one edge answered.
@@ -718,8 +755,12 @@ pub mod gather {
         address: Option<IpAddr>,
     }
 
-    async fn one_edge(url: &str, from_port: Option<u16>) -> Result<(EdgeAnswer, u16), String> {
-        let (body, used_port) = crate::reflect::get(url, from_port).await?;
+    async fn one_edge(
+        url: &str,
+        dest: std::net::SocketAddr,
+        from_port: Option<u16>,
+    ) -> Result<(EdgeAnswer, u16), String> {
+        let (body, used_port) = crate::reflect::get(url, dest, from_port).await?;
         let json: serde_json::Value =
             serde_json::from_str(&body).map_err(|_| "the edge did not answer JSON".to_string())?;
         let observed = json
@@ -830,10 +871,12 @@ mod tests {
                 EdgeView {
                     edge: "gate1".into(),
                     port: Some(51823),
+                    dest: "203.0.113.1:443".into(),
                 },
                 EdgeView {
                     edge: "gate2".into(),
                     port: Some(51823),
+                    dest: "203.0.113.2:443".into(),
                 },
             ],
             ..Default::default()
@@ -876,10 +919,12 @@ mod tests {
                 EdgeView {
                     edge: "gate1".into(),
                     port: Some(51823),
+                    dest: "203.0.113.1:443".into(),
                 },
                 EdgeView {
                     edge: "gate2".into(),
                     port: None,
+                    dest: "203.0.113.2:443".into(),
                 },
             ],
             ..Default::default()
@@ -1081,10 +1126,12 @@ mod tests {
                 EdgeView {
                     edge: "gate1".into(),
                     port: Some(51823),
+                    dest: "203.0.113.1:443".into(),
                 },
                 EdgeView {
                     edge: "gate2".into(),
                     port: Some(51999),
+                    dest: "203.0.113.2:443".into(),
                 },
             ],
             ..Default::default()
@@ -1120,10 +1167,12 @@ mod tests {
                 EdgeView {
                     edge: "gate1".into(),
                     port: Some(51823),
+                    dest: "203.0.113.1:443".into(),
                 },
                 EdgeView {
                     edge: "gate2".into(),
                     port: Some(51823),
+                    dest: "203.0.113.2:443".into(),
                 },
             ],
             ..Default::default()
@@ -1136,6 +1185,7 @@ mod tests {
             tcp_views: vec![EdgeView {
                 edge: "gate1".into(),
                 port: Some(51823),
+                dest: "203.0.113.1:443".into(),
             }],
             ..Default::default()
         };
@@ -1151,10 +1201,12 @@ mod tests {
                 EdgeView {
                     edge: edge.into(),
                     port: Some(51823),
+                    dest: "203.0.113.1:443".into(),
                 },
                 EdgeView {
                     edge: edge.into(),
                     port: Some(51823),
+                    dest: "203.0.113.1:443".into(),
                 },
             ],
             ..Default::default()
@@ -1178,10 +1230,12 @@ mod tests {
                 EdgeView {
                     edge: "gate1".into(),
                     port: Some(51823),
+                    dest: "203.0.113.1:443".into(),
                 },
                 EdgeView {
                     edge: "gate1".into(),
                     port: Some(51999),
+                    dest: "203.0.113.1:443".into(),
                 },
             ],
             ..twice("gate1")
@@ -1189,23 +1243,48 @@ mod tests {
         assert_eq!(moved.tcp_agrees(), None);
         assert_eq!(moved.tcp_mapping_stable(), Some(false));
 
-        // Two distinct edges are the measurement, and stability is then not
-        // the question being asked.
+        // Two distinct destinations are the measurement, and stability is
+        // then not the question being asked.
         let two = Measurements {
             tcp_views: vec![
                 EdgeView {
                     edge: "gate1".into(),
                     port: Some(51823),
+                    dest: "203.0.113.1:443".into(),
                 },
                 EdgeView {
-                    edge: "fetch2".into(),
+                    edge: "gate2".into(),
                     port: Some(51823),
+                    dest: "203.0.113.2:443".into(),
                 },
             ],
             ..twice("gate1")
         };
         assert_eq!(two.tcp_agrees(), Some(true));
         assert_eq!(two.tcp_mapping_stable(), None);
+
+        // And the case the edge NAME would have refused: `NETCHECK-SPEC.md`
+        // §2's cheap intermediate is a second listen port on gate1, so two
+        // real vantages that both answer `edge: "gate1"`. Keying on the
+        // destination takes the measurement; keying on the name would have
+        // called it a stability check and thrown it away.
+        let two_ports = Measurements {
+            tcp_views: vec![
+                EdgeView {
+                    edge: "gate1".into(),
+                    port: Some(51823),
+                    dest: "203.0.113.1:443".into(),
+                },
+                EdgeView {
+                    edge: "gate1".into(),
+                    port: Some(51823),
+                    dest: "203.0.113.1:8443".into(),
+                },
+            ],
+            ..twice("gate1")
+        };
+        assert_eq!(two_ports.tcp_agrees(), Some(true));
+        assert_eq!(two_ports.tcp_mapping_stable(), None);
     }
 
     /// An edge that did not answer says why, on the line where its absence

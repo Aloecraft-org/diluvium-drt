@@ -199,7 +199,7 @@ connection to a destination it already has one for — but it says whether
 the mapping **held**, and that is the precondition for the two-edge test:
 
 - `the mapping held (a second vantage would measure something)` — good.
-  When fetch2 exists, the comparison will produce an answer.
+  When a second vantage exists, the comparison will produce an answer.
 - `the mapping CHANGED, so no two-edge comparison can succeed here` — this
   network assigns a fresh external port per connection, so the two-edge run
   can never answer `independent` whatever the NAT really does. **Standing up
@@ -209,14 +209,27 @@ the mapping **held**, and that is the precondition for the two-edge test:
 Worth running from the XPS at your parents' as well as the laptop: it is
 the CGNAT case, and it is the one where the answer might differ.
 
-**And what the two-edge measurement will say, once fetch2 exists.** With
-two reflect names:
+**And what the two-edge measurement will say, once there are two vantages.**
+One name, not two — see below:
 
 ```sh
-drt netcheck --pin-source-port \
-  --reflect https://reflect.discofetch.link/ \
-  --reflect https://reflect2.discofetch.link/
+drt netcheck --pin-source-port --reflect https://reflect.discofetch.link/
 ```
+
+**One flag, not two, and one name.** `NETCHECK-SPEC.md` §2 corrected this on
+31 Aug: *"One name, two A records. The client resolves
+`reflect.discofetch.link`, connects to each returned address from the same
+local port with the same `Host`, and reads `observed.edge` to know which
+vantage answered."* So `--reflect` resolves the name and asks **every**
+address it gets. Add gate2's A record to `reflect` and the command above
+starts comparing, with nothing to change on this side.
+
+**And it is not blocked on the box.** The same section names a cheaper
+intermediate available today: *"A second listen port on gate1 for the same
+reflect path … two destination vantages on one box distinguishes
+port-dependent (symmetric) mapping before gate2 exists."* Two ports on gate1
+is a real two-vantage measurement — DRT keys the comparison on the
+destination, not the edge name, so both answering `edge: "gate1"` is fine.
 
 `independent (pinned source port, sequential)` means the TCP mapping is
 endpoint-independent. `per-destination` means it is not. Without
@@ -283,7 +296,7 @@ https://reflect.discofetch.link/` shows `observed.port` … `observed.edge =
 
 **The probe (inbound test) is a separate and larger gap.** `deploy/probe/`
 is a written kit, `REFLECT-NAT.md` §5 calls the probe *"an edge service, not
-a Lua call"* and lists it as a seam arriving with fetch2, and the 0.5.0 ask
+a Lua call"* and lists it as a seam arriving with gate2, and the 0.5.0 ask
 says the written kit does the *wrong thing* (it probes back from the edge
 the caller just talked to). So `--port` is not blocked on DRT: it is blocked
 on an endpoint that does not exist in any form DRT should be written

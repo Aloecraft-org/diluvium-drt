@@ -45,13 +45,40 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 /// No `socket2`. `tokio::net::TcpSocket` binds and sets `SO_REUSEADDR`
 /// natively and is already a dependency, so the pinning that looked like a
 /// new crate costs none.
-pub async fn get(url: &str, from_port: Option<u16>) -> Result<(String, u16), String> {
-    tokio::time::timeout(TIMEOUT, fetch(url, from_port))
+pub async fn get(
+    url: &str,
+    dest: std::net::SocketAddr,
+    from_port: Option<u16>,
+) -> Result<(String, u16), String> {
+    tokio::time::timeout(TIMEOUT, fetch(url, dest, from_port))
         .await
         .map_err(|_| format!("no answer within {}s", TIMEOUT.as_secs()))?
 }
 
-async fn fetch(url: &str, from_port: Option<u16>) -> Result<(String, u16), String> {
+/// Every address a reflect name resolves to — one per vantage.
+///
+/// `NETCHECK-SPEC.md` §2 is explicit that the two vantages are **one name
+/// with two A records**, not two names: *"The client resolves
+/// `reflect.discofetch.link`, connects to each returned address from the
+/// same local port with the same `Host`, and reads `observed.edge` to know
+/// which vantage answered."* So resolution and connection are separate
+/// steps here — taking only the first address would ask one vantage twice
+/// and call it a comparison.
+pub async fn addresses(url: &str) -> Result<Vec<std::net::SocketAddr>, String> {
+    let (host, port) = split(url)?.1;
+    let found: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), port))
+        .await
+        .map_err(|e| format!("dns: {e}"))?
+        .collect();
+    if found.is_empty() {
+        return Err(format!("dns: '{host}' resolved to nothing"));
+    }
+    Ok(found)
+}
+
+/// Split a URL into (tls, (host, port), path).
+#[allow(clippy::type_complexity)]
+fn split(url: &str) -> Result<(bool, (String, u16), String), String> {
     let (tls, rest) = match url.split_once("://") {
         Some(("https", rest)) => (true, rest),
         Some(("http", rest)) => (false, rest),
@@ -71,13 +98,25 @@ async fn fetch(url: &str, from_port: Option<u16>) -> Result<(String, u16), Strin
     if host.is_empty() {
         return Err("no host in the url".into());
     }
+    Ok((tls, (host, port), path))
+}
+
+async fn fetch(
+    url: &str,
+    dest: std::net::SocketAddr,
+    from_port: Option<u16>,
+) -> Result<(String, u16), String> {
+    // The `Host` header stays the name whichever address answered: one
+    // vhost serves the label from every vantage, which is the whole reason
+    // this needs no second name.
+    let (tls, (host, _), path) = split(url)?;
 
     let request = format!(
         "GET {path} HTTP/1.1\r\nhost: {host}\r\nuser-agent: drt-netcheck\r\n\
          accept: application/json\r\nconnection: close\r\n\r\n"
     );
 
-    let (stream, local_port) = connect_from(&host, port, from_port).await?;
+    let (stream, local_port) = connect_from(dest, from_port).await?;
 
     if tls {
         let mut roots = tokio_rustls::rustls::RootCertStore::empty();
@@ -117,16 +156,9 @@ async fn fetch(url: &str, from_port: Option<u16>) -> Result<(String, u16), Strin
 //     back to an ephemeral port would produce two numbers that look like a
 //     comparison and are not.
 async fn connect_from(
-    host: &str,
-    port: u16,
+    addr: std::net::SocketAddr,
     from_port: Option<u16>,
 ) -> Result<(tokio::net::TcpStream, u16), String> {
-    let addr = tokio::net::lookup_host((host, port))
-        .await
-        .map_err(|e| format!("dns: {e}"))?
-        .next()
-        .ok_or_else(|| format!("dns: '{host}' resolved to nothing"))?;
-
     let socket = if addr.is_ipv4() {
         tokio::net::TcpSocket::new_v4()
     } else {

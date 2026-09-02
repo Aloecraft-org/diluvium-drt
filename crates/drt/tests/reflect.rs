@@ -55,7 +55,7 @@ fn echoing_edge(edge_name: &str) -> String {
 #[test]
 fn pinning_the_source_port_is_what_makes_two_edges_a_comparison() {
     let a = echoing_edge("gate1");
-    let b = echoing_edge("fetch2");
+    let b = echoing_edge("gate2");
 
     let loose = netcheck(&["--reflect", &a, "--reflect", &b]);
     assert!(
@@ -108,7 +108,7 @@ fn one_edge_asked_twice_is_a_stability_check_not_a_comparison() {
 
     // Two genuinely different edges still compare, so the guard is about
     // distinct destinations rather than refusing everything.
-    let b = echoing_edge("fetch2");
+    let b = echoing_edge("gate2");
     let both = netcheck(&["--pin-source-port", "--reflect", &a, "--reflect", &b]);
     assert!(
         both.contains("independent (pinned source port, sequential)"),

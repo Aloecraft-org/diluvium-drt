@@ -75,7 +75,21 @@ is still ahead. See known issues.
   it is `ADDRESS PORT` and nothing else. One JSON fetch gives address,
   port and edge together, so it is one request rather than two, and
   two requests would be two connections reporting two source ports.
-- **`--pin-source-port`, which is what makes two edges a
+- **`--reflect` asks every address a name resolves to**, because
+  that is what a vantage is. `NETCHECK-SPEC.md` §2, corrected 31 Aug:
+  *"One name, two A records. The client resolves
+  `reflect.discofetch.link`, connects to each returned address from
+  the same local port with the same `Host`, and reads `observed.edge`
+  to know which vantage answered."* Taking only the first address --
+  which this did -- asks one vantage and calls it the set.
+
+  And the comparison keys on the **destination**, not the edge name.
+  Two vantages can share a name: the same section's cheap intermediate
+  is *"a second listen port on gate1 for the same reflect path"*, and
+  both ports answer `edge: "gate1"`. Keying on the name would refuse
+  that measurement — which means the TCP half is not blocked on a
+  second machine at all.
+- **`--pin-source-port`, which is what makes two vantages a
   measurement.** `REFLECT-NAT.md` §5 defines the TCP mapping test as
   *"same-local-port connections to reflect through both edges"*, and
   nothing in the tree could bind an outbound source port. Now the
@@ -97,7 +111,7 @@ is still ahead. See known issues.
   the fetches are sequential and a NAT may rebind between them.
 
   Nothing measures anything until there is a **second reflect
-  vantage**, which is discofetch's fetch2 and a box not yet bought.
+  vantage**, which is discofetch's gate2, a box not yet bought.
   This is the DRT half, finished and tested against two local edges
   that echo the source port they saw.
 
