@@ -146,7 +146,34 @@ is the original bug and it would mean the fallback did not take.
 
 ---
 
-## 1.5 The one that blocks §2: reflect is not deployed
+## 1.5 reflect is deployed — one thing left to confirm
+
+**Retired 2026-09-02.** `observed.port`, `observed.edge` and
+`?format=addr-port` are all live; the edge is sending `x-real-port`, which
+was the second step below and the one that would otherwise have cost a day.
+Kept because the three states it names are still how you read a failure.
+
+**What I could not check, and you can in one command.** This container's
+outbound HTTPS goes through a proxy with its own CA, so every `--reflect`
+from here answers `tls: invalid peer certificate: UnknownIssuer`. That is
+the proxy, not reflect. Whether reflect's real chain validates against the
+**Mozilla root set** (`webpki-roots`, which is what DRT ships rather than
+the system store) is unverified:
+
+```sh
+drt netcheck --reflect https://reflect.discofetch.link/
+```
+
+`tcp map  <port> (gate1)` means the chain validates. A `tls:` reason means
+it does not, and an internal or non-Mozilla CA would make **every**
+`--reflect` fail identically on every network — worth knowing before it is
+mistaken for a network finding.
+
+### The three states, and how to read them
+
+---
+
+## 1.6 The old blocker, kept for its diagnosis
 
 **Checked against the live service on 2026-09-02, and this is the finding
 that decides when `--reflect` can be built.**

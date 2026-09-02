@@ -108,7 +108,7 @@ enum Command {
     /// `relay` included: a network that needs a tunnel is a successful
     /// measurement, not an error. Non-zero means nothing could be
     /// measured.
-    #[cfg(feature = "stun")]
+    #[cfg(feature = "netcheck")]
     Netcheck {
         /// A STUN server, repeatable. Two on separate addresses are needed
         /// to classify a mapping; `detect_mapping` refuses below two rather
@@ -116,6 +116,16 @@ enum Command {
         /// relay fallback, never a confident wrong answer.
         #[arg(long = "stun", value_name = "HOST:PORT")]
         stun: Vec<String>,
+        /// A reflect edge, repeatable. Fills the `address` and `tcp map`
+        /// lines from what an edge saw over TCP, keyed by the `edge` it
+        /// names itself. An edge that does not answer stays "not
+        /// measured", with the reason — never a guess and never a zero.
+        ///
+        /// Two edges do not yet make a comparison: each fetch is its own
+        /// connection with its own source port, and comparing those
+        /// compares nothing. See `Measurements::tcp_agrees`.
+        #[arg(long = "reflect", value_name = "URL")]
+        reflect: Vec<String>,
         /// Machine-readable output. The default is human text, because the
         /// primary consumer is a person deciding what to do next.
         #[arg(long)]
@@ -133,7 +143,8 @@ enum Command {
         feature = "connector-sql",
         feature = "connector-crypto",
         feature = "connector-rest",
-        feature = "connector-ssmtp"
+        feature = "connector-ssmtp",
+        feature = "netcheck"
     )),
     allow(unused_mut, unused_variables)
 )]
@@ -178,11 +189,11 @@ fn buildinfo(json: bool) -> String {
     if cfg!(feature = "relay") {
         verbs.push("relay");
     }
+    if cfg!(feature = "netcheck") {
+        verbs.push("netcheck");
+    }
     if cfg!(feature = "stun") {
         verbs.push("stun");
-        // netcheck rides the same gate: its decisive measurement is
-        // `detect_mapping` across two STUN servers.
-        verbs.push("netcheck");
     }
     if cfg!(feature = "tunnel") {
         verbs.push("tunnel");
@@ -519,11 +530,23 @@ fn main() -> ExitCode {
             }
         }
         #[cfg(feature = "stun")]
-        Command::Netcheck { stun, json } => {
+        Command::Netcheck {
+            stun,
+            reflect,
+            json,
+        } => {
             let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
             let mut m = drt::netcheck::Measurements::default();
             let servers: Vec<&str> = stun.iter().map(String::as_str).collect();
-            runtime.block_on(drt::netcheck::gather::local_and_udp(&mut m, &servers));
+            let edges: Vec<&str> = reflect.iter().map(String::as_str).collect();
+            runtime.block_on(async {
+                drt::netcheck::gather::local_and_udp(&mut m, &servers).await;
+                // After the UDP half on purpose: STUN's address is the one
+                // the decisive measurement saw, and an edge that disagrees
+                // with it is recorded as a disagreement rather than
+                // overwriting it.
+                drt::netcheck::gather::reflect(&mut m, &edges).await;
+            });
             // The same leak as `stun`/`relay`/`tunnel`, for the same reason:
             // FM-1, tokio 1.53.1's use-after-free in runtime teardown, and
             // `detect_mapping` resolves through `lookup_host`, so there is

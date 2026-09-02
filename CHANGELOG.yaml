@@ -110,6 +110,41 @@ releases:
         also says the command to get the whole set, up front, rather than
         after eight diffs.
       - |
+        **`drt netcheck --reflect <url>`, repeatable, and a `netcheck`
+        cargo feature to carry it.** An edge is asked what it saw over TCP;
+        the answer fills the `address` line and one vantage of `tcp map`,
+        keyed by the `edge` the edge names itself.
+
+        Its own feature rather than riding `stun`, because asking an edge
+        means an HTTP client and a TLS stack and the STUN *server* has no
+        business carrying either — the server is what a small deployment
+        runs. `full` only, and it adds no new crate: the TLS stack is the
+        one `rest` already links. Priced and accepted: a `--features stun`
+        build keeps the server and loses the verb.
+
+        **The JSON form, not `?format=addr-port`.** `REFLECT-NAT.md` §5 says
+        to key these by the `edge` field and `addr-port` carries no edge —
+        it is `ADDRESS PORT` and nothing else. One JSON fetch gives address,
+        port and edge together, so it is one request rather than two, and
+        two requests would be two connections reporting two source ports.
+      - |
+        **`tcp_agrees()` called two vantages a comparison, which they are
+        not.** Each reflect fetch is its own TCP connection with its own
+        ephemeral source port, so two edges report two different ports on
+        *every* network — and the old method read that as `Some(false)`,
+        "per-destination": a confident statement about a NAT built on
+        nothing, in the module whose first premise is that it does not do
+        that. Measured live: two fetches to the same edge answered ports
+        3075 and 56304.
+
+        It now answers `None` unless the views came from one pinned source
+        port, which nothing yet sets, and the evidence line says
+        `(separate connections, so separate source ports; not a
+        comparison)` rather than naming a mapping. `REFLECT-NAT.md` §5 is
+        explicit that the measurement is *"same-local-port connections to
+        reflect through both edges"*; pinning one needs `socket2` and is
+        `doc/Next.md`'s.
+      - |
         **The `ssmtp` connector: `host:ssmtp/send`.** `rest`'s sibling, and
         built as one -- `rest`'s scope is an origin allowlist, this one is a
         recipient allowlist, `@example.com` or an exact address, refused by

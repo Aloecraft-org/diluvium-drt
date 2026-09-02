@@ -149,6 +149,24 @@ pub struct Measurements {
     pub udp_why: Option<String>,
     /// What each reflect edge saw. Informational: the TCP half.
     pub tcp_views: Vec<EdgeView>,
+    /// Whether every entry in `tcp_views` was gathered from the **same
+    /// local source port**. Without that, comparing their ports compares
+    /// nothing — see [`tcp_agrees`](Self::tcp_agrees).
+    pub tcp_same_source_port: bool,
+    /// Why an edge is missing from `tcp_views`, when one is. One entry per
+    /// edge that was asked and did not answer, so "not measured" says which
+    /// and why rather than leaving the reader to guess between a rate limit,
+    /// a name that would not resolve, and an edge that is simply down.
+    pub reflect_why: Vec<String>,
+    /// A vantage that saw a different address from the one already
+    /// measured, rendered beside it.
+    ///
+    /// Its own field rather than an entry in `reflect_why`, because it
+    /// belongs on a different line: `reflect_why` explains an absence in
+    /// `tcp map`, and this explains a presence in `address`. Recorded in
+    /// `reflect_why` instead, it was written down and never shown, which is
+    /// the same as not recording it.
+    pub address_why: Option<String>,
     /// The inbound test. Filled by a caller that can arrange an
     /// unsolicited inbound connect; nothing in this build can, so it is
     /// always `None` here and the renderer says "not measured" rather
@@ -230,6 +248,20 @@ impl Measurements {
     /// second gate exists, and is reported as "not measured" rather than
     /// guessed.
     pub fn tcp_agrees(&self) -> Option<bool> {
+        // The guard that makes this mean anything. Each reflect fetch is a
+        // separate TCP connection with its own ephemeral source port, so two
+        // edges asked over two connections report two different ports on
+        // *every* network — and reading that as "per-destination" would be a
+        // confident statement about a NAT built on nothing.
+        //
+        // `REFLECT-NAT.md` §5 is explicit that the measurement is "same-
+        // local-port connections to reflect through both edges". Until DRT
+        // can pin an outbound source port (doc/Next.md; it needs `socket2`),
+        // nothing sets this and this method answers `None` — which the
+        // renderer prints as the non-comparison it is.
+        if !self.tcp_same_source_port {
+            return None;
+        }
         let ports: Vec<u16> = self.tcp_views.iter().filter_map(|v| v.port).collect();
         if ports.len() < 2 {
             return None;
@@ -357,9 +389,13 @@ pub fn render_text(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
 
     match m.observed_address {
         Some(a) => out.push_str(&format!(
-            "  address    {}{}\n",
+            "  address    {}{}{}\n",
             a,
-            if m.is_cgnat() { " (CGNAT)" } else { "" }
+            if m.is_cgnat() { " (CGNAT)" } else { "" },
+            match &m.address_why {
+                Some(why) => format!(" ({why})"),
+                None => String::new(),
+            }
         )),
         None => {
             out.push_str("  address    not measured (no STUN server or reflect edge answered)\n")
@@ -392,7 +428,10 @@ pub fn render_text(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
     }
 
     if m.tcp_views.is_empty() {
-        out.push_str("  tcp map    not measured\n");
+        match m.reflect_why.first() {
+            Some(why) => out.push_str(&format!("  tcp map    not measured ({why})\n")),
+            None => out.push_str("  tcp map    not measured\n"),
+        }
     } else {
         let pairs: Vec<String> = m
             .tcp_views
@@ -405,6 +444,12 @@ pub fn render_text(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
         let label = match m.tcp_agrees() {
             Some(true) => "  independent",
             Some(false) => "  per-destination",
+            // Two vantages over two connections is still not a comparison,
+            // and saying so is the difference between this line and a wrong
+            // answer about the network.
+            None if m.tcp_views.len() > 1 => {
+                "  (separate connections, so separate source ports; not a comparison)"
+            }
             None => "  (one vantage; not a comparison)",
         };
         out.push_str(&format!("  tcp map    {}{}\n", pairs.join(", "), label));
@@ -434,7 +479,7 @@ pub fn render_text(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
 /// and is tested without it.
 #[cfg(feature = "stun")]
 pub mod gather {
-    use super::{Measurements, UdpMapping};
+    use super::{EdgeView, Measurements, UdpMapping};
     use ego_transport::stun::{detect_mapping, NatMapping, ProbeConfig};
     use std::net::IpAddr;
 
@@ -540,6 +585,93 @@ pub mod gather {
     /// A failed STUN probe leaves `udp_mapping` as `None`, which `decide`
     /// reads as "not measured" and answers `relay` — the verdict that works
     /// on every network — rather than abstaining.
+    /// Ask each reflect edge what it saw, filling [`Measurements::tcp_views`]
+    /// and — where STUN did not already answer — the observed address.
+    ///
+    /// **The JSON form, not `?format=addr-port`.** discofetch's
+    /// `doc/REFLECT-NAT.md` §5 says to key these by the `edge` field, and
+    /// `addr-port` does not carry one: it is `ADDRESS PORT` and nothing
+    /// else. One JSON fetch gives address, port and edge together, so it is
+    /// one request rather than two — and two requests would be two TCP
+    /// connections reporting two different source ports, which is the
+    /// measurement error this whole line is guarded against.
+    ///
+    /// An edge that does not answer becomes a line in
+    /// [`Measurements::reflect_why`] and never a guess. A rate limit
+    /// (HAProxy answers 429 here) is "not measured" like any other silence:
+    /// rendering it as a closed port would be a confidently wrong answer
+    /// about the user's network, which is the one thing this module exists
+    /// not to do.
+    pub async fn reflect(m: &mut Measurements, edges: &[&str]) {
+        for url in edges {
+            match one_edge(url).await {
+                Ok(view) => {
+                    // The address an edge saw over TCP. STUN's is over UDP,
+                    // and a network may egress differently per protocol, so
+                    // a disagreement is recorded rather than resolved.
+                    if let Some(seen) = view.address {
+                        match m.observed_address {
+                            None => m.observed_address = Some(seen),
+                            // Different protocols may egress differently,
+                            // so this is a finding to show and not a
+                            // conflict to resolve. First one wins the field;
+                            // a second disagreement is the same story.
+                            Some(known) if known != seen => {
+                                m.address_why.get_or_insert_with(|| {
+                                    format!("{} saw {seen}, over TCP", view.edge)
+                                });
+                            }
+                            Some(_) => {}
+                        }
+                    }
+                    m.tcp_views.push(EdgeView {
+                        edge: view.edge,
+                        port: view.port,
+                    });
+                }
+                Err(why) => m.reflect_why.push(format!("{url}: {why}")),
+            }
+        }
+    }
+
+    /// What one edge answered.
+    struct EdgeAnswer {
+        edge: String,
+        port: Option<u16>,
+        address: Option<IpAddr>,
+    }
+
+    async fn one_edge(url: &str) -> Result<EdgeAnswer, String> {
+        let body = crate::reflect::get(url).await?;
+        let json: serde_json::Value =
+            serde_json::from_str(&body).map_err(|_| "the edge did not answer JSON".to_string())?;
+        let observed = json
+            .get("observed")
+            .ok_or("the edge answered JSON with no `observed` block")?;
+        // Absent is not measured, never zero -- NETCHECK-SPEC.md is explicit
+        // about the port, and the same rule is right for all three.
+        let port = observed
+            .get("port")
+            .and_then(|v| v.as_u64())
+            .and_then(|p| u16::try_from(p).ok());
+        let address = observed
+            .get("address")
+            .and_then(|v| v.as_str())
+            .and_then(|a| a.parse::<IpAddr>().ok());
+        // The edge names itself; where it does not, the URL is the only
+        // honest name for the vantage and is better than inventing one.
+        let edge = observed
+            .get("edge")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| url.to_string());
+        Ok(EdgeAnswer {
+            edge,
+            port,
+            address,
+        })
+    }
+
     pub async fn local_and_udp(m: &mut Measurements, stun_servers: &[&str]) {
         m.routable_v6 = routable_v6();
         match udp_mapping(stun_servers).await {
@@ -604,10 +736,16 @@ mod tests {
         // The trap the spec singles out, and the reason the UDP half is
         // decisive. A verdict read off the TCP columns would say punchable
         // here and be wrong.
+        //
+        // `tcp_same_source_port` because the fixture is describing a real
+        // TCP finding, and endpoint-independent is only a finding when both
+        // views came from one pinned source port. Two equal ports from two
+        // separate connections would be a coincidence, not a measurement.
         let m = Measurements {
             observed_address: public_v4(),
             udp_mapping: Some(UdpMapping::Symmetric),
             udp_ports: vec![("stun1".into(), 51823), ("stun2".into(), 40119)],
+            tcp_same_source_port: true,
             tcp_views: vec![
                 EdgeView {
                     edge: "gate1".into(),
@@ -844,6 +982,107 @@ mod tests {
             render_text(&behind_cgnat, v, why)
         };
         assert!(rendered.contains("(CGNAT)"), "{rendered}");
+    }
+
+    /// Two vantages are not a comparison, and the line must not pretend
+    /// otherwise.
+    ///
+    /// Each reflect fetch is its own TCP connection with its own ephemeral
+    /// source port, so two edges report two different ports on *every*
+    /// network. `tcp_agrees` used to read that as `Some(false)` —
+    /// "per-destination" — which is a confident statement about a NAT built
+    /// on nothing at all, in the module whose first premise is that it does
+    /// not do that. Measured live: two fetches to the same edge answered
+    /// ports 3075 and 56304.
+    #[test]
+    fn two_edges_over_two_connections_are_not_a_tcp_comparison() {
+        let two_vantages = Measurements {
+            tcp_views: vec![
+                EdgeView {
+                    edge: "gate1".into(),
+                    port: Some(51823),
+                },
+                EdgeView {
+                    edge: "gate2".into(),
+                    port: Some(51999),
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            two_vantages.tcp_agrees(),
+            None,
+            "different ports from different connections say nothing"
+        );
+        let (v, why) = decide(&two_vantages);
+        let text = render_text(&two_vantages, v, why);
+        assert!(
+            text.contains("separate source ports; not a comparison"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("per-destination"),
+            "the one answer this must never give here: {text}"
+        );
+
+        // Pinned, the same two ports ARE the measurement, and differing
+        // ports then genuinely mean per-destination.
+        let pinned = Measurements {
+            tcp_same_source_port: true,
+            ..two_vantages.clone()
+        };
+        assert_eq!(pinned.tcp_agrees(), Some(false));
+
+        // And pinned with equal ports is endpoint-independent.
+        let agreeing = Measurements {
+            tcp_same_source_port: true,
+            tcp_views: vec![
+                EdgeView {
+                    edge: "gate1".into(),
+                    port: Some(51823),
+                },
+                EdgeView {
+                    edge: "gate2".into(),
+                    port: Some(51823),
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(agreeing.tcp_agrees(), Some(true));
+
+        // One vantage is never a comparison however it was gathered.
+        let one = Measurements {
+            tcp_same_source_port: true,
+            tcp_views: vec![EdgeView {
+                edge: "gate1".into(),
+                port: Some(51823),
+            }],
+            ..Default::default()
+        };
+        assert_eq!(one.tcp_agrees(), None);
+    }
+
+    /// An edge that did not answer says why, on the line where its absence
+    /// shows — the same rule the udp line already follows.
+    #[test]
+    fn an_edge_that_did_not_answer_says_why() {
+        let m = Measurements {
+            reflect_why: vec!["https://reflect.example/: rate limited by the edge".into()],
+            ..Default::default()
+        };
+        let (v, why) = decide(&m);
+        let text = render_text(&m, v, why);
+        assert!(
+            text.contains("tcp map    not measured (https://reflect.example/: rate limited"),
+            "{text}"
+        );
+        // A rate limit is silence, not a finding about the network. It must
+        // not reach the verdict.
+        assert_eq!(v, Verdict::Relay);
+        assert!(
+            !m.probed_anything(),
+            "an edge that refused measured nothing"
+        );
     }
 
     #[test]

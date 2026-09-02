@@ -969,7 +969,9 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "tokio-tungstenite",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]

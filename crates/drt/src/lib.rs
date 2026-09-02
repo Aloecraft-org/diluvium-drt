@@ -7,6 +7,10 @@ pub mod listen;
 /// `drt netcheck`: the NAT diagnostic. The verdict table is pure and
 /// always compiled; the measurements that need STUN are behind `stun`.
 pub mod netcheck;
+/// The reflect fetch `drt netcheck --reflect` uses. Behind `netcheck`
+/// because it is the half that links a TLS stack.
+#[cfg(feature = "netcheck")]
+pub mod reflect;
 #[cfg(feature = "relay")]
 pub mod relay;
 pub mod repl;
