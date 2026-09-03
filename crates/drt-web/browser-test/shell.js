@@ -12,9 +12,13 @@
 //     term   a DrtTerm (pkg/drt_web.js)
 //     write  (fd, text): where stdout (1) and stderr (2) go
 //     sleep  (ms) -> Promise; defaults to setTimeout
-//     io     { readLine(continuing) -> Promise<string|null>, stop() -> bool }
+//     io     { readLine(continuing, session) -> Promise<string|null>,
+//              stop() -> bool }
 //            readLine answers a session that wants a line; null is end of
-//            input, which is what ^D is to the native repl. stop() polled
+//            input, which is what ^D is to the native repl. The session is
+//            passed so the host can refresh Tab's candidates from it and
+//            abandon a line on ^C -- both the guest's business, asked
+//            between lines (doc/Wasm.md §5). stop() polled
 //            between ticks: true ends the command with status 130 (^C).
 //   ECHO, DRT: the two commands; everything else is not found.
 
@@ -65,7 +69,7 @@ export function makeShell({ term, write, sleep = wait }) {
           continue;
         }
         if (next.wantsInput) {
-          const line = await io.readLine(next.continuing);
+          const line = await io.readLine(next.continuing, session);
           if (line === null) {
             // End of input, newline included, as the native repl leaves.
             write(2, '\n');

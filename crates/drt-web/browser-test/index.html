@@ -1,27 +1,37 @@
 <!doctype html>
 <meta charset="utf-8">
 <title>drt in the browser</title>
+<link rel="stylesheet" href="./node_modules/@xterm/xterm/css/xterm.css">
+<script src="./node_modules/@xterm/xterm/lib/xterm.js"></script>
 <style>
   body { margin: 0; padding: 1rem 1.25rem; background: #101418; color: #d8dee4;
          font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   h1 { font-size: 1rem; margin: 0 0 .25rem; }
   #about { margin: 0 0 1rem; white-space: pre-wrap; color: #8b97a3; }
-  #screen { margin: 0; min-height: 60vh; white-space: pre-wrap; word-break: break-all;
-            outline: none; }
-  #screen:focus::after { content: "\2588"; color: #8b97a3; }
+  #screen { height: 60vh; }
+  /* Where replTranscript's terminal lives: on the page, because xterm.js
+     renders nothing until it is opened into something laid out. */
+  #offscreen { position: absolute; left: -10000px; width: 80ch; height: 24em; }
 </style>
 <h1>drt</h1>
 <p id="about">loading pkg/drt_web.js…</p>
-<pre id="screen" tabindex="0"></pre>
+<div id="screen"></div>
+<div id="offscreen"></div>
 <script type="module">
-  // The page has two readers. A person gets a terminal: the <pre> above,
-  // fed through drt-term.js the way an xterm.js Terminal would be, with a
-  // hello.dlua seeded so `drt run hello.dlua` has something to run. The
-  // suite (run.mjs) gets window.drtBrowserTest: a fresh DrtTerm per
-  // example, files to seed, a cmd line to run through shell.js with stdout
-  // and stderr merged, and the REPL typed at drt-term.js for the parity
-  // check. Same module, same shell, same adapter, either way.
-  import init, { DrtTerm, buildInfo, abiVersion, setPanicHook } from './pkg/drt_web.js';
+  // The page has two readers. A person gets a terminal: a real xterm.js
+  // above, with a hello.dlua seeded so `drt run hello.dlua` has something
+  // to run. The suite (run.mjs) gets window.drtBrowserTest: a fresh
+  // DrtTerm per example, files to seed, a cmd line to run through shell.js
+  // with stdout and stderr merged, and the REPL typed at drt-term.js for
+  // the parity check. Same module, same shell, same adapter, either way.
+  //
+  // Both terminals here are xterm.js and neither is hand-written. They
+  // were, when the page's editor was a printable-and-backspace loop that
+  // emitted nothing a terminal had to interpret. `ego_cli` renders -- it
+  // moves the cursor, redraws a line, clears to the end -- so a <pre> that
+  // appends characters would now be a third terminal emulator to get
+  // wrong, which is the thing D8 exists to avoid.
+  import init, { DrtTerm, DrtEditor, buildInfo, abiVersion, setPanicHook } from './pkg/drt_web.js';
   import { makeShell } from './shell.js';
   import { attach } from './drt-term.js';
 
@@ -59,30 +69,38 @@
       const status = await shell.run(line);
       return { status, output: chunks.join('') };
     },
+    // The REPL, typed at a real terminal and read back from what it
+    // renders. Raw writes would do for a printable-and-backspace loop and
+    // will not for an editor: the bytes now carry cursor moves and
+    // redraws, and the question the check asks -- does the page's repl say
+    // what the native one says -- is about the screen, not the stream.
+    // `terminal.input` is xterm.js's own "as if typed", so `attach`'s
+    // `onData` path is the one under test.
     async replTranscript(lines) {
-      const out = [];
-      let onData = () => {};
-      const fake = {
-        write: (text) => out.push(text),
-        onData: (cb) => {
-          onData = cb;
-          return { dispose: () => { onData = () => {}; } };
-        },
-      };
-      const bound = attach(DrtTerm, fake);
-      await bound.whenIdle();
-      onData('drt repl\r');
-      for (const line of lines) {
+      const terminal = new Terminal({ cols: 80, rows: 40, convertEol: false });
+      terminal.open(document.getElementById('offscreen'));
+      const bound = attach(DrtTerm, terminal, { DrtEditor });
+      const type = async (text) => {
         await bound.whenIdle();
-        onData(line + '\r');
+        terminal.input(text, true);
+      };
+      await type('drt repl\r');
+      for (const line of lines) await type(line + '\r');
+      await type('\x04');
+      await bound.whenIdle();
+      // One turn for the last write to reach the buffer: xterm.js parses
+      // what it is given asynchronously.
+      await new Promise((r) => setTimeout(r, 50));
+      const buf = terminal.buffer.active;
+      const rendered = [];
+      for (let i = 0; i < buf.length; i++) {
+        rendered.push(buf.getLine(i).translateToString(true));
       }
-      await bound.whenIdle();
-      onData('\x04');
-      await bound.whenIdle();
       bound.dispose();
       bound.term.free();
+      terminal.dispose();
       term = null;
-      return out.join('');
+      return rendered.join('\n').replace(/\n+$/, '') + '\n';
     },
   };
   window.drtBrowserTest = harness;
@@ -94,31 +112,14 @@
     await harness.ready;
     about.textContent = buildInfo(false).trimEnd() + `\nabi: ${abiVersion()}\n\n` +
       'a terminal: type `drt run hello.dlua`, `drt repl`, `drt --help`. click to focus.';
-    const terminal = {
-      write(text) {
-        for (const ch of text) {
-          if (ch === '\b') screen.textContent = screen.textContent.slice(0, -1);
-          else if (ch !== '\r') screen.textContent += ch;
-        }
-        screen.scrollTop = screen.scrollHeight;
-      },
-      onData(cb) {
-        const handler = (e) => {
-          let data = null;
-          if (e.key === 'Enter') data = '\r';
-          else if (e.key === 'Backspace') data = '\x7f';
-          else if (e.ctrlKey && e.key === 'c') data = '\x03';
-          else if (e.ctrlKey && e.key === 'd') data = '\x04';
-          else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) data = e.key;
-          if (data === null) return;
-          e.preventDefault();
-          cb(data);
-        };
-        screen.addEventListener('keydown', handler);
-        return { dispose: () => screen.removeEventListener('keydown', handler) };
-      },
-    };
-    const bound = attach(DrtTerm, terminal);
+    const terminal = new Terminal({
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+      fontSize: 13,
+      cursorBlink: true,
+      theme: { background: '#101418', foreground: '#d8dee4' },
+    });
+    if (!location.search.includes('nodemo')) terminal.open(screen);
+    const bound = attach(DrtTerm, terminal, { DrtEditor });
     bound.term.putFile('/hello.dlua', new TextEncoder().encode(
       'print("hello from a page")\nprint("the time is", host.time())\n'));
     bound.term.setCwd('/');

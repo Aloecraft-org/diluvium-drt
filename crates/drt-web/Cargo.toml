@@ -38,5 +38,10 @@ clap = { workspace = true }
 # therefore defines (doc/Wasm.md §2.3). Delete that definition when the
 # pin moves to >= 0.2.127, which defines it itself.
 wasm-bindgen = "=0.2.114"
+wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 console_error_panic_hook = "0.1"
+# The one editor, in the page (doc/Wasm.md D8, M8). `XtermTerminal` takes
+# the terminal object this crate is already handed, so nothing imports
+# xterm.js and the page keeps its own theme, addons and font.
+ego_cli = { workspace = true }

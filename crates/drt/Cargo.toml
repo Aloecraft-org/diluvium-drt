@@ -97,7 +97,7 @@ wasi = ["connector-time", "connector-fs", "connector-crypto", "connector-sql", "
 # memory filesystem through `drt-platform`. Named here so `buildinfo`
 # reports `web` from inside the page and the examples gate can skip by
 # profile there as it does everywhere else.
-web = ["connector-time", "connector-fs", "connector-crypto"]
+web = ["connector-time", "connector-fs", "connector-crypto", "cli"]
 # Line editing for `drt repl` on a tty: history, word motions, undo, and
 # Tab over names the running instance answers with (doc/Wasm.md D8, M8,
 # §5). One editor for every target rather than one per host, which is

@@ -16,7 +16,7 @@
 </style>
 <div id="term"></div>
 <script type="module">
-  import init, { DrtTerm, setPanicHook } from './pkg/drt_web.js';
+  import init, { DrtTerm, DrtEditor, setPanicHook } from './pkg/drt_web.js';
   import { attach } from './drt-term.js';
 
   // Exactly the five lines a host writes, and nothing else: its own
@@ -32,6 +32,7 @@
   await init();
   setPanicHook();
   const bound = attach(DrtTerm, terminal, {
+    DrtEditor,
     banner: 'drt — type `drt run hello.dlua`, `drt repl`, or `drt --help`.',
   });
   bound.term.putFile('/hello.dlua', new TextEncoder().encode(

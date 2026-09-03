@@ -1,19 +1,31 @@
-// drt-term.js: a DrtTerm behind a terminal (doc/Wasm.md §4.4, §5).
+// drt-term.js: a DrtTerm behind a terminal (doc/Wasm.md §4.4, §5, M8).
 //
-// The terminal is anything with xterm.js's two methods, `write(text)` and
-// `onData(callback)`. Given those, this file is the process a shell would
-// be: a `$ ` prompt, a line editor, `drt ...` lines run through shell.js,
-// and the REPL's `dv> ` and `>> ` prompts when a session asks for a line.
-// The runtime's bytes arrive on fd 1 and 2 and reach the terminal as text
-// with `\n` made `\r\n`, which is what a terminal wants.
+// The terminal is an xterm.js `Terminal`, or anything duck-typed like one:
+// `write(text)`, `onData(callback)`, `cols`, `rows`, and -- for `run` and
+// `reset`, which put input in without a keyboard -- `input(data)`. Given
+// that, this file
+// is the process a shell would be -- a `$ ` prompt, `drt ...` lines run
+// through shell.js, and the REPL's `dv> ` and `>> ` prompts when a session
+// asks for a line. The runtime's bytes arrive on fd 1 and 2 and reach the
+// terminal as text with `\n` made `\r\n`, which is what a terminal wants.
+//
+// The editing is not here. `DrtEditor` is `ego_cli`'s `Session` over the
+// same terminal object, so a line typed in a page gets the history, word
+// motions, undo and Tab a tty gets, from one implementation rather than
+// two that drift (D8). This file decides only *when* a line is wanted and
+// with which prompt -- §5's rule that a host calls `read_line` at exactly
+// one point, where the driver parks on input.
 //
 // surface block:
-//   attach(DrtTerm, terminal, { prompt, banner })
+//   attach(DrtTerm, terminal, { prompt, banner, DrtEditor })
 //       -> { term, run(line), reset(), whenIdle(), dispose() }
 //     term      the DrtTerm, to seed files into
-//     run       submit a line as though it were typed; resolves with its
-//               exit status. For a host that has buttons as well as a
-//               keyboard -- a "try this" link, a panel restoring a session.
+//     run       submit a line as though it were typed -- through the
+//               terminal's own `input`, so it really is typed and the
+//               editor treats it identically. Resolves with its exit
+//               status. For a host that has buttons as well as a
+//               keyboard -- a "try this" link, a panel restoring a
+//               session.
 //     reset     abandon whatever is running and return to the prompt. The
 //               filesystem survives, because the instance is what a
 //               restart is about: every command already runs a fresh one.
@@ -21,136 +33,115 @@
 //               about now, not about a keystroke the terminal has not
 //               delivered yet, so a host sequencing commands should await
 //               `run` instead.
-//   KEYS: what the editor answers to; every other control key is ignored.
+//   INTERRUPT: the one key this file still reads for itself, and only
+//               while a command is running -- the editor is not reading
+//               then, so nothing else would see it.
 
 import { makeShell } from './shell.js';
 
-const KEYS = {
-  enter: ['\r', '\n'],
-  backspace: ['\x7f', '\b'],
-  interrupt: '\x03',
-  endOfInput: '\x04',
-};
+const INTERRUPT = '\x03';
 
-export function attach(DrtTerm, terminal, { prompt = '$ ', banner = '' } = {}) {
+export function attach(DrtTerm, terminal, { prompt = '$ ', banner = '', DrtEditor } = {}) {
   const decoders = [null, new TextDecoder(), new TextDecoder()];
   const write = (fd, text) => terminal.write(text.replace(/\r?\n/g, '\r\n'));
   const term = new DrtTerm((fd, bytes) =>
     write(fd, decoders[fd].decode(bytes, { stream: true })),
   );
   const shell = makeShell({ term, write });
+  const editor = DrtEditor.attach(terminal);
 
-  let line = '';
-  let reader = null; // resolve(line | null) while a command reads
   let running = false;
   let interrupted = false;
   let waiters = [];
   let disposed = false;
+  let pending = null; // resolve(status) for the `run` in flight
 
-  const idle = () => !running || reader !== null;
+  const idle = () => !running;
   const settle = () => {
     const w = waiters;
     waiters = [];
     for (const resolve of w) resolve();
   };
-  const show = (text) => {
-    terminal.write(text);
-    settle();
-  };
 
+  /// The REPL's side of §5: a line when the session parks on input, with
+  /// the prompt its `continuing()` chooses, and the candidate snapshot
+  /// refreshed from the guest after every accepted line.
   const io = {
-    readLine: (continuing) =>
-      new Promise((resolve) => {
-        reader = resolve;
-        show(continuing ? '>> ' : 'dv> ');
-      }),
+    readLine: async (continuing, session) => {
+      if (session) editor.setCandidates(session.names());
+      settle();
+      const outcome = await editor.readLine(continuing ? '>> ' : 'dv> ');
+      if (outcome.line !== undefined) return outcome.line;
+      if (outcome.interrupted) {
+        if (session) session.abandon();
+        return '';
+      }
+      return null; // eof
+    },
     stop: () => interrupted,
   };
 
-  async function submit(text) {
-    terminal.write('\r\n');
-    if (reader) {
-      const answer = reader;
-      reader = null;
-      answer(text);
-      return;
-    }
-    running = true;
-    interrupted = false;
-    let status = 1;
-    try {
-      status = await shell.run(text, io);
-    } catch (e) {
-      write(2, `drt-term: ${(e && e.message) || e}\n`);
-    }
-    running = false;
-    if (!disposed) show(prompt);
-    return status;
-  }
-
-  function key(ch) {
-    if (KEYS.enter.includes(ch)) {
-      const text = line;
-      line = '';
-      submit(text);
-    } else if (KEYS.backspace.includes(ch)) {
-      if (line.length) {
-        line = line.slice(0, -1);
-        terminal.write('\b \b');
+  async function loop() {
+    while (!disposed) {
+      settle();
+      const outcome = await editor.readLine(prompt);
+      if (disposed) return;
+      if (outcome.eof || outcome.interrupted) continue;
+      const text = outcome.line;
+      if (!text.trim()) continue;
+      running = true;
+      interrupted = false;
+      let status = 1;
+      try {
+        status = await shell.run(text, io);
+      } catch (e) {
+        write(2, `drt-term: ${(e && e.message) || e}\n`);
       }
-    } else if (ch === KEYS.interrupt) {
-      line = '';
-      terminal.write('^C\r\n');
-      if (reader) {
-        const answer = reader;
-        reader = null;
-        interrupted = true;
-        answer(null);
-      } else if (running) {
-        interrupted = true;
-      } else {
-        show(prompt);
+      running = false;
+      if (pending) {
+        pending(status);
+        pending = null;
       }
-    } else if (ch === KEYS.endOfInput) {
-      if (reader && line === '') {
-        const answer = reader;
-        reader = null;
-        answer(null);
-      }
-    } else if (ch >= ' ') {
-      line += ch;
-      terminal.write(ch);
     }
   }
 
   const listener = terminal.onData((data) => {
-    for (const ch of data) key(ch);
+    // While a command runs the editor is not reading, so this is the only
+    // thing that sees Ctrl+C. At a prompt the editor has it, and clearing
+    // the line is its business rather than this file's.
+    if (running && data.includes(INTERRUPT)) interrupted = true;
   });
+
   if (banner) write(1, banner.endsWith('\n') ? banner : `${banner}\n`);
-  show(prompt);
+  loop();
 
   return {
     term,
-    /// Type `line` and submit it. Echoed first, so what the terminal
-    /// shows afterwards is what a person doing it by hand would see.
+    /// Type `line` and submit it: literally typed, through the terminal's
+    /// own `input`, so the editor echoes and edits it exactly as it would
+    /// a person's keystrokes and there is one input path rather than two.
+    /// Needs a terminal with xterm.js's `input`, which is what the method
+    /// means there -- "as if the user typed this".
     run(line) {
-      if (reader || running) {
-        return Promise.reject(new Error('the terminal is busy'));
+      if (running) return Promise.reject(new Error('the terminal is busy'));
+      if (typeof terminal.input !== 'function') {
+        return Promise.reject(
+          new Error('run() needs a terminal with input(), the way xterm.js has one'),
+        );
       }
-      terminal.write(line);
-      return submit(line);
+      const done = new Promise((resolve) => {
+        pending = resolve;
+      });
+      terminal.input(`${line}\r`, true);
+      return done;
     },
     /// Abandon whatever is running and return to a fresh prompt.
+    ///
+    /// While a command runs this is the stop the shell polls; at a prompt
+    /// it is Ctrl+C, which is the editor's to interpret.
     reset() {
-      line = '';
-      if (reader) {
-        const answer = reader;
-        reader = null;
-        answer(null);
-      }
-      interrupted = true;
-      terminal.write('\r\n');
-      show(prompt);
+      if (running) interrupted = true;
+      else if (typeof terminal.input === 'function') terminal.input(INTERRUPT, true);
     },
     whenIdle: () =>
       idle() ? Promise.resolve() : new Promise((resolve) => waiters.push(resolve)),

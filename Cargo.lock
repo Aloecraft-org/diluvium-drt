@@ -1263,8 +1263,10 @@ dependencies = [
  "drt-connector",
  "drt-platform",
  "drt-swarm",
+ "ego_cli",
  "js-sys",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]

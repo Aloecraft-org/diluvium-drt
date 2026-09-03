@@ -225,7 +225,12 @@ pub fn repl(
     budget: drt_config::Budget,
 ) -> Result<(), String> {
     let repl = Repl::new(dispatcher, caps, budget)?;
-    #[cfg(feature = "cli")]
+    // Not in a page: see `edited` for why the browser has no tty to ask
+    // about, and `drt-web`'s `editor` module for what it has instead.
+    #[cfg(all(
+        feature = "cli",
+        not(all(target_arch = "wasm32", target_os = "unknown"))
+    ))]
     {
         use std::io::IsTerminal;
         if std::io::stdin().is_terminal() {
@@ -276,8 +281,20 @@ fn piped(mut repl: Repl) -> Result<(), String> {
 /// driver. `Repl` refreshes it after every line, which is when what is in
 /// scope can have changed.
 #[cfg(feature = "cli")]
-struct Names {
+pub struct Names {
     names: Arc<Mutex<Vec<String>>>,
+}
+
+#[cfg(feature = "cli")]
+impl Names {
+    /// Complete from `names`, which the caller refreshes.
+    ///
+    /// Public so a host that drives the editor itself -- `drt-web`, whose
+    /// tick loop lives in the page -- completes by the same rule as a tty
+    /// rather than a second one that drifts.
+    pub fn new(names: Arc<Mutex<Vec<String>>>) -> Self {
+        Names { names }
+    }
 }
 
 #[cfg(feature = "cli")]
@@ -351,7 +368,16 @@ pub async fn edit<T: ego_cli::term::Terminal>(
 }
 
 /// The tty: the same REPL, with an editor in front of it.
-#[cfg(feature = "cli")]
+///
+/// Not compiled for the browser, which has no terminal to *open*:
+/// `ego_cli::term::platform()` exists wherever a process can ask its
+/// target for one, and a page instead owns an xterm.js object and hands
+/// it over. `drt-web`'s `editor` module takes it from there, over the
+/// same [`editor`] and the same [`Names`] this builds.
+#[cfg(all(
+    feature = "cli",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
 fn edited(mut repl: Repl) -> Result<(), String> {
     let terminal = ego_cli::term::platform().map_err(|e| format!("no terminal: {e}"))?;
     let mut session = editor(&repl, terminal);

@@ -299,6 +299,29 @@ impl Session {
     pub fn is_over(&self) -> bool {
         matches!(self.kind, Kind::Exited(_))
     }
+
+    /// The names the guest last said were in scope, for Tab.
+    ///
+    /// §5's snapshot: `Repl` refreshes it after every accepted line, and
+    /// the host hands it to the editor, whose `Completer` is synchronous
+    /// on purpose. Not a repl session: nothing to complete.
+    pub fn names(&self) -> Vec<String> {
+        match &self.kind {
+            Kind::Repl(repl) => {
+                let names = repl.names();
+                let names = names.lock().unwrap_or_else(|e| e.into_inner());
+                names.clone()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Throw away an unfinished line, the way Ctrl+C does natively.
+    pub fn abandon(&mut self) {
+        if let Kind::Repl(repl) = &mut self.kind {
+            repl.abandon();
+        }
+    }
 }
 
 fn say(fd: Fd, text: &str) {

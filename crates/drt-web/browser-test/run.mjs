@@ -300,11 +300,26 @@ for (const name of examples) {
 // the same lines. The page echoes what is typed and the native transcript
 // (stdin from a file) does not, so the echoes are removed before the diff;
 // everything else -- prompts, answers, the C core's print, the error --
-// must match byte for byte.
+// must match.
+//
+// Read from a real terminal's rendered buffer rather than from the bytes
+// the adapter wrote. Since M8 the page's editor is `ego_cli`, which moves
+// the cursor and redraws, so the byte stream is no longer a transcript of
+// anything a person saw; the screen is. Two consequences, both the
+// terminal's doing rather than the runtime's. A tab is movement to the
+// next 8-column stop, and it lands on a different column in each -- the
+// native prompt shares a line with the output after it, the page's output
+// starts a fresh line under the echo -- so runs of horizontal whitespace
+// are collapsed on both sides: what that keeps is the answer, `print`'s
+// separator included, and what it gives up is how far a terminal moved,
+// which is the terminal's business. And the shell prompt ^D returns to is
+// a line of its own rather than a dangling `$ `.
 {
   const name = 'repl-parity';
   const scriptLines = fs.readFileSync(path.join(HERE, 'repl-script.txt'), 'utf8').replace(/\n$/, '').split('\n');
-  const expected = fs.readFileSync(path.join(HERE, 'repl-expected.txt'), 'utf8');
+  const expected = oneSpace(
+    fs.readFileSync(path.join(HERE, 'repl-expected.txt'), 'utf8'),
+  );
   try {
     const raw = await withTimeout(
       page.evaluate((lines) => window.drtBrowserTest.replTranscript(lines), scriptLines),
@@ -315,7 +330,8 @@ for (const name of examples) {
     for (const line of scriptLines) {
       actual = actual.replace(new RegExp(`(dv> |>> )${escapeRegExp(line)}\n`), '$1');
     }
-    actual = actual.replace(/\$ $/, '');
+    // After ^D: the blank line the repl leaves, then the shell prompt.
+    actual = oneSpace(actual.replace(/\n*\$ ?\n*$/, '\n'));
     if (actual === expected) {
       console.log(`ok       ${name.padEnd(24)} drt repl < repl-script.txt, typed at drt-term.js`);
       nOk += 1;
@@ -383,6 +399,16 @@ function walk(root, visit, rel = '') {
       walk(root, visit, here);
     } else if (entry.isFile()) visit(here, false);
   }
+}
+
+/// Every run of tabs and spaces as one space.
+///
+/// A tab survives a byte stream and does not survive a screen, where it
+/// has already become however many columns the cursor moved. Applied to
+/// both sides of the repl diff so it is about what was said rather than
+/// about where a terminal put it.
+function oneSpace(text) {
+  return text.replace(/[ \t]+/g, ' ');
 }
 
 function escapeRegExp(text) {

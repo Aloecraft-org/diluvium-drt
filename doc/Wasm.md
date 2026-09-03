@@ -108,7 +108,10 @@ behaviours enumerated in §5 identical by construction instead of by
 agreement. §2.6 weighs it: +111 KB in the browser, +248 KB natively, and
 tokio in a slim graph that has never had it, which is the price and the
 one thing to dislike — and the one thing that got fixed, the native cost
-settling at +153 KB with no runtime at all once the ask was answered. M8 is the work; its native half landed the day this
+settling at +153 KB with no runtime at all once the ask was answered. The
+browser's came in at +129 KB, and of the three hand-written editors above,
+none is left: `repl.rs`'s reader is the pipe's shape only, `drt-term.js`
+has no editing in it, and the homepage's is a consumer's to retire. M8 is the work; its native half landed the day this
 was decided, and `cli` sits in `slim` — where the argument said it
 belonged — because
 [ego-cli#3](https://github.com/Aloecraft-org/ego-cli/issues/3) was
@@ -963,10 +966,15 @@ for byte what it was — and `edited`, the tty, over `ego_cli::Session`;
 candidates are the names the running instance answered with;
 `tests/editor.rs` scripts five behaviours through `MemTerminal`. `drt
 repl` on a tty now has history, word motions, undo and Tab; it had none
-of them. **Still to do:** `cli` into `slim` once ego-cli#3's branch
-lands on `main` (below), and the browser half — `drt-web` keeps
-`drt-term.js`'s printable-and-backspace loop until
-`XtermTerminal::attach` replaces it.)
+of them. **Both halves are in.** `cli` moved into `slim` the same day,
+ego-cli#4 having landed the runtime-free backend it waited on (below);
+and `web` took `cli` too, so the page runs the editor a tty runs.
+`crates/drt-web/src/editor.rs` is the same `ego_cli::Session` over
+`XtermTerminal::attach`, completing through the same
+`drt::repl::Names` -- one type, not a second implementation of the same
+rule -- and `drt-term.js` no longer has a line editor in it at all: it
+decides *when* a line is wanted and with which prompt, which is all §5
+ever asked a host to do. +129,545 bytes on the module, +7.4%.)
 
 *The plan as written:* D8, §2.6. `ego_cli` in
 `crates/drt` behind a `cli` feature, with `Session` driven at the one
@@ -1056,8 +1064,9 @@ off for the whole workspace: one editor backend on every target rather
 than two, and `full`'s tokio is the relay's and STUN's alone.
 
 `wasi` and `web` name their connectors explicitly rather than building on
-`slim`, so they are untouched — the browser half below is still the
-browser half.
+`slim`, so `wasi` is untouched: `drt repl` under wasmtime is still the
+piped shape, for the reason §2.6 gives -- Preview 2 has no way to ask for
+raw mode, so there is no tty there to edit at. `web` names `cli` itself.
 
 **Later, named so they are not mistaken for forgotten:** the plugin
 channel and a `browser/*` capability over it, both assessed against M3's

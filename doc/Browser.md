@@ -122,7 +122,7 @@ term.putFile('/app.dlua', new TextEncoder().encode('print("hello")'));
 ```
 
 ```
-  attach(DrtTerm, terminal, { prompt, banner }) -> handle
+  attach(DrtTerm, terminal, { prompt, banner, DrtEditor }) -> handle
   handle.term            the DrtTerm: putFile, putDir, getFile, listFiles, setCwd
   handle.run(line)       submit a line nobody typed; resolves with its exit status
   handle.reset()         abandon whatever is running, return to the prompt
@@ -130,28 +130,36 @@ term.putFile('/app.dlua', new TextEncoder().encode('print("hello")'));
   handle.dispose()       unregister the onData handler
 ```
 
-It is the process a shell would be: a `$ ` prompt, a line editor
-(printable keys, Backspace, Enter, `^C` drops the line or the running
-command, `^D` on an empty line leaves the REPL), the REPL's `dv> ` and
+It is the process a shell would be: a `$ ` prompt, the REPL's `dv> ` and
 `>> ` prompts when a session wants a line, and output with `\n` made
-`\r\n`. `shell.js` behind it is just enough sh for the examples'
+`\r\n`. The editing is `DrtEditor`'s -- `ego_cli`'s `Session` over the
+same terminal object, so the page has the history, word motions, undo and
+guest-completing Tab a tty has, from one implementation rather than a
+second that drifts (doc/Wasm.md D8, M8). `attach` takes it as an argument
+rather than importing it so a host can pass its own, and `drt-term.js`
+decides only *when* a line is wanted and with which prompt. `shell.js` behind it is just enough sh for the examples'
 `meta.json` commands: `;`, single and double quotes, `$?`, `echo`, and
 `drt` -- the real one. Anything else is `command not found`, status 127.
 
 `run` is there because a panel has buttons as well as a keyboard -- a
-"try this example" link, a restored session, a test. It echoes the line
-first, so what the terminal shows afterwards is what a person doing it by
-hand would have seen, and it resolves when the command is over, which
+"try this example" link, a restored session, a test. It submits the line
+through the terminal's own `input`, xterm.js's "as if the user typed
+this", so the editor echoes and edits it exactly as it would a person's
+keystrokes and what the terminal shows afterwards is what a person doing
+it by hand would have seen. It resolves when the command is over, which
 `whenIdle` cannot tell you: `whenIdle` answers about now, and a keystroke
 the terminal has not delivered yet is not yet running.
 
 Neither file imports xterm.js -- a bundler, an import map and a
 `<script>` tag all work, and the object is used duck-typed. The suite
-drives them three ways to keep that honest: through a fake terminal
-(`index.html`), through a `<pre>` with a keyboard, and through a real
-xterm.js `Terminal` in Chromium (`xterm.html`, the `xterm-embedding`
-check), where the assertion is read out of the terminal's own rendered
-buffer after real keystrokes.
+drives them through real xterm.js `Terminal`s in Chromium -- the demo on
+`index.html`, the transcript the parity check types at, and
+`xterm.html`'s, typed into with real keystrokes -- and every assertion is
+read out of a terminal's own rendered buffer. The fake terminals and the
+`<pre>` with a keydown handler that used to stand in for two of those are
+gone: an editor that moves the cursor and redraws needs a terminal to
+interpret it, and a hand-written stand-in would be one more terminal
+emulator to get wrong.
 
 ## What the suite proves (`crates/drt-web/browser-test`)
 
@@ -167,9 +175,14 @@ shell version, and so does `needs_listener` -- a page has no socket to
 bind. `buildinfo` inside the page reports `profile: web`, and that is
 what decides the build skips.
 
-Then `repl-script.txt` is typed at `drt-term.js` and the transcript,
-echoes removed, is compared with `repl-expected.txt`, which the native
-binary produced for the same lines. And `xterm.html` is loaded with a
+Then `repl-script.txt` is typed at `drt-term.js` and the screen it
+renders, echoes removed, is compared with `repl-expected.txt`, which the
+native binary produced for the same lines. What is compared is the
+rendered buffer rather than the bytes written, because since M8 those
+bytes carry the editor's cursor moves and redraws and are no longer a
+transcript of anything a person saw; runs of horizontal whitespace are
+collapsed on both sides, a tab having already become columns on the one
+side and not the other. And `xterm.html` is loaded with a
 real xterm.js `Terminal`, typed into with real keystrokes (including
 Backspace, so the edit path is exercised), asked to `run` a line nobody
 typed, and read back from the terminal's own buffer.

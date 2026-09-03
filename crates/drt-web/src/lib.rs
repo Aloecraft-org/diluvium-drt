@@ -22,13 +22,17 @@
 //!
 //! - [`term::Term`], [`term::Session`], [`term::Step`]: the contract.
 //! - `bindings` (browser only): the wasm-bindgen exports -- `DrtTerm`,
-//!   `DrtSession`, `abiVersion`, `buildInfo`, `setPanicHook`.
+//!   `DrtSession`, `DrtEditor`, `abiVersion`, `buildInfo`, `setPanicHook`.
+//! - `editor` (browser only): the one line editor, over the page's
+//!   xterm.js object.
 //! - `wasi_shim` (browser only): wasi-libc's seventeen syscalls.
 
 pub mod term;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod bindings;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod editor;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod wasi_shim;
 

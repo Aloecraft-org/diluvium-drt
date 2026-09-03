@@ -11,6 +11,7 @@
 
 use wasm_bindgen::prelude::*;
 
+use crate::editor::{Editor, Outcome};
 use crate::term::{Session, Step, Term};
 
 /// The flag wasm-bindgen 0.2.114 reads before every export call once a
@@ -189,5 +190,69 @@ impl DrtSession {
     #[wasm_bindgen(js_name = isOver)]
     pub fn is_over(&self) -> bool {
         self.inner.is_over()
+    }
+
+    /// The names Tab completes from, as of the last accepted line.
+    pub fn names(&self) -> Vec<String> {
+        self.inner.names()
+    }
+
+    /// Throw away an unfinished line, as Ctrl+C does natively.
+    pub fn abandon(&mut self) {
+        self.inner.abandon();
+    }
+}
+
+/// The line editor over the page's own xterm.js `Terminal`.
+///
+/// One `read_line` at a time, because §5 puts exactly one in a host: the
+/// tick loop stays in the page and calls this only where the driver parks
+/// on input. What it gets in return is what a tty gets -- history, word
+/// motions, undo, and Tab over the guest's names -- from the same
+/// `ego_cli::Session` and the same `drt::repl::Names`.
+#[wasm_bindgen]
+pub struct DrtEditor {
+    inner: Editor,
+}
+
+#[wasm_bindgen]
+impl DrtEditor {
+    /// Take the page's terminal object. Nothing is imported: `attach` uses
+    /// it duck-typed, so a bundler, an import map and a `<script>` tag all
+    /// work.
+    pub fn attach(terminal: JsValue) -> DrtEditor {
+        DrtEditor {
+            inner: Editor::attach(terminal),
+        }
+    }
+
+    /// Read one line, showing `prompt`.
+    ///
+    /// Resolves to `{line}`, `{interrupted: true}` (Ctrl+C) or
+    /// `{eof: true}` (Ctrl+D on an empty line); rejects if a read is
+    /// already in flight.
+    #[wasm_bindgen(js_name = readLine)]
+    pub fn read_line(&self, prompt: String) -> js_sys::Promise {
+        let reading = self.inner.read_line(prompt);
+        wasm_bindgen_futures::future_to_promise(async move {
+            let o = js_sys::Object::new();
+            let set = |k: &str, v: JsValue| {
+                let _ = js_sys::Reflect::set(&o, &JsValue::from_str(k), &v);
+            };
+            match reading.await {
+                Ok(Outcome::Line(line)) => set("line", JsValue::from_str(&line)),
+                Ok(Outcome::Interrupted) => set("interrupted", JsValue::TRUE),
+                Ok(Outcome::Eof) => set("eof", JsValue::TRUE),
+                Err(e) => return Err(JsValue::from_str(&e)),
+            }
+            Ok(o.into())
+        })
+    }
+
+    /// Replace what Tab serves from -- `DrtSession.names()`, after each
+    /// accepted line.
+    #[wasm_bindgen(js_name = setCandidates)]
+    pub fn set_candidates(&self, names: Vec<String>) {
+        self.inner.set_candidates(names);
     }
 }
