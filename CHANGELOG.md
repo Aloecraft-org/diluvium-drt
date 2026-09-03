@@ -12,9 +12,9 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
-## [0.5.0] - unreleased
+## [0.4.2] - 2026-09-03
 
-`v0.5.0` &middot; dv ABI 1 &middot; diluvium `515160f64587`
+`v0.4.2` &middot; dv ABI 1 &middot; diluvium `515160f64587`
 
 Local `exec`: the one hostcall family the C host answered and DRT
 did not, and the one the instruction budget cannot reach. The
@@ -22,10 +22,13 @@ contract is `dhost_exec.c`'s to the sentence, a `.host.lua` saying
 `exec = true` loads unchanged, and the scope gains the thing the C
 host had nowhere to put: the programs a call may start.
 
-A minor version, because `full`'s connector set is not v0.4.1's.
-A package declaring `requires.connectors` with `exec` in it is now
-admissible against the `full` artifact and refused by name against
-`slim`, which does not carry it.
+A patch digit for a new connector, by the owner's decision
+(`doc/Release.md`): nothing that existed changed, and the check a
+package makes is by name against BUILDINFO's connector list, never
+against the version. That list is not v0.4.1's -- `full` gains
+`exec`, `slim` is unchanged -- so a package declaring
+`requires.connectors` with `exec` in it is admissible against the
+`full` artifact and refused by name against `slim`.
 
 ### Connectors
 

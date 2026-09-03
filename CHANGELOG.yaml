@@ -59,12 +59,13 @@ schema: 1
 repo: Aloecraft-org/diluvium-drt
 
 releases:
-  - version: 0.5.0
-    tag: v0.5.0
-    date: null
-    status: unreleased
+  - version: 0.4.2
+    tag: v0.4.2
+    date: 2026-09-03
+    status: released
     stable: true
-    mirror: false
+    mirror: true
+    latest: true
     dv_abi: 1
     diluvium: 515160f645874fc82de001fea7f68803f47bbc58
     connectors:
@@ -77,10 +78,13 @@ releases:
       `exec = true` loads unchanged, and the scope gains the thing the C
       host had nowhere to put: the programs a call may start.
 
-      A minor version, because `full`'s connector set is not v0.4.1's.
-      A package declaring `requires.connectors` with `exec` in it is now
-      admissible against the `full` artifact and refused by name against
-      `slim`, which does not carry it.
+      A patch digit for a new connector, by the owner's decision
+      (`doc/Release.md`): nothing that existed changed, and the check a
+      package makes is by name against BUILDINFO's connector list, never
+      against the version. That list is not v0.4.1's -- `full` gains
+      `exec`, `slim` is unchanged -- so a package declaring
+      `requires.connectors` with `exec` in it is admissible against the
+      `full` artifact and refused by name against `slim`.
     added:
       - |
         **`exec/run`, the honest escape hatch.** `{argv, stdin?,
@@ -135,7 +139,6 @@ releases:
     status: released
     stable: true
     mirror: true
-    latest: true
     dv_abi: 1
     diluvium: 515160f645874fc82de001fea7f68803f47bbc58
     connectors:
