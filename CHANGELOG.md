@@ -12,6 +12,118 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
+## [0.5.0rc1] - 2026-09-03 (prerelease)
+
+`v0.5.0rc1` &middot; dv ABI 1 &middot; diluvium `f4d52516380c`
+
+The wasm port, as a candidate: the same code v0.5.0 will carry,
+tagged so the work waiting on it can start against a tag rather
+than a branch name. The Lab's Terminal and Instances panels and
+the diluvium homepage's REPL are the three consumers, and what
+they need is `drt_web.tar.gz` and the exports below.
+
+**A candidate, not the release.** Nothing here is known to be
+wrong -- the examples gate passes on all three targets and the
+browser suite is ten checks -- but no consumer has yet built
+against the surface, and the first one to try is the test the
+surface has not had. v0.5.0 follows when it has.
+
+Not mirrored, and not `latest`: an `install.sh` still resolves
+to the newest stable release, which is v0.4.2.
+
+### Connectors
+
+- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `listen`
+- `slim`: `time`, `fs`, `crypto`, `listen`
+- `wasi`: `time`, `fs`, `crypto`, `sql`, `listen`
+- `web`: `time`, `fs`, `crypto`
+
+### Added
+
+- **`drt` on `wasm32-wasip2`, released as `drt_wasip2.wasm`.** The
+  binary itself, built with the `wasi` profile -- `time`, `fs`,
+  `crypto`, `sql`, `listen` -- and run under wasmtime with
+  `script/drt-wasip2.sh`, which carries the flags the C core's
+  `setjmp`/`longjmp` lowering needs. It proves itself the way the
+  native legs do and then harder: the examples gate runs through
+  the wrapper before the artifact is uploaded.
+- **`drt` in a browser, released as `drt_web.tar.gz`.** The `web`
+  profile with the C core and wasi-libc linked into one module, so
+  it imports nothing but wasm-bindgen's glue -- wasi-libc's
+  seventeen syscalls are defined inside it, and `fd_write` reaches
+  the same sink the runtime's own output does. The tarball carries
+  the module, its glue, and `drt-term.js`/`shell.js`: a host
+  constructs its own xterm.js `Terminal`, calls `attach`, and has a
+  `$ ` prompt running `drt run`, `drt repl` and `drt buildinfo`.
+  The gate is the examples in Chromium, a REPL transcript diffed
+  against the native binary's, and a real xterm.js typed into.
+- **`drt start` serves from wasmtime.** wasip2 has sockets and no
+  threads, so the listener gained a second acceptor: non-blocking
+  `std::net`, one state machine per connection, stepped from the
+  drive loop. The bridge's contract is unchanged -- one request per
+  connection as a message on a queue, headers by allowlist only --
+  and `examples/17-serving-http` is the deployment, curl'd both
+  natively and under wasmtime.
+- **Line editing in `drt repl`, behind the `cli` feature.** History,
+  word motions, undo, and Tab whose candidates are the names the
+  running instance answers with rather than a list the host
+  hard-coded. One editor (`ego-cli`) rather than one per host --
+  the same `Session` and the same completer on a tty and in a
+  page, where `attach` drives the host's own xterm.js object.
+  In `slim` as well as `full`, costing +150 KB and no async
+  runtime, because the backend under it blocks on the terminal
+  instead of driving an executor; +129 KB in the browser. `drt
+  repl` reading a pipe is unedited as before, prompts on stderr,
+  and so is `drt repl` under wasmtime, which has no way to ask
+  for raw mode.
+- **`drt repl --unsafe`, and the swarm exports.** Two things a
+  browser host asked for. The flag evaluates with `os`, `io` and
+  `require` in scope, which a *language* REPL needs and a sealed
+  guest is not given: it lifts the stdlib seal and nothing else,
+  so the capability grants and the budget still decide what a
+  hostcall reaches, and the banner names what is off rather than
+  looking like a sealed REPL. It costs replayability and makes the
+  budget approximate. And `DrtSwarm` puts the instances table --
+  root, step, the roster, the capability questions, hibernate and
+  wake -- beside `DrtTerm`, over the deployment `drt start`
+  drives, so a panel driving the C swarm's sixteen entry points
+  has twins for them here.
+- **`crates/drt-platform`.** The four places DRT touches a platform
+  -- clock, entropy, the filesystem, stdio -- behind one seam, so
+  nothing above them is target-aware. In a page the clock is
+  `web-time`, the filesystem is a `MemFs` the page seeds, and stdio
+  is a sink the page installs.
+
+### Changed
+
+- **The drive loop inverted, and the hostcall pump defers.**
+  `run`, `repl` and `start` no longer own loops that block:
+  `tick()` advances an instance as far as it can and returns what
+  the host should do next, and the host owns the sleeping. A
+  connector that cannot answer at once is parked in an in-flight
+  table and polled on the loop's cadence instead of stalling every
+  instance -- which also removes the failure mode
+  `doc/Failure-Modes.md` records for `rest`.
+- The command surface moved from `main.rs` into `drt::cli`, so a
+  page parses the same command line the binary parses, with the
+  same `--help` and the same exit statuses.
+
+### Removed
+
+- **The browser tier's JS host bridge.** `drt-web` was an `Engine`
+  over a JS-hosted interpreter, which was SPEC.md §4's fallback for
+  the case where the C core could not be linked into the same
+  module. It can, so the fallback is gone rather than kept as a
+  second engine path.
+
+### Fixed
+
+- The fs connector's jail tests for a root with `has_root` rather
+  than `is_absolute`, which `std` answers differently on
+  `wasm32-unknown-unknown` -- an absolute path was refused
+  natively and by a different rule in a page.
+
+
 ## [0.5.0] - unreleased
 
 `v0.5.0` &middot; dv ABI 1 &middot; diluvium `f4d52516380c`
