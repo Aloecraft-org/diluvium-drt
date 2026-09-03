@@ -1,0 +1,62 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>drt in a real xterm.js</title>
+<!-- The embedding contract against the real thing (doc/Wasm.md M5).
+     index.html drives drt-term.js through a <pre> and a fake terminal,
+     which proves the adapter's logic; this page proves the claim the
+     contract actually makes -- that `attach` drives an xterm.js
+     `Terminal`, the object the diluvium homepage panel and the Lab both
+     already have. xterm.js is served from node_modules rather than a CDN,
+     which is also how the homepage serves it. -->
+<link rel="stylesheet" href="./node_modules/@xterm/xterm/css/xterm.css">
+<script src="./node_modules/@xterm/xterm/lib/xterm.js"></script>
+<style>
+  body { margin: 0; background: #14161a; }
+  #term { padding: 8px; height: 100vh; }
+</style>
+<div id="term"></div>
+<script type="module">
+  import init, { DrtTerm, setPanicHook } from './pkg/drt_web.js';
+  import { attach } from './drt-term.js';
+
+  // Exactly the five lines a host writes, and nothing else: its own
+  // Terminal, its own theme, `attach`, and files seeded into the page.
+  const terminal = new Terminal({
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+    fontSize: 13,
+    cursorBlink: true,
+    theme: { background: '#14161a', foreground: '#d7dae0' },
+  });
+  terminal.open(document.getElementById('term'));
+
+  await init();
+  setPanicHook();
+  const bound = attach(DrtTerm, terminal, {
+    banner: 'drt — type `drt run hello.dlua`, `drt repl`, or `drt --help`.',
+  });
+  bound.term.putFile('/hello.dlua', new TextEncoder().encode(
+    'print("hello from a page")\nprint(1 + 1)\n'));
+  bound.term.setCwd('/');
+  terminal.focus();
+
+  // What the suite reads: the terminal's own rendered buffer, so the
+  // assertion is about what a person would see rather than about what
+  // the adapter thinks it wrote.
+  window.drtXtermTest = {
+    screen() {
+      const buf = terminal.buffer.active;
+      const lines = [];
+      for (let i = 0; i < buf.length; i++) {
+        lines.push(buf.getLine(i).translateToString(true));
+      }
+      return lines.join('\n').replace(/\n+$/, '');
+    },
+    idle: () => bound.whenIdle(),
+    // The two a panel with buttons needs: run a line nobody typed, and
+    // return to the prompt from whatever is running.
+    run: (line) => bound.run(line),
+    reset: () => bound.reset(),
+    cols: terminal.cols,
+    rows: terminal.rows,
+  };
+</script>

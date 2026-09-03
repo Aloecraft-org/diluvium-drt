@@ -2,6 +2,9 @@
 // run.mjs: the browser suite. examples/*/meta.json through drt-web, in
 // Chromium, diffed against expected.txt (doc/Wasm.md §5, M4).
 //
+// Also the embedding contract, against a real xterm.js Terminal
+// (xterm.html), because that is the object every host actually has.
+//
 // The page-side twin of examples/run-all.sh, under the same rules: every
 // examples/NN-*/ with a meta.json is one example; its files are seeded
 // into the page's memory filesystem; its "cmd" runs through the in-page
@@ -19,8 +22,8 @@
 //      DRT_WEB_BUILDINFO  a path: the page's `drt buildinfo` is written there,
 //                         which is how a release reads the profile off the
 //                         module (release.yml, build-web)
-// needs: pkg/ from script/drt-web.sh; `npm ci` for Playwright, whose
-//        Chromium is `npx playwright install chromium`.
+// needs: pkg/ from script/drt-web.sh; `npm ci` for Playwright and
+//        xterm.js, and `npx playwright install chromium` for the browser.
 
 import { chromium } from 'playwright';
 import fs from 'node:fs';
@@ -38,6 +41,7 @@ const TYPES = {
   '.js': 'text/javascript',
   '.mjs': 'text/javascript',
   '.wasm': 'application/wasm',
+  '.css': 'text/css',
 };
 
 // ---------------------------------------------------------------------------
@@ -237,6 +241,58 @@ for (const name of examples) {
     const lines = diff(expected.split('\n'), actual.split('\n'));
     for (const line of lines.slice(0, MAXDIFF)) console.log(`           ${line}`);
     if (lines.length > MAXDIFF) console.log(`           ... ${lines.length - MAXDIFF} more diff lines not shown`);
+  }
+}
+
+// The embedding contract, against a real xterm.js Terminal (doc/Wasm.md
+// M5). index.html drives drt-term.js through a fake terminal, which
+// proves the adapter's logic against a scriptable object; this proves the
+// claim the contract makes to a host -- that `attach` drives the xterm.js
+// `Terminal` the homepage panel and the Lab already have -- by typing
+// real keystrokes into xterm's own input handling and reading back the
+// terminal's own rendered buffer.
+{
+  const name = 'xterm-embedding';
+  try {
+    const xterm = await browser.newPage();
+    xterm.on('pageerror', (e) => consoleLines.push(`xterm pageerror: ${e.message}`));
+    await xterm.goto(`${origin}/xterm.html`);
+    await xterm.waitForFunction(() => window.drtXtermTest !== undefined, null, { timeout: 30000 });
+    await xterm.evaluate(() => window.drtXtermTest.idle());
+    // Typed, not injected: through the textarea xterm.js listens on, so
+    // the path under test is the page's own keyboard -> onData -> attach.
+    await xterm.click('#term');
+    await xterm.keyboard.type('drt run hellp.dlua');
+    for (let i = 0; i < 6; i++) await xterm.keyboard.press('Backspace');
+    await xterm.keyboard.type('o.dlua');
+    await xterm.keyboard.press('Enter');
+    // Waited for by content, not by a promise: `whenIdle` answers about
+    // the adapter's state, and what this check is about is what the
+    // terminal ends up showing a person.
+    await xterm
+      .waitForFunction(() => window.drtXtermTest.screen().includes('hello from a page'), null, {
+        timeout: 15000,
+      })
+      .catch(() => {});
+    // And the same thing again without a keyboard: `run` is what a panel
+    // with a "try this" button calls, and it resolves when the command is
+    // over rather than leaving the host to guess.
+    const status = await xterm.evaluate(() => window.drtXtermTest.run('drt buildinfo'));
+    const screen = await xterm.evaluate(() => window.drtXtermTest.screen());
+    await xterm.close();
+
+    const want = ['$ drt run hello.dlua', 'hello from a page', '2', 'profile: web'];
+    if (status !== 0) throw new Error(`run('drt buildinfo') answered ${status}`);
+    const missing = want.filter((line) => !screen.split('\n').some((l) => l.trim() === line));
+    if (missing.length === 0) {
+      console.log(`ok       ${name.padEnd(24)} a real xterm.js Terminal, typed into and read back`);
+      nOk += 1;
+    } else {
+      fail(name, `the terminal never showed: ${missing.join(' | ')}`);
+      for (const line of screen.split('\n')) console.log(`           |${line}`);
+    }
+  } catch (e) {
+    fail(name, `the page threw: ${e.message}`);
   }
 }
 

@@ -99,11 +99,28 @@ that a node smoke test cannot see the one browser divergence this project
 has hit (`doc/HostBaseline.md`) stands, and is why the browser gate is a
 browser.
 
-**D8. The REPL is one guest and two line editors, by contract.** `repl.dlua`
-stays the only evaluator. The host half is "line in, text out" plus a
-completion request, natively rustyline and in the page an xterm.js
-readline addon, with the behaviours enumerated in §5 so the two cannot
-drift silently. The `host.time()` divergence `doc/HostBaseline.md` records
+**D8. The REPL is one guest and one line editor.** `repl.dlua` stays the
+only evaluator, and the host half — "line in, text out" plus a completion
+request — is `ego-cli` on all three targets rather than a native editor
+and a browser one held in step by a parity test. The editor is the same
+code; only the backend under it differs, which is what makes the
+behaviours enumerated in §5 identical by construction instead of by
+agreement. §2.6 weighs it: +111 KB in the browser, +248 KB natively, and
+tokio in a slim graph that has never had it, which is the price and the
+one thing to dislike. M8 is the work.
+
+*Revised 2026-09-03.* This decision read "two line editors, by contract —
+natively rustyline and in the page an xterm.js readline addon, with the
+behaviours enumerated in §5 so the two cannot drift silently", and §7
+recorded the alternative as open. Three hand-written editors is what the
+codebase actually had by then — `repl.rs`'s cooked `stdin` reader with no
+editing at all, `drt-term.js`'s printable-and-backspace loop, and the
+diluvium homepage's `Repl` class with arrows, `^A`/`^E`/`^U`, history and
+tab completion (`diluvium/doc/repl-reference.html`) — none of which agreed
+with the others. A contract between editors that do not exist yet is
+cheaper to write than to keep.
+
+The `host.time()` divergence `doc/HostBaseline.md` records
 for the Lab's REPL does not exist here: under wasmtime, `drt repl` answered
 `print(host.time() > 0)` with `true` (§2.2), because a REPL that is an
 instance parks properly.
@@ -394,6 +411,56 @@ claim, not a number, until M4's suite prints one.
 
 ---
 
+### 2.6 ego-cli, weighed on all three targets
+
+`ego-cli` (Aloecraft-org/ego-cli, `3e45e91`) is line editing as a library:
+an incremental ANSI decoder, a rebindable keymap, an editor with word
+motions and undo, a renderer that wraps and places the cursor, history
+with prefix search, and two hooks — `Completer` and `Highlighter`. It
+carries four terminal backends: crossterm in raw mode natively, an
+xterm.js object in the browser, cooked lines on WASI P2 (a component
+cannot reach the host's termios), and a memory terminal for tests. It
+pins `wasm-bindgen = "=0.2.114"`, which is the pin this tree already has.
+
+Measured here rather than argued about, because the objection in §7 —
+that `ego_platform` drags a browser kitchen sink — turns out to be true
+of the object file and false of the artifact.
+
+| what | bytes | over baseline |
+|---|---|---|
+| browser: glue only, after `wasm-bindgen` | 793 | — |
+| browser: the editing core (decoder, keymap, editor, renderer) | 96,324 | +95 KB |
+| browser: the whole `Session`, its edit loop driven, with a completer | 111,730 | +111 KB |
+| native `release-small` binary: baseline | 294,512 | — |
+| native `release-small`: `Session` over the real crossterm backend | 542,472 | +248 KB |
+
+Against what ships that is **+6.4%** on `drt_web_bg.wasm` (1,740,483
+bytes) and **+16.6%** on `drt` slim (1,490,264 bytes). For wasip2 the
+answer is only that it compiles: `ego_cli`, `ego_platform` and `tokio`
+all build for `wasm32-wasip2`, and the backend there is the cooked one,
+which is what `drt repl` already does.
+
+**Measure the artifact, not the object.** Before `wasm-bindgen` runs, the
+same browser module reads 539,085 bytes — five times the figure above —
+and `strings` finds `indexedDB`, `localStorage` and `gloo` in it. None of
+that survives: wasm-bindgen's `describe` functions are exported, so every
+`#[wasm_bindgen]` extern in a dependency is a linker root until the CLI
+removes them, and `ego_platform`'s IndexedDB blob store is reachable only
+through `History::load`/`save`, which nothing calls. Anyone weighing a
+browser dependency by looking at `target/wasm32-unknown-unknown/*/x.wasm`
+will conclude the opposite of the truth.
+
+What is *not* free is native. `ego_platform` takes `tokio` with `full`,
+and `ego_cli`'s native backend takes `crossterm` with `event-stream`, so
+a slim build that uses them has tokio in its graph — a profile that has
+deliberately had none (`crates/drt/Cargo.toml`). The bytes are only paid
+on use (the linker drops both when the memory terminal is the only
+backend reached), but the lockfile, the build time and the audit surface
+are not conditional. Both crates are already in `Cargo.lock` today behind
+`ego_transport`, so `full` pays nothing new; `slim`, `wasi` and `web` do.
+
+---
+
 ## 3. The three platforms, as facts
 
 What each target has, so the leaf adapters in §4 are derived rather than
@@ -638,10 +705,9 @@ a runaway guest freezes the worker and not the tab, and **Stop** is
 `terminate()` — and the baked `file://` build, which cannot start a
 worker, still runs it in the page.
 
-**The REPL's two halves, enumerated so they cannot drift.** `repl.dlua` is
-the evaluator on every host. The host half must provide, natively with
-rustyline and in the page with an xterm.js readline addon (`xterm-readline`
-or the `local-echo` addon; vendored, per the Lab's rule):
+**The REPL's two halves.** `repl.dlua` is the evaluator on every host.
+The host half is one editor — `ego-cli`, D8 — over whichever backend the
+target has, and it must provide:
 
 - a prompt `dv> ` and a continuation prompt `>> `, chosen by the guest's
   `{more = true}` answer (`repl.rs:135-150`);
@@ -652,10 +718,35 @@ or the `local-echo` addon; vendored, per the Lab's rule):
   {...}}`, which `doc/HostBaseline.md` already assigns to the guest side
   because `host.<Tab>` is `pairs(host)`, a guest question.
 
-A parity test feeds the same keystroke script to both and diffs the
-transcripts (the native one through a pty, the browser one through
-Playwright). The candidate list is the guest's, so it is identical by
-construction; what the test guards is the editors.
+That last one has a shape the editor forces, and it is the right shape
+anyway. `ego-cli`'s `Completer` is synchronous and takes `&self`,
+deliberately: asking the guest is a round trip through the driver, and a
+keystroke is not the moment to take one. So the host asks *between*
+lines — one `{complete}` message after each accepted line, whose answer
+is the candidate set the next Tab serves from. A REPL's namespace changes
+when a line runs, which is exactly when the snapshot is refreshed.
+
+**Where an owning `read_line` fits a loop that must not block.** D6
+inverted the drive loop so no host ever sleeps with work pending, and
+`ego-cli`'s `read_line().await` owns its wait — those look opposed and are
+not. There is exactly one point where a host calls it: `Step::Input`,
+which the driver returns only when the instance is parked on the input
+queue with nothing else to run. Waiting there is not a violation of D6,
+it is the case D6 exists to identify. Everywhere else the loop still
+ticks:
+
+```
+loop {
+  match session.tick() {
+    Step::Sleep(d)         => sleep(d),                  // a timer, or thread::sleep
+    Step::Input{continuing} => { prompt(continuing); feed(read_line().await) },
+    Step::Exit(status)     => return status,
+  }
+}
+```
+
+The `.await` is a JS microtask in a page and a `block_on` natively, and
+in both the instance is idle by construction while it runs.
 
 **And the shell.** The page's terminal shows `$ ` and accepts `drt ...`
 lines, which `exec` parses with the real `Cli`. So `drt run app.dlua`,
@@ -728,7 +819,58 @@ in the page-side fs seeding and in xterm.js integration, which is why the
 range is wide. Gate: that suite, in Chromium, in CI, with the browser leg
 joining the release matrix and `profile.web` in BUILDINFO.
 
-**M5 — the Lab. ~1 week, in `diluvium-lab`.** A **Terminal** tool in the
+**M5 — the hosts. The surface here, then three consumers of it.**
+
+This was written as "the Lab, ~1 week, in `diluvium-lab`", which named
+one consumer and mistook it for the milestone. There are at least three
+places an xterm.js terminal wants `drt` behind it, they want the same
+surface, and only that surface is this repository's work.
+
+**The surface** (`drt_web.tar.gz`, doc/Browser.md) is `drt_web_bg.wasm` +
+`drt_web.js` + `drt-term.js` + `shell.js`, and the whole of what a host
+writes is:
+
+```js
+const terminal = new Terminal({ /* the host's own theme, addons, font */ });
+terminal.open(element);
+await init();
+const { term, run, reset } = attach(DrtTerm, terminal);
+term.putFile('/hello.dlua', bytes);        // the page owns the filesystem
+```
+
+`attach` takes the host's `Terminal` object and never imports xterm.js,
+so a bundler, an import map and a `<script>` tag all work; `run(line)`
+submits a line nobody typed, for a panel that has buttons as well as a
+keyboard, and `reset()` returns to the prompt from whatever is running.
+The suite's `xterm-embedding` check holds this to the real thing rather
+than to a stand-in: it types into an actual xterm.js `Terminal` in
+Chromium and reads the assertion out of that terminal's own rendered
+buffer.
+
+**Host 1: the diluvium homepage panel.** Its reference implementation is
+`diluvium/doc/repl-reference.html`, and it is today three hand-written
+things that this replaces outright: a WASI shim in the page (45 imports,
+an `ENOSYS` `Proxy`, `fd_write` reassembling iovecs — `wasi_shim.rs`
+does this inside the module, so nothing is imported); a ~120-line `Repl`
+class doing arrows, `^A`/`^E`/`^U`, history and Tab (D8's one editor);
+and `init_lua`/`repl_eval`/`repl_complete` as the evaluation protocol
+(`repl.dlua` over two queues). What the panel gains is everything else
+`drt` is: `drt run`, `drt buildinfo`, capabilities, a filesystem, and
+`--help` that matches the binary's.
+
+What it must decide first is **sealed or not**, and it is the same
+question §7 asks about the Lab's cells, arriving here first because the
+homepage is a *language* demo. That page's REPL is unsealed — `os`, `io`
+and `require` are present, state persists across lines — and `drt repl`
+is sealed by design, so a homepage that swapped one for the other would
+quietly stop being able to demonstrate the language. Either the panel
+runs a `drt` verb that hosts an unsealed evaluator (the guest already
+supports it: `LoadSpec::unsafe_stdlib`, refused for `drt run` on
+purpose), or the homepage keeps the language kernel for its REPL tab and
+uses `drt` for a second one. Not this plan's call, but this plan should
+not pretend the swap is free.
+
+**Host 2: the Lab** (`diluvium-lab`, ~1 week). A **Terminal** tool in the
 rail (`src/notebook/panel.js` registration, xterm.js vendored) over
 `drt_web_bg.wasm` in the kernel worker; the runtime registry learning a
 second artifact namespace (`releases.json` under `/release/drt/`, the
@@ -740,6 +882,18 @@ cross-check); the Instances panel over the `Swarm` exports instead of
 `libdiluvium_wasi.wasm`: they are the language kernel, unsealed and
 stateful across cells, which is a different product from `drt run`; §7
 records the question of whether that should change.
+
+**Host 3: whoever else.** The tarball is a release artifact and the five
+lines above are its documentation, so a p2p web app embedding a sealed
+runtime is not a fourth integration — it is the same one. This is the
+audience `doc/Browser.md` calls the CDN audience, and the reason `attach`
+is duck-typed and imports nothing.
+
+**What the surface still owes each of them**, and therefore what belongs
+in this repository: the `Swarm` exports (host 2 — the only piece of the
+old M5 that was really ours); completion candidates from the guest (§5,
+all three); and the sealed/unsealed verb (host 1). Everything else on
+this list is a consumer's own work against a surface that now exists.
 
 **M6 — `listen` on wasip2. ~2-3 days. Landed 2026-09-03**
 (`crates/drt/src/listen.rs`: the bridge's parsing and response bytes
@@ -770,6 +924,32 @@ terminal contract). Delete `bridge.rs`, `engine.rs`,
 `doc/Browser.md` to the terminal contract and the export table; close the
 branch. Zero risk once M4's suite is green, and not before.
 
+**M8 — one line editor, `ego-cli`'s. ~3-4 days.** D8, §2.6. `ego_cli` in
+`crates/drt` behind a `cli` feature, with `Session` driven at the one
+seam §5 identifies (`Step::Input`, where the instance is parked and the
+host has nothing else to do): `repl.rs`'s native half becomes the
+crossterm backend, `drt-web`'s becomes `XtermTerminal::attach` over the
+object `drt-term.js` already receives, and the wasip2 build takes the
+cooked backend it already behaves like. `drt repl` gets history, word
+motions, undo and Tab; the browser gets the same ones rather than
+`drt-term.js`'s printable-and-backspace; and the completion snapshot in
+§5 is what Tab serves from. The gate: the browser suite's REPL parity
+check unchanged (it diffs the page against the native transcript, so one
+editor must produce both), plus a keystroke script through
+`MemTerminal` asserting the editing set on every target, plus the size
+budget from §2.6 held to within 10%.
+
+The awkward part is the one to decide before starting rather than
+during: `slim` gains tokio and crossterm (§2.6). Three ways out, in the
+order they should be tried — an upstream ask for an `ego-cli` native
+backend over blocking `crossterm::event::poll`, which needs no runtime
+at all and suits a tick loop better than `EventStream` does; or the
+`cli` feature simply not being in `slim`, which keeps the byte count
+honest but leaves the *native* terminal — the one a human actually types
+at — as the only one without the editor, which is backwards; or accepting
+tokio in slim and saying so in the manifest where the comment currently
+promises otherwise.
+
 **Later, named so they are not mistaken for forgotten:** `rest` over
 `wasi:http` and `fetch` (the deferred pump is the prerequisite, M3);
 `sql` in the browser; `ego_transport` on wasm (it already builds for both
@@ -777,10 +957,14 @@ targets with `WebSocket`/`wasip2` backends) for `webrtc://` and the
 browser doing SSH — SPEC.md §13b's seam; the wasm-engine tier
 (`diluvium-wasmtime`, SPEC.md §8) is a different thing and unaffected.
 
-Total to "the Lab runs `drt` in a terminal, verified in CI on all three
-targets": M1–M5, roughly four to five weeks of focused work, with M1 and
-M2 shippable in the first three days and M6 a further half week for the
-served-deployment story.
+Where this stands (2026-09-03): M1, M2, M3, M4, M6 and M7 are landed, so
+"`drt` runs in a terminal, verified in CI on all three targets" is done
+and `drt_web.tar.gz` ships. What is left is M5 — which is now three
+consumers of a surface that exists rather than one integration that does
+not — and M8, the editor those consumers all want. Original estimate,
+kept for calibration: "M1–M5, roughly four to five weeks of focused work,
+with M1 and M2 shippable in the first three days and M6 a further half
+week for the served-deployment story."
 
 ---
 
@@ -795,6 +979,15 @@ served-deployment story.
   `ego_platform`'s shape, and fold it in when `drt` takes `ego_transport`
   on wasm — at which point `ego_platform` is in the browser build anyway.
   Reversible either way; the traits are the same four.
+
+  *Half-answered by §2.6 (2026-09-03).* M8 brings `ego_platform` into the
+  browser and wasip2 builds through `ego-cli`, and it costs nothing there
+  that was feared: its IndexedDB and `localStorage` surface is stripped
+  whole by `wasm-bindgen` because nothing reaches it. So the two coexist
+  rather than compete — `drt-platform` stays the seam DRT's own code is
+  written against, and `ego_platform` arrives underneath a dependency, as
+  predicted. The native half of the objection stands unchanged: tokio
+  `full`, and getrandom 0.2 beside 0.3.
 - **The wasm-bindgen pin, across three repositories.** `=0.2.114`
   everywhere, because `ego_transport` and `ego_platform` pin it and one
   lockfile holds one version; `drt-web` pays for that with the
@@ -820,11 +1013,14 @@ served-deployment story.
   persistent, synchronous-in-a-worker filesystem and is the natural
   second backend; IndexedDB is the fallback where OPFS is not. Decide when
   someone wants a notebook's files to survive a reload.
-- **One line editor or two.** §5 chooses rustyline plus an xterm.js
-  addon with a parity test. A single Rust editor over a `Terminal` trait
-  (raw bytes in, escape sequences out) would make parity structural
-  instead of tested, at the cost of writing one. Revisit if the parity
-  test starts finding drift.
+- **One line editor or two.** ~~§5 chooses rustyline plus an xterm.js
+  addon with a parity test.~~ **Answered 2026-09-03: one.** The single
+  Rust editor over a `Terminal` trait this entry describes as
+  hypothetical — "raw bytes in, escape sequences out ... at the cost of
+  writing one" — already exists as `ego-cli`, weighed in §2.6, decided in
+  D8, and built in M8. Nobody has to write it, and parity becomes
+  structural rather than tested. What is left open is only where the
+  `cli` feature sits in the profile table, which M8 states.
 - **`exec`.** Never, on any target; diluvium's `doc/DRT.md` records the
   gap as untracked, and it stays untracked here on purpose — a page and a
   wasmtime sandbox have no process to exec, and native declines it

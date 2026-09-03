@@ -106,14 +106,28 @@ running program; what a program writes, `getFile` reads back.
 ## The terminal: `drt-term.js` and `shell.js`
 
 `drt-term.js` binds a `DrtTerm` to anything with xterm.js's two methods,
-`write(text)` and `onData(callback)`:
+`write(text)` and `onData(callback)`. That is the whole of what a host
+writes:
 
 ```js
 import init, { DrtTerm } from './drt_web.js';
 import { attach } from './drt-term.js';
+
+const terminal = new Terminal({ /* your own theme, font, addons */ });
+terminal.open(document.getElementById('term'));
+
 await init();
-const { term } = attach(DrtTerm, xtermTerminal);   // `$ ` appears; type `drt run app.dlua`
+const { term, run, reset } = attach(DrtTerm, terminal, { banner: 'drt' });
 term.putFile('/app.dlua', new TextEncoder().encode('print("hello")'));
+```
+
+```
+  attach(DrtTerm, terminal, { prompt, banner }) -> handle
+  handle.term            the DrtTerm: putFile, putDir, getFile, listFiles, setCwd
+  handle.run(line)       submit a line nobody typed; resolves with its exit status
+  handle.reset()         abandon whatever is running, return to the prompt
+  handle.whenIdle()      resolves at the next moment a line is wanted
+  handle.dispose()       unregister the onData handler
 ```
 
 It is the process a shell would be: a `$ ` prompt, a line editor
@@ -123,10 +137,25 @@ command, `^D` on an empty line leaves the REPL), the REPL's `dv> ` and
 `\r\n`. `shell.js` behind it is just enough sh for the examples'
 `meta.json` commands: `;`, single and double quotes, `$?`, `echo`, and
 `drt` -- the real one. Anything else is `command not found`, status 127.
-Neither file depends on xterm.js; the suite drives them with a fake
-terminal and the page in `browser-test/index.html` with a `<pre>`.
+
+`run` is there because a panel has buttons as well as a keyboard -- a
+"try this example" link, a restored session, a test. It echoes the line
+first, so what the terminal shows afterwards is what a person doing it by
+hand would have seen, and it resolves when the command is over, which
+`whenIdle` cannot tell you: `whenIdle` answers about now, and a keystroke
+the terminal has not delivered yet is not yet running.
+
+Neither file imports xterm.js -- a bundler, an import map and a
+`<script>` tag all work, and the object is used duck-typed. The suite
+drives them three ways to keep that honest: through a fake terminal
+(`index.html`), through a `<pre>` with a keyboard, and through a real
+xterm.js `Terminal` in Chromium (`xterm.html`, the `xterm-embedding`
+check), where the assertion is read out of the terminal's own rendered
+buffer after real keystrokes.
 
 ## What the suite proves (`crates/drt-web/browser-test`)
+
+
 
 `run.mjs` is `examples/run-all.sh` for a page: every `examples/NN-*/`
 with a `meta.json` is seeded into the page under `/examples/NN-*`, its
@@ -134,13 +163,20 @@ with a `meta.json` is seeded into the page under `/examples/NN-*`, its
 `normalise` (sed, translated to JavaScript one expression at a time) is
 applied to both sides, and the two are diffed. `needs_build: full` and
 `needs_network` skip by name and are never counted as passes, as in the
-shell version. `buildinfo` inside the page reports `profile: web`, and
-that is what decides the skips. Then `repl-script.txt` is typed at
-`drt-term.js` and the transcript, echoes removed, is compared with
-`repl-expected.txt`, which the native binary produced for the same lines.
+shell version, and so does `needs_listener` -- a page has no socket to
+bind. `buildinfo` inside the page reports `profile: web`, and that is
+what decides the build skips.
 
-On 2026-09-03: 01, 02, 03, 04, 06, 08, 12 and the REPL pass; the rest
-skip for needing `full` or a network, exactly as they do under wasmtime.
+Then `repl-script.txt` is typed at `drt-term.js` and the transcript,
+echoes removed, is compared with `repl-expected.txt`, which the native
+binary produced for the same lines. And `xterm.html` is loaded with a
+real xterm.js `Terminal`, typed into with real keystrokes (including
+Backspace, so the edit path is exercised), asked to `run` a line nobody
+typed, and read back from the terminal's own buffer.
+
+On 2026-09-03: 01, 02, 03, 04, 06, 08, 12, the REPL and the xterm
+embedding pass; the rest skip for needing `full`, a network, or a port a
+page cannot bind, exactly as they do under wasmtime.
 
 ## Building it
 
@@ -161,6 +197,36 @@ re-discover:
   destructors after -- and the destructor flushes stdout into the sink,
   which allocates a JS value through an export, which runs the
   destructors: a stack overflow on the first `print`.
+
+## The hosts
+
+Three places want an xterm.js terminal with `drt` behind it, and the
+surface above is all three of them (doc/Wasm.md M5).
+
+**The diluvium homepage panel.** Its reference implementation is
+`diluvium/doc/repl-reference.html`, and this replaces three hand-written
+pieces of it: the WASI shim in the page (45 imports and an `ENOSYS`
+`Proxy`; `wasi_shim.rs` does it inside the module, so nothing is
+imported), the `Repl` class doing arrows, `^A`/`^E`/`^U`, history and Tab
+(one editor, doc/Wasm.md D8), and `init_lua`/`repl_eval` as the
+evaluation protocol (`repl.dlua` over two queues). The panel gains the
+rest of `drt` with it: `drt run`, `drt buildinfo`, capabilities, a
+filesystem, and `--help` that matches the binary's.
+
+One thing to settle before that swap: **the homepage REPL is unsealed and
+`drt repl` is sealed**. `os`, `io` and `require` are there today and
+state persists across lines, because the page is demonstrating the
+language; `drt run` seals all of that deliberately (GUARANTEES.md). A
+homepage that swapped one for the other without deciding this would
+quietly stop being able to demonstrate what it is demonstrating.
+doc/Wasm.md M5 and §7 carry the question.
+
+**The Lab.** A Terminal tool in the rail over `drt_web_bg.wasm` in the
+kernel worker, plus the Instances panel over the swarm exports below.
+
+**Anyone else.** `drt_web.tar.gz` is a release artifact and the snippet
+above is its documentation. A p2p web app embedding a sealed runtime is
+not a fourth integration; it is this one.
 
 ## The swarm exports
 
