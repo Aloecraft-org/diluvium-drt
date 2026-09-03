@@ -1,0 +1,6 @@
+drt repl — ^D to leave
+dv> dv> >> dv> 22
+dv> 2
+dv> hi	22
+dv> repl:1: attempt to call a nil value (global 'nope')
+dv> 

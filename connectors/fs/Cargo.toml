@@ -12,6 +12,8 @@ serde = { workspace = true }
 rmpv = { workspace = true }
 drt-caps = { workspace = true }
 drt-connector = { workspace = true }
+# The backend the jail runs over: the disk, or a page's memory (doc/Wasm.md D5).
+drt-platform = { workspace = true }
 
 [dev-dependencies]
 drt-hostcall = { workspace = true }

@@ -146,9 +146,8 @@ fn from_hex(s: &str) -> Option<Vec<u8>> {
 /// Wall clock, seconds. The host owns the time — `jwt_sign` takes a ttl and
 /// never a timestamp, and `jwt_verify` reads `exp` against this.
 fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
+    drt_platform::clock::wall_secs()
+        .map(|s| s as i64)
         .unwrap_or(0)
 }
 
@@ -503,8 +502,8 @@ fn do_random(args: Option<&rmpv::Value>) -> CallResult {
         )));
     }
     let mut buf = vec![0u8; n as usize];
-    getrandom::fill(&mut buf)
-        .map_err(|e| CallError::new(format!("crypto/random: no entropy source: {e}")))?;
+    drt_platform::entropy::fill(&mut buf)
+        .map_err(|e| CallError::new(format!("crypto/random: {e}")))?;
     // Hex, because a guest has no base64/hex library and a raw-byte string
     // is awkward to carry: hex is what a token id or a nonce wants anyway.
     Ok(rmpv::Value::from(to_hex(&buf)))

@@ -16,7 +16,6 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { workspace = true }
-pollster = "0.4"
 # The listener's HTTP/1.1 parser: the same job picohttpparser does for the
 # C host, and the same posture — parse strictly, refuse the rest.
 httparse = { version = "1", optional = true }
@@ -41,6 +40,9 @@ serde_json = "1"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"], optional = true }
 webpki-roots = { version = "0.26", optional = true }
 drt-config = { workspace = true }
+# The program and config loader read through the platform filesystem, so
+# a page can seed what `drt run app.dlua` opens (doc/Wasm.md D5).
+drt-platform = { workspace = true }
 drt-caps = { workspace = true }
 drt-hostcall = { workspace = true }
 drt-connector = { workspace = true }
@@ -53,9 +55,18 @@ drt-connector-crypto = { workspace = true, optional = true }
 drt-connector-rest = { workspace = true, optional = true }
 drt-connector-ssmtp = { workspace = true, optional = true }
 drt-connector-exec = { workspace = true, optional = true }
+# The line editor behind `drt repl` on a tty (doc/Wasm.md D8). Optional
+# and not in `slim`: its native backend wants crossterm's event-stream and
+# Runtime-free: the workspace pin turns ego-cli's `runtime` feature off, so
+# this brings neither `ego_platform` nor tokio (ego-cli#4). `futures-executor`
+# is the whole executor a `Session` over the blocking backend needs.
+ego_cli = { workspace = true, optional = true }
+futures-executor = { version = "0.3", default-features = false, features = ["std"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+# The driver test's connector that answers on its second poll.
+async-trait = { workspace = true }
 # The tunnel test drives a real SSH session through both bridge halves.
 ego_transport = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net", "sync", "time"] }
@@ -68,8 +79,43 @@ futures-util = { version = "0.3", default-features = false }
 # fs/time/stdio only; `full` is everything this build can carry. Each
 # connector is its own gate so a profile is a feature list, not a fork.
 default = ["slim"]
-slim = ["connector-time", "connector-fs", "connector-crypto", "listen"]
+slim = ["connector-time", "connector-fs", "connector-crypto", "listen", "cli"]
 full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "connector-exec", "tunnel", "relay", "stun", "netcheck"]
+# The portable build (doc/Wasm.md D2): what `drt` carries on
+# wasm32-wasip2, under wasmtime. Every connector here compiles for that
+# target with no source change and is exercised by the examples gate
+# through `script/drt-wasip2.sh`. `listen` is served there by the polled
+# acceptor (doc/Wasm.md M6): wasip2 has sockets and no threads, and the
+# wrapper grants the sockets. The tokio-backed verbs and connectors --
+# `tunnel`, `relay`, `stun`, `netcheck`, `ssh`, `rest`, `ssmtp` -- cannot
+# cross at all (tokio refuses its `net` feature on wasm), so `full` is not
+# a wasm build and this is.
+wasi = ["connector-time", "connector-fs", "connector-crypto", "connector-sql", "listen"]
+# The browser build (doc/Wasm.md D3): what `drt-web` links into a page.
+# `wasi` without `sql`, and without `listen`, because a page has neither
+# threads nor sockets to serve on; the fs connector reaches the page's
+# memory filesystem through `drt-platform`. Named here so `buildinfo`
+# reports `web` from inside the page and the examples gate can skip by
+# profile there as it does everywhere else.
+web = ["connector-time", "connector-fs", "connector-crypto", "cli"]
+# Line editing for `drt repl` on a tty: history, word motions, undo, and
+# Tab over names the running instance answers with (doc/Wasm.md D8, M8,
+# §5). One editor for every target rather than one per host, which is
+# what the three hand-written ones in this project were before it.
+#
+# In `slim`, and so in every profile: ego-cli#3 was answered by ego-cli#4,
+# which adds a native backend needing no executor and makes `ego_platform`
+# -- the other route tokio arrived by -- optional. With the workspace
+# pin's `default-features = false` (above), `slim` + `cli` costs +153 KB
+# (+10.2%) and `cargo tree -e normal -i tokio` finds nothing.
+#
+# `futures-executor` rather than tokio because a `Session` over the
+# blocking backend never returns `Pending`: `block_on` runs it to
+# completion on the first poll, which is the whole point of the backend.
+#
+# A pipe is never edited either way -- `drt repl < script.dlua` keeps the
+# plain reader, whose prompts go to stderr so that redirect stays clean.
+cli = ["dep:ego_cli", "dep:futures-executor"]
 connector-time = ["dep:drt-connector-time"]
 connector-ssh = ["dep:drt-connector-ssh"]
 connector-fs = ["dep:drt-connector-fs"]

@@ -1,0 +1,18 @@
+-- A fetchpoint: requests arrive as messages on one queue, and a reply
+-- pushed on the other becomes the response. app.json owns the port; this
+-- program never sees a socket.
+local requests = queue.declare('http_in',  {capacity = 8})
+local replies  = queue.declare('http_out', {capacity = 8, exported = true})
+
+while true do
+  local _, req = queue.wait({requests})
+  local body
+  if req.path == '/hello' then
+    -- req.headers carries only what app.json allowlisted, lowercased.
+    local who = req.headers and req.headers['x-name'] or 'the deployment'
+    body = 'hello from ' .. who .. '\n'
+  else
+    body = req.method .. ' ' .. req.path .. ': ' .. #req.body .. ' bytes\n'
+  end
+  queue.push(replies, {conn = req.conn, status = 200, content_type = 'text/plain', body = body})
+end

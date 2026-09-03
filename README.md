@@ -23,10 +23,11 @@ hostcall encoding (moved here from diluvium).
 | [`crates/drt-hostcall`](crates/drt-hostcall) | The hostcall encoding as serde types: request/reply, status enum, token space. Implements `doc/Hostcall.md`. |
 | [`crates/drt-caps`](crates/drt-caps) | Capability grammar: effect × capability × scope, `host:fs/*` pattern match (same semantics as `dvs_holds`), attenuation check, provenance chain. |
 | [`crates/drt-config`](crates/drt-config) | Manifest/config schema. The serde types are the source of truth; one shape at every depth — host-config and spawn-request are the same object. |
+| [`crates/drt-platform`](crates/drt-platform) | The leaf adapters: clock, entropy, the fs backend (a disk, or a page's memory) and stdio, `cfg`-gated per target so nothing above them is. See [`doc/Wasm.md`](doc/Wasm.md). |
 | [`crates/drt-connector`](crates/drt-connector) | The `Connector` trait, registry, capability gating, and the dispatcher that guarantees every drained request is answered. Mocks implement the same trait; guests cannot tell. |
 | [`crates/drt-swarm`](crates/drt-swarm) | The swarm: `dvs.c` semantics ported over the `Engine` seam (instance table, attenuated caps with provenance, lifecycle drain, budgets, hibernation + `wake_on_message`); the snapshot store; endpoint refs. |
 | [`crates/drt`](crates/drt) | The binary: `run` \| `start` \| `repl` \| `relay` \| `tunnel` \| `ps` — see SPEC.md §13a. |
-| [`crates/drt-web`](crates/drt-web) | The browser tier: an `Engine` over a JS host bridge, so the same swarm runs in a page. See [`doc/Browser.md`](doc/Browser.md). |
+| [`crates/drt-web`](crates/drt-web) | The browser tier: the same `drt`, C core linked in, behind a terminal contract a page attaches xterm.js to. See [`doc/Browser.md`](doc/Browser.md). |
 | [`connectors/`](connectors) | Connector implementations, each feature-gated: `time`, `crypto`, `fs` and `sql` (each a granted directory), `rest` and `ssmtp` (each an allowlist), `ssh` (client, `host:ssh/exec`) and `exec` (local, `host:exec/run`, wired only by name and announced when it is). |
 
 ## Building
@@ -104,6 +105,7 @@ curl -fsSL https://diluvium.aloecraft.org/drt/latest/install.sh | sh
 ```
 drt run prog.dlua                    # one program, to completion
 drt repl                             # a REPL, which is an instance
+drt repl --unsafe                    # ... with os, io and require in scope
 drt --config app.host.lua start      # the deployment: swarm + listeners + relay
 drt --config rv.host.lua relay       # the rendezvous relay, standalone
 drt tunnel --park wss://…/park/xps?k=… --to 127.0.0.1:22   # the device half
@@ -120,7 +122,10 @@ arbitration.
 in another process, which is the control endpoint's job and lands with sshd.
 
 A seams-only build (`--no-default-features`) compiles the traits without the
-C core — the shape the wasm targets start from.
+C core. The wasm targets link the C core in — `drt` itself builds for
+`wasm32-wasip2` and runs under wasmtime, and `drt-web` is the same runtime
+for a page, where the examples pass through an in-page shell in Chromium;
+the plan and the recipes for both are [`doc/Wasm.md`](doc/Wasm.md).
 
 ## Writing a program
 

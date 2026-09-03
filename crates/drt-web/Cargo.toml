@@ -1,6 +1,6 @@
 [package]
 name = "drt-web"
-description = "The browser tier: DRT's swarm over a JS-hosted diluvium instance"
+description = "The browser tier: the same drt, with the C core linked in, behind a terminal contract for xterm.js"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,22 +8,42 @@ repository.workspace = true
 
 [lib]
 # cdylib is the browser artifact; rlib keeps it testable natively, which is
-# how the bridge gets real coverage without a browser (see `bridge`).
+# how the terminal contract gets real coverage without a browser.
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# Deliberately WITHOUT default features: the traits, no C core. The browser
-# engine bridges to a JS-hosted diluvium instance rather than linking one,
-# so no wasi-sdk is involved (doc/Browser.md).
-# Declared by path rather than `workspace = true`: `default-features =
-# false` is SILENTLY IGNORED when inheriting a workspace dependency that
-# does not itself disable them, and the failure is remote — the C core gets
-# pulled in and the wasm build dies in diluvium-sys's build script asking
-# for a wasi-sdk this crate never needed.
-drt-swarm = { path = "../drt-swarm", version = "0.4.2", default-features = false }
-drt-caps = { workspace = true }
+# The runtime itself -- the CLI, the drivers, and the `web` profile: the
+# connectors that cross a page (doc/Wasm.md D3). Declared by path with
+# `default-features = false` rather than `workspace = true`, because a
+# workspace dependency's default features cannot be turned off from here,
+# and the default `slim` carries `listen`, which is threads and sockets a
+# page does not have.
+drt = { path = "../drt", version = "0.5.0", default-features = false, features = ["web"] }
+drt-platform = { workspace = true }
 drt-config = { workspace = true }
+drt-connector = { workspace = true }
+# With its default feature: the engine. Building this crate for a wasm
+# target therefore needs a wasi-sdk named by WASI_SDK_PATH, for the C core
+# and (in build.rs) for wasi-libc.
+drt-swarm = { workspace = true }
+drt-caps = { workspace = true }
+clap = { workspace = true }
+serde_json = "1"
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = "0.2"
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+# PINNED, and it must stay pinned: the wasm-bindgen ABI is unstable across
+# patch releases and has to match the wasm-bindgen-cli that generates the
+# glue (browser-test/, and the `browser` job in ci.yml). 0.2.114 because
+# ego-transport pins `=0.2.114` and a workspace holds one version; the
+# price is that 0.2.114 refuses a module carrying the C core's `try_table`
+# unless it also exports `__instance_terminated`, which `bindings.rs`
+# therefore defines (doc/Wasm.md §2.3). Delete that definition when the
+# pin moves to >= 0.2.127, which defines it itself.
+wasm-bindgen = "=0.2.114"
+wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
+console_error_panic_hook = "0.1"
+# The one editor, in the page (doc/Wasm.md D8, M8). `XtermTerminal` takes
+# the terminal object this crate is already handed, so nothing imports
+# xterm.js and the page keeps its own theme, addons and font.
+ego_cli = { workspace = true }

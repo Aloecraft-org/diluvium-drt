@@ -1,7 +1,12 @@
 //! The DRT runtime, as a library. The `drt` binary is a thin CLI over
 //! this; keeping the flow here is what lets it be tested end to end.
 
+/// The command surface, parsed and assembled once for every host.
+pub mod cli;
 pub mod config;
+/// The drive loop as a state machine: what `run`, `repl` and the browser
+/// tier drive an instance with (doc/Wasm.md D6).
+pub mod drive;
 #[cfg(feature = "listen")]
 pub mod listen;
 /// `drt netcheck`: the NAT diagnostic. The verdict table is pure and

@@ -6,9 +6,20 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 fn repl(input: &str, args: &[&str]) -> (String, String) {
+    drive(input, args, &[])
+}
+
+/// The same, with `--unsafe` after the verb: global options come before
+/// `repl` and the verb's own after it, which is where clap puts them.
+fn unsealed(input: &str, args: &[&str]) -> (String, String) {
+    drive(input, args, &["--unsafe"])
+}
+
+fn drive(input: &str, args: &[&str], verb_args: &[&str]) -> (String, String) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_drt"))
         .args(args)
         .arg("repl")
+        .args(verb_args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -94,4 +105,65 @@ fn the_repl_is_an_instance_under_the_configs_ceiling() {
     );
     assert!(!out.contains("escape"), "{out}{err}");
     assert!(out.contains('2'), "the repl survives a refusal: {out}");
+}
+
+/// `--unsafe` puts the stdlib back and takes nothing else off.
+///
+/// The seal `drt run` keeps is what the flag lifts: `os`, `io` and
+/// `require` are the libraries a *language* REPL is expected to have and
+/// a sealed guest is not given. What it must not lift is the sandbox, so
+/// the second half of this is the same ceiling test above, run again with
+/// the flag on.
+#[test]
+fn unsafe_is_the_stdlib_seal_and_not_the_sandbox() {
+    // Sealed: not there, and the banner does not claim otherwise.
+    let (out, err) = repl("type(os)\ntype(io)\n", &[]);
+    assert_eq!(out.lines().collect::<Vec<_>>(), vec!["nil", "nil"], "{out}");
+    assert!(err.starts_with("drt repl — ^D to leave"), "{err}");
+
+    // Unsealed: there, and the banner says so rather than looking the
+    // same as a sealed one, which would be a trap.
+    let (out, err) = unsealed("type(os)\ntype(io)\nos.time() > 0\n", &[]);
+    assert_eq!(
+        out.lines().collect::<Vec<_>>(),
+        vec!["table", "table", "true"],
+        "{out}{err}"
+    );
+    assert!(
+        err.contains("unsafe stdlib: os, io, require"),
+        "the banner names what is off: {err}"
+    );
+}
+
+/// The capability ceiling holds with the flag on: an unwired connector is
+/// denied exactly as it is without it. The stdlib and the caps are two
+/// different seals, and only one of them has a flag.
+#[test]
+fn unsafe_does_not_widen_the_capability_ceiling() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    std::fs::write(work.join("note.txt"), "reachable").unwrap();
+    let config = dir.path().join("drt.json");
+    std::fs::write(
+        &config,
+        format!(
+            r#"{{"caps": [{{"capability": "host:fs/*"}}],
+                 "connectors": {{"fs": {{"scope": {{"scope": "{}", "access": "read"}}}}}}}}"#,
+            work.display()
+        ),
+    )
+    .unwrap();
+    let cfg = config.display().to_string();
+
+    let (out, err) = unsealed(
+        "host.fs.read('note.txt')\nhost.fs.read('../escape.txt')\n1 + 1\n",
+        &["--config", &cfg],
+    );
+    assert!(out.contains("reachable"), "inside the scope: {out}{err}");
+    assert!(
+        !out.contains("escape"),
+        "outside it, still refused: {out}{err}"
+    );
+    assert!(out.contains('2'), "and the repl goes on: {out}");
 }

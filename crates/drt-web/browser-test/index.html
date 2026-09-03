@@ -1,0 +1,159 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>drt in the browser</title>
+<link rel="stylesheet" href="./node_modules/@xterm/xterm/css/xterm.css">
+<script src="./node_modules/@xterm/xterm/lib/xterm.js"></script>
+<style>
+  body { margin: 0; padding: 1rem 1.25rem; background: #101418; color: #d8dee4;
+         font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  h1 { font-size: 1rem; margin: 0 0 .25rem; }
+  #about { margin: 0 0 1rem; white-space: pre-wrap; color: #8b97a3; }
+  #screen { height: 60vh; }
+  /* Where replTranscript's terminal lives: on the page, because xterm.js
+     renders nothing until it is opened into something laid out. */
+  #offscreen { position: absolute; left: -10000px; width: 80ch; height: 24em; }
+</style>
+<h1>drt</h1>
+<p id="about">loading pkg/drt_web.js…</p>
+<div id="screen"></div>
+<div id="offscreen"></div>
+<script type="module">
+  // The page has two readers. A person gets a terminal: a real xterm.js
+  // above, with a hello.dlua seeded so `drt run hello.dlua` has something
+  // to run. The suite (run.mjs) gets window.drtBrowserTest: a fresh
+  // DrtTerm per example, files to seed, a cmd line to run through shell.js
+  // with stdout and stderr merged, and the REPL typed at drt-term.js for
+  // the parity check. Same module, same shell, same adapter, either way.
+  //
+  // Both terminals here are xterm.js and neither is hand-written. They
+  // were, when the page's editor was a printable-and-backspace loop that
+  // emitted nothing a terminal had to interpret. `ego_cli` renders -- it
+  // moves the cursor, redraws a line, clears to the end -- so a <pre> that
+  // appends characters would now be a third terminal emulator to get
+  // wrong, which is the thing D8 exists to avoid.
+  import init, { DrtTerm, DrtEditor, DrtSwarm, buildInfo, abiVersion, setPanicHook } from './pkg/drt_web.js';
+  import { makeShell } from './shell.js';
+  import { attach } from './drt-term.js';
+
+  const decode = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+
+  let term = null;
+  let shell = null;
+  let chunks = [];
+  let decoders = [];
+
+  function fresh() {
+    if (term) term.free();
+    chunks = [];
+    decoders = [null, new TextDecoder(), new TextDecoder()];
+    term = new DrtTerm((fd, bytes) => chunks.push(decoders[fd].decode(bytes, { stream: true })));
+    shell = makeShell({ term, write: (fd, text) => chunks.push(text) });
+  }
+
+  const harness = {
+    ready: init().then(() => {
+      setPanicHook();
+      return true;
+    }),
+    buildInfo: (json) => buildInfo(json),
+    abiVersion: () => abiVersion(),
+    // The swarm table, driven the way the Lab's Instances panel drives
+    // it: root a program, step until it settles, and read the roster and
+    // its capability answers back. What this proves is that the exports
+    // are a swarm and not a shape -- the instance runs, is asked what it
+    // holds, and is killed.
+    swarmRoundTrip(source) {
+      const sw = new DrtSwarm(0, 0);
+      const out = {};
+      try {
+        const root = sw.root(new TextEncoder().encode(source));
+        out.root = root;
+        out.parent = sw.parent(root) ?? null;
+        out.holdsTime = sw.holds(root, 'host:time');
+        out.holdsLifecycle = sw.holds(root, 'lifecycle');
+        out.parentOfNobody = sw.parent(9999) ?? null;
+        out.caps = sw.caps(root);
+        out.resident = sw.resident(root);
+        out.slots = sw.slotsAllocated();
+        let steps = 0;
+        while (sw.step() > 0 && steps < 100) steps += 1;
+        out.steps = steps;
+        out.aliveAfter = sw.alive();
+        out.idsAfter = sw.ids();
+      } finally {
+        sw.free();
+      }
+      return out;
+    },
+    seed({ cwd, files, dirs = [] }) {
+      fresh();
+      for (const d of dirs) term.putDir(d);
+      for (const { path, data } of files) term.putFile(path, decode(data));
+      term.setCwd(cwd);
+    },
+    async run(line) {
+      if (!term) fresh();
+      chunks = [];
+      const status = await shell.run(line);
+      return { status, output: chunks.join('') };
+    },
+    // The REPL, typed at a real terminal and read back from what it
+    // renders. Raw writes would do for a printable-and-backspace loop and
+    // will not for an editor: the bytes now carry cursor moves and
+    // redraws, and the question the check asks -- does the page's repl say
+    // what the native one says -- is about the screen, not the stream.
+    // `terminal.input` is xterm.js's own "as if typed", so `attach`'s
+    // `onData` path is the one under test.
+    async replTranscript(lines) {
+      const terminal = new Terminal({ cols: 80, rows: 40, convertEol: false });
+      terminal.open(document.getElementById('offscreen'));
+      const bound = attach(DrtTerm, terminal, { DrtEditor });
+      const type = async (text) => {
+        await bound.whenIdle();
+        terminal.input(text, true);
+      };
+      await type('drt repl\r');
+      for (const line of lines) await type(line + '\r');
+      await type('\x04');
+      await bound.whenIdle();
+      // One turn for the last write to reach the buffer: xterm.js parses
+      // what it is given asynchronously.
+      await new Promise((r) => setTimeout(r, 50));
+      const buf = terminal.buffer.active;
+      const rendered = [];
+      for (let i = 0; i < buf.length; i++) {
+        rendered.push(buf.getLine(i).translateToString(true));
+      }
+      bound.dispose();
+      bound.term.free();
+      terminal.dispose();
+      term = null;
+      return rendered.join('\n').replace(/\n+$/, '') + '\n';
+    },
+  };
+  window.drtBrowserTest = harness;
+
+  // depth: the person's terminal, a <pre> with a keyboard.
+  const screen = document.getElementById('screen');
+  const about = document.getElementById('about');
+  try {
+    await harness.ready;
+    about.textContent = buildInfo(false).trimEnd() + `\nabi: ${abiVersion()}\n\n` +
+      'a terminal: type `drt run hello.dlua`, `drt repl`, `drt --help`. click to focus.';
+    const terminal = new Terminal({
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+      fontSize: 13,
+      cursorBlink: true,
+      theme: { background: '#101418', foreground: '#d8dee4' },
+    });
+    if (!location.search.includes('nodemo')) terminal.open(screen);
+    const bound = attach(DrtTerm, terminal, { DrtEditor });
+    bound.term.putFile('/hello.dlua', new TextEncoder().encode(
+      'print("hello from a page")\nprint("the time is", host.time())\n'));
+    bound.term.setCwd('/');
+    term = null;
+  } catch (e) {
+    about.textContent = `drt_web did not load: ${(e && e.stack) || e}`;
+    throw e;
+  }
+</script>

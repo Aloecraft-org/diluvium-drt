@@ -1,0 +1,22 @@
+[package]
+name = "drt-platform"
+description = "The leaf adapters: clock, entropy, the fs backend and stdio, cfg-gated per target so nothing above them is"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Entropy, every target. wasip2 and native need nothing said; the browser
+# needs the `wasm_js` feature BELOW and the matching
+# `--cfg getrandom_backend="wasm_js"`, which the workspace's
+# .cargo/config.toml carries -- getrandom 0.3 refuses to guess a backend
+# for wasm32-unknown-unknown, and a build without the cfg fails to compile
+# with a sentence naming it (doc/Wasm.md §2.1).
+getrandom = "0.3"
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }
+# `Instant` and `SystemTime` over `performance.now()` and `Date.now()`.
+# std's versions compile on this target and panic when called.
+web-time = "1.1"

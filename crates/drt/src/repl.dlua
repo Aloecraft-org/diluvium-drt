@@ -27,9 +27,51 @@ local function compile(text)
   return load(text, '=repl', 't', env)
 end
 
+-- The names in scope, for the host's Tab. Fully qualified and one dot
+-- deep past each table, because `host.<Tab>` is the question people
+-- actually ask; `pairs` is a guest question, which is why this lives here
+-- and not in the host (doc/HostBaseline.md, doc/Wasm.md §5).
+--
+-- Asked between lines, never during a keystroke: the host's completer is
+-- synchronous, and a prompt that stalls mid-Tab is worse than one that
+-- offers nothing. So this is a snapshot, refreshed when a line changes
+-- what is in scope.
+local NAME_CAP = 512
+local NAME_DEPTH = 3
+
+local function collect(names, seen, scope, prefix, depth)
+  if type(scope) ~= 'table' or depth > NAME_DEPTH or #names >= NAME_CAP then
+    return
+  end
+  for key, value in pairs(scope) do
+    if #names >= NAME_CAP then return end
+    -- `_G`, `_ENV` and the like are noise at a prompt.
+    if type(key) == 'string' and key:sub(1, 1) ~= '_' then
+      local name = prefix .. key
+      if not seen[name] then
+        seen[name] = true
+        names[#names + 1] = name
+        if type(value) == 'table' then
+          collect(names, seen, value, name .. '.', depth + 1)
+        end
+      end
+    end
+  end
+end
+
+local function names_in_scope()
+  local names, seen = {}, {}
+  collect(names, seen, env, '', 1)
+  collect(names, seen, _G, '', 1)
+  table.sort(names)
+  return names
+end
+
 while true do
   local _, line = queue.wait({inq})
-  if type(line) ~= 'string' then
+  if type(line) == 'table' and line.complete then
+    queue.push(outq, {names = names_in_scope()})
+  elseif type(line) ~= 'string' then
     queue.push(outq, {ok = false, text = 'the repl expects a line of source'})
   else
     local chunk, err = compile(line)

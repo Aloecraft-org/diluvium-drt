@@ -14,7 +14,7 @@
 //!   or a restore, never comparable to a persisted wall timestamp. Intervals
 //!   belong here, records belong on `time`.
 
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use drt_platform::clock::{self, Instant};
 
 use drt_caps::Scope;
 use drt_connector::{CallError, CallResult, Connector};
@@ -48,10 +48,7 @@ impl Connector for TimeConnector {
     ) -> CallResult {
         match call {
             "time" => {
-                let ms = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map_err(|_| CallError::new("the host clock is before the epoch"))?
-                    .as_millis() as u64;
+                let ms = clock::wall_ms().map_err(|e| CallError::new(e.to_string()))?;
                 Ok(rmpv::Value::from(ms))
             }
             "time/monotonic" => Ok(rmpv::Value::from(self.started.elapsed().as_millis() as u64)),

@@ -15,7 +15,6 @@ drt-caps = { workspace = true }
 drt-config = { workspace = true }
 drt-hostcall = { workspace = true }
 drt-connector = { workspace = true }
-pollster = "0.4"
 diluvium = { workspace = true, optional = true }
 
 [features]

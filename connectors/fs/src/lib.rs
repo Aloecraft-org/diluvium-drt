@@ -18,11 +18,13 @@
 //! filesystem, so this is the only bound there is.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::Deserialize;
 
 use drt_caps::{Scope, ScopeType};
 use drt_connector::{CallError, CallResult, Connector};
+use drt_platform::fs::Backend;
 
 const DEFAULT_MAX_BYTES: u64 = 1024 * 1024;
 
@@ -85,8 +87,12 @@ impl FsScope {
     /// The granted directory, resolved. Checked at startup so a scope
     /// naming a directory that is not there fails by name at boot rather
     /// than as a puzzling error on first call.
-    fn root(&self) -> Result<PathBuf, String> {
-        std::fs::canonicalize(&self.scope).map_err(|e| {
+    ///
+    /// Resolved through the backend, not `std::fs`: the jail is the same
+    /// jail over a disk and over a page's memory filesystem, and the
+    /// backend is the only thing that differs (doc/Wasm.md §4.2).
+    fn root(&self, fs: &dyn Backend) -> Result<PathBuf, String> {
+        fs.canonicalize(&self.scope).map_err(|e| {
             format!(
                 "scope directory {} cannot be resolved: {e}",
                 self.scope.display()
@@ -99,10 +105,10 @@ impl FsScope {
     /// `must_exist` is false for writes, where the file is legitimately not
     /// there yet — then the *parent* is resolved instead, so a symlinked
     /// parent pointing out of the jail is still caught.
-    fn resolve(&self, rel: &str, must_exist: bool) -> Result<PathBuf, String> {
-        let root = self.root()?;
+    fn resolve(&self, fs: &dyn Backend, rel: &str, must_exist: bool) -> Result<PathBuf, String> {
+        let root = self.root(fs)?;
         let rel_path = Path::new(rel);
-        if rel_path.is_absolute() {
+        if names_a_root(rel_path) {
             return Err(format!(
                 "'{rel}' is absolute; name a path inside the granted scope"
             ));
@@ -118,12 +124,14 @@ impl FsScope {
         }
         let joined = root.join(rel_path);
         let resolved = if must_exist {
-            std::fs::canonicalize(&joined).map_err(|e| format!("'{rel}': {e}"))?
+            fs.canonicalize(&joined)
+                .map_err(|e| format!("'{rel}': {e}"))?
         } else {
             let parent = joined
                 .parent()
                 .ok_or_else(|| format!("'{rel}' has no parent directory"))?;
-            let parent = std::fs::canonicalize(parent)
+            let parent = fs
+                .canonicalize(parent)
                 .map_err(|e| format!("'{rel}': the containing directory {e}"))?;
             let name = joined
                 .file_name()
@@ -137,6 +145,14 @@ impl FsScope {
         }
         Ok(resolved)
     }
+}
+
+/// Does the path start at a root? `has_root` rather than `is_absolute`:
+/// on `wasm32-unknown-unknown` std counts `/etc/hosts` as not absolute (it
+/// is neither unix nor wasi there), and the jail's answer must not depend
+/// on which target it is asked on. A prefix (`C:`) counts too.
+fn names_a_root(path: &Path) -> bool {
+    path.has_root() || path.is_absolute()
 }
 
 fn outside(rel: &str) -> String {
@@ -170,7 +186,9 @@ fn lexically_within(root: &Path, rel: &Path) -> bool {
     true
 }
 
-struct FsScopeType;
+struct FsScopeType {
+    fs: Arc<dyn Backend>,
+}
 
 impl ScopeType for FsScopeType {
     fn describe(&self) -> &str {
@@ -180,7 +198,7 @@ impl ScopeType for FsScopeType {
     fn validate(&self, scope: Option<&Scope>) -> Result<(), String> {
         // Resolving the directory here is the point: an unreadable or
         // missing scope is a startup refusal, by name.
-        FsScope::parse(scope)?.root().map(|_| ())
+        FsScope::parse(scope)?.root(&*self.fs).map(|_| ())
     }
 }
 
@@ -208,11 +226,23 @@ fn bytes_of(value: &rmpv::Value) -> Option<Vec<u8>> {
     }
 }
 
-pub struct FsConnector;
+pub struct FsConnector {
+    fs: Arc<dyn Backend>,
+}
 
 impl FsConnector {
+    /// Over the process's filesystem (`drt_platform::fs::host`): the disk
+    /// natively and under wasmtime, the page's memory filesystem in a
+    /// browser.
     pub fn new() -> Self {
-        FsConnector
+        FsConnector {
+            fs: drt_platform::fs::host(),
+        }
+    }
+
+    /// Over a backend of the caller's choosing -- a test's, or a page's.
+    pub fn with_backend(fs: Arc<dyn Backend>) -> Self {
+        FsConnector { fs }
     }
 }
 
@@ -225,7 +255,9 @@ impl Default for FsConnector {
 #[async_trait::async_trait]
 impl Connector for FsConnector {
     fn scope_type(&self) -> Box<dyn ScopeType> {
-        Box::new(FsScopeType)
+        Box::new(FsScopeType {
+            fs: self.fs.clone(),
+        })
     }
 
     async fn call(
@@ -250,18 +282,24 @@ impl Connector for FsConnector {
             "fs/read" => {
                 let a: PathArgs = rmpv::ext::from_value(need_args("{path}")?)
                     .map_err(|e| CallError::new(format!("{call} args: {e}")))?;
-                let path = sc.resolve(&a.path, true).map_err(CallError::new)?;
-                let meta = std::fs::metadata(&path)
+                let path = sc
+                    .resolve(&*self.fs, &a.path, true)
+                    .map_err(CallError::new)?;
+                let meta = self
+                    .fs
+                    .metadata(&path)
                     .map_err(|e| CallError::new(format!("'{}': {e}", a.path)))?;
-                if meta.len() > sc.max_bytes() {
+                if meta.len > sc.max_bytes() {
                     return Err(CallError::new(format!(
                         "'{}' is {} bytes, past the {}-byte cap this scope allows",
                         a.path,
-                        meta.len(),
+                        meta.len,
                         sc.max_bytes()
                     )));
                 }
-                let bytes = std::fs::read(&path)
+                let bytes = self
+                    .fs
+                    .read(&path)
                     .map_err(|e| CallError::new(format!("'{}': {e}", a.path)))?;
                 // msgpack bin and str decode identically in the guest, and
                 // bin is byte-exact where a str would force UTF-8.
@@ -275,9 +313,11 @@ impl Connector for FsConnector {
                     .as_ref()
                     .and_then(bytes_of)
                     .ok_or_else(|| CallError::new("fs/write needs data (a string)"))?;
-                let path = sc.resolve(&a.path, false).map_err(CallError::new)?;
+                let path = sc
+                    .resolve(&*self.fs, &a.path, false)
+                    .map_err(CallError::new)?;
                 let existing = if a.append {
-                    std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
+                    self.fs.metadata(&path).map(|m| m.len).unwrap_or(0)
                 } else {
                     0
                 };
@@ -290,19 +330,9 @@ impl Connector for FsConnector {
                         sc.max_bytes()
                     )));
                 }
-                if a.append {
-                    use std::io::Write;
-                    let mut f = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&path)
-                        .map_err(|e| CallError::new(format!("'{}': {e}", a.path)))?;
-                    f.write_all(&data)
-                        .map_err(|e| CallError::new(format!("'{}': {e}", a.path)))?;
-                } else {
-                    std::fs::write(&path, &data)
-                        .map_err(|e| CallError::new(format!("'{}': {e}", a.path)))?;
-                }
+                self.fs
+                    .write(&path, &data, a.append)
+                    .map_err(|e| CallError::new(format!("'{}': {e}", a.path)))?;
                 Ok(rmpv::Value::Nil)
             }
             "fs/list" => {
@@ -314,23 +344,23 @@ impl Connector for FsConnector {
                     Some(p) => p.to_string(),
                     None => ".".to_string(),
                 };
-                let dir = sc.resolve(&rel, true).map_err(CallError::new)?;
-                let mut names: Vec<rmpv::Value> = Vec::new();
-                let entries =
-                    std::fs::read_dir(&dir).map_err(|e| CallError::new(format!("'{rel}': {e}")))?;
-                for entry in entries.flatten() {
-                    if let Some(name) = entry.file_name().to_str() {
-                        names.push(rmpv::Value::from(name));
-                    }
-                }
-                names.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
-                Ok(rmpv::Value::Array(names))
+                let dir = sc.resolve(&*self.fs, &rel, true).map_err(CallError::new)?;
+                let names = self
+                    .fs
+                    .read_dir(&dir)
+                    .map_err(|e| CallError::new(format!("'{rel}': {e}")))?;
+                Ok(rmpv::Value::Array(
+                    names.into_iter().map(rmpv::Value::from).collect(),
+                ))
             }
             "fs/remove" => {
                 let a: PathArgs = rmpv::ext::from_value(need_args("{path}")?)
                     .map_err(|e| CallError::new(format!("{call} args: {e}")))?;
-                let path = sc.resolve(&a.path, true).map_err(CallError::new)?;
-                std::fs::remove_file(&path)
+                let path = sc
+                    .resolve(&*self.fs, &a.path, true)
+                    .map_err(CallError::new)?;
+                self.fs
+                    .remove_file(&path)
                     .map_err(|e| CallError::new(format!("'{}': {e}", a.path)))?;
                 Ok(rmpv::Value::Nil)
             }

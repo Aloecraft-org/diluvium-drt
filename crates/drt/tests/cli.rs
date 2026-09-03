@@ -266,3 +266,137 @@ fn buildinfo_reports_the_embedded_diluvium_revision() {
         "the two forms must agree: {json}"
     );
 }
+
+/// `drt buildinfo` names its profile by exact feature set, and the sets
+/// it knows are the ones `Cargo.toml` declares.
+///
+/// Two tables have to agree — the `[features]` profiles in the manifest
+/// and the `PROFILE_*` constants in `main.rs` — and nothing but this test
+/// makes them. It reads the manifest, closes over what each profile turns
+/// on, works out which of those features *this* test binary was compiled
+/// with (an integration test shares its package's features), and checks
+/// the binary reports the profile that set is. A feature added to `full`
+/// in the manifest and forgotten in `main.rs` fails here as `custom`; a
+/// feature added to the manifest and unknown to this test fails by name.
+#[test]
+fn profile_matches_its_manifest() {
+    const PROFILES: [&str; 4] = ["full", "slim", "wasi", "web"];
+    const LEAVES: [&str; 14] = [
+        "cli",
+        "connector-crypto",
+        "connector-exec",
+        "connector-fs",
+        "connector-rest",
+        "connector-sql",
+        "connector-ssh",
+        "connector-ssmtp",
+        "connector-time",
+        "listen",
+        "netcheck",
+        "relay",
+        "stun",
+        "tunnel",
+    ];
+
+    // The manifest's `[features]` table, as `name -> entries`.
+    let manifest =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
+    let mut table: Vec<(String, Vec<String>)> = Vec::new();
+    let mut in_features = false;
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_features = line == "[features]";
+            continue;
+        }
+        if !in_features || line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (name, rest) = line
+            .split_once('=')
+            .expect("a feature line is `name = [...]`");
+        let entries = rest
+            .trim()
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .split(',')
+            .map(|e| e.trim().trim_matches('"').to_string())
+            .filter(|e| !e.is_empty())
+            .collect();
+        table.push((name.trim().to_string(), entries));
+    }
+    for (name, _) in &table {
+        let known = name == "default"
+            || PROFILES.contains(&name.as_str())
+            || LEAVES.contains(&name.as_str());
+        assert!(
+            known,
+            "Cargo.toml declares feature '{name}'; teach this test and main.rs's PROFILE_* \
+             tables about it"
+        );
+    }
+
+    // Everything a profile turns on, transitively, by leaf name: `full`
+    // names `slim`, `netcheck` names `stun`, `relay` names `listen`.
+    fn close(name: &str, table: &[(String, Vec<String>)], into: &mut Vec<String>) {
+        let Some((_, entries)) = table.iter().find(|(n, _)| n == name) else {
+            return;
+        };
+        for e in entries {
+            if e.starts_with("dep:") || into.contains(e) {
+                continue;
+            }
+            into.push(e.clone());
+            close(e, table, into);
+        }
+    }
+    let leaves_of = |profile: &str| -> Vec<String> {
+        let mut all = Vec::new();
+        close(profile, &table, &mut all);
+        all.retain(|f| LEAVES.contains(&f.as_str()));
+        all.sort();
+        all
+    };
+
+    // Which leaves this binary was compiled with, by the same names.
+    let mut enabled: Vec<String> = Vec::new();
+    macro_rules! feature {
+        ($name:literal) => {
+            if cfg!(feature = $name) {
+                enabled.push($name.to_string());
+            }
+        };
+    }
+    feature!("cli");
+    feature!("connector-crypto");
+    feature!("connector-exec");
+    feature!("connector-fs");
+    feature!("connector-rest");
+    feature!("connector-sql");
+    feature!("connector-ssh");
+    feature!("connector-ssmtp");
+    feature!("connector-time");
+    feature!("listen");
+    feature!("netcheck");
+    feature!("relay");
+    feature!("stun");
+    feature!("tunnel");
+    enabled.sort();
+
+    let expected = PROFILES
+        .into_iter()
+        .find(|p| leaves_of(p) == enabled)
+        .unwrap_or("custom");
+
+    let out = drt().arg("buildinfo").output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    let reported = text
+        .lines()
+        .find_map(|l| l.strip_prefix("profile: "))
+        .expect("buildinfo names a profile");
+    assert_eq!(
+        reported, expected,
+        "this binary was built with {enabled:?}, which Cargo.toml says is '{expected}'; \
+         buildinfo says '{reported}', so main.rs's PROFILE_* tables and the manifest disagree"
+    );
+}
