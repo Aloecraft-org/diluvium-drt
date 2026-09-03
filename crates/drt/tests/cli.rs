@@ -281,7 +281,8 @@ fn buildinfo_reports_the_embedded_diluvium_revision() {
 #[test]
 fn profile_matches_its_manifest() {
     const PROFILES: [&str; 4] = ["full", "slim", "wasi", "web"];
-    const LEAVES: [&str; 12] = [
+    const LEAVES: [&str; 13] = [
+        "cli",
         "connector-crypto",
         "connector-fs",
         "connector-rest",
@@ -365,6 +366,7 @@ fn profile_matches_its_manifest() {
             }
         };
     }
+    feature!("cli");
     feature!("connector-crypto");
     feature!("connector-fs");
     feature!("connector-rest");

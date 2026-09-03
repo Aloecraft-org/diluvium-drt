@@ -41,6 +41,10 @@ drt-connector-sql = { path = "connectors/sql", version = "0.4.1" }
 drt-connector-crypto = { path = "connectors/crypto", version = "0.4.1" }
 drt-connector-rest = { path = "connectors/rest", version = "0.4.1" }
 drt-connector-ssmtp = { path = "connectors/ssmtp", version = "0.4.1" }
+# The line editor, one for every target (doc/Wasm.md D8, M8). From git
+# because that is where it lives; the browser half pins wasm-bindgen
+# `=0.2.114`, which is this workspace's pin already.
+ego_cli = { git = "https://github.com/Aloecraft-org/ego-cli", branch = "main" }
 
 # Field names cross the boundary: the safe diluvium crate serializes with
 # rmp-serde's to_vec_named, and everything here does the same.

@@ -950,6 +950,13 @@ at — as the only one without the editor, which is backwards; or accepting
 tokio in slim and saying so in the manifest where the comment currently
 promises otherwise.
 
+*Taken, 2026-09-03: the first, with the second as the interim.* The ask
+is [ego-cli#3](https://github.com/Aloecraft-org/ego-cli/issues/3), and
+until it lands `cli` rides `full` — which carries tokio already, for the
+relay and the STUN server — so `slim` keeps its promise and the smallest
+build is the one still without an editor. That is the backwards half of
+the second option, and it is meant to be temporary.
+
 **Later, named so they are not mistaken for forgotten:** `rest` over
 `wasi:http` and `fetch` (the deferred pump is the prerequisite, M3);
 `sql` in the browser; `ego_transport` on wasm (it already builds for both

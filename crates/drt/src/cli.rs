@@ -53,6 +53,7 @@ const PROFILE_WASI: &[&str] = &[
 ];
 const PROFILE_WEB: &[&str] = &["connector-crypto", "connector-fs", "connector-time"];
 const PROFILE_FULL: &[&str] = &[
+    "cli",
     "connector-crypto",
     "connector-fs",
     "connector-rest",
@@ -362,6 +363,7 @@ fn enabled_features() -> Vec<&'static str> {
             }
         };
     }
+    feature!("cli");
     feature!("connector-crypto");
     feature!("connector-fs");
     feature!("connector-rest");

@@ -54,6 +54,12 @@ drt-connector-sql = { workspace = true, optional = true }
 drt-connector-crypto = { workspace = true, optional = true }
 drt-connector-rest = { workspace = true, optional = true }
 drt-connector-ssmtp = { workspace = true, optional = true }
+# The line editor behind `drt repl` on a tty (doc/Wasm.md D8). Optional
+# and not in `slim`: its native backend wants crossterm's event-stream and
+# `ego_platform` wants tokio `full`, and `slim` has deliberately carried
+# neither -- so `cli` rides `full`, which has tokio already, until
+# ego-cli#3 lands a backend that needs no runtime.
+ego_cli = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -72,7 +78,7 @@ futures-util = { version = "0.3", default-features = false }
 # connector is its own gate so a profile is a feature list, not a fork.
 default = ["slim"]
 slim = ["connector-time", "connector-fs", "connector-crypto", "listen"]
-full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "tunnel", "relay", "stun", "netcheck"]
+full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "tunnel", "relay", "stun", "netcheck", "cli"]
 # The portable build (doc/Wasm.md D2): what `drt` carries on
 # wasm32-wasip2, under wasmtime. Every connector here compiles for that
 # target with no source change and is exercised by the examples gate
@@ -90,6 +96,22 @@ wasi = ["connector-time", "connector-fs", "connector-crypto", "connector-sql", "
 # reports `web` from inside the page and the examples gate can skip by
 # profile there as it does everywhere else.
 web = ["connector-time", "connector-fs", "connector-crypto"]
+# Line editing for `drt repl` on a tty: history, word motions, undo, and
+# Tab over names the running instance answers with (doc/Wasm.md D8, M8,
+# §5). One editor for every target rather than one per host, which is
+# what the three hand-written ones in this project were before it.
+#
+# In `full` and not in `slim`, for now: `ego_cli`'s native backend is
+# built on crossterm's `EventStream`, and `ego_platform` under it takes
+# tokio with `full`. `full` carries tokio already (the relay, STUN);
+# `slim` never has. ego-cli#3 asks upstream for a backend over blocking
+# `crossterm::event::poll`, which needs no runtime and suits this
+# tick-shaped driver better; when it lands, this moves to `slim` and the
+# piped path below is the only one left without an editor.
+#
+# A pipe is never edited either way -- `drt repl < script.dlua` keeps the
+# plain reader, whose prompts go to stderr so that redirect stays clean.
+cli = ["dep:ego_cli", "dep:tokio"]
 connector-time = ["dep:drt-connector-time"]
 connector-ssh = ["dep:drt-connector-ssh"]
 connector-fs = ["dep:drt-connector-fs"]
