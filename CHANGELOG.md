@@ -56,6 +56,18 @@ client files it under that conversation rather than beside it.
   `examples/15-sending-mail` sends a third message, a reply, so the
   two lines are on the transcript where a client looks for them.
 
+### Fixed
+
+- **`examples/run-all.sh` broke `13` and `15` under its own documented
+  command.** `DRT=../target/release/drt ./run-all.sh` is relative to
+  `examples/`, and the runner resolved that to an absolute path for
+  `PATH` but left the relative one in the environment -- so the two
+  `demo.sh` scripts that honour `$DRT`, running from inside their own
+  directories, named a file that was not there. `13` failed by name
+  and `15` waited for a relay connection that never came until the
+  timeout. The absolute path is exported now, and the fourteen that
+  only use `PATH` are unchanged.
+
 
 ## [0.4.0] - 2026-09-02
 

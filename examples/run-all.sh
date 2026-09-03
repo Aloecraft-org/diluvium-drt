@@ -348,6 +348,14 @@ if [ -z "$drt_abs" ] || [ ! -x "$drt_abs" ]; then
     exit 2
 fi
 
+# The demo.sh scripts that honour $DRT get the absolute path too. The
+# README's `DRT=../target/release/drt` is relative to examples/, and an
+# example runs from inside its own directory, where that path names
+# nothing -- so 13 and 15 failed under the documented command while the
+# fourteen that only use PATH passed.
+DRT=$drt_abs
+export DRT
+
 work=$(mktemp -d) || exit 2
 trap 'rm -rf -- "$work"' EXIT INT TERM
 
