@@ -47,6 +47,13 @@ name**. So a release whose connector set changed is not a patch release
 whatever the digits say. v0.4.0 is numbered the way it is for exactly this
 reason: `rest` is new, so `profile.full.connectors` is not v0.3.0's.
 
+**Narrowed 2026-09-03, by the owner.** A connector *added* with nothing
+existing changed may take the patch digit: v0.4.2 carries `exec` and is a
+patch. The rule above still holds for a set that *loses* or *changes* a
+connector, which is the case that would make a version number lie. Either
+way the digit is not the check -- the connector list is, by name, which
+is why the changelog entry still has to say what moved.
+
 ## Versioning: independent, with the coupling recorded
 
 DRT tags its own `vX.Y.Z`. A DRT release does not name a diluvium release
@@ -194,7 +201,7 @@ wasmtime run -W exceptions=y --dir . drt_wasip2.wasm run app.dlua
 `listen` is in the profile (doc/Wasm.md M6): wasip2 has sockets and no
 threads, so the listener there is the polled acceptor, non-blocking
 sockets stepped by the drive loop, and the wrapper grants
-`-S inherit-network=y -S tcp=y`. `examples/16-serving-http` is served
+`-S inherit-network=y -S tcp=y`. `examples/17-serving-http` is served
 from wasmtime by the gate, so the artifact proves it can serve before it
 ships.
 

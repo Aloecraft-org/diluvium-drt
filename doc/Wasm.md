@@ -265,7 +265,7 @@ and writes on the accepted `TcpStream` all work on wasip2 under wasmtime
 48 with `-S inherit-network=y -S tcp=y`, so the rewrite needed neither
 `wasi:io/poll` nor the `wasip2` crate — the polled acceptor in
 `listen.rs` is `std::net` stepped from the drive loop, and
-`examples/16-serving-http` serves from wasmtime through the wrapper.
+`examples/17-serving-http` serves from wasmtime through the wrapper.
 
 ### 2.3 The browser: the C core inside a wasm-bindgen module
 
@@ -902,7 +902,7 @@ over, the threaded acceptor natively and a `polled` one — non-blocking
 `std::net`, one state machine per connection, stepped every `POLL_TICK`
 from the drive loop — on wasi, compiled and tested natively too; `listen`
 in the `wasi` profile; the wrapper grants `-S inherit-network=y -S
-tcp=y`; `examples/16-serving-http` is the gate's served example and runs
+tcp=y`; `examples/17-serving-http` is the gate's served example and runs
 natively and under wasmtime, skipped by name in the browser). Planned as
 `wasi:sockets` and `wasi:io/poll` directly; the second measurement in
 §2.2 showed `std::net`'s non-blocking sockets already work there, so the
@@ -957,7 +957,10 @@ relay and the STUN server — so `slim` keeps its promise and the smallest
 build is the one still without an editor. That is the backwards half of
 the second option, and it is meant to be temporary.
 
-**Later, named so they are not mistaken for forgotten:** `rest` over
+**Later, named so they are not mistaken for forgotten:** the plugin
+channel and a `browser/*` capability over it, both assessed against M3's
+pump and now unblocked by it (`doc/Plugins.md`, `doc/Playwright.md`);
+`rest` over
 `wasi:http` and `fetch` (the deferred pump is the prerequisite, M3);
 `sql` in the browser; `ego_transport` on wasm (it already builds for both
 targets with `WebSocket`/`wasip2` backends) for `webrtc://` and the
@@ -1051,7 +1054,7 @@ cd examples && DRT=../script/drt-wasip2.sh ./run-all.sh
 `wasmtime compile -W exceptions=y -o drt.cwasm drt.wasm` and
 `wasmtime run --allow-precompiled ... drt.cwasm` for the 10 ms start.
 Serving needs `-S inherit-network=y -S tcp=y`, which the wrapper passes;
-`cd examples/16-serving-http && DRT=../../script/drt-wasip2.sh ./demo.sh`
+`cd examples/17-serving-http && DRT=../../script/drt-wasip2.sh ./demo.sh`
 is a deployment served from wasmtime and curl'd.
 
 **The browser build and gate**, exactly as run (the pieces below are

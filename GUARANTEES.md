@@ -31,10 +31,13 @@ checker than that and still had escapes. The mitigations are:
 ## `exec` leaves the sandbox
 
 A subprocess runs outside the VM, so the instruction budget cannot bound it —
-it is bounded by a wall-clock timeout and an output cap, host-side, and by
-nothing else. Granting `exec` is leaving the sandbox; the connector is behind
-a loud flag because enabling it must be a conscious act. Do not read any other
-guarantee in this file as covering what an `exec`'d process does. `host:ssh/exec`
+it is bounded by a wall-clock timeout, an output cap and an allow list of
+programs, host-side, and by nothing else. Granting `exec` is leaving the
+sandbox, so enabling it is a conscious act three times over: the connector is
+in the `full` build only, it is wired only when a config names
+`connectors.exec`, and `drt` announces the wiring on stderr before the first
+step. Do not read any other guarantee in this file as covering what an
+`exec`'d process does. `host:ssh/exec`
 is the same caveat on another machine: the scope pins where, as whom, with
 which key, and under which host key — but what the command does there is
 outside everything this file promises.

@@ -1,0 +1,29 @@
+-- A local command from inside the sandbox. The vector is the program's; the
+-- deadline, the output cap and the programs it may start are the
+-- deployment's, and drt says so on stderr when the config loads:
+--
+--   drt run --config deploy.json
+
+-- example: omits the ok/refused branch — host.exec.try_run answers value,
+-- status, detail, so one line prints whichever came back
+local function row(label, value, status, detail)
+    local answer = detail
+    if value then
+        local out = value.stdout:gsub("\n$", "")
+        answer = "status " .. value.status .. (out ~= "" and "  " .. out or "")
+    end
+    print(string.format("  %-22s %-7s %s", label, status, answer))
+end
+
+print("a vector, never a shell string; the exit is an answer:")
+row("echo hello", host.exec.try_run({ "echo", "hello" }))
+row("sh -c 'exit 3'", host.exec.try_run({ "sh", "-c", "exit 3" }))
+row("cat, fed stdin", host.exec.try_run({ "cat" }, { stdin = "from the program" }))
+row("no-such-program", host.exec.try_run({ "no-such-program" }))
+
+print("")
+print("what the scope bounds, and in whose words:")
+row("sleep 5, timeout 200", host.exec.try_run({ "sleep", "5" }, { timeout_ms = 200 }))
+row("sleep 5, timeout 5000", host.exec.try_run({ "sleep", "5" }, { timeout_ms = 5000 }))
+row("yes, until the cap", host.exec.try_run({ "yes" }))
+row("ls, not allowed", host.exec.try_run({ "ls", "/" }))

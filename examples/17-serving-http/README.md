@@ -1,4 +1,4 @@
-# 16-serving-http
+# 17-serving-http
 
 A deployment that serves. `drt start` binds the port `app.json` names, turns
 every request into a message on a queue, and turns the program's reply on
@@ -8,7 +8,7 @@ program never sees a socket.
 ## Run it
 
 ```
-cd examples/16-serving-http
+cd examples/17-serving-http
 drt start --config app.json
 ```
 

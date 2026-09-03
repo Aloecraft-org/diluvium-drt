@@ -6,7 +6,3 @@ $ drt run app.dlua
   ssh/exec  denied  no connector is wired for 'ssh/exec' in this process
   exec/run  denied  no connector is wired for 'exec/run' in this process
 exit 0
-
-$ drt run --config no-exec.json
-drt: config wires connector 'exec', which this build does not carry
-exit 1

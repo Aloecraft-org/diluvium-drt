@@ -1,7 +1,7 @@
-version: 0.4.1
+version: 0.4.2
 profile: full
 dv_abi: 1
 dv_abi_expected: 1
 diluvium: <revision>
-connectors: time,fs,crypto,sql,ssh,rest,ssmtp,listen
+connectors: time,fs,crypto,sql,ssh,rest,ssmtp,exec,listen
 verbs: buildinfo,netcheck,ps,relay,repl,run,start,stun,tunnel

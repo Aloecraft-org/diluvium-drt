@@ -6,7 +6,7 @@
 #
 # Dependencies: bash, and coreutils + sed + diff.  Nothing else — in
 # particular no jq, so meta.json is read by the small JSON reader below.
-# (16-serving-http's own demo.sh uses curl to be its client; that is the
+# (17-serving-http's own demo.sh uses curl to be its client; that is the
 # example's dependency, not the gate's.)
 
 set -o pipefail

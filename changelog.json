@@ -1,8 +1,9 @@
 {
   "schema": 1,
   "repo": "Aloecraft-org/diluvium-drt",
-  "latest": "v0.4.1",
+  "latest": "v0.4.2",
   "mirror_tags": [
+    "v0.4.2",
     "v0.4.1",
     "v0.4.0",
     "v0.3.1",
@@ -11,6 +12,47 @@
     "v0.1.0"
   ],
   "releases": [
+    {
+      "version": "0.4.2",
+      "tag": "v0.4.2",
+      "date": "2026-09-03",
+      "status": "released",
+      "stable": true,
+      "mirror": true,
+      "dv_abi": 1,
+      "diluvium": "515160f645874fc82de001fea7f68803f47bbc58",
+      "connectors": {
+        "full": [
+          "time",
+          "fs",
+          "crypto",
+          "sql",
+          "ssh",
+          "rest",
+          "ssmtp",
+          "exec",
+          "listen"
+        ],
+        "slim": [
+          "time",
+          "fs",
+          "crypto",
+          "listen"
+        ]
+      },
+      "summary": "Local `exec`: the one hostcall family the C host answered and DRT\ndid not, and the one the instruction budget cannot reach. The\ncontract is `dhost_exec.c`'s to the sentence, a `.host.lua` saying\n`exec = true` loads unchanged, and the scope gains the thing the C\nhost had nowhere to put: the programs a call may start.\n\nA patch digit for a new connector, by the owner's decision\n(`doc/Release.md`): nothing that existed changed, and the check a\npackage makes is by name against BUILDINFO's connector list, never\nagainst the version. That list is not v0.4.1's -- `full` gains\n`exec`, `slim` is unchanged -- so a package declaring\n`requires.connectors` with `exec` in it is admissible against the\n`full` artifact and refused by name against `slim`.\n",
+      "upgrading": null,
+      "latest": true,
+      "sections": {
+        "added": [
+          "**`exec/run`, the honest escape hatch.** `{argv, stdin?,\ntimeout_ms?, cwd?}` answers `{status, stdout, stderr}`, exactly as\n`host/dhost_exec.c` answers it, so a program written against\n`diluvium-host` runs here unchanged. `argv` is a vector handed to\nexec and never a shell string, so there is nothing a quote can\nescape from; a nonzero exit is an answer, read the way a script\nreads `$?`, and a program that does not exist is `127`. `error` is\nthe call's own failure only: the deadline, a cap, a malformed\nrequest, each in the C host's words.\n\nThree bounds, all the deployment's, because the instruction\nbudget cannot reach a subprocess. `max_timeout_ms` is a ceiling a\ncall may ask below and never above; at the deadline the child is\nkilled with SIGKILL, and the kill sweeps its whole process group\non every exit path, so nothing `exec/run` starts outlives the\ncall. `max_output_bytes` caps each stream and stdin, refusing\nrather than truncating past it. Both default to the C host's\nnumbers.\n\nAnd one the C host could not take: `allow`, a list of programs by\nabsolute path. A call naming anything else is refused by name and\nnever started; an entry that is not there is a refusal at\nstartup, by name, like every other unreachable scope. Compared\nafter symlinks are resolved on both sides, so `/bin/sh` matches on\na box where `/bin` is `/usr/bin`. Leave it out and the behaviour\nis the C host's: whatever `PATH` finds.\n\n`full` only, and not for a dependency -- it links nothing. Off\nuntil a config names `connectors.exec`, and announced on stderr\nwhen one does: granting it is leaving the sandbox, and\nGUARANTEES.md's \"loud flag\" is now a sentence the process prints\nrather than a promise. `examples/16-exec` is the app; `10-ssh-exec`\nno longer claims there is no local exec, and its third run, which\nshowed the config being refused, is gone because the config is no\nlonger refused.\n\nHonest about one thing the C host is honest about too: the\nconnector answers synchronously, so a running child stalls every\nguest in the deployment until it exits or hits its deadline. Bound\nit tight. The deferred pump planned in `doc/Wasm.md` lifts that\nfor every connector at once.\n"
+        ],
+        "changed": [
+          "**The connector set grows.** `full` carries `exec`; `slim` is\nunchanged. `drt buildinfo` reports it, so a package's\n`requires.connectors` can name it.\n"
+        ]
+      },
+      "notes_md": "## [0.4.2] - 2026-09-03\n\n`v0.4.2` &middot; dv ABI 1 &middot; diluvium `515160f64587`\n\nLocal `exec`: the one hostcall family the C host answered and DRT\ndid not, and the one the instruction budget cannot reach. The\ncontract is `dhost_exec.c`'s to the sentence, a `.host.lua` saying\n`exec = true` loads unchanged, and the scope gains the thing the C\nhost had nowhere to put: the programs a call may start.\n\nA patch digit for a new connector, by the owner's decision\n(`doc/Release.md`): nothing that existed changed, and the check a\npackage makes is by name against BUILDINFO's connector list, never\nagainst the version. That list is not v0.4.1's -- `full` gains\n`exec`, `slim` is unchanged -- so a package declaring\n`requires.connectors` with `exec` in it is admissible against the\n`full` artifact and refused by name against `slim`.\n\n### Connectors\n\n- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `listen`\n- `slim`: `time`, `fs`, `crypto`, `listen`\n\n### Added\n\n- **`exec/run`, the honest escape hatch.** `{argv, stdin?,\n  timeout_ms?, cwd?}` answers `{status, stdout, stderr}`, exactly as\n  `host/dhost_exec.c` answers it, so a program written against\n  `diluvium-host` runs here unchanged. `argv` is a vector handed to\n  exec and never a shell string, so there is nothing a quote can\n  escape from; a nonzero exit is an answer, read the way a script\n  reads `$?`, and a program that does not exist is `127`. `error` is\n  the call's own failure only: the deadline, a cap, a malformed\n  request, each in the C host's words.\n\n  Three bounds, all the deployment's, because the instruction\n  budget cannot reach a subprocess. `max_timeout_ms` is a ceiling a\n  call may ask below and never above; at the deadline the child is\n  killed with SIGKILL, and the kill sweeps its whole process group\n  on every exit path, so nothing `exec/run` starts outlives the\n  call. `max_output_bytes` caps each stream and stdin, refusing\n  rather than truncating past it. Both default to the C host's\n  numbers.\n\n  And one the C host could not take: `allow`, a list of programs by\n  absolute path. A call naming anything else is refused by name and\n  never started; an entry that is not there is a refusal at\n  startup, by name, like every other unreachable scope. Compared\n  after symlinks are resolved on both sides, so `/bin/sh` matches on\n  a box where `/bin` is `/usr/bin`. Leave it out and the behaviour\n  is the C host's: whatever `PATH` finds.\n\n  `full` only, and not for a dependency -- it links nothing. Off\n  until a config names `connectors.exec`, and announced on stderr\n  when one does: granting it is leaving the sandbox, and\n  GUARANTEES.md's \"loud flag\" is now a sentence the process prints\n  rather than a promise. `examples/16-exec` is the app; `10-ssh-exec`\n  no longer claims there is no local exec, and its third run, which\n  showed the config being refused, is gone because the config is no\n  longer refused.\n\n  Honest about one thing the C host is honest about too: the\n  connector answers synchronously, so a running child stalls every\n  guest in the deployment until it exits or hits its deadline. Bound\n  it tight. The deferred pump planned in `doc/Wasm.md` lifts that\n  for every connector at once.\n\n### Changed\n\n- **The connector set grows.** `full` carries `exec`; `slim` is\n  unchanged. `drt buildinfo` reports it, so a package's\n  `requires.connectors` can name it.\n"
+    },
     {
       "version": "0.4.1",
       "tag": "v0.4.1",
@@ -40,7 +82,7 @@
       },
       "summary": "`ssmtp/send` threads. A reply can name the message it answers, so a\nclient files it under that conversation rather than beside it. And\nthe examples gate passes under its own documented command, which\nit did not.\n\nA patch, honestly: the connector set is v0.4.0's, so a package\ndeclaring `requires.connectors` sees nothing new. The call surface\ngrew by two optional fields and nothing was removed.\n",
       "upgrading": null,
-      "latest": true,
+      "latest": false,
       "sections": {
         "added": [
           "**`ssmtp/send` takes `in_reply_to` and `references`.** A reply had\nno way to say what it answered: the call was `{to, subject, body}`,\nso the only threading a program could do was `Re:` on the subject,\nwhich is a guess a client may or may not make. `in_reply_to` is\nthe parent's `Message-ID` as its header spelled it; `references`\nis the thread, oldest first, and defaults to `in_reply_to` --\nwhich is what a reply to a thread's first message carries.\n\nThese two are the guest's to set because neither routes: a relay\nreads nothing from them and a client only threads on them. So the\ncheck is on shape rather than on trust. An id reads `<id@host>`;\nthe brackets are supplied when a source such as JMAP strips them,\nand a token that cannot be an id is refused by name and by field.\nA line ending inside either is a **fold**, not an injection: a\n`References` line long enough to have been folded by its sender\narrives with a CRLF in it, so whitespace separates ids there rather\nthan refusing the value, and nothing of the guest's text reaches\nthe wire as written -- what follows a fold is one more id inside\nthe same header, never a header of its own. Long lists fold at 78\non the way out, per RFC 5322.\n\nNo other header is the guest's, still. What a message could also\ncarry, and the argument for each, is in `doc/Next.md` under\n`ssmtp`: a `Message-ID` the connector mints and returns, `Date`,\n`Auto-Submitted`, `Cc` under the same allowlist -- and `Reply-To`,\nwhich is the scope's and never the program's.\n\n`examples/15-sending-mail` sends a third message, a reply, so the\ntwo lines are on the transcript where a client looks for them.\n"

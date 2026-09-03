@@ -54,6 +54,7 @@ drt-connector-sql = { workspace = true, optional = true }
 drt-connector-crypto = { workspace = true, optional = true }
 drt-connector-rest = { workspace = true, optional = true }
 drt-connector-ssmtp = { workspace = true, optional = true }
+drt-connector-exec = { workspace = true, optional = true }
 # The line editor behind `drt repl` on a tty (doc/Wasm.md D8). Optional
 # and not in `slim`: its native backend wants crossterm's event-stream and
 # `ego_platform` wants tokio `full`, and `slim` has deliberately carried
@@ -78,7 +79,7 @@ futures-util = { version = "0.3", default-features = false }
 # connector is its own gate so a profile is a feature list, not a fork.
 default = ["slim"]
 slim = ["connector-time", "connector-fs", "connector-crypto", "listen"]
-full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "tunnel", "relay", "stun", "netcheck", "cli"]
+full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "connector-exec", "tunnel", "relay", "stun", "netcheck", "cli"]
 # The portable build (doc/Wasm.md D2): what `drt` carries on
 # wasm32-wasip2, under wasmtime. Every connector here compiles for that
 # target with no source change and is exercised by the examples gate
@@ -128,6 +129,14 @@ connector-rest = ["dep:drt-connector-rest"]
 # holding the password and cannot forge its From line; that is the whole
 # reason this is a connector and not something a guest reaches via `rest`.
 connector-ssmtp = ["dep:drt-connector-ssmtp"]
+# Local exec: `host:exec/run`, the honest escape hatch, the contract
+# `dhost_exec.c` fixes. `full` only, and not for a dependency -- it links
+# nothing -- but because SPEC.md §3's slim profile is "run a script,
+# fs/time/stdio only", and a binary that cannot shell out is a smaller
+# thing to trust. Off until a config names `connectors.exec`, and announced
+# on stderr when one does: granting it is leaving the sandbox
+# (GUARANTEES.md), and that is the loud flag the guarantee promises.
+connector-exec = ["dep:drt-connector-exec"]
 # The http listener (dhost_http.c's contract). In slim because the C host
 # always carries its listener, and a runtime that cannot serve a fetchpoint
 # is not the runtime discofetch is waiting for.

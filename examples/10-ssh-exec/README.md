@@ -10,7 +10,6 @@ user, one key, one trust anchor. The program names the command and nothing else.
 cd examples/10-ssh-exec
 drt run --config deploy.json
 drt run app.dlua
-drt run --config no-exec.json
 ```
 
 `deploy.json` is the shape a real deployment has. It stops here because the key
@@ -29,13 +28,10 @@ $ drt run app.dlua
   exec/run  denied  no connector is wired for 'exec/run' in this process
 exit 0
 
-$ drt run --config no-exec.json
-drt: config wires connector 'exec', which this build does not carry
-exit 1
 ```
 
-Those two `denied` lines are replies the program read and printed. The other
-two runs never started a program at all.
+Those two `denied` lines are replies the program read and printed. The
+first run never started a program at all.
 
 ## What it teaches
 
@@ -52,11 +48,11 @@ requirement above as `host_key|host_fingerprint`. Take the fingerprint out of
 … trust-on-first-use is never the default*. The prompt `ssh` gives you on a
 first connection is a decision, and a config is where decisions live.
 
-**There is no local exec.** `exec/run` comes back `denied`, the same word an
-unwired family gets, because at the call boundary "not wired here" and "does
-not exist anywhere" look alike. The difference shows one step earlier: a config
-naming `connectors.exec` is refused when it loads, in every build. If you
-arrived from diluvium-host looking for it, that is the answer.
+**Local exec is a different door.** `exec/run` comes back `denied` here for
+the same reason `ssh/exec` does: nothing wired it. It exists, in the `full`
+build, and [`16-exec`](../16-exec) is the app that wires it, with a scope
+that names which programs, for how long, and how much output. If you arrived
+from diluvium-host looking for it, that is where it went.
 
 **The budget cannot reach it.** An instruction budget stops at this machine's
 VM, so what limits a remote command is `timeout_ms` and `max_output_bytes`, and
