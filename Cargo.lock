@@ -946,13 +946,14 @@ dependencies = [
 
 [[package]]
 name = "drt"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "clap",
  "drt-caps",
  "drt-config",
  "drt-connector",
  "drt-connector-crypto",
+ "drt-connector-exec",
  "drt-connector-fs",
  "drt-connector-rest",
  "drt-connector-sql",
@@ -976,7 +977,7 @@ dependencies = [
 
 [[package]]
 name = "drt-bench"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "clap",
  "drt-caps",
@@ -990,7 +991,7 @@ dependencies = [
 
 [[package]]
 name = "drt-caps"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "rmpv",
  "serde",
@@ -999,7 +1000,7 @@ dependencies = [
 
 [[package]]
 name = "drt-config"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "drt-caps",
  "rmp-serde",
@@ -1009,7 +1010,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "async-trait",
  "drt-caps",
@@ -1023,7 +1024,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-crypto"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "async-trait",
  "base64",
@@ -1042,8 +1043,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "drt-connector-exec"
+version = "0.4.2"
+dependencies = [
+ "async-trait",
+ "drt-caps",
+ "drt-connector",
+ "libc",
+ "pollster",
+ "rmpv",
+ "serde",
+ "tempfile",
+]
+
+[[package]]
 name = "drt-connector-fs"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "async-trait",
  "drt-caps",
@@ -1057,7 +1072,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-rest"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "async-trait",
  "drt-caps",
@@ -1073,7 +1088,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-sql"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "async-trait",
  "drt-caps",
@@ -1088,7 +1103,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-ssh"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "async-trait",
  "drt-caps",
@@ -1106,7 +1121,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-ssmtp"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "async-trait",
  "base64",
@@ -1122,7 +1137,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-time"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "async-trait",
  "drt-caps",
@@ -1134,7 +1149,7 @@ dependencies = [
 
 [[package]]
 name = "drt-hostcall"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "rmp-serde",
  "rmpv",
@@ -1143,7 +1158,7 @@ dependencies = [
 
 [[package]]
 name = "drt-swarm"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "diluvium",
  "drt-caps",
@@ -1160,7 +1175,7 @@ dependencies = [
 
 [[package]]
 name = "drt-web"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "drt-caps",
  "drt-config",

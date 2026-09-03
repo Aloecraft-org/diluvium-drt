@@ -1,0 +1,8 @@
+{
+  "name": "16-exec",
+  "teaches": "host:exec/run runs a local command: argv is a vector and never a shell string, a nonzero exit is an answer and a missing program is 127, and the scope bounds it with a deadline ceiling, a byte cap and an allow list — drt announces the wiring on stderr because granting it is leaving the sandbox.",
+  "cmd": "echo '$ drt run --config deploy.json'; drt run --config deploy.json",
+  "needs_network": false,
+  "needs_build": "full",
+  "normalise": []
+}

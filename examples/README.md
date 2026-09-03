@@ -1,14 +1,14 @@
 # DRT examples
 
 A run-through for someone who has a `drt` binary and has never run anything
-with it. Thirteen sittings — fourteen directories, because `05` has a live
+with it. Seventeen sittings — eighteen directories, because `05` has a live
 twin — meant in order: one idea each, a command block you can paste, and an
 `expected.txt` that is the real output of running it rather than a
 transcription of what it ought to say. A **drt app** is a config plus a
 program; the first two examples are that sentence taken apart, and most of the
 rest are one program run under two or three configs, so every difference
 between the outputs is the config's doing and not the program's. This is not a
-reference. Everything here is v0.4.1.
+reference. Everything here is v0.4.2.
 
 | directory | what it teaches | the command |
 |---|---|---|
@@ -23,15 +23,17 @@ reference. Everything here is v0.4.1.
 | [`07-sql`](07-sql) | `sql/query` reads and `sql/exec` writes; the scope is a directory, and the database is a name the program picks inside it. | `drt run --config readwrite.json` |
 | [`08-spawn-and-hibernation`](08-spawn-and-hibernation) | A program starting another: a child holds a subset of its parent's grants and nothing more, and parks itself when it has nothing to do. | `drt start --config app.json` |
 | [`09-netcheck`](09-netcheck) | One of four verdicts about the network in front of you, and the measurements that produced it. | `drt netcheck` |
-| [`10-ssh-exec`](10-ssh-exec) | `ssh/exec` is the one call that leaves the sandbox, so the scope pins the destination. And there is no local `exec`, in any build. | `drt run --config deploy.json` |
+| [`10-ssh-exec`](10-ssh-exec) | `ssh/exec` leaves the sandbox for another machine, so the scope pins the destination: host, user, key, trust anchor. | `drt run --config deploy.json` |
 | [`11-tunnel-and-relay`](11-tunnel-and-relay) | Two machines that cannot reach each other both dial out to a relay, which splices their legs into one pipe that ssh rides over. | `drt tunnel` |
 | [`12-under-the-hood`](12-under-the-hood) | What every `host.*` call is underneath: the `host/calls` and `host/replies` pair, a token the host echoes back, and a reply of four fields. | `drt run app.dlua` |
 | [`13-stun-server`](13-stun-server) | Run two STUN binding servers and classify this machine's NAT from what they answer. One server is never enough. | `./demo.sh` |
 | [`14-ssh-through-a-tunnel`](14-ssh-through-a-tunnel) | Use your own `ssh` client through DRT with OpenSSH's `ProxyCommand`. `scp`, `rsync`, `sftp` and `-L` come free. | `drt tunnel` |
 | [`15-sending-mail`](15-sending-mail) | Send mail without holding the relay's password, and without being able to choose who the mail is from. | `./demo.sh` |
+| [`16-exec`](16-exec) | `exec/run` runs a local command: a vector, never a shell string; the exit is an answer; and a deadline, a byte cap and an allow list are the deployment's. | `drt run --config deploy.json` |
 
 `drt run` executes one program to completion and exits — no swarm, no
-listeners, no second instance — and it is what `01`–`07`, `10` and `12` use.
+listeners, no second instance — and it is what `01`–`07`, `10`, `12` and `16`
+use.
 `drt start` runs the whole deployment, and `08` needs it because a child has
 nowhere to live under `drt run`. `00`, `09` and `11` call neither: `buildinfo`,
 `netcheck`, `tunnel` and `relay` are verbs beside those two, not apps.
@@ -86,11 +88,6 @@ output.
 
 Named rather than omitted, so you are not left looking for them.
 
-- **Running a local process.** DRT has none. There is no `exec` family: no
-  connector implements one, so a config naming it is refused at load the way
-  any unrecognised connector name is, and `exec/run` is `denied` the way any
-  unwired family is. A drt app cannot shell out. The nearest thing is
-  `ssh/exec`, and `10-ssh-exec` is both halves of it.
 - **`crypto`.** In every build's connector list, and the family `01` uses to
   show you a `denied` — and no example wires it, because in v0.4.0 the crypto
   scope demands a signing key even for the keyless calls. That conflict is
