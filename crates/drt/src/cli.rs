@@ -39,6 +39,7 @@ use drt_connector::Registry;
 /// here too, and `profile_matches_its_manifest` in `tests/cli.rs` is what
 /// notices when someone forgets.
 const PROFILE_SLIM: &[&str] = &[
+    "cli",
     "connector-crypto",
     "connector-fs",
     "connector-time",
