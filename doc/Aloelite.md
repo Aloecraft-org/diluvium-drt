@@ -126,10 +126,18 @@ aloelite's contract (TX-1), which is stronger than what the disk gives.
 
 ## 4. Costs and hazards, stated
 
-- **SQLite is linked once or not at all.** DRT's `sql` connector pins
+- **SQLite is linked once or not at all.** DRT's `sql` connector pinned
   `rusqlite 0.37`; aloelite-core pins `0.40`. `libsqlite3-sys` carries a
-  `links` key, so two versions in one build do not compile. The `sql`
-  connector moves to 0.40, which is half a day and should happen first.
+  `links` key, so two versions in one build do not compile. **Done
+  2026-09-03:** the `sql` connector is on `rusqlite 0.40`
+  (`libsqlite3-sys 0.38`), which took a version bump and no source change
+  -- the connector uses `Connection`, `OpenFlags`, `ToSql` and
+  `types::{Value, ValueRef}`, none of which moved. Verified natively (the
+  connector's twelve tests, `examples/07-sql`) and cross-compiled for
+  `wasm32-wasip2`, where the bundled C library is the part that could
+  have broken and did not: `07-sql` run by hand under wasmtime gives its
+  whole transcript, both refusals included. So the blocker is gone and
+  the backend below is next.
   After that the bundled SQLite `full` already carries serves both, and
   aloelite costs `full` only its own code and the RustCrypto ladder.
 - **`slim` stays without it.** No SQLite in `slim` is a decision

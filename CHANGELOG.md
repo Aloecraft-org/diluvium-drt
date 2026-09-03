@@ -211,6 +211,12 @@ contract is `doc/Browser.md`; `doc/Platforms.md` is the matrix.
 
 ### Changed
 
+- **`sql` is on `rusqlite 0.40`.** A version bump and no source
+  change: the connector uses `Connection`, `OpenFlags`, `ToSql`
+  and `types::{Value, ValueRef}`, none of which moved. It matters
+  because `libsqlite3-sys` carries a `links` key, so a build can
+  hold one SQLite and not two -- which is what stood between DRT
+  and an aloelite volume as an `fs` backend (doc/Aloelite.md §4).
 - **The drive loop inverted, and the hostcall pump defers.**
   `run`, `repl` and `start` no longer own loops that block:
   `tick()` advances an instance as far as it can and returns what
