@@ -92,9 +92,13 @@ names the diluvium revision inside the binary and the dv ABI it speaks —
 read off the artifact rather than inferred from a tag. See
 [`doc/Release.md`](doc/Release.md).
 
-The mirror at `https://diluvium.aloecraft.org/release/drt/` is the intended
-front door and the one `install.sh` prefers, but it does not carry the `drt`
-namespace yet — the URLs above are the ones that resolve today.
+The mirror at `https://diluvium.aloecraft.org/drt/` is the front door and
+the one `install.sh` prefers. It carries every release, `latest/`, and
+`install.sh` itself, so the one-liner is:
+
+```sh
+curl -fsSL https://diluvium.aloecraft.org/drt/latest/install.sh | sh
+```
 
 ## What you can do with it today
 
