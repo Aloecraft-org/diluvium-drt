@@ -1,1 +1,6 @@
 /target
+.dump
+.nogit
+.xtr
+x.patch
+x.md
