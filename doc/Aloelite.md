@@ -6,6 +6,15 @@ aloelite's Rust port on `claude/aloelite-rust-port-assessment-732bo0`
 evaluation. Claims about aloelite name the file in its tree; claims
 about DRT name the file here or on the wasm branch. Nothing is built.
 
+**The DRT-side claims were checked against the wasm branch on
+2026-09-03**: the `Backend` trait's six operations and their names,
+`StdFs` and `MemFs` as its two implementations, `SnapshotStore`'s four,
+the `rusqlite 0.37` pin, and -- the load-bearing one for "a deployment
+can be one file" -- that the program and config loaders really do read
+through the installed backend (`config.rs`, `run.rs` and `start.rs` all
+call `drt_platform::fs::read_to_string`, not `std::fs`). All hold. One
+hazard in §4 did not, and is corrected there.
+
 **The ask.** Aloelite is a filesystem inside one SQLite file: nodes,
 edges, volumes and mounts, content-addressed chunks with deduplication,
 at-rest encryption per volume, and a Mount API of about fifty operations
@@ -127,14 +136,29 @@ aloelite's contract (TX-1), which is stronger than what the disk gives.
   (`connectors/sql/Cargo.toml`), so the backend is a feature the `full`
   and `wasi` profiles carry and `web` decides on separately, where it
   costs SQLite compiled to wasm.
-- **`ego_platform` comes along.** aloelite-core takes its clock from
-  `ego_platform`, which brings tokio natively and pins `wasm-bindgen`
-  at `=0.2.114` while the wasm branch moved DRT to `0.2.127`
-  (`doc/Wasm.md` §7). The wasm branch already records the pin ask
-  upstream; the cleaner fix is an aloelite-side one: a clock trait of
-  its own, so a consumer supplies the clock and `ego_platform` is not
-  in the engine's dependency graph. Small, and worth asking for before
-  the port is evaluated.
+- **`ego_platform` comes along — but not the version conflict.**
+  *Checked against the wasm branch, 2026-09-03, and half of this is the
+  wrong way round:* DRT pins `wasm-bindgen = "=0.2.114"` itself, and
+  deliberately, **because** the ego crates pin it and a workspace holds
+  one version (`crates/drt-web/Cargo.toml`, `doc/Wasm.md` §2.3). It did
+  not move to `0.2.127`. So aloelite's `ego_platform` agrees with DRT
+  on wasm-bindgen rather than colliding with it, and the price of that
+  pin is already paid here: 0.2.114 refuses a module carrying the C
+  core's `try_table` unless it exports `__instance_terminated`, which
+  `bindings.rs` therefore defines.
+
+  What is real is tokio natively, and the ask for a clock trait is the
+  right one — with a precedent that landed the same day this was
+  written. `ego-cli` was asked for the same thing
+  ([ego-cli#3](https://github.com/Aloecraft-org/ego-cli/issues/3)): a
+  backend needing no runtime. The answer was not only a blocking
+  backend but **`ego_platform` made an optional dependency**, since it
+  is a hard one and takes tokio with `full` whatever else changes.
+  Measured against this tree, that removes tokio from the graph
+  entirely (`cargo tree -i tokio` finds nothing) for +153 KB
+  (`doc/Wasm.md` M8). So the aloelite-side ask has both a shape and a
+  demonstration: a clock trait plus an optional `ego_platform`, not
+  one without the other.
 - **Versions travel with the bytes.** aloelite has a schema era and a
   Mount API version; DRT's rule is that the compatibility fact rides in
   BUILDINFO. A build carrying the backend reports the era it opens, the
