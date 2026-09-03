@@ -4,7 +4,7 @@
 program does with `rest`.
 
 ```
-python3 relay.py 2 &          # a fake relay, so this runs anywhere
+python3 relay.py 3 &          # a fake relay, so this runs anywhere
 drt run --config deploy.json
 ```
 
@@ -46,6 +46,23 @@ that wanted a newline wanted something else.
 SMTP message, so a program could otherwise stop its own message early and
 have the rest read as commands. The transcript shows the body's `.` arriving
 as `..`, which is the wire saying "this is text".
+
+## Threading a reply
+
+The third granted send answers a message. It names that message's
+`Message-ID` as `in_reply_to`, and the transcript shows where it lands:
+
+```
+Subject: Re: Hello
+In-Reply-To: <20260903.42@mail.example.com>
+References: <20260903.42@mail.example.com>
+```
+
+`references` is the thread, oldest first, and defaults to the same id —
+right when the message answered started the thread. When it did not, pass
+its own `References` followed by its `Message-ID`, as text or as a list.
+These two are the only headers a program may add: neither routes anywhere,
+so the check is on shape (an id reads `<id@host>`) rather than on trust.
 
 ## Wiring it to a real relay
 

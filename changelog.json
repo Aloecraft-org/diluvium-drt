@@ -11,6 +11,43 @@
   ],
   "releases": [
     {
+      "version": "0.4.1",
+      "tag": "v0.4.1",
+      "date": null,
+      "status": "unreleased",
+      "stable": true,
+      "mirror": false,
+      "dv_abi": 1,
+      "diluvium": "515160f645874fc82de001fea7f68803f47bbc58",
+      "connectors": {
+        "full": [
+          "time",
+          "fs",
+          "crypto",
+          "sql",
+          "ssh",
+          "rest",
+          "ssmtp",
+          "listen"
+        ],
+        "slim": [
+          "time",
+          "fs",
+          "crypto",
+          "listen"
+        ]
+      },
+      "summary": "`ssmtp/send` threads. A reply can name the message it answers, so a\nclient files it under that conversation rather than beside it.\n",
+      "upgrading": null,
+      "latest": false,
+      "sections": {
+        "added": [
+          "**`ssmtp/send` takes `in_reply_to` and `references`.** A reply had\nno way to say what it answered: the call was `{to, subject, body}`,\nso the only threading a program could do was `Re:` on the subject,\nwhich is a guess a client may or may not make. `in_reply_to` is\nthe parent's `Message-ID` as its header spelled it; `references`\nis the thread, oldest first, and defaults to `in_reply_to` --\nwhich is what a reply to a thread's first message carries.\n\nThese two are the guest's to set because neither routes: a relay\nreads nothing from them and a client only threads on them. So the\ncheck is on shape rather than on trust. An id reads `<id@host>`;\nthe brackets are supplied when a source such as JMAP strips them,\nand a token that cannot be an id is refused by name and by field.\nA line ending inside either is a **fold**, not an injection: a\n`References` line long enough to have been folded by its sender\narrives with a CRLF in it, so whitespace separates ids there rather\nthan refusing the value, and nothing of the guest's text reaches\nthe wire as written -- what follows a fold is one more id inside\nthe same header, never a header of its own. Long lists fold at 78\non the way out, per RFC 5322.\n\nNo other header is the guest's, still. What a message could also\ncarry, and the argument for each, is in `doc/Next.md` under\n`ssmtp`: a `Message-ID` the connector mints and returns, `Date`,\n`Auto-Submitted`, `Cc` under the same allowlist -- and `Reply-To`,\nwhich is the scope's and never the program's.\n\n`examples/15-sending-mail` sends a third message, a reply, so the\ntwo lines are on the transcript where a client looks for them.\n"
+        ]
+      },
+      "notes_md": "## [0.4.1] - unreleased\n\n`v0.4.1` &middot; dv ABI 1 &middot; diluvium `515160f64587`\n\n`ssmtp/send` threads. A reply can name the message it answers, so a\nclient files it under that conversation rather than beside it.\n\n### Connectors\n\n- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `listen`\n- `slim`: `time`, `fs`, `crypto`, `listen`\n\n### Added\n\n- **`ssmtp/send` takes `in_reply_to` and `references`.** A reply had\n  no way to say what it answered: the call was `{to, subject, body}`,\n  so the only threading a program could do was `Re:` on the subject,\n  which is a guess a client may or may not make. `in_reply_to` is\n  the parent's `Message-ID` as its header spelled it; `references`\n  is the thread, oldest first, and defaults to `in_reply_to` --\n  which is what a reply to a thread's first message carries.\n\n  These two are the guest's to set because neither routes: a relay\n  reads nothing from them and a client only threads on them. So the\n  check is on shape rather than on trust. An id reads `<id@host>`;\n  the brackets are supplied when a source such as JMAP strips them,\n  and a token that cannot be an id is refused by name and by field.\n  A line ending inside either is a **fold**, not an injection: a\n  `References` line long enough to have been folded by its sender\n  arrives with a CRLF in it, so whitespace separates ids there rather\n  than refusing the value, and nothing of the guest's text reaches\n  the wire as written -- what follows a fold is one more id inside\n  the same header, never a header of its own. Long lists fold at 78\n  on the way out, per RFC 5322.\n\n  No other header is the guest's, still. What a message could also\n  carry, and the argument for each, is in `doc/Next.md` under\n  `ssmtp`: a `Message-ID` the connector mints and returns, `Date`,\n  `Auto-Submitted`, `Cc` under the same allowlist -- and `Reply-To`,\n  which is the scope's and never the program's.\n\n  `examples/15-sending-mail` sends a third message, a reply, so the\n  two lines are on the transcript where a client looks for them.\n"
+    },
+    {
       "version": "0.4.0",
       "tag": "v0.4.0",
       "date": "2026-09-02",

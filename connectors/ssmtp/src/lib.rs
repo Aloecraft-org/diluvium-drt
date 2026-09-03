@@ -10,8 +10,18 @@
 //! connector rather than something a program reaches through `rest`.
 //!
 //! ```text
-//! ssmtp/send {to, subject, body} -> {accepted, recipients}
+//! ssmtp/send {to, subject, body, in_reply_to?, references?}
+//!     -> {accepted, recipients}
 //! ```
+//!
+//! A reply threads by naming what it answers. `in_reply_to` is the parent's
+//! `Message-ID`, as its header spelled it; `references` is the thread,
+//! oldest first — the parent's `References` and then its `Message-ID` —
+//! and defaults to `in_reply_to`, which is what a reply to a thread's first
+//! message carries. Both are the guest's to set because neither routes: a
+//! relay reads nothing from them and a client only threads on them, so the
+//! check is on shape rather than on trust, in [`msg_ids_of`]. No other
+//! header is the guest's to name; [`SsmtpScope::from`] says why.
 //!
 //! The reference is discofetch's `deploy/mail/df-mail-puller`, which exists
 //! precisely because "a guest has no SMTP" (`api/supervisor.lua:5182`): the
@@ -24,7 +34,10 @@
 //! - [`SsmtpConnector`] — the only entry point; `send` is the only verb.
 //! - [`SsmtpScope`] — the wiring: relay, credential, sender, allowlist.
 //! - Bounds: [`MAX_BODY_BYTES`], [`MAX_SUBJECT_BYTES`], [`MAX_RECIPIENTS`],
+//!   [`MAX_REFERENCES`], [`MAX_MSGID_BYTES`], [`FOLD_AT_BYTES`],
 //!   [`DEFAULT_TIMEOUT_MS`], [`DEFAULT_PORT`].
+//! - What a call sends is a [`Message`]; its header block is [`headers`],
+//!   the one place a header name is written.
 //! - The SMTP conversation is one function, [`deliver`], read top to bottom.
 //!
 //! ## The three things that make this dangerous, and what is done about them
@@ -64,6 +77,17 @@ pub const MAX_SUBJECT_BYTES: usize = 998;
 /// One `send` is one message. A guest wanting a mailing list can ask twice,
 /// and a bound here is what stops one call becoming a blast.
 pub const MAX_RECIPIENTS: usize = 16;
+/// Ids one call may name in `in_reply_to` or in `references`. A thread
+/// longer than this is a program that never trimmed, not a long thread;
+/// mail clients trim `References` well short of it.
+pub const MAX_REFERENCES: usize = 64;
+/// One id must fit on its header's first line under RFC 5322's 998 octets,
+/// after the longer of the two field names. An id past that is a mistake,
+/// not a long id.
+pub const MAX_MSGID_BYTES: usize = 998 - "In-Reply-To: ".len();
+/// Where a list of ids folds onto a continuation line: RFC 5322 §2.1.1's
+/// SHOULD, and what every client folds at.
+pub const FOLD_AT_BYTES: usize = 78;
 /// The puller's `timeout=30` (`df-mail-puller:154`).
 pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 /// The submission port. `df-mail-puller` defaults to the same, and its
@@ -260,6 +284,13 @@ struct SendArgs {
     to: rmpv::Value,
     subject: String,
     body: String,
+    /// The `Message-ID` of what this answers: one id or several, as the
+    /// text of a copied header or as a list.
+    #[serde(default)]
+    in_reply_to: Option<rmpv::Value>,
+    /// The thread, oldest first. Absent, it is `in_reply_to`.
+    #[serde(default)]
+    references: Option<rmpv::Value>,
 }
 
 #[derive(Default)]
@@ -307,6 +338,133 @@ fn recipients_of(to: &rmpv::Value) -> Result<Vec<String>, String> {
     Ok(raw)
 }
 
+/// The message ids a call named in `in_reply_to` or `references`: text
+/// holding one id or several separated by whitespace, exactly as a copied
+/// header reads, or a list with one per entry. Each comes back as `<id>`.
+///
+/// Whitespace is a separator here rather than a refusal, unlike in
+/// [`header_safe`], because a `References` line long enough to have been
+/// folded by its sender arrives with a CRLF inside it, and that fold is the
+/// one legitimate line ending a header value can carry. Nothing of the
+/// guest's text reaches the wire as written: the ids are re-joined, so what
+/// follows a fold is one more id inside the same header and never a header
+/// of its own.
+pub fn msg_ids_of(field: &str, value: &rmpv::Value) -> Result<Vec<String>, String> {
+    let texts: Vec<&str> = match value {
+        rmpv::Value::String(s) => vec![s
+            .as_str()
+            .ok_or_else(|| format!("{field} is not valid text"))?],
+        rmpv::Value::Array(items) => items
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .ok_or_else(|| format!("{field} contains a value that is not text"))
+            })
+            .collect::<Result<_, _>>()?,
+        _ => {
+            return Err(format!(
+                "{field} is neither a message id nor a list of them"
+            ))
+        }
+    };
+    let mut ids = Vec::new();
+    for token in texts.iter().flat_map(|t| t.split_whitespace()) {
+        ids.push(msg_id(field, token)?);
+    }
+    if ids.is_empty() {
+        return Err(format!("{field} names no message id"));
+    }
+    if ids.len() > MAX_REFERENCES {
+        return Err(format!(
+            "{field} names {} message ids; {MAX_REFERENCES} is the bound for one message",
+            ids.len()
+        ));
+    }
+    Ok(ids)
+}
+
+/// One token as `<id>`, the brackets supplied when the guest's source had
+/// stripped them — JMAP's `messageId` does; a copied header does not.
+fn msg_id(field: &str, token: &str) -> Result<String, String> {
+    let inner = match token.strip_prefix('<') {
+        Some(rest) => rest.strip_suffix('>').ok_or_else(|| {
+            format!("{field} entry {token:?} opens a message id and does not close it")
+        })?,
+        None => token,
+    };
+    // RFC 5322 §3.6.4: `<` id-left `@` id-right `>`, no whitespace, no
+    // nested brackets, no controls. Not a validator — a client threads on
+    // equality, not on syntax, and ids without an `@` exist in the wild —
+    // so this refuses only the shapes that are certainly not one id.
+    if inner.is_empty()
+        || inner
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '<' | '>' | '"' | '(' | ')' | ',' | ';' | '\\'))
+    {
+        return Err(format!(
+            "{field} entry {token:?} is not a message id; one reads <id@host>"
+        ));
+    }
+    if inner.len() + 2 > MAX_MSGID_BYTES {
+        return Err(format!(
+            "{field} entry is {} bytes; {MAX_MSGID_BYTES} is the bound for one message id",
+            inner.len() + 2
+        ));
+    }
+    Ok(format!("<{inner}>"))
+}
+
+/// `Field: <id> <id>…` with CRLF, folded between ids once a line would pass
+/// [`FOLD_AT_BYTES`]. The first id stays on the field's own line whatever
+/// its length, as every client writes it — [`MAX_MSGID_BYTES`] is sized so
+/// that line still fits the hard limit.
+pub fn fold_ids(field: &str, ids: &[String]) -> String {
+    let mut out = format!("{field}:");
+    let mut line = out.len();
+    for (i, id) in ids.iter().enumerate() {
+        if i > 0 && line + 1 + id.len() > FOLD_AT_BYTES {
+            out.push_str("\r\n");
+            line = 0;
+        }
+        out.push(' ');
+        out.push_str(id);
+        line += 1 + id.len();
+    }
+    out.push_str("\r\n");
+    out
+}
+
+/// What one call asked to send, after every check: the guest's part of a
+/// message. The scope's part — sender, relay, credential — stays in the
+/// scope, and the two meet only in [`headers`].
+struct Message {
+    recipients: Vec<String>,
+    subject: String,
+    body: String,
+    in_reply_to: Vec<String>,
+    references: Vec<String>,
+}
+
+/// The header block, through the blank line that ends it. The scope's
+/// sender first and the guest's fields under it, never above — which is
+/// what puts a subject of `From: x` visibly below the real one.
+fn headers(scope: &SsmtpScope, msg: &Message) -> String {
+    let mut out = format!(
+        "From: {}\r\nTo: {}\r\nSubject: {}\r\n",
+        scope.from,
+        msg.recipients.join(", "),
+        msg.subject
+    );
+    if !msg.in_reply_to.is_empty() {
+        out.push_str(&fold_ids("In-Reply-To", &msg.in_reply_to));
+    }
+    if !msg.references.is_empty() {
+        out.push_str(&fold_ids("References", &msg.references));
+    }
+    out.push_str("MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n");
+    out
+}
+
 #[async_trait::async_trait]
 impl Connector for SsmtpConnector {
     fn scope_type(&self) -> Box<dyn ScopeType> {
@@ -348,14 +506,23 @@ impl Connector for SsmtpConnector {
         if args.body.len() > MAX_BODY_BYTES {
             return Err(CallError::new("too_large"));
         }
-
-        let work = async {
-            tokio::time::timeout(
-                scope.timeout(),
-                deliver(&scope, &recipients, &args.subject, &args.body),
-            )
-            .await
+        let in_reply_to = match &args.in_reply_to {
+            Some(v) => msg_ids_of("in_reply_to", v).map_err(CallError::new)?,
+            None => Vec::new(),
         };
+        let references = match &args.references {
+            Some(v) => msg_ids_of("references", v).map_err(CallError::new)?,
+            None => in_reply_to.clone(),
+        };
+        let msg = Message {
+            recipients,
+            subject: args.subject,
+            body: args.body,
+            in_reply_to,
+            references,
+        };
+
+        let work = async { tokio::time::timeout(scope.timeout(), deliver(&scope, &msg)).await };
         // FM-3: `drt start` has a reactor, `drt run` does not.
         let outcome = match tokio::runtime::Handle::try_current() {
             Ok(_) => work.await,
@@ -374,7 +541,7 @@ impl Connector for SsmtpConnector {
             ("accepted".into(), rmpv::Value::Boolean(true)),
             (
                 "recipients".into(),
-                rmpv::Value::Array(recipients.iter().map(|r| r.as_str().into()).collect()),
+                rmpv::Value::Array(msg.recipients.iter().map(|r| r.as_str().into()).collect()),
             ),
         ]))
     }
@@ -439,12 +606,7 @@ where
     }
 }
 
-async fn deliver(
-    scope: &SsmtpScope,
-    recipients: &[String],
-    subject: &str,
-    body: &str,
-) -> Result<(), String> {
+async fn deliver(scope: &SsmtpScope, msg: &Message) -> Result<(), String> {
     let stream = tokio::net::TcpStream::connect((scope.host.as_str(), scope.port()))
         .await
         .map_err(|e| format!("connect: {e}"))?;
@@ -469,12 +631,12 @@ async fn deliver(
         // EHLO again: the extensions before STARTTLS are not the ones that
         // count, and a relay may advertise AUTH only once encrypted.
         smtp!(tls, 250, "EHLO {}", ehlo_name(&scope.from));
-        session(&mut tls, scope, recipients, subject, body).await
+        session(&mut tls, scope, msg).await
     } else {
         let mut io = stream;
         read_reply(&mut io, 220).await?;
         smtp!(io, 250, "EHLO {}", ehlo_name(&scope.from));
-        session(&mut io, scope, recipients, subject, body).await
+        session(&mut io, scope, msg).await
     }
 }
 
@@ -487,13 +649,7 @@ fn ehlo_name(from: &str) -> String {
         .unwrap_or_else(|| "localhost".into())
 }
 
-async fn session<S>(
-    mut io: &mut S,
-    scope: &SsmtpScope,
-    recipients: &[String],
-    subject: &str,
-    body: &str,
-) -> Result<(), String>
+async fn session<S>(mut io: &mut S, scope: &SsmtpScope, msg: &Message) -> Result<(), String>
 where
     S: tokio::io::AsyncRead + AsyncWriteExt + Unpin,
 {
@@ -506,22 +662,15 @@ where
     }
     // The envelope sender is the scope's, never the guest's.
     smtp!(io, 250, "MAIL FROM:<{}>", envelope(&scope.from));
-    for address in recipients {
+    for address in &msg.recipients {
         smtp!(io, 250, "RCPT TO:<{address}>");
     }
     smtp!(io, 354, "DATA");
 
-    let headers = format!(
-        "From: {}\r\nTo: {}\r\nSubject: {}\r\nMIME-Version: 1.0\r\n\
-         Content-Type: text/plain; charset=utf-8\r\n\r\n",
-        scope.from,
-        recipients.join(", "),
-        subject
-    );
-    io.write_all(headers.as_bytes())
+    io.write_all(headers(scope, msg).as_bytes())
         .await
         .map_err(|e| format!("send: {e}"))?;
-    io.write_all(dot_stuff(body).as_bytes())
+    io.write_all(dot_stuff(&msg.body).as_bytes())
         .await
         .map_err(|e| format!("send: {e}"))?;
     smtp!(io, 250, ".");

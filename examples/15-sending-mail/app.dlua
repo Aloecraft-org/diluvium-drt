@@ -4,14 +4,13 @@
 --
 --   ./demo.sh
 --
--- Two sends the deployment permits, and two it refuses. The interesting
+-- Three sends the deployment permits, and two it refuses. The interesting
 -- half is the wire transcript demo.sh prints underneath.
 
 -- host.try hands back value, status, detail, so a refusal arrives as a reply
 -- to print rather than an error to catch.
-local function send(label, to, subject, body)
-    local out, status, detail = host.try("ssmtp/send",
-        { to = to, subject = subject, body = body })
+local function send(label, args)
+    local out, status, detail = host.try("ssmtp/send", args)
     print(string.format("  %-38s %-6s %s", label, status,
         detail or (out and "sent") or "-"))
 end
@@ -19,24 +18,34 @@ end
 print("granted:")
 -- The body carries a line that is exactly `.`, which is what ends an SMTP
 -- message. It reaches the relay as text — look for `..` in the transcript.
-send("an ordinary message", "someone@example.com", "Hello",
-     "a body\n.\nstill the body\n")
+send("an ordinary message", { to = "someone@example.com", subject = "Hello",
+     body = "a body\n.\nstill the body\n" })
 
 -- A subject is only ever a subject. This one asks to be a From line and
 -- becomes `Subject: From: ...`; the real From is the deployment's, and the
 -- program has no way to name it.
-send("a subject that wants to be From", "someone@example.com",
-     "From: me@evil.example", "the sender is not this program's to choose")
+send("a subject that wants to be From", { to = "someone@example.com",
+     subject = "From: me@evil.example",
+     body = "the sender is not this program's to choose" })
+
+-- A reply threads by naming the message it answers: `in_reply_to` is that
+-- message's Message-ID, as its header spelled it. `references` is the
+-- thread and defaults to the same id. Neither routes anywhere, which is
+-- why a program may set them — the one pair of headers it may.
+send("a reply, threaded", { to = "someone@example.com", subject = "Re: Hello",
+     body = "threaded under the message this answers",
+     in_reply_to = "<20260903.42@mail.example.com>" })
 
 print("")
 print("refused:")
 -- The allowlist is `@example.com`. A domain that merely ends with it is a
 -- different domain.
-send("someone@evil.example.net", "someone@evil.example.net", "Hi", "x")
+send("someone@evil.example.net", { to = "someone@evil.example.net",
+     subject = "Hi", body = "x" })
 
 -- A newline in a header ends it and starts another. This subject would add
 -- a Bcc line, so it is refused rather than escaped.
 -- example: omits the multi-recipient form — `to` also takes a list, and
 -- every address in it is checked exactly the same way.
-send("a subject carrying a header", "someone@example.com",
-     "Hi\r\nBcc: everyone@example.com", "x")
+send("a subject carrying a header", { to = "someone@example.com",
+     subject = "Hi\r\nBcc: everyone@example.com", body = "x" })

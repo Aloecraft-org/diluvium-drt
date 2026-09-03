@@ -10,7 +10,9 @@ use std::sync::{Arc, Mutex};
 
 use drt_caps::{Scope, ScopeType};
 use drt_connector::Connector;
-use drt_connector_ssmtp::SsmtpConnector;
+use drt_connector_ssmtp::{
+    fold_ids, msg_ids_of, SsmtpConnector, FOLD_AT_BYTES, MAX_MSGID_BYTES, MAX_REFERENCES,
+};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 /// A relay that speaks just enough SMTP to accept one message, and records
@@ -344,4 +346,211 @@ fn a_call_with_no_reactor_refuses_rather_than_panicking() {
         Some(&scope_for(port, &["@example.com"])),
     ));
     out.expect_err("nothing is listening; this cannot succeed");
+}
+
+/// `args` for a reply: the threading fields, each present only if given.
+fn reply_args(in_reply_to: Option<rmpv::Value>, references: Option<rmpv::Value>) -> rmpv::Value {
+    let mut map = vec![
+        ("to".into(), "a@example.com".into()),
+        ("subject".into(), "Re: Hello".into()),
+        ("body".into(), "b".into()),
+    ];
+    if let Some(v) = in_reply_to {
+        map.push(("in_reply_to".into(), v));
+    }
+    if let Some(v) = references {
+        map.push(("references".into(), v));
+    }
+    rmpv::Value::Map(map)
+}
+
+/// The header block as a receiver reads it: the lines between DATA and the
+/// blank line, each folded continuation joined back onto its field.
+fn unfolded_headers(sent: &[String]) -> Vec<String> {
+    let data_at = sent.iter().position(|l| l == "DATA").unwrap();
+    let mut out: Vec<String> = Vec::new();
+    for line in &sent[data_at + 1..] {
+        if line.is_empty() {
+            break;
+        }
+        match out.last_mut() {
+            Some(field) if line.starts_with(' ') || line.starts_with('\t') => field.push_str(line),
+            _ => out.push(line.clone()),
+        }
+    }
+    out
+}
+
+/// Send one reply through the fake relay and hand back the wire.
+async fn wire_of(args: rmpv::Value) -> Result<Vec<String>, String> {
+    let (port, log) = fake_relay().await;
+    SsmtpConnector::new()
+        .call(
+            "ssmtp/send",
+            Some(args),
+            Some(&scope_for(port, &["@example.com"])),
+        )
+        .await
+        .map_err(|e| e.0)?;
+    let sent = log.lock().unwrap().clone();
+    Ok(sent)
+}
+
+/// Threading: a reply names what it answers, and the wire carries both
+/// lines where a client looks for them.
+#[tokio::test]
+async fn a_reply_carries_the_thread_it_answers() {
+    let sent = wire_of(reply_args(
+        Some("<parent@example.com>".into()),
+        Some(rmpv::Value::Array(vec![
+            "<root@example.com>".into(),
+            "<parent@example.com>".into(),
+        ])),
+    ))
+    .await
+    .unwrap();
+
+    let at = |line: &str| {
+        sent.iter()
+            .position(|l| l == line)
+            .unwrap_or_else(|| panic!("{line:?} is not on the wire: {sent:?}"))
+    };
+    let in_reply_to = at("In-Reply-To: <parent@example.com>");
+    let references = at("References: <root@example.com> <parent@example.com>");
+    // Under the scope's From and the guest's Subject and above the MIME
+    // fields: never above the one line the guest cannot set.
+    assert!(at("From: Michael at Discofetch <no-reply@discofetch.net>") < in_reply_to);
+    assert!(at("Subject: Re: Hello") < in_reply_to);
+    assert!(in_reply_to < references && references < at("MIME-Version: 1.0"));
+}
+
+/// The common reply knows only the parent's id. `References` is then that
+/// id, which is what a reply to a thread's first message carries; and a
+/// message that is not a reply carries neither line.
+#[tokio::test]
+async fn references_defaults_to_in_reply_to_and_neither_appears_unasked() {
+    let sent = wire_of(reply_args(Some("<parent@example.com>".into()), None))
+        .await
+        .unwrap();
+    assert!(
+        sent.iter()
+            .any(|l| l == "In-Reply-To: <parent@example.com>"),
+        "{sent:?}"
+    );
+    assert!(
+        sent.iter().any(|l| l == "References: <parent@example.com>"),
+        "{sent:?}"
+    );
+
+    let sent = wire_of(args("a@example.com".into(), "Hello", "b"))
+        .await
+        .unwrap();
+    assert!(
+        !sent
+            .iter()
+            .any(|l| l.starts_with("In-Reply-To:") || l.starts_with("References:")),
+        "{sent:?}"
+    );
+}
+
+/// A copied header is the shape a program has: brackets present or not
+/// (JMAP strips them), folded across lines or not. Both arrive as ids, and
+/// a line ending inside the field is a fold — what follows it is one more
+/// id inside the same header, never a header of its own.
+#[tokio::test]
+async fn ids_are_bracketed_and_a_fold_is_a_separator_not_a_header() {
+    let sent = wire_of(reply_args(
+        Some("parent@example.com".into()),
+        Some("<root@example.com>\r\n <parent@example.com>\r\nBcc: everyone@example.com".into()),
+    ))
+    .await
+    .unwrap();
+    let fields = unfolded_headers(&sent);
+    assert!(
+        fields
+            .iter()
+            .any(|l| l == "In-Reply-To: <parent@example.com>"),
+        "{sent:?}"
+    );
+    assert!(
+        fields.iter().any(|l| l
+            == "References: <root@example.com> <parent@example.com> <Bcc:> <everyone@example.com>"),
+        "{sent:?}"
+    );
+    assert!(!fields.iter().any(|l| l.starts_with("Bcc:")), "{sent:?}");
+    // Four ids pass the fold, so the wire itself carried a continuation
+    // line — the shape the guest's copy arrived in.
+    assert!(sent.iter().any(|l| l.starts_with(" <")), "{sent:?}");
+}
+
+/// What a message id may not be, each refused by name and by field.
+#[tokio::test]
+async fn a_message_id_that_is_not_one_is_refused_by_name() {
+    for (bad, why) in [
+        ("<unclosed@example.com", "does not close"),
+        ("<a@b>(comment)", "does not close"),
+        ("a<b>c@example.com", "not a message id"),
+        ("<a@b>,", "does not close"),
+        ("", "names no message id"),
+        ("   ", "names no message id"),
+    ] {
+        let e = wire_of(reply_args(Some(bad.into()), None))
+            .await
+            .unwrap_err();
+        assert!(e.contains(why), "{bad:?}: {e}");
+        assert!(
+            e.starts_with("in_reply_to"),
+            "the refusal names the field: {e}"
+        );
+    }
+    let e = wire_of(reply_args(None, Some(rmpv::Value::from(7))))
+        .await
+        .unwrap_err();
+    assert!(e.contains("neither a message id nor a list"), "{e}");
+
+    // The bounds: one id that will not fit its line, and a thread longer
+    // than any client keeps.
+    let long = format!("<{}@example.com>", "x".repeat(MAX_MSGID_BYTES));
+    let e = wire_of(reply_args(Some(long.into()), None))
+        .await
+        .unwrap_err();
+    assert!(e.contains("bound for one message id"), "{e}");
+    let many: Vec<rmpv::Value> = (0..=MAX_REFERENCES)
+        .map(|i| format!("<{i}@example.com>").into())
+        .collect();
+    let e = wire_of(reply_args(None, Some(rmpv::Value::Array(many))))
+        .await
+        .unwrap_err();
+    assert!(e.contains("is the bound for one message"), "{e}");
+}
+
+/// Folding, on the function itself: no line past the fold, every
+/// continuation line begins with a space, and the ids read back whole.
+#[test]
+fn a_long_thread_folds_and_reads_back_whole() {
+    let ids: Vec<String> = (0..12)
+        .map(|i| format!("<{i:0>24}@mail.example.com>"))
+        .collect();
+    let folded = fold_ids("References", &ids);
+    let lines: Vec<&str> = folded.strip_suffix("\r\n").unwrap().split("\r\n").collect();
+    assert!(lines.len() > 1, "{folded:?}");
+    assert!(lines[0].starts_with("References: <"), "{folded:?}");
+    for line in &lines {
+        assert!(line.len() <= FOLD_AT_BYTES, "{line:?}");
+    }
+    for line in &lines[1..] {
+        assert!(line.starts_with(' '), "{line:?}");
+    }
+    // Unfolded — the CRLF removed, as a receiver does — it is the list.
+    let value = folded.replace("\r\n", "");
+    let back = msg_ids_of(
+        "references",
+        &value.strip_prefix("References:").unwrap().into(),
+    )
+    .unwrap();
+    assert_eq!(back, ids);
+
+    // A single id longer than the fold stays on the field's own line.
+    let long = vec![format!("<{}@example.com>", "x".repeat(2 * FOLD_AT_BYTES))];
+    assert_eq!(fold_ids("In-Reply-To", &long).matches("\r\n").count(), 1);
 }
