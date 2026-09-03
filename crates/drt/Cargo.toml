@@ -41,6 +41,9 @@ serde_json = "1"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"], optional = true }
 webpki-roots = { version = "0.26", optional = true }
 drt-config = { workspace = true }
+# The program and config loader read through the platform filesystem, so
+# a page can seed what `drt run app.dlua` opens (doc/Wasm.md D5).
+drt-platform = { workspace = true }
 drt-caps = { workspace = true }
 drt-hostcall = { workspace = true }
 drt-connector = { workspace = true }

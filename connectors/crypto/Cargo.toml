@@ -12,6 +12,8 @@ serde = { workspace = true }
 rmpv = { workspace = true }
 drt-caps = { workspace = true }
 drt-connector = { workspace = true }
+# The clock and the entropy source, per target (doc/Wasm.md D5).
+drt-platform = { workspace = true }
 # Every one of these is already in the tree behind `ssh` (russh pulls the
 # same versions), so on the `full` profile this connector is close to free.
 # `sha1` is here for TURN only -- see the warning at `turn_credential`.
@@ -19,7 +21,6 @@ sha2 = "0.10"
 sha1 = "0.10"
 hmac = "0.12"
 base64 = "0.22"
-getrandom = "0.3"
 subtle = "2"
 # The JWT payload is JSON, and hand-rolling an emitter and a parser for the
 # bytes a signature is checked over is exactly the wrong place to save a

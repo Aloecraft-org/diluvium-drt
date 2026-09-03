@@ -283,3 +283,77 @@ fn the_access_spelling_is_the_c_hosts() {
     assert!(err.contains("\"read\""), "{err}");
     assert!(err.contains("\"readwrite\""), "{err}");
 }
+
+/// The same jail over a page's memory filesystem (`drt_platform::fs::MemFs`).
+///
+/// The backend is the only thing that changes between a disk and a page,
+/// so the refusals -- `..`, an absolute path, a read-only scope, the byte
+/// cap -- must read identically there, and the verbs must round-trip. The
+/// text is asserted rather than the kind because `doc/Wasm.md` §5 makes
+/// `expected.txt` the oracle on every target: a message that differs in a
+/// browser is a divergence a program can see.
+#[test]
+fn the_jail_holds_over_a_memory_backend() {
+    use drt_platform::fs::MemFs;
+
+    let mem = Arc::new(MemFs::new());
+    mem.add_file("/work/note.txt", "from the granted directory");
+    mem.add_file("/etc/passwd", "root:x:0:0");
+    let connector = FsConnector::with_backend(mem.clone());
+    let sc = scope(std::path::Path::new("/work"), "readwrite", 64);
+    let call = |name: &str, args: rmpv::Value| {
+        pollster::block_on(connector.call(name, Some(args), Some(&sc))).map_err(|e| e.to_string())
+    };
+
+    let got = call("fs/read", read_args("note.txt")).unwrap();
+    assert_eq!(got.as_slice().unwrap(), b"from the granted directory");
+
+    call("fs/write", write_args("log.txt", "first\n", false)).unwrap();
+    call("fs/write", write_args("log.txt", "second\n", true)).unwrap();
+    assert_eq!(
+        call("fs/read", read_args("log.txt"))
+            .unwrap()
+            .as_slice()
+            .unwrap(),
+        b"first\nsecond\n"
+    );
+    let names: Vec<String> = call("fs/list", rmpv::Value::Nil)
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(names, ["log.txt", "note.txt"]);
+    call("fs/remove", read_args("log.txt")).unwrap();
+    assert_eq!(
+        mem.files().len(),
+        2,
+        "the page sees what the program wrote and removed"
+    );
+
+    // The refusals, worded as the disk words them.
+    let escape = call("fs/read", read_args("../etc/passwd")).unwrap_err();
+    assert!(
+        escape.contains("resolves outside the granted scope"),
+        "{escape}"
+    );
+    let absolute = call("fs/read", read_args("/etc/passwd")).unwrap_err();
+    assert!(absolute.contains("is absolute"), "{absolute}");
+    let big = call("fs/write", write_args("big.txt", &"x".repeat(65), false)).unwrap_err();
+    assert!(big.contains("past the 64-byte cap"), "{big}");
+    let missing = call("fs/read", read_args("missing.txt")).unwrap_err();
+    assert!(missing.contains("missing.txt"), "{missing}");
+
+    // And a scope naming a directory the page never seeded is a startup
+    // refusal, by name, exactly as on disk.
+    let mut reg = Registry::new();
+    let err = reg
+        .wire(
+            "fs",
+            Arc::new(FsConnector::with_backend(mem)),
+            Some(scope(std::path::Path::new("/nowhere"), "read", 64)),
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("cannot be resolved"), "{err}");
+}

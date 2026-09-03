@@ -11,6 +11,7 @@ async-trait = { workspace = true }
 rmpv = { workspace = true }
 drt-caps = { workspace = true }
 drt-connector = { workspace = true }
+drt-platform = { workspace = true }
 
 [dev-dependencies]
 drt-hostcall = { workspace = true }

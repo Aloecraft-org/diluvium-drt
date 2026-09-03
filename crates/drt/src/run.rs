@@ -30,7 +30,7 @@ pub fn run(
     caps: Vec<Grant>,
     budget: drt_config::Budget,
 ) -> Result<(), String> {
-    let source = std::fs::read_to_string(program)
+    let source = drt_platform::fs::read_to_string(program)
         .map_err(|e| format!("cannot read {}: {e}", program.display()))?;
     let name = program
         .file_name()

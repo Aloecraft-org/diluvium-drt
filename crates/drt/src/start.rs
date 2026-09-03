@@ -438,7 +438,7 @@ fn pump_replies(sw: &mut Deployment, root: InstanceId, bound: &crate::listen::Bo
 
 fn root_source(config: &RootConfig) -> Result<String, String> {
     match &config.root.program {
-        Some(drt_config::Program::Path(path)) => std::fs::read_to_string(path)
+        Some(drt_config::Program::Path(path)) => drt_platform::fs::read_to_string(path)
             .map_err(|e| format!("cannot read {}: {e}", path.display())),
         Some(drt_config::Program::Source(src)) => Ok(src.clone()),
         // The one place a pointer to dollup belongs: the user has

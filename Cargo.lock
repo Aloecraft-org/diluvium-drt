@@ -960,6 +960,7 @@ dependencies = [
  "drt-connector-ssmtp",
  "drt-connector-time",
  "drt-hostcall",
+ "drt-platform",
  "drt-swarm",
  "ego_transport",
  "futures-util",
@@ -1030,7 +1031,7 @@ dependencies = [
  "drt-caps",
  "drt-connector",
  "drt-hostcall",
- "getrandom 0.3.4",
+ "drt-platform",
  "hmac 0.12.1",
  "pollster",
  "rmpv",
@@ -1049,6 +1050,7 @@ dependencies = [
  "drt-caps",
  "drt-connector",
  "drt-hostcall",
+ "drt-platform",
  "pollster",
  "rmpv",
  "serde",
@@ -1128,6 +1130,7 @@ dependencies = [
  "drt-caps",
  "drt-connector",
  "drt-hostcall",
+ "drt-platform",
  "pollster",
  "rmpv",
 ]
@@ -1139,6 +1142,14 @@ dependencies = [
  "rmp-serde",
  "rmpv",
  "serde",
+]
+
+[[package]]
+name = "drt-platform"
+version = "0.4.1"
+dependencies = [
+ "getrandom 0.3.4",
+ "web-time",
 ]
 
 [[package]]
@@ -1632,9 +1643,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi 5.3.0",
  "wasip2",
+ "wasm-bindgen",
 ]
 
 [[package]]

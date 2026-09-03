@@ -1,0 +1,9 @@
+# Build-time switches per target. Checked in because a switch that lives
+# in someone's shell is a build that works on one machine.
+
+[target.wasm32-unknown-unknown]
+# getrandom 0.3 will not pick a backend for the browser target by itself:
+# the crate feature (`wasm_js`, in crates/drt-platform) says the backend
+# exists, and this cfg says to use it. Both are required, and a build
+# missing this one fails in getrandom with a sentence naming the cfg.
+rustflags = ["--cfg", "getrandom_backend=\"wasm_js\""]

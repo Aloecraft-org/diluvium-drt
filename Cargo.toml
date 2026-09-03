@@ -6,6 +6,7 @@ members = [
     "crates/drt-config",
     "crates/drt-caps",
     "crates/drt-hostcall",
+    "crates/drt-platform",
     "crates/drt-connector",
     "crates/drt-swarm",
     "crates/drt",
@@ -29,6 +30,7 @@ repository = "https://github.com/Aloecraft-org/diluvium-drt"
 drt-config = { path = "crates/drt-config", version = "0.4.1" }
 drt-caps = { path = "crates/drt-caps", version = "0.4.1" }
 drt-hostcall = { path = "crates/drt-hostcall", version = "0.4.1" }
+drt-platform = { path = "crates/drt-platform", version = "0.4.1" }
 drt-connector = { path = "crates/drt-connector", version = "0.4.1" }
 drt-swarm = { path = "crates/drt-swarm", version = "0.4.1" }
 drt-web = { path = "crates/drt-web", version = "0.4.1" }

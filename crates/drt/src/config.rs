@@ -27,7 +27,7 @@ pub fn load(path: Option<&Path>) -> Result<RootConfig, String> {
     if path.extension().is_some_and(|e| e == "lua") {
         return load_host_lua(path);
     }
-    let text = std::fs::read_to_string(path)
+    let text = drt_platform::fs::read_to_string(path)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
@@ -80,7 +80,7 @@ pub fn load_host_lua(path: &Path) -> Result<RootConfig, String> {
         diluvium_engine::DiluviumEngine, Engine, LoadSpec, ProgramBytes, Step,
     };
 
-    let text = std::fs::read_to_string(path)
+    let text = drt_platform::fs::read_to_string(path)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     // The file's own shape is `return { ... }`; wrapping it in a function
     // keeps that contract verbatim and pushes the result out on a queue —

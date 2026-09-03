@@ -653,7 +653,9 @@ and a wasmtime release, builds `release-small`, and runs
 `profile.wasi.connectors` in BUILDINFO. Everything in it was run in §2.2.
 Blocked on nothing; deliverable the day it is started.
 
-**M2 — the leaf adapters. ~2 days.** `crates/drt-platform`, the `time`,
+**M2 — the leaf adapters. ~2 days. Landed 2026-09-03** (`crates/drt-platform`:
+`clock`, `entropy`, `fs::{Backend, StdFs, MemFs, host}`, `stdio`; the three
+connectors and the loader over it; the gate build green). `crates/drt-platform`, the `time`,
 `crypto` and `fs` connectors over it, `MemFs`, the getrandom cfg. Gate:
 the three connectors' existing tests green natively, and
 `cargo build -p drt --no-default-features --features connector-time,connector-fs,connector-crypto --target wasm32-unknown-unknown`
