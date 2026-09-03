@@ -79,6 +79,10 @@ script/drt-web.sh                                   # needs WASI_SDK_PATH and th
 cd crates/drt-web/browser-test && npm ci && npx playwright install chromium && npm test
 ```
 
+`16-serving-http` binds a port, which a page cannot, so the browser gate
+skips it by name; the other two serve it, natively and from wasmtime, and
+its `demo.sh` uses `curl` to be its own client.
+
 Every directory is self-contained: it runs from inside itself and touches
 nothing outside itself. Start with the `cd` — paths inside a config resolve
 against the directory you are standing in, so a config naming `./workspace`

@@ -145,6 +145,7 @@ let nFail = 0;
 const failed = [];
 const skipped = [];
 const wrongBuild = [];
+const noSocket = [];
 
 const fail = (name, why) => {
   console.log(`FAILED   ${name.padEnd(24)} ${why}`);
@@ -168,6 +169,11 @@ for (const name of examples) {
   if (meta.needs_network === true && !wantNet) {
     console.log(`skipped  ${name.padEnd(24)} (needs network) — pass --net to run it`);
     skipped.push(name);
+    continue;
+  }
+  if (meta.needs_listener === true) {
+    console.log(`skipped  ${name.padEnd(24)} (binds a port, and a page cannot)`);
+    noSocket.push(name);
     continue;
   }
   if (meta.needs_build && meta.needs_build !== profile && profile !== 'unknown') {
@@ -272,7 +278,7 @@ for (const name of examples) {
 // ---------------------------------------------------------------------------
 
 for (const n of uncovered) console.log(`NO META  ${n.padEnd(24)} not checked by anything — add a meta.json`);
-const nSkip = skipped.length + wrongBuild.length;
+const nSkip = skipped.length + wrongBuild.length + noSocket.length;
 const total = nOk + nFail + nSkip + uncovered.length;
 console.log('');
 console.log(`${total} check(s): ${nOk} ok, ${nFail} failed, ${nSkip} skipped, ${uncovered.length} without a meta.json`);
@@ -283,6 +289,10 @@ if (skipped.length) {
 if (wrongBuild.length) {
   console.log(`skipped for needing another build (NOT a pass): ${wrongBuild.join(' ')}`);
   console.log('the browser is the `web` profile; the native gate covers the rest.');
+}
+if (noSocket.length) {
+  console.log(`skipped for binding a port (NOT a pass): ${noSocket.join(' ')}`);
+  console.log('a page has no socket to bind; the native gate and the wasmtime one cover these.');
 }
 if (uncovered.length) console.log(`no meta.json, so unchecked: ${uncovered.join(' ')}`);
 if (nFail) console.log(`failed: ${failed.join(' ')}`);

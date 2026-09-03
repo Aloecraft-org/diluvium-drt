@@ -1,0 +1,8 @@
+{
+  "name": "16-serving-http",
+  "teaches": "drt start binds the port a config names and bridges each request onto a queue as a message; the program's reply on another queue is the response, and request headers cross only by allowlist.",
+  "cmd": "./demo.sh",
+  "needs_network": false,
+  "needs_listener": true,
+  "normalise": []
+}

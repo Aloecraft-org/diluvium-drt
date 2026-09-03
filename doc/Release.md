@@ -191,10 +191,12 @@ wasmtime (43 or newer, for the exception-handling proposal the C core's
 wasmtime run -W exceptions=y --dir . drt_wasip2.wasm run app.dlua
 ```
 
-`listen` is not in the profile: wasip2 has sockets and no threads, and
-the acceptor spawns one per connection (doc/Wasm.md M6 is the rewrite).
-A config naming a listener is refused by name, as it is on any build
-without the feature.
+`listen` is in the profile (doc/Wasm.md M6): wasip2 has sockets and no
+threads, so the listener there is the polled acceptor, non-blocking
+sockets stepped by the drive loop, and the wrapper grants
+`-S inherit-network=y -S tcp=y`. `examples/16-serving-http` is served
+from wasmtime by the gate, so the artifact proves it can serve before it
+ships.
 
 **`drt_web.tar.gz` ships**, from the `build-web` job (2026-09-03,
 doc/Wasm.md M4), and it is admitted by exactly what this section said

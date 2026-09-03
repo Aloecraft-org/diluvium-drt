@@ -49,6 +49,7 @@ const PROFILE_WASI: &[&str] = &[
     "connector-fs",
     "connector-sql",
     "connector-time",
+    "listen",
 ];
 const PROFILE_WEB: &[&str] = &["connector-crypto", "connector-fs", "connector-time"];
 const PROFILE_FULL: &[&str] = &[

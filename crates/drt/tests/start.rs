@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+#[cfg(feature = "listen")]
+use drt::listen::Acceptor;
 use drt::start;
 use drt_config::RootConfig;
 use drt_connector::{Dispatcher, Registry};
@@ -413,7 +415,7 @@ fn repeated_headers_join_rather_than_shadow() {
 #[cfg(feature = "listen")]
 #[test]
 fn a_deployment_with_no_listeners_sleeps_instead_of_spinning() {
-    let bound = drt::listen::bind(&[]).unwrap();
+    let mut bound = drt::listen::bind(&[]).unwrap();
     let start = std::time::Instant::now();
     assert!(bound.next_within(Duration::from_millis(150)).is_none());
     let waited = start.elapsed();
@@ -423,4 +425,104 @@ fn a_deployment_with_no_listeners_sleeps_instead_of_spinning() {
          timeout: the ingress channel disconnected, and the drive loop is \
          spinning rather than idling"
     );
+    // The polled acceptor, wasi's, has no channel to disconnect and must
+    // idle the same way: a plain sleep, sliced by its poll tick.
+    let mut polled = drt::listen::polled::Bound::bind(&[]).unwrap();
+    let start = std::time::Instant::now();
+    assert!(polled.next_within(Duration::from_millis(150)).is_none());
+    let waited = start.elapsed();
+    assert!(
+        waited >= Duration::from_millis(140),
+        "the polled acceptor idled {waited:?}"
+    );
+}
+
+/// The polled acceptor (doc/Wasm.md M6) is what wasip2 serves with: no
+/// threads, non-blocking sockets stepped from the drive loop. It is
+/// compiled natively so the same bridge can be proven here, through the
+/// same `serve` loop, against the same requests the threaded one answers.
+#[cfg(feature = "listen")]
+mod polled {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
+    const ECHO: &str = "\
+        local q   = queue.declare('http_in',  {capacity = 8})\n\
+        local out = queue.declare('http_out', {capacity = 8, exported = true})\n\
+        while true do\n\
+          local id, req = queue.wait({q})\n\
+          queue.push(out, {conn = req.conn, status = 200, content_type = 'text/plain',\n\
+                           body = req.method .. ' ' .. req.path .. ' ' .. #req.body})\n\
+        end\n";
+
+    fn served(program: &str, listener_json: &str) -> std::net::SocketAddr {
+        let program_json = serde_json::to_string(program).unwrap();
+        let cfg: RootConfig = serde_json::from_str(&format!(
+            r#"{{"program": {{"source": {program_json}}}, "listeners": [{listener_json}]}}"#
+        ))
+        .unwrap();
+        let bound = drt::listen::polled::Bound::bind(&cfg.listeners).unwrap();
+        let addr = bound.addrs()[0];
+        std::thread::spawn(move || {
+            let _ = start::serve(&cfg, Dispatcher::new(Registry::new()), bound);
+        });
+        addr
+    }
+
+    fn roundtrip(addr: std::net::SocketAddr, request: &[u8]) -> String {
+        let mut conn = TcpStream::connect(addr).unwrap();
+        conn.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        conn.write_all(request).unwrap();
+        let mut response = String::new();
+        conn.read_to_string(&mut response).unwrap();
+        response
+    }
+
+    #[test]
+    fn the_polled_acceptor_serves_the_bridge_without_a_thread() {
+        let addr = served(ECHO, r#"{"scheme": "http", "address": "127.0.0.1:0"}"#);
+        let response = roundtrip(addr, b"GET /hello?x=1 HTTP/1.1\r\nHost: t\r\n\r\n");
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+        assert!(response.ends_with("GET /hello?x=1 0"), "{response}");
+        assert!(response.contains("Connection: close\r\n"), "{response}");
+        // A body, arriving in two pieces, across two polls.
+        let mut conn = TcpStream::connect(addr).unwrap();
+        conn.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        conn.write_all(b"POST /in HTTP/1.1\r\nHost: t\r\nContent-Length: 6\r\n\r\nabc")
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        conn.write_all(b"def").unwrap();
+        let mut response = String::new();
+        conn.read_to_string(&mut response).unwrap();
+        assert!(response.ends_with("POST /in 6"), "{response}");
+        // And the same refusals as the threaded one, in the C's words.
+        let response = roundtrip(
+            addr,
+            b"POST / HTTP/1.1\r\nHost: t\r\nTransfer-Encoding: chunked\r\n\r\n",
+        );
+        assert!(response.starts_with("HTTP/1.1 400 "), "{response}");
+        assert!(
+            response.contains("chunked bodies are not spoken here"),
+            "{response}"
+        );
+    }
+
+    #[test]
+    fn a_program_that_never_answers_is_timed_out_by_the_polled_acceptor() {
+        let addr = served(
+            "local q = queue.declare('http_in', {capacity = 8})\nwhile true do queue.wait({q}) end\n",
+            r#"{"scheme": "http", "address": "127.0.0.1:0", "conn_deadline_ms": 200}"#,
+        );
+        let started = std::time::Instant::now();
+        let response = roundtrip(addr, b"GET / HTTP/1.1\r\nHost: t\r\n\r\n");
+        assert!(response.starts_with("HTTP/1.1 504 "), "{response}");
+        assert!(
+            response.contains("did not answer within the deadline"),
+            "{response}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
 }

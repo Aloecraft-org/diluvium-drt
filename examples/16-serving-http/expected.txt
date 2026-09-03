@@ -1,0 +1,4 @@
+drt start: http listening on 127.0.0.1:18475
+hello from the deployment
+hello from curl
+POST /echo: 6 bytes

@@ -76,12 +76,13 @@ full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-s
 # The portable build (doc/Wasm.md D2): what `drt` carries on
 # wasm32-wasip2, under wasmtime. Every connector here compiles for that
 # target with no source change and is exercised by the examples gate
-# through `script/drt-wasip2.sh`. `listen` joins once its acceptor stops
-# spawning threads (doc/Wasm.md M6): wasip2 has sockets and no threads.
-# The tokio-backed verbs and connectors -- `tunnel`, `relay`, `stun`,
-# `netcheck`, `ssh`, `rest`, `ssmtp` -- cannot cross at all (tokio refuses
-# its `net` feature on wasm), so `full` is not a wasm build and this is.
-wasi = ["connector-time", "connector-fs", "connector-crypto", "connector-sql"]
+# through `script/drt-wasip2.sh`. `listen` is served there by the polled
+# acceptor (doc/Wasm.md M6): wasip2 has sockets and no threads, and the
+# wrapper grants the sockets. The tokio-backed verbs and connectors --
+# `tunnel`, `relay`, `stun`, `netcheck`, `ssh`, `rest`, `ssmtp` -- cannot
+# cross at all (tokio refuses its `net` feature on wasm), so `full` is not
+# a wasm build and this is.
+wasi = ["connector-time", "connector-fs", "connector-crypto", "connector-sql", "listen"]
 # The browser build (doc/Wasm.md D3): what `drt-web` links into a page.
 # `wasi` without `sql`, and without `listen`, because a page has neither
 # threads nor sockets to serve on; the fs connector reaches the page's

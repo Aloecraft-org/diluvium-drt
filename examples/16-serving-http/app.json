@@ -1,0 +1,16 @@
+{
+  "_comment": "A deployment that serves. The port is the deployment's to own and the program's never to see: a request is a message, and so is the reply.",
+
+  "program": { "path": "fetchpoint.dlua" },
+
+  "_listeners": "One http listener. `headers` is the whole list of request headers the program may see, under this lowercased spelling; a header not named here never reaches it.",
+  "listeners": [
+    {
+      "scheme": "http",
+      "address": "127.0.0.1:18475",
+      "queue": "http_in",
+      "reply_queue": "http_out",
+      "headers": ["x-name"]
+    }
+  ]
+}

@@ -242,6 +242,14 @@ failed to spawn thread: Error { kind: Unsupported, message: "operation not suppo
 per connection. wasip2 has sockets and no threads, so serving under
 wasmtime is a listener rewrite (§6, M6), not a platform limit.
 
+*Resolved at M6 (2026-09-03).* A second measurement decided the shape:
+`TcpListener::set_nonblocking(true)`, `accept`, and non-blocking reads
+and writes on the accepted `TcpStream` all work on wasip2 under wasmtime
+48 with `-S inherit-network=y -S tcp=y`, so the rewrite needed neither
+`wasi:io/poll` nor the `wasip2` crate — the polled acceptor in
+`listen.rs` is `std::net` stepped from the drive loop, and
+`examples/16-serving-http` serves from wasmtime through the wrapper.
+
 ### 2.3 The browser: the C core inside a wasm-bindgen module
 
 A throwaway cdylib crate — `drt-swarm` with its default `engine-diluvium`
@@ -504,7 +512,9 @@ relay-spins-a-core class of bug (`CHANGELOG.yaml`, v0.4.0), so it lands
 alone, with the `IDLE_TICK` and `next_deadline` behaviour pinned by a
 test before it starts.
 
-`listen.rs` is untouched by this milestone and stays native-only until M6.
+`listen.rs` is untouched by this milestone and stays native-only until M6
+(where it grows the polled acceptor and the `Acceptor` trait this loop is
+generic over).
 
 ### 4.4 `drt-web`: the browser module, second shape
 
@@ -576,10 +586,11 @@ trap so the reason is visible.
 
 ### 4.5 The wasip2 build: `crates/drt`, a profile, no new crate
 
-`[features] wasi = ["connector-time", "connector-fs", "connector-crypto", "connector-sql"]`
+`[features] wasi = ["connector-time", "connector-fs", "connector-crypto", "connector-sql", "listen"]`
 in `crates/drt/Cargo.toml`, and `buildinfo`'s profile detector learns to
-name it. `listen` joins the profile at M6. Nothing else: the CLI, the
-config loader, `run`, `repl`, `start` and the swarm all ran unchanged
+name it. `listen` joined the profile at M6, served by the polled
+acceptor, with the wrapper granting the sockets. Nothing else: the CLI,
+the config loader, `run`, `repl`, `start` and the swarm all ran unchanged
 (§2.2).
 
 The release leg builds `--profile release-small -p drt --no-default-features
@@ -730,7 +741,18 @@ cross-check); the Instances panel over the `Swarm` exports instead of
 stateful across cells, which is a different product from `drt run`; §7
 records the question of whether that should change.
 
-**M6 — `listen` on wasip2. ~2-3 days.** A poll-based acceptor over
+**M6 — `listen` on wasip2. ~2-3 days. Landed 2026-09-03**
+(`crates/drt/src/listen.rs`: the bridge's parsing and response bytes
+made pure and shared, an `Acceptor` trait the serve loop is generic
+over, the threaded acceptor natively and a `polled` one — non-blocking
+`std::net`, one state machine per connection, stepped every `POLL_TICK`
+from the drive loop — on wasi, compiled and tested natively too; `listen`
+in the `wasi` profile; the wrapper grants `-S inherit-network=y -S
+tcp=y`; `examples/16-serving-http` is the gate's served example and runs
+natively and under wasmtime, skipped by name in the browser). Planned as
+`wasi:sockets` and `wasi:io/poll` directly; the second measurement in
+§2.2 showed `std::net`'s non-blocking sockets already work there, so the
+`wasip2` crate stayed out. A poll-based acceptor over
 `wasi:sockets` and `wasi:io/poll` (the `wasip2` crate `ego_transport`
 already carries) behind `cfg(target_env = "p2")`, folded into the driver's
 idle wait the way `bound.next_within` is natively. `std::net` binds on
@@ -825,7 +847,9 @@ cd examples && DRT=../script/drt-wasip2.sh ./run-all.sh
 
 `wasmtime compile -W exceptions=y -o drt.cwasm drt.wasm` and
 `wasmtime run --allow-precompiled ... drt.cwasm` for the 10 ms start.
-Serving needs `-S inherit-network=y -S tcp=y` and M6.
+Serving needs `-S inherit-network=y -S tcp=y`, which the wrapper passes;
+`cd examples/16-serving-http && DRT=../../script/drt-wasip2.sh ./demo.sh`
+is a deployment served from wasmtime and curl'd.
 
 **The browser build and gate**, exactly as run (the pieces below are
 what the spike established and `crates/drt-web` now carries):

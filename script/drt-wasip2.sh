@@ -5,15 +5,17 @@
 #   cd examples && DRT=../script/drt-wasip2.sh ./run-all.sh
 #
 # DRT_WASM names the component; the default is the release-small build of
-# the `wasi` profile. DRT_WASMTIME_FLAGS adds wasmtime options -- for a
-# deployment with a listener that will be `-S inherit-network=y -S tcp=y`,
-# once the acceptor stops spawning threads (doc/Wasm.md M6).
+# the `wasi` profile. DRT_WASMTIME_FLAGS adds wasmtime options.
 #
 # `-W exceptions=y` is not optional. The C core's setjmp/longjmp is lowered
 # onto the exception-handling proposal, and without the flag the module is
 # refused at load. `--dir .` maps the working directory and nothing else,
 # which is what the examples gate and every config path in this repository
 # assume: a config naming `./workspace` means the one beside it.
+# `-S inherit-network=y -S tcp=y` is what lets a deployment's listener
+# bind (doc/Wasm.md M6); nothing else in the wasi profile opens a socket --
+# no connector in it reaches out -- so the grant is exactly the listener
+# the config asked for, on a port the config names.
 set -eu
 
 self=$0
@@ -36,4 +38,4 @@ if ! command -v wasmtime >/dev/null 2>&1; then
 fi
 
 # shellcheck disable=SC2086  # the flags are several words on purpose
-exec wasmtime run -W exceptions=y --dir . ${DRT_WASMTIME_FLAGS:-} "$DRT_WASM" "$@"
+exec wasmtime run -W exceptions=y --dir . -S inherit-network=y -S tcp=y ${DRT_WASMTIME_FLAGS:-} "$DRT_WASM" "$@"

@@ -35,6 +35,8 @@ use drt_swarm::swarm::{Driven, Swarm, SwarmHost};
 use drt_swarm::InstanceId;
 
 use crate::drive::{Next, Outcome};
+#[cfg(feature = "listen")]
+use crate::listen::Acceptor;
 
 /// How long the drive loop sleeps when a step moved nothing. Latency is
 /// bounded by it; idle cost is one step per tick. Event-driven wakeups
@@ -322,10 +324,10 @@ pub fn start(config: &RootConfig, dispatcher: Dispatcher) -> Result<(), String> 
 /// The deployment with its listeners: the drive loop, with the ingress
 /// channel doubling as the idle sleep so a request never waits on a tick.
 #[cfg(feature = "listen")]
-pub fn serve(
+pub fn serve<B: Acceptor>(
     config: &RootConfig,
     dispatcher: Dispatcher,
-    bound: crate::listen::Bound,
+    bound: B,
 ) -> Result<(), String> {
     serve_with_observer(config, dispatcher, bound, |_, _| {})
 }
@@ -341,11 +343,14 @@ pub fn serve(
 ///
 /// The observer runs on the drive thread and blocks the next step, so it
 /// should do bookkeeping, not work.
+///
+/// Generic over the acceptor so the polled one (wasi's) is driven by this
+/// same loop natively, under test, and not only under wasmtime.
 #[cfg(feature = "listen")]
-pub fn serve_with_observer(
+pub fn serve_with_observer<B: Acceptor>(
     config: &RootConfig,
     dispatcher: Dispatcher,
-    bound: crate::listen::Bound,
+    mut bound: B,
     mut observe: impl FnMut(&mut Deployment, InstanceId),
 ) -> Result<(), String> {
     let mut driver = DeployDriver::new(config, dispatcher)?;
@@ -383,7 +388,7 @@ pub fn serve_with_observer(
     loop {
         let alive = driver.step();
         let sw = driver.deployment_mut();
-        pump_replies(sw, root, &bound);
+        pump_replies(sw, root, &mut bound);
         #[cfg(feature = "relay")]
         if let Some(relay) = relay.as_mut() {
             // Answers first: a question asked last pass is waiting, and a
@@ -407,10 +412,10 @@ pub fn serve_with_observer(
         }
         let sleep = driver.idle();
         if let Some(ingress) = bound.next_within(sleep) {
-            deliver(driver.deployment_mut(), root, &bound, ingress);
+            deliver(driver.deployment_mut(), root, &mut bound, ingress);
         }
         while let Some(ingress) = bound.try_next() {
-            deliver(driver.deployment_mut(), root, &bound, ingress);
+            deliver(driver.deployment_mut(), root, &mut bound, ingress);
         }
     }
 }
@@ -456,16 +461,16 @@ fn deployment(
 /// One parsed request onto the root's queue. The refusals and their texts
 /// are `dhost_http.c`'s, so an operator's runbook matches either host.
 #[cfg(feature = "listen")]
-fn deliver(
+fn deliver<B: Acceptor>(
     sw: &mut Deployment,
     root: InstanceId,
-    bound: &crate::listen::Bound,
+    bound: &mut B,
     ingress: crate::listen::Ingress,
 ) {
     use crate::listen::Outcome;
     use drt_swarm::swarm::SwarmError;
-    let queue = &bound.listeners[ingress.listener].queue;
-    match sw.push(root, queue, &ingress.message) {
+    let queue = bound.listeners()[ingress.listener].queue.clone();
+    match sw.push(root, &queue, &ingress.message) {
         Ok(_) => {} // parked in the queue; the reply pump answers
         Err(SwarmError::UnknownQueue) => bound.answer(
             ingress.token,
@@ -489,9 +494,10 @@ fn deliver(
 /// pass is skipped. A reply naming no waiting connection is consumed all
 /// the same.
 #[cfg(feature = "listen")]
-fn pump_replies(sw: &mut Deployment, root: InstanceId, bound: &crate::listen::Bound) {
+fn pump_replies<B: Acceptor>(sw: &mut Deployment, root: InstanceId, bound: &mut B) {
+    let listeners: Vec<Arc<crate::listen::ListenerRt>> = bound.listeners().to_vec();
     let mut drained: Vec<&str> = Vec::new();
-    for rt in &bound.listeners {
+    for rt in &listeners {
         if drained.contains(&rt.reply_queue.as_str()) {
             continue;
         }
@@ -507,7 +513,7 @@ fn pump_replies(sw: &mut Deployment, root: InstanceId, bound: &crate::listen::Bo
             let Some(owner) = bound.owner_of(token) else {
                 continue; // deadline beat the reply; consumed all the same
             };
-            let outcome = crate::listen::parse_reply(&raw, &bound.listeners[owner]);
+            let outcome = crate::listen::parse_reply(&raw, &listeners[owner]);
             bound.answer(token, outcome);
         }
     }
