@@ -46,7 +46,12 @@ drt-connector-exec = { path = "connectors/exec", version = "0.5.0" }
 # The line editor, one for every target (doc/Wasm.md D8, M8). From git
 # because that is where it lives; the browser half pins wasm-bindgen
 # `=0.2.114`, which is this workspace's pin already.
-ego_cli = { git = "https://github.com/Aloecraft-org/ego-cli", branch = "main" }
+# `default-features = false` turns off ego-cli's `runtime` feature, which is
+# what carries `ego_platform`, tokio and crossterm's `EventStream`. Without
+# it `term::platform()` returns `BlockingNative`, which blocks on
+# `crossterm::event::read` and writes with `std::io` -- so `slim` can have a
+# line editor without gaining an async runtime (ego-cli#4, doc/Wasm.md M8).
+ego_cli = { git = "https://github.com/Aloecraft-org/ego-cli", branch = "main", default-features = false }
 
 # Field names cross the boundary: the safe diluvium crate serializes with
 # rmp-serde's to_vec_named, and everything here does the same.

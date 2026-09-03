@@ -356,18 +356,13 @@ fn edited(mut repl: Repl) -> Result<(), String> {
     let terminal = ego_cli::term::platform().map_err(|e| format!("no terminal: {e}"))?;
     let mut session = editor(&repl, terminal);
 
-    // A runtime for the terminal's own IO, leaked rather than dropped for
-    // the reason `cli.rs` leaks the relay's: tokio 1.53.1's teardown has a
-    // use-after-free, and the process is on its way out anyway.
-    let runtime = Box::leak(Box::new(
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| format!("no runtime for the terminal: {e}"))?,
-    ));
-
+    // `block_on` and nothing else: with ego-cli's `runtime` feature off,
+    // `platform()` is `BlockingNative`, which blocks on the terminal itself
+    // and never returns `Pending` -- so this future runs to completion on
+    // the first poll. No reactor to build, and nothing to leak past the
+    // tokio teardown bug `cli.rs` still works around for the relay.
     eprintln!("drt repl — ^D to leave");
-    runtime.block_on(edit(&mut repl, &mut session))
+    futures_executor::block_on(edit(&mut repl, &mut session))
 }
 
 /// What came back on `repl/out`: something to show, or the names Tab

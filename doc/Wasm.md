@@ -107,7 +107,14 @@ code; only the backend under it differs, which is what makes the
 behaviours enumerated in §5 identical by construction instead of by
 agreement. §2.6 weighs it: +111 KB in the browser, +248 KB natively, and
 tokio in a slim graph that has never had it, which is the price and the
-one thing to dislike. M8 is the work.
+one thing to dislike — and the one thing that got fixed, the native cost
+settling at +153 KB with no runtime at all once the ask was answered. M8 is the work; its native half landed the day this
+was decided, and `cli` sits in `slim` — where the argument said it
+belonged — because
+[ego-cli#3](https://github.com/Aloecraft-org/ego-cli/issues/3) was
+answered with a runtime-free backend and
+[#4](https://github.com/Aloecraft-org/ego-cli/pull/4) merged it the same
+day. The smallest build has the editor and no async runtime.
 
 *Revised 2026-09-03.* This decision read "two line editors, by contract —
 natively rustyline and in the page an xterm.js readline addon, with the
@@ -433,12 +440,23 @@ of the object file and false of the artifact.
 | browser: the whole `Session`, its edit loop driven, with a completer | 111,730 | +111 KB |
 | native `release-small` binary: baseline | 294,512 | — |
 | native `release-small`: `Session` over the real crossterm backend | 542,472 | +248 KB |
+| native `release-small`: over `BlockingNative`, no runtime (ego-cli#4) | 447,384 | **+153 KB** |
 
-Against what ships that is **+6.4%** on `drt_web_bg.wasm` (1,740,483
-bytes) and **+16.6%** on `drt` slim (1,490,264 bytes). For wasip2 the
+The last row is what shipped, and it is the probe rather than the
+estimate: measured in this tree after the pin moved, `slim` went
+1,493,272 → 1,646,912 bytes, **+150 KB and +10.3%** (M8). The row above
+it is what the same editor cost when it brought an async runtime with
+it, kept because the difference between the two is the whole argument
+for having asked.
+
+Against what ships the *runtime* figures were **+6.4%** on
+`drt_web_bg.wasm` (1,740,483 bytes) and **+16.6%** on `drt` slim
+(1,490,264 bytes). For wasip2 the
 answer is only that it compiles: `ego_cli`, `ego_platform` and `tokio`
 all build for `wasm32-wasip2`, and the backend there is the cooked one,
-which is what `drt repl` already does.
+which is what `drt repl` already does. (In the end `wasi` does not take
+`cli` at all: it names its connectors explicitly rather than building on
+`slim`, so the editor reached the native profiles and stopped there.)
 
 **Measure the artifact, not the object.** Before `wasm-bindgen` runs, the
 same browser module reads 539,085 bytes — five times the figure above —
@@ -976,12 +994,13 @@ at — as the only one without the editor, which is backwards; or accepting
 tokio in slim and saying so in the manifest where the comment currently
 promises otherwise.
 
-*Taken, 2026-09-03: the first, with the second as the interim.* The ask
-is [ego-cli#3](https://github.com/Aloecraft-org/ego-cli/issues/3), and
-until it lands `cli` rides `full` — which carries tokio already, for the
-relay and the STUN server — so `slim` keeps its promise and the smallest
-build is the one still without an editor. That is the backwards half of
-the second option, and it is meant to be temporary.
+*Taken, 2026-09-03: the first, and it landed the same day, so the interim
+lasted hours rather than weeks.* The ask was
+[ego-cli#3](https://github.com/Aloecraft-org/ego-cli/issues/3). While it
+was open `cli` rode `full` — which carries tokio already, for the relay
+and the STUN server — so `slim` kept its promise and the smallest build
+was the one still without an editor: the backwards half of the second
+option, taken deliberately and meant to be temporary. It was.
 
 *Answered upstream the same day, and measured here.* ego-cli#3 came back
 with a `runtime` feature (default on) and a `term::blocking::BlockingNative`
@@ -1007,10 +1026,38 @@ Tried against this tree with the dependency pointed at that branch and
 
 **+153 KB, +10.2%, and `cargo tree -i tokio` finds nothing** — where the
 runtime backend cost +248 KB and an async runtime. All five of
-`tests/editor.rs` pass over it unchanged. So the move is two lines (`cli`
-out of `full` and into `slim`, `dep:tokio` to `dep:futures-executor`)
-once that work reaches ego-cli's `main`; this tree does not point at a
-feature branch in the meantime.
+`tests/editor.rs` pass over it unchanged.
+
+*Landed 2026-09-03, the same day again.*
+[ego-cli#4](https://github.com/Aloecraft-org/ego-cli/pull/4) merged that
+branch to `main` unchanged — the code measured above is what shipped,
+plus nine lines of module doc recording the feature-unification
+argument. So the pin moved to `e5bd70d` with `default-features = false`,
+and `cli` is in `slim`, and so in every profile that carries a native
+terminal:
+
+| | crates | `release-small` |
+|---|---|---|
+| `slim` without `cli` | 59 | 1,493,272 |
+| `slim` | 89 | 1,646,912 |
+
+**+150 KB, +10.3%**, re-measured against the merge rather than the
+branch, and `cargo tree -e normal -i tokio` prints "nothing to print"
+for `slim`. `ego_platform` left `Cargo.lock` entirely.
+
+Two things fell out that the estimate did not have. `edited()` no longer
+builds a tokio runtime at all — `futures_executor::block_on` is the
+whole executor, because a `Session` over `BlockingNative` never returns
+`Pending` — which also deletes the `Box::leak` that worked around tokio
+1.53.1's teardown use-after-free; `cli.rs` still carries that leak for
+the relay, and this is one fewer place that bug is load-bearing. And
+`full` now takes the blocking backend too, since the pin turns `runtime`
+off for the whole workspace: one editor backend on every target rather
+than two, and `full`'s tokio is the relay's and STUN's alone.
+
+`wasi` and `web` name their connectors explicitly rather than building on
+`slim`, so they are untouched — the browser half below is still the
+browser half.
 
 **Later, named so they are not mistaken for forgotten:** the plugin
 channel and a `browser/*` capability over it, both assessed against M3's

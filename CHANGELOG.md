@@ -70,9 +70,11 @@ contract is `doc/Browser.md`; `doc/Platforms.md` is the matrix.
 - **Line editing in `drt repl`, behind the `cli` feature.** History,
   word motions, undo, and Tab whose candidates are the names the
   running instance answers with rather than a list the host
-  hard-coded. One editor (`ego-cli`) rather than one per host. In
-  `full` for now: its native backend wants an async runtime, and
-  `slim` carries none.
+  hard-coded. One editor (`ego-cli`) rather than one per host, and
+  in `slim` as well as `full`: the editor costs +150 KB and no
+  async runtime, because the backend under it blocks on the
+  terminal instead of driving an executor. `drt repl` reading a
+  pipe is unedited as before, prompts on stderr.
 - **`crates/drt-platform`.** The four places DRT touches a platform
   -- clock, entropy, the filesystem, stdio -- behind one seam, so
   nothing above them is target-aware. In a page the clock is
