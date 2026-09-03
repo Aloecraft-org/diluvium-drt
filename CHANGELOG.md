@@ -211,6 +211,16 @@ contract is `doc/Browser.md`; `doc/Platforms.md` is the matrix.
 
 ### Changed
 
+- **wasm-bindgen `=0.2.114` -> `=0.2.127`, and a workaround
+  deleted.** 0.2.114 refused a module carrying the C core's
+  `try_table` unless it exported `__instance_terminated`, so
+  `drt-web` defined that global itself; 0.2.127 defines it, and the
+  definition is gone. The pin could not move earlier because the
+  ego crates pinned 0.2.114 and a workspace holds one version --
+  they moved, each tagging `pre-wasm-bindgen-0.2.127` at the commit
+  before, and DRT followed. Nothing hard-codes the version twice:
+  `script/drt-web.sh` and the `browser` job read the CLI's version
+  off the crate's pin, so this was one line and the rest followed.
 - **`sql` is on `rusqlite 0.40`.** A version bump and no source
   change: the connector uses `Connection`, `OpenFlags`, `ToSql`
   and `types::{Value, ValueRef}`, none of which moved. It matters
