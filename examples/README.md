@@ -62,6 +62,14 @@ cargo build --release --all-features
 cd examples && DRT=../target/release/drt ./run-all.sh
 ```
 
+The same gate runs against the portable build, under wasmtime — the
+wrapper puts the flags on ([`doc/Wasm.md`](../doc/Wasm.md)):
+
+```
+cargo build --profile release-small -p drt --no-default-features --features wasi --target wasm32-wasip2
+cd examples && DRT=../script/drt-wasip2.sh ./run-all.sh
+```
+
 Every directory is self-contained: it runs from inside itself and touches
 nothing outside itself. Start with the `cd` — paths inside a config resolve
 against the directory you are standing in, so a config naming `./workspace`

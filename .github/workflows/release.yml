@@ -206,9 +206,81 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  build-wasip2:
+    # The portable leg (doc/Wasm.md D2): `drt` itself for wasm32-wasip2,
+    # the `wasi` profile, run under wasmtime. It proves itself the way the
+    # native legs do -- `--version` and `run smoke.lua` -- and then harder:
+    # the examples gate runs through `script/drt-wasip2.sh` before the
+    # artifact is uploaded, because a wasm artifact nothing ran is the thing
+    # this matrix's smoke step exists to prevent (doc/Release.md).
+    name: Build (wasip2)
+    needs: [preflight, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      WASI_SDK_VERSION: "27.0"
+      WASMTIME_VERSION: v48.0.1
+      WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasip2
+      - name: wasi-sdk, cached
+        id: wasi-sdk
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/wasi-sdk
+          key: wasi-sdk-${{ env.WASI_SDK_VERSION }}-x86_64-linux
+      - name: wasi-sdk, fetched
+        if: steps.wasi-sdk.outputs.cache-hit != 'true'
+        run: |
+          set -eu
+          major=${WASI_SDK_VERSION%%.*}
+          curl -fsSL -o "$RUNNER_TEMP/wasi-sdk.tar.gz" \
+            "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${major}/wasi-sdk-${WASI_SDK_VERSION}-x86_64-linux.tar.gz"
+          tar -C "$RUNNER_TEMP" -xzf "$RUNNER_TEMP/wasi-sdk.tar.gz"
+          mv "$RUNNER_TEMP/wasi-sdk-${WASI_SDK_VERSION}-x86_64-linux" "$WASI_SDK_PATH"
+      - name: wasmtime
+        run: |
+          set -eu
+          curl -fsSL -o "$RUNNER_TEMP/wasmtime.tar.xz" \
+            "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/wasmtime-${WASMTIME_VERSION}-x86_64-linux.tar.xz"
+          tar -C "$RUNNER_TEMP" -xJf "$RUNNER_TEMP/wasmtime.tar.xz"
+          sudo install "$RUNNER_TEMP/wasmtime-${WASMTIME_VERSION}-x86_64-linux/wasmtime" /usr/local/bin/wasmtime
+      - name: Build the wasi profile
+        run: |
+          set -eu
+          cargo build --profile release-small -p drt --no-default-features --features wasi --target wasm32-wasip2
+          cp target/wasm32-wasip2/release-small/drt.wasm drt_wasip2.wasm
+      - name: Smoke test
+        run: |
+          set -eu
+          export DRT_WASM="$PWD/drt_wasip2.wasm"
+          script/drt-wasip2.sh --version
+          echo 'local x = 1' > smoke.lua
+          script/drt-wasip2.sh run smoke.lua
+          script/drt-wasip2.sh buildinfo | grep -q '^profile: wasi$'
+      - name: The examples gate, through wasmtime
+        run: |
+          set -eu
+          export DRT_WASM="$PWD/drt_wasip2.wasm"
+          cd examples && DRT="$GITHUB_WORKSPACE/script/drt-wasip2.sh" ./run-all.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drt-wasip2
+          path: drt_wasip2.wasm
+          if-no-files-found: error
+          retention-days: 30
+
   publish:
     name: Publish release
-    needs: [preflight, test, build]
+    needs: [preflight, test, build, build-wasip2]
     if: needs.preflight.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -222,6 +294,17 @@ jobs:
           pattern: drt-*
           path: release_dist
           merge-multiple: true
+      # The wasip2 artifact answers `buildinfo` too, from inside wasmtime,
+      # so its connector set is read off the bytes like the native ones'.
+      - name: wasmtime, to ask the wasip2 artifact what it carries
+        env:
+          WASMTIME_VERSION: v48.0.1
+        run: |
+          set -eu
+          curl -fsSL -o "$RUNNER_TEMP/wasmtime.tar.xz" \
+            "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/wasmtime-${WASMTIME_VERSION}-x86_64-linux.tar.xz"
+          tar -C "$RUNNER_TEMP" -xJf "$RUNNER_TEMP/wasmtime.tar.xz"
+          sudo install "$RUNNER_TEMP/wasmtime-${WASMTIME_VERSION}-x86_64-linux/wasmtime" /usr/local/bin/wasmtime
       - name: BUILDINFO and checksums
         run: |
           set -eu
@@ -262,6 +345,9 @@ jobs:
           DV_ABI=$(bi drt_linux_static_x86_64 dv_abi)
           FULL_CONNECTORS=$(bi drt_linux_static_x86_64 connectors)
           SLIM_CONNECTORS=$(bi drt_slim_linux_static_x86_64 connectors)
+          # The wasip2 component runs under wasmtime; same question, same
+          # answer format, read off the artifact (doc/Wasm.md D2).
+          WASI_CONNECTORS=$(wasmtime run -W exceptions=y ./drt_wasip2.wasm buildinfo 2>/dev/null | sed -n 's/^connectors: //p')
           {
             echo "tag: ${{ needs.preflight.outputs.tag }}"
             echo "commit: ${{ needs.preflight.outputs.sha }}"
@@ -277,6 +363,9 @@ jobs:
             # instead of by guessing from the artifact filename.
             echo "profile.full.connectors: ${FULL_CONNECTORS:-unknown}"
             echo "profile.slim.connectors: ${SLIM_CONNECTORS:-unknown}"
+            # `drt_wasip2.wasm`: run it with
+            #   wasmtime run -W exceptions=y --dir . drt_wasip2.wasm run app.dlua
+            echo "profile.wasi.connectors: ${WASI_CONNECTORS:-unknown}"
           } > BUILDINFO.txt
           sha256sum drt_* BUILDINFO.txt > SHA256SUMS.txt
           cat BUILDINFO.txt SHA256SUMS.txt

@@ -19,6 +19,43 @@ use drt::{config, repl, run, start};
 use drt_config::RootConfig;
 use drt_connector::Registry;
 
+/// The named profiles, as the exact feature sets `Cargo.toml` declares
+/// them, so `buildinfo` names a build by what it *is*. A binary matching
+/// none of these is `custom`, which is more useful than calling it
+/// whichever named profile it resembles: a package declaring
+/// `requires.connectors` is admitted by name, never by resemblance.
+///
+/// Sorted, because the comparison is against a sorted list of what this
+/// binary was compiled with. Adding a feature to a profile means adding it
+/// here too, and `profile_matches_its_manifest` in `tests/cli.rs` is what
+/// notices when someone forgets.
+const PROFILE_SLIM: &[&str] = &[
+    "connector-crypto",
+    "connector-fs",
+    "connector-time",
+    "listen",
+];
+const PROFILE_WASI: &[&str] = &[
+    "connector-crypto",
+    "connector-fs",
+    "connector-sql",
+    "connector-time",
+];
+const PROFILE_FULL: &[&str] = &[
+    "connector-crypto",
+    "connector-fs",
+    "connector-rest",
+    "connector-sql",
+    "connector-ssh",
+    "connector-ssmtp",
+    "connector-time",
+    "listen",
+    "netcheck",
+    "relay",
+    "stun",
+    "tunnel",
+];
+
 #[derive(Parser)]
 #[command(name = "drt", version, about = "The Diluvium RunTime")]
 struct Cli {
@@ -246,15 +283,11 @@ fn buildinfo(json: bool) -> String {
 
     // Named by what the profile actually is, not by what was asked for: a
     // build with an unusual feature set is `custom`, and saying so is more
-    // useful than calling it whichever named profile it resembles.
-    let profile = match (
-        cfg!(feature = "relay") && cfg!(feature = "stun") && cfg!(feature = "tunnel"),
-        cfg!(feature = "connector-sql") && cfg!(feature = "connector-ssh"),
-    ) {
-        (true, true) => "full",
-        (false, false) => "slim",
-        _ => "custom",
-    };
+    // useful than calling it whichever named profile it resembles. The
+    // comparison is exact -- the wasi profile is slim's connectors plus sql
+    // and minus listen, and a looser match once reported it as `slim`,
+    // which the examples gate then read as "skip what needs sql".
+    let profile = profile_name(&enabled_features());
 
     // Asked of drt-swarm, which owns the engine feature — see the note on
     // `abi_versions` there. `null`/`unknown` is reported honestly rather
@@ -303,6 +336,47 @@ fn buildinfo(json: bool) -> String {
             connectors.join(","),
             verbs.join(","),
         )
+    }
+}
+
+/// Every feature this binary was compiled with, sorted, in the spelling
+/// `Cargo.toml` uses. `slim` and `full` themselves are not listed: they
+/// are the names of sets, and this is the set.
+fn enabled_features() -> Vec<&'static str> {
+    let mut on: Vec<&'static str> = Vec::new();
+    macro_rules! feature {
+        ($name:literal) => {
+            if cfg!(feature = $name) {
+                on.push($name);
+            }
+        };
+    }
+    feature!("connector-crypto");
+    feature!("connector-fs");
+    feature!("connector-rest");
+    feature!("connector-sql");
+    feature!("connector-ssh");
+    feature!("connector-ssmtp");
+    feature!("connector-time");
+    feature!("listen");
+    feature!("netcheck");
+    feature!("relay");
+    feature!("stun");
+    feature!("tunnel");
+    on.sort_unstable();
+    on
+}
+
+/// Which named profile `features` is, exactly, or `custom`.
+fn profile_name(features: &[&str]) -> &'static str {
+    if features == PROFILE_FULL {
+        "full"
+    } else if features == PROFILE_SLIM {
+        "slim"
+    } else if features == PROFILE_WASI {
+        "wasi"
+    } else {
+        "custom"
     }
 }
 

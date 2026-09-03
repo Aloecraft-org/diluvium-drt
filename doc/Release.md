@@ -170,54 +170,54 @@ link resolves today, and the message is deliberately the *only* place it
 appears — a missing `relay` block or an unparseable program are different
 problems, and answering those with a package manager would be noise.
 
-### wasm32 is not in the matrix yet, and the trigger is a smoke test
+### wasm32-wasip2 is in the matrix; the browser is not, yet
 
-`drt-web` is `crate-type = ["cdylib", "rlib"]`, so `cargo build -p drt-web
---target wasm32-unknown-unknown` does produce a `.wasm`. Checked what is
-in it (2026-08-28): **one export, `memory`, and no callable functions.**
-The wasm-bindgen export layer is task #31.
+Two wasm targets, two answers, both decided by the rule every leg in the
+matrix obeys: an artifact joins when it can be verified the way the others
+are -- by *running* it.
 
-**The reason it is not in the release matrix is verification, not
-naming.** Every leg in that matrix builds `-p drt` and then proves itself
-by *running* the artifact — `--version` and `run smoke.lua`
-(release.yml:171-180). A wasm32 leg matches none of that:
+**`drt_wasip2.wasm` ships**, from the `build-wasip2` job (2026-09-03,
+doc/Wasm.md M1). It is `drt` itself, built for `wasm32-wasip2` with the
+`wasi` profile -- `time`, `fs`, `crypto`, `sql` (doc/Wasm.md D2) -- and it
+proves itself the way the native legs do, `--version` and `run smoke.lua`,
+and then harder: the examples gate runs through `script/drt-wasip2.sh`
+before the artifact is uploaded. BUILDINFO gains `profile.wasi.connectors`,
+read off the artifact under wasmtime rather than guessed in YAML, the same
+say-what-you-carry rule the native profiles follow. Running it needs
+wasmtime (43 or newer, for the exception-handling proposal the C core's
+`setjmp`/`longjmp` is lowered onto) and the flag:
 
-- It builds a **different crate**. The `drt` CLI cannot target wasm32 at
-  all — tokio, russh, bundled sqlite, and a C core that would want a
-  wasi-sdk. `drt-web` is a library for a JS host, not the CLI for a
-  different platform.
-- It **cannot be executed on the runner**. There is no JS host there, so
-  the artifact would be the only one in the release that nothing verifies.
-  Every other one has been run before it shipped.
+```
+wasmtime run -W exceptions=y --dir . drt_wasip2.wasm run app.dlua
+```
 
-An earlier draft of this section argued instead that publishing it would
-create a compatibility surface whose contents change while its name stays.
-That argument does not hold: contents changing between versions is what a
-version *is*, and `BUILDINFO` already exists to say what an artifact
-carries — an inert `.wasm` could declare `profile.web.exports: none` and
-be refused by name. Recorded because the weaker argument was "not ready"
-wearing better clothes, and the distinction matters for the next call like
-this one.
+`listen` is not in the profile: wasip2 has sockets and no threads, and
+the acceptor spawns one per connection (doc/Wasm.md M6 is the rewrite).
+A config naming a listener is refused by name, as it is on any build
+without the feature.
 
-**The trigger, stated so nobody has to re-derive it.** wasm32 joins the
-matrix when the artifact can be verified the way the others are:
+**The browser artifact does not ship yet**, and the reason is the one
+this section has always given: nothing on the runner can verify it the
+way the others are verified. What admits it is doc/Wasm.md M4 -- the
+examples run in Chromium and diffed against `expected.txt`. A node smoke
+step asserting `abiVersion() === 1`, which an earlier draft of this
+section proposed as the trigger, would not: doc/Next.md §7 records the
+one browser-vs-native divergence this project has actually met, and node
+cannot see it. Meanwhile `ci.yml`'s `wasm` job compiles `drt-web` for
+wasm32-unknown-unknown on every push, which guards a different property
+-- *does it still build* -- and is not a substitute for the release entry.
 
-1. The export layer exists (#31) and the `.wasm` exports the functions
-   `doc/Browser.md` names.
-2. A smoke step can execute it — node with the wasm-bindgen glue is
-   enough — and assert at minimum `abiVersion() === 1`, which is the wasm
-   equivalent of `drt --version`.
-3. BUILDINFO gains `profile.web.exports`, under the same
-   say-what-you-carry rule the native profiles follow.
+An earlier draft of this section argued instead that publishing an inert
+artifact would create a compatibility surface whose contents change while
+its name stays. That argument does not hold: contents changing between
+versions is what a version *is*, and `BUILDINFO` already exists to say
+what an artifact carries. Recorded because the weaker argument was "not
+ready" wearing better clothes, and the distinction matters for the next
+call like this one.
 
-Until (2) exists, adding the target would ship an unverified artifact,
-which is the thing the matrix's smoke step exists to prevent.
-
-Meanwhile `ci.yml`'s `wasm` job compiles drt-web for wasm32 on every push.
-That guards a different property — *does it still build* — and is not a
-substitute for the release entry. The mirror half needs no DRT change:
-`install.sh` falls back to GitHub Releases (install.sh:13, 58-59), so the
-Lab can consume from GitHub whenever there is something to consume.
+The mirror half needs no DRT change: `install.sh` falls back to GitHub
+Releases (install.sh:13, 58-59), so the Lab can consume from GitHub
+whenever there is something to consume.
 
 ### Resolved: two SIGSEGVs, two different bugs
 
@@ -451,18 +451,27 @@ learn one new path segment and nothing else.
 
 ## Building for wasm
 
-`--no-default-features` carries the swarm and the capability layers without
-the C core, and that is what a browser build starts from — there the
-`Engine` bridges to a JS-hosted diluvium instance rather than linking one
-(SPEC.md §4).
-
-Building the `engine-diluvium` feature *for* a wasm target is the other
-case, and it needs a wasi-sdk (>= 24) named by `WASI_SDK_PATH`, because the
-C core must be compiled by a clang that can target wasm32. Without it
+Both wasm targets link the C core in (doc/Wasm.md D1), so both need a
+wasi-sdk (>= 24; 27 is what CI pins) named by `WASI_SDK_PATH`: the core
+must be compiled by a clang that can target wasm32, and without one
 `diluvium-sys` refuses with an explanation. That refusal is deliberate and
 worth knowing about: until recently the build *succeeded* and emitted a
 host `.o`, so `cargo build --target wasm32-unknown-unknown` looked green and
 only failed when something forced an actual link.
+
+The portable build, which is what `build-wasip2` publishes:
+
+```
+export WASI_SDK_PATH=/opt/wasi-sdk-27.0-x86_64-linux
+rustup target add wasm32-wasip2
+cargo build --profile release-small -p drt --no-default-features --features wasi --target wasm32-wasip2
+script/drt-wasip2.sh run examples/hello.dlua        # wasmtime, with the flags it needs
+cd examples && DRT=../script/drt-wasip2.sh ./run-all.sh
+```
+
+`--no-default-features` still carries the swarm and the capability layers
+without the C core, and is what `ci.yml`'s `wasm` job builds `drt-web` as
+until doc/Wasm.md M4 lands.
 
 ## Installing
 

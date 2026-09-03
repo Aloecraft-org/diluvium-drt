@@ -642,7 +642,10 @@ make and the cheapest to keep true.
 Each is independently valuable, lands with its own gate, and the first
 two need no design decision beyond this document.
 
-**M1 — the `wasi` profile and the wasmtime gate in CI. ~1 day.** The
+**M1 — the `wasi` profile and the wasmtime gate in CI. ~1 day. Landed
+2026-09-03** (`script/drt-wasip2.sh`, the `wasip2` job in `ci.yml`, the
+`build-wasip2` leg in `release.yml`, `profile: wasi` from `buildinfo`;
+the gate: 7 ok, 0 failed, 10 skipped by profile). The
 feature in `crates/drt/Cargo.toml`; `buildinfo` naming it; a `wasip2` job
 in `ci.yml` that installs the wasi-sdk tarball (119 MB, cached by URL)
 and a wasmtime release, builds `release-small`, and runs
@@ -761,14 +764,9 @@ served-deployment story.
 export WASI_SDK_PATH=/opt/wasi-sdk-27.0-x86_64-linux        # >= 24; 27 verified
 rustup target add wasm32-wasip2
 cargo build --profile release-small -p drt --no-default-features \
-  --features connector-time,connector-fs,connector-crypto,connector-sql \
-  --target wasm32-wasip2
-cat > /usr/local/bin/drt-wasip2 <<'SH'
-#!/bin/sh
-exec wasmtime run -W exceptions=y --dir . /path/to/drt.wasm "$@"
-SH
-chmod +x /usr/local/bin/drt-wasip2
-cd examples && DRT=drt-wasip2 ./run-all.sh
+  --features wasi --target wasm32-wasip2
+script/drt-wasip2.sh run examples/hello.dlua     # the wrapper: wasmtime, flags, --dir .
+cd examples && DRT=../script/drt-wasip2.sh ./run-all.sh
 ```
 
 `wasmtime compile -W exceptions=y -o drt.cwasm drt.wasm` and
