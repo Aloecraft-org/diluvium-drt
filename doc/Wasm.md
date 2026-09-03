@@ -936,8 +936,28 @@ same `drt::repl::Names` a tty completes through. The `Swarm` exports are
 `Deployment` `drt start` drives rather than a bare swarm, so a panel that
 moves gains connectors behind the grants, hibernation and wake, and the
 residency policy; the `swarm-table` check roots a program, steps it to
-exit and reads the roster and its capability answers back. +184 KB. The
-sealed/unsealed verb is below.
+exit and reads the roster and its capability answers back. +184 KB.
+
+**And the third: `drt repl --unsafe`.** The homepage panel's blocker was
+that `drt repl` is sealed and its REPL is a *language* demo, so the swap
+would have cost it `os`, `io` and `require`. The flag lifts the stdlib
+seal and nothing else: still an instance, still under the config's
+ceiling, still the same editor and the same guest-completing Tab. Off by
+default, named at the call (`Repl::unsealed`, not a `bool` on
+`Repl::new`, so every caller that has it is one `grep` away), and the
+banner says `unsafe stdlib: os, io, require` rather than looking like a
+sealed one — an unsealed REPL that looked sealed would be a trap. Two
+tests hold the two seals apart: `os` and `io` appear with the flag and
+not without, and an unwired connector is denied with the flag on exactly
+as it is with it off. It works in a page as it does on a tty, which is
+what host 1 actually needed.
+
+`drepl.c` stayed out of it. `b09e825` makes a raw `lua_State` reachable
+from Rust and this does not use it: `LoadSpec::unsafe_stdlib` was always
+the smaller answer, and it is the one that keeps the capabilities and the
+budget. If the homepage ever needs behaviour byte-identical to `drepl.c`
+rather than merely equivalent, that is the second option and it is still
+open.
 
 **M6 — `listen` on wasip2. ~2-3 days. Landed 2026-09-03**
 (`crates/drt/src/listen.rs`: the bridge's parsing and response bytes

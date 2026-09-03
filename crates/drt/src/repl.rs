@@ -55,13 +55,41 @@ pub struct Repl {
     /// A line has run since the snapshot was taken, so it is worth
     /// asking again before the next prompt.
     names_stale: bool,
+    /// What [`Repl::banner`] says, and what the lines evaluate under.
+    unsafe_stdlib: bool,
 }
 
 impl Repl {
+    /// The sealed REPL: the stdlib every other guest gets.
     pub fn new(
         dispatcher: Arc<Dispatcher>,
         caps: Vec<Grant>,
         budget: drt_config::Budget,
+    ) -> Result<Self, String> {
+        Self::build(dispatcher, caps, budget, false)
+    }
+
+    /// The REPL with `os`, `io` and `require` in scope.
+    ///
+    /// A separate constructor rather than a `bool` on [`Repl::new`], so
+    /// that nothing acquires the unsafe stdlib without naming it and every
+    /// caller that has it is one `grep` away. Still an instance: the
+    /// capability grants and the budget apply as they always did, and what
+    /// is off is the stdlib seal, not the sandbox. It costs replayability
+    /// and makes the budget approximate (dv.h says why).
+    pub fn unsealed(
+        dispatcher: Arc<Dispatcher>,
+        caps: Vec<Grant>,
+        budget: drt_config::Budget,
+    ) -> Result<Self, String> {
+        Self::build(dispatcher, caps, budget, true)
+    }
+
+    fn build(
+        dispatcher: Arc<Dispatcher>,
+        caps: Vec<Grant>,
+        budget: drt_config::Budget,
+        unsafe_stdlib: bool,
     ) -> Result<Self, String> {
         let engine = DiluviumEngine::new().map_err(|e| e.to_string())?;
         let caps: Arc<CapSet> = CapSet::root(caps);
@@ -71,10 +99,12 @@ impl Repl {
                 program: ProgramBytes::Source(PROGRAM),
                 name: "repl",
                 budget,
-                // The REPL's own source is ours, not the user's, and the
-                // lines it evaluates run under the same stdlib every other
-                // guest gets. A REPL is not a way around the sandbox.
-                unsafe_stdlib: false,
+                // The REPL's own source is ours, not the user's. Sealed,
+                // the lines it evaluates run under the same stdlib every
+                // other guest gets, and a REPL is not a way around the
+                // sandbox; unsealed, that is what the caller asked for by
+                // name, and the caps and the budget still hold.
+                unsafe_stdlib,
             },
             caps,
             dispatcher,
@@ -85,7 +115,27 @@ impl Repl {
             want_more: false,
             names: Arc::new(Mutex::new(Vec::new())),
             names_stale: true,
+            unsafe_stdlib,
         })
+    }
+
+    /// What to print before the first prompt.
+    ///
+    /// An unsealed REPL that looked like a sealed one would be a trap, so
+    /// the two do not look alike and the difference is named rather than
+    /// hinted at. One function because three hosts print it -- the pipe,
+    /// the tty and the page -- and they must not drift.
+    pub fn banner(&self) -> &'static str {
+        if self.unsafe_stdlib {
+            "drt repl — unsafe stdlib: os, io, require — ^D to leave"
+        } else {
+            "drt repl — ^D to leave"
+        }
+    }
+
+    /// Whether this REPL evaluates with the unsafe stdlib.
+    pub fn is_unsealed(&self) -> bool {
+        self.unsafe_stdlib
     }
 
     /// The names the guest last reported in scope. Empty until the first
@@ -223,8 +273,13 @@ pub fn repl(
     dispatcher: Arc<Dispatcher>,
     caps: Vec<Grant>,
     budget: drt_config::Budget,
+    unsafe_stdlib: bool,
 ) -> Result<(), String> {
-    let repl = Repl::new(dispatcher, caps, budget)?;
+    let repl = if unsafe_stdlib {
+        Repl::unsealed(dispatcher, caps, budget)?
+    } else {
+        Repl::new(dispatcher, caps, budget)?
+    };
     // Not in a page: see `edited` for why the browser has no tty to ask
     // about, and `drt-web`'s `editor` module for what it has instead.
     #[cfg(all(
@@ -245,7 +300,7 @@ fn piped(mut repl: Repl) -> Result<(), String> {
     let stdin = std::io::stdin();
     let mut lines = stdin.lock().lines();
 
-    eprintln!("drt repl — ^D to leave");
+    eprintln!("{}", repl.banner());
     loop {
         match repl.tick() {
             Next::Sleep(how_long) => std::thread::sleep(how_long),
@@ -387,7 +442,7 @@ fn edited(mut repl: Repl) -> Result<(), String> {
     // and never returns `Pending` -- so this future runs to completion on
     // the first poll. No reactor to build, and nothing to leak past the
     // tokio teardown bug `cli.rs` still works around for the relay.
-    eprintln!("drt repl — ^D to leave");
+    eprintln!("{}", repl.banner());
     futures_executor::block_on(edit(&mut repl, &mut session))
 }
 

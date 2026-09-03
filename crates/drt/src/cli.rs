@@ -94,7 +94,17 @@ pub enum Command {
     Start,
     /// A REPL is an instance, not a mode: a sealed guest with a generous
     /// local grant, bridged to this terminal.
-    Repl,
+    Repl {
+        /// Evaluate with the unsafe stdlib: `os`, `io` and `require`
+        /// present, as a language REPL needs them and as `drt run`
+        /// refuses. Still an instance -- the capability grants and the
+        /// budget apply exactly as they do without it -- but the seal
+        /// `drt` otherwise keeps is off, which the banner says out loud.
+        /// It costs replayability and makes the budget approximate; dv.h
+        /// says why.
+        #[arg(long = "unsafe")]
+        unsafe_stdlib: bool,
+    },
     /// The introspection surface: instances, caps, budgets, usage, health.
     Ps,
     /// What this binary is and what it carries: version, the dv ABI it
@@ -691,11 +701,12 @@ pub fn main(cli: Cli) -> ExitCode {
             print!("{}", buildinfo(json));
             ExitCode::SUCCESS
         }
-        Command::Repl => {
+        Command::Repl { unsafe_stdlib } => {
             match repl::repl(
                 std::sync::Arc::new(dispatcher),
                 config::ceiling(&config),
                 config.root.budget,
+                unsafe_stdlib,
             ) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {

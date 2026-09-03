@@ -144,14 +144,19 @@ impl Term {
                     Session::exited(1)
                 }
             },
-            Command::Repl => {
-                match Repl::new(
+            Command::Repl { unsafe_stdlib } => {
+                let build = if unsafe_stdlib {
+                    Repl::unsealed
+                } else {
+                    Repl::new
+                };
+                match build(
                     Arc::new(dispatcher),
                     config::ceiling(&config),
                     config.root.budget,
                 ) {
                     Ok(repl) => {
-                        say(Fd::Stderr, "drt repl — ^D to leave\n");
+                        say(Fd::Stderr, &format!("{}\n", repl.banner()));
                         Session {
                             kind: Kind::Repl(repl),
                         }

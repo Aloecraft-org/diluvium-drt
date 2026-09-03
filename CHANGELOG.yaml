@@ -132,6 +132,19 @@ releases:
         and so is `drt repl` under wasmtime, which has no way to ask
         for raw mode.
       - |
+        **`drt repl --unsafe`, and the swarm exports.** Two things a
+        browser host asked for. The flag evaluates with `os`, `io` and
+        `require` in scope, which a *language* REPL needs and a sealed
+        guest is not given: it lifts the stdlib seal and nothing else,
+        so the capability grants and the budget still decide what a
+        hostcall reaches, and the banner names what is off rather than
+        looking like a sealed REPL. It costs replayability and makes the
+        budget approximate. And `DrtSwarm` puts the instances table --
+        root, step, the roster, the capability questions, hibernate and
+        wake -- beside `DrtTerm`, over the deployment `drt start`
+        drives, so a panel driving the C swarm's sixteen entry points
+        has twins for them here.
+      - |
         **`crates/drt-platform`.** The four places DRT touches a platform
         -- clock, entropy, the filesystem, stdio -- behind one seam, so
         nothing above them is target-aware. In a page the clock is

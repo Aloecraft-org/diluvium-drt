@@ -105,6 +105,7 @@ curl -fsSL https://diluvium.aloecraft.org/drt/latest/install.sh | sh
 ```
 drt run prog.dlua                    # one program, to completion
 drt repl                             # a REPL, which is an instance
+drt repl --unsafe                    # ... with os, io and require in scope
 drt --config app.host.lua start      # the deployment: swarm + listeners + relay
 drt --config rv.host.lua relay       # the rendezvous relay, standalone
 drt tunnel --park wss://…/park/xps?k=… --to 127.0.0.1:22   # the device half
