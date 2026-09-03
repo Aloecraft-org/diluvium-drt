@@ -150,14 +150,20 @@ run everywhere the stream does.
 | transport | obtains the stream by | who starts the plugin | works on |
 |---|---|---|---|
 | `socketpair` | DRT forks, execs an absolute path, hands over fd 3 | DRT, per deployment | native unix; the C host's, kept for its manifests |
+| `spawn` | DRT listens on an ephemeral loopback port, spawns the plugin with the port and a secret as arguments, the plugin dials back | DRT, per deployment | native unix and native windows: no fd inheritance needed, `CreateProcess` is enough |
 | `tcp` | DRT dials an address, loopback by default | the operator: a service, a sidecar, a Windows service | native unix, native windows, **wasip2 under wasmtime** |
 | websocket | the page dials | the page | the browser tier, later |
 | worker | `postMessage` | the page | the browser tier, later |
 
 The frame bodies are identical on every row, which is the claim
 `rest_plugin.mjs` already makes for two of them. A plugin written for
-fd 3 becomes a `tcp` plugin by changing where it reads and writes and
-nothing else.
+fd 3 becomes a `tcp` or `spawn` plugin by changing where it reads and
+writes and nothing else, and `spawn` keeps what `socketpair` had that
+`tcp` lacks: DRT starts the process, owns its lifetime, sweeps it at
+exit, and knows exactly who is on the other end, because the secret it
+minted a moment ago is the first thing that arrives. `socketpair` then
+exists for one reason, the C host's manifests, and `spawn` is the native
+default.
 
 **`tcp` is the one that reaches wasip2, and it is measured, not
 inferred.** `doc/Wasm.md` §2.2 recorded `std::net` binding under
@@ -195,9 +201,10 @@ obtain one today, and the browser's later.
   tokio (`doc/Wasm.md` §2.1). Served as plugins by a native process,
   they reach a wasm `drt` unchanged and unported. Upstream's C
   `rest_plugin` and its Node twin are such a process already.
-- **A future native Windows build needs this transport anyway.** There
-  is no fd 3 on Windows; a Windows `drt` would speak `tcp` to its
-  plugins from the first day.
+- **A future native Windows build needs `spawn` or `tcp` anyway.** There
+  is no fd 3 on Windows; a Windows `drt` would start its plugins through
+  `spawn` with dial-back from the first day, and §4.5 argues that build
+  may be the better Windows answer than wasmtime.
 
 ### 4.3 What it costs, and what changes
 
@@ -241,10 +248,58 @@ obtain one today, and the browser's later.
 On top of §3's channel work, not instead of it; the codec, manifest and
 `PluginConnector` are shared.
 
-### 4.5 What stays impossible under wasmtime, so nobody plans around it
+### 4.5 Spawning under wasmtime: what is impossible, and what restores it
 
-- Spawning. wasip2 has no process API, so `socketpair` plugins and
-  `exec` stay native-only. The plugin has to be running already.
+**Two spawns, and only one is lost.** DRT's spawn is a program starting a
+program: `host.spawn`, the swarm's lifecycle queue, attenuated grants,
+hibernation. That is in-process and it works under wasmtime today --
+`08-spawn-and-hibernation` passes through the wasip2 gate (`doc/Wasm.md`
+§2.2) and in Chromium. What wasip2 lacks is the *OS* spawn: a process
+API. As of September 2026 none is on WASI's standardization track --
+0.3.0 (June 2026) is async streams and futures, and `wasi:thread-spawn`
+is threads, not processes -- so this is the absence of an interface, not
+a wasmtime flag, and waiting is not a plan. Two things in DRT need the
+OS spawn: `exec/run`, and starting a plugin process.
+
+**What restores it: one native helper per box, and it is a plugin.** A
+launcher is a `tcp` plugin that answers two families over the same
+frames:
+
+- `exec/run`, exactly as `connectors/exec` answers it -- the vector, the
+  deadline, the caps, the allow list, the group sweep -- served from
+  outside the module. The scope arrives in the hello frame; the
+  enforcement point moves from the connector to the launcher and the
+  contract does not.
+- `plugin/start {manifest}`: spawn a plugin from its manifest the way the
+  `spawn` transport does natively, and answer with the address and secret
+  DRT then dials. A wasm `drt` gains dynamically started plugins through
+  one static one.
+
+Where a native `drt` exists, the launcher *is* `drt`: a `plugin-serve`
+verb that puts any builtin connector behind the frame protocol on a
+loopback port, so a wasm `drt` beside a native one has `exec`, `rest`,
+`ssmtp` and `ssh` without those connectors crossing to wasm at all. On a
+box with no native `drt` -- Windows before a build exists -- the launcher
+is a small program in whatever runs there, with `connectors/exec` as its
+specification and `plugin_echo.c` as its framing.
+
+That composition is also SPEC.md §8's strong-isolation tier reached from
+the other side: the untrusted program runs inside wasmtime, and
+everything it can reach is a process the operator started under a scope
+the config named.
+
+**And the other answer for Windows is not wasmtime.** `slim` carries no
+tokio, no russh and no `aws-lc-sys`; a `x86_64-pc-windows-gnu`
+cross-build with mingw as `$CC` for the C core is a day to rehearse in
+`release.yml`'s dispatch mode. A native `drt slim` on Windows spawns its
+plugins through the `spawn` transport and needs no launcher.
+`doc/Platforms.md` has the matrix.
+
+What stays impossible under wasmtime, so nobody plans around it:
+
+- Spawning from inside the module. `socketpair` and `spawn` plugins and
+  the builtin `exec` stay native-only; under wasmtime the launcher
+  serves them.
 - Loading a second component at runtime. A composed component --
   `drt.wasm` linked with a plugin component through `wac` -- is the route
   where WIT enters (SPEC.md §7), and it is static: the operator composes,
