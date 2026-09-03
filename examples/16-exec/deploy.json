@@ -1,0 +1,21 @@
+{
+  "_comment": "Wiring exec is leaving the sandbox, and drt says so on stderr when this loads. The scope is what keeps the door narrow: a ceiling on the deadline, a cap on the bytes, and the programs a call may start.",
+
+  "program": { "path": "app.dlua" },
+
+  "_caps": "The ceiling. There is one call in the family, and this is it.",
+  "caps": [
+    { "capability": "host:exec/run" }
+  ],
+
+  "_connectors": "Every bound is the deployment's. A call may ask for a shorter deadline than max_timeout_ms, never a longer one; max_output_bytes caps each stream and stdin; allow names programs by absolute path, compared after symlinks are resolved.",
+  "connectors": {
+    "exec": {
+      "scope": {
+        "max_timeout_ms": 2000,
+        "max_output_bytes": 4096,
+        "allow": ["/bin/sh", "/bin/echo", "/bin/cat", "/bin/sleep", "/usr/bin/yes"]
+      }
+    }
+  }
+}

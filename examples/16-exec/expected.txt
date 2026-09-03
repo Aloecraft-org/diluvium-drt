@@ -1,0 +1,13 @@
+$ drt run --config deploy.json
+drt: exec wired: granting host:exec/run leaves the sandbox (GUARANTEES.md); only the scope's deadline, output cap and allow list bound it
+a vector, never a shell string; the exit is an answer:
+  echo hello             ok      status 0  hello
+  sh -c 'exit 3'         ok      status 3
+  cat, fed stdin         ok      status 0  from the program
+  no-such-program        ok      status 127
+
+what the scope bounds, and in whose words:
+  sleep 5, timeout 200   error   the child was killed at the 200 ms deadline
+  sleep 5, timeout 5000  error   timeout_ms passed the host's ceiling (2000 ms); a call may ask for less, never more
+  yes, until the cap     error   stdout passed this deployment's byte cap (4096); the child was killed, the output refused
+  ls, not allowed        error   'ls' is outside this scope's allow list; a program may start only what the deployment allows

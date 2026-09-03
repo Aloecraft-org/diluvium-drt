@@ -188,6 +188,7 @@ enum Command {
         feature = "connector-crypto",
         feature = "connector-rest",
         feature = "connector-ssmtp",
+        feature = "connector-exec",
         feature = "netcheck"
     )),
     allow(unused_mut, unused_variables)
@@ -224,6 +225,9 @@ fn buildinfo(json: bool) -> String {
     }
     if cfg!(feature = "connector-ssmtp") {
         connectors.push("ssmtp");
+    }
+    if cfg!(feature = "connector-exec") {
+        connectors.push("exec");
     }
     if cfg!(feature = "listen") {
         connectors.push("listen");
@@ -393,6 +397,27 @@ fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
                     wiring.scope.clone(),
                 )
                 .map_err(|e| e.to_string())?,
+            // The one connector the instruction budget cannot reach. Wired
+            // only when a config names it, and announced when it is:
+            // leaving the sandbox is a conscious act, so the process says
+            // so on stderr before the first step, in GUARANTEES.md's words.
+            // What bounds it is the scope's -- a deadline, an output cap
+            // and an allow list -- and nothing else.
+            #[cfg(feature = "connector-exec")]
+            "exec" => {
+                eprintln!(
+                    "drt: exec wired: granting host:exec/run leaves the sandbox \
+                     (GUARANTEES.md); only the scope's deadline, output cap and allow \
+                     list bound it"
+                );
+                registry
+                    .wire(
+                        "exec",
+                        std::sync::Arc::new(drt_connector_exec::ExecConnector::new()),
+                        wiring.scope.clone(),
+                    )
+                    .map_err(|e| e.to_string())?
+            }
             other => {
                 return Err(format!(
                     "config wires connector '{other}', which this build does not carry"

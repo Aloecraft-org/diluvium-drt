@@ -2,7 +2,6 @@
 --
 --   drt run --config deploy.json
 --   drt run app.dlua
---   drt run --config no-exec.json
 
 -- example: omits the ok/refused branch — host.try answers value, status,
 -- detail, so one line prints whichever of the two came back.
@@ -14,5 +13,6 @@ end
 -- deployment's, and nothing in this file can name them or reach past them.
 show("ssh/exec", host.try("ssh/exec", { command = "uptime" }))
 
--- There is no local exec. Not unwired here — absent from every build.
-show("exec/run", host.try("exec/run", { command = "uptime" }))
+-- Local exec is its own connector, unwired here; 16-exec is the app that
+-- wires it, and the scope there names which programs, for how long.
+show("exec/run", host.try("exec/run", { argv = { "uptime" } }))

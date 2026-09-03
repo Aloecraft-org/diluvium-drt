@@ -27,7 +27,7 @@ hostcall encoding (moved here from diluvium).
 | [`crates/drt-swarm`](crates/drt-swarm) | The swarm: `dvs.c` semantics ported over the `Engine` seam (instance table, attenuated caps with provenance, lifecycle drain, budgets, hibernation + `wake_on_message`); the snapshot store; endpoint refs. |
 | [`crates/drt`](crates/drt) | The binary: `run` \| `start` \| `repl` \| `relay` \| `tunnel` \| `ps` — see SPEC.md §13a. |
 | [`crates/drt-web`](crates/drt-web) | The browser tier: an `Engine` over a JS host bridge, so the same swarm runs in a page. See [`doc/Browser.md`](doc/Browser.md). |
-| [`connectors/`](connectors) | Connector implementations, each feature-gated: `time`, `fs` and `sql` (each a granted directory) and `ssh` (client, `host:ssh/exec`) today; `listen` and `exec` per SPEC.md §7. |
+| [`connectors/`](connectors) | Connector implementations, each feature-gated: `time`, `crypto`, `fs` and `sql` (each a granted directory), `rest` and `ssmtp` (each an allowlist), `ssh` (client, `host:ssh/exec`) and `exec` (local, `host:exec/run`, wired only by name and announced when it is). |
 
 ## Building
 

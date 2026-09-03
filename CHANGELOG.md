@@ -12,6 +12,77 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
+## [0.5.0] - unreleased
+
+`v0.5.0` &middot; dv ABI 1 &middot; diluvium `515160f64587`
+
+Local `exec`: the one hostcall family the C host answered and DRT
+did not, and the one the instruction budget cannot reach. The
+contract is `dhost_exec.c`'s to the sentence, a `.host.lua` saying
+`exec = true` loads unchanged, and the scope gains the thing the C
+host had nowhere to put: the programs a call may start.
+
+A minor version, because `full`'s connector set is not v0.4.1's.
+A package declaring `requires.connectors` with `exec` in it is now
+admissible against the `full` artifact and refused by name against
+`slim`, which does not carry it.
+
+### Connectors
+
+- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `listen`
+- `slim`: `time`, `fs`, `crypto`, `listen`
+
+### Added
+
+- **`exec/run`, the honest escape hatch.** `{argv, stdin?,
+  timeout_ms?, cwd?}` answers `{status, stdout, stderr}`, exactly as
+  `host/dhost_exec.c` answers it, so a program written against
+  `diluvium-host` runs here unchanged. `argv` is a vector handed to
+  exec and never a shell string, so there is nothing a quote can
+  escape from; a nonzero exit is an answer, read the way a script
+  reads `$?`, and a program that does not exist is `127`. `error` is
+  the call's own failure only: the deadline, a cap, a malformed
+  request, each in the C host's words.
+
+  Three bounds, all the deployment's, because the instruction
+  budget cannot reach a subprocess. `max_timeout_ms` is a ceiling a
+  call may ask below and never above; at the deadline the child is
+  killed with SIGKILL, and the kill sweeps its whole process group
+  on every exit path, so nothing `exec/run` starts outlives the
+  call. `max_output_bytes` caps each stream and stdin, refusing
+  rather than truncating past it. Both default to the C host's
+  numbers.
+
+  And one the C host could not take: `allow`, a list of programs by
+  absolute path. A call naming anything else is refused by name and
+  never started; an entry that is not there is a refusal at
+  startup, by name, like every other unreachable scope. Compared
+  after symlinks are resolved on both sides, so `/bin/sh` matches on
+  a box where `/bin` is `/usr/bin`. Leave it out and the behaviour
+  is the C host's: whatever `PATH` finds.
+
+  `full` only, and not for a dependency -- it links nothing. Off
+  until a config names `connectors.exec`, and announced on stderr
+  when one does: granting it is leaving the sandbox, and
+  GUARANTEES.md's "loud flag" is now a sentence the process prints
+  rather than a promise. `examples/16-exec` is the app; `10-ssh-exec`
+  no longer claims there is no local exec, and its third run, which
+  showed the config being refused, is gone because the config is no
+  longer refused.
+
+  Honest about one thing the C host is honest about too: the
+  connector answers synchronously, so a running child stalls every
+  guest in the deployment until it exits or hits its deadline. Bound
+  it tight. The deferred pump planned in `doc/Wasm.md` lifts that
+  for every connector at once.
+
+### Changed
+
+- **The connector set grows.** `full` carries `exec`; `slim` is
+  unchanged. `drt buildinfo` reports it, so a package's
+  `requires.connectors` can name it.
+
+
 ## [0.4.1] - 2026-09-03
 
 `v0.4.1` &middot; dv ABI 1 &middot; diluvium `515160f64587`
