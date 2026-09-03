@@ -202,6 +202,24 @@ impl Relay {
     /// Total bytes spliced since start — the seed of the metering the
     /// supervisor will drain. A counter, not a report: reporting is the
     /// deployment's, over the queue bridge.
+    /// How many legs are parked under `label`, waiting for a caller.
+    ///
+    /// The presence events (`RelayEvent::Parked` and its siblings) say when
+    /// this changes; this says what it is now. A leg is registered by
+    /// `park_leg`, which runs *after* the device's WebSocket handshake has
+    /// completed, so "the device connected" and "the device is claimable"
+    /// are two moments and a caller between them is told the device is not
+    /// home. That is correct -- the device's backoff re-parks and the
+    /// caller retries -- but it is a window a test must not race, which is
+    /// what this exists for.
+    pub fn parked(&self, label: &str) -> usize {
+        self.labels
+            .lock()
+            .unwrap()
+            .get(label)
+            .map_or(0, |l| l.parked.len())
+    }
+
     pub fn bytes_relayed(&self) -> u64 {
         self.bytes_relayed.load(Ordering::Relaxed)
     }

@@ -42,11 +42,11 @@ fn accepting(addr: std::net::SocketAddr) -> bool {
 /// is real. Three is generous: losing twice in a row is not a race.
 const PORT_TRIES: usize = 3;
 
-async fn relay_on_port() -> (std::net::SocketAddr, ()) {
+async fn relay_on_port() -> (std::net::SocketAddr, std::sync::Arc<Relay>) {
     for attempt in 1..=PORT_TRIES {
-        let addr = start_relay(free_port()).await;
+        let (addr, relay) = start_relay(free_port()).await;
         if accepting(addr) {
-            return (addr, ());
+            return (addr, relay);
         }
         assert!(
             attempt < PORT_TRIES,
@@ -58,7 +58,7 @@ async fn relay_on_port() -> (std::net::SocketAddr, ()) {
 }
 
 /// The relay itself, on the port it was told.
-async fn start_relay(addr: std::net::SocketAddr) -> std::net::SocketAddr {
+async fn start_relay(addr: std::net::SocketAddr) -> (std::net::SocketAddr, std::sync::Arc<Relay>) {
     let config = RelayConfig {
         bind: addr.to_string(),
         labels: [(
@@ -74,21 +74,46 @@ async fn start_relay(addr: std::net::SocketAddr) -> std::net::SocketAddr {
         admit_timeout_ms: 2000,
     };
     let relay = Relay::new(config);
+    let serving = relay.clone();
     tokio::spawn(async move {
-        let _ = serve(relay).await;
+        let _ = serve(serving).await;
     });
-    addr
+    (addr, relay)
+}
+
+/// Wait until `want` legs are parked under `label`.
+///
+/// A device's `/park` handshake completing is not the same moment as its
+/// leg being claimable: `park_leg` registers the leg in its own task, just
+/// after. A caller in between is told the device is not home, correctly --
+/// and a test that claims without waiting is racing that window. In CI it
+/// lost, and the device then sat out `PARK_IDLE` (300s) before the relay
+/// dropped it, which is the `ResetWithoutClosingHandshake` that failed
+/// this file. So: no sleeps, ask the relay.
+async fn parked(relay: &Relay, label: &str, want: usize) {
+    for _ in 0..1000 {
+        if relay.parked(label) >= want {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!(
+        "{want} leg(s) never parked under {label}: {} are",
+        relay.parked(label)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_caller_and_a_device_splice_through_the_relay() {
-    let (addr, ()) = relay_on_port().await;
+    let (addr, relay) = relay_on_port().await;
 
     // The device parks a leg, as websocat would: a dumb pipe, key in the URL.
     let (mut device, _) =
         tokio_tungstenite::connect_async(format!("ws://{addr}/park/xps?k=park-secret-0123456789"))
             .await
             .expect("the device could not park");
+    // Claimable, not merely connected: see `parked`.
+    parked(&relay, "xps", 1).await;
 
     // A caller claims it. The claim manifests as the first caller byte —
     // exactly what an SSH client's banner is.
@@ -129,7 +154,7 @@ async fn a_caller_and_a_device_splice_through_the_relay() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_wrong_key_never_upgrades_and_an_empty_pool_says_not_home() {
-    let (addr, ()) = relay_on_port().await;
+    let (addr, _relay) = relay_on_port().await;
 
     // Wrong caller key: refused at the handshake — the WebSocket never
     // exists, which is what keeps an open relay from being an open proxy.
@@ -167,7 +192,7 @@ async fn a_wrong_key_never_upgrades_and_an_empty_pool_says_not_home() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_full_triangle_and_replenish_on_claim() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let (addr, ()) = relay_on_port().await;
+    let (addr, relay) = relay_on_port().await;
 
     // The "sshd": a local echo server the device dials lazily.
     let echo = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -193,7 +218,7 @@ async fn the_full_triangle_and_replenish_on_claim() {
     tokio::spawn(async move {
         let _ = drt::tunnel::park(&park_url, &echo_addr).await;
     });
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    parked(&relay, "xps", 1).await;
 
     for round in 0..2u8 {
         let (mut caller, _) = tokio_tungstenite::connect_async(format!(
@@ -221,7 +246,10 @@ async fn the_full_triangle_and_replenish_on_claim() {
             drop(caller);
         } else {
             std::mem::forget(caller);
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            // What this round is actually asserting: a fresh leg is parked
+            // by replenish-on-claim while the first session is still open.
+            // Waiting for it beats sleeping and hoping.
+            parked(&relay, "xps", 1).await;
         }
     }
 }
@@ -336,6 +364,27 @@ fn drain(rx: &std::sync::mpsc::Receiver<String>, want: usize) -> Vec<String> {
     lines
 }
 
+/// Wait for one presence line, keeping whatever else arrives on the way.
+///
+/// The deployment's own view of "the leg is claimable" -- `park_leg` emits
+/// `Parked` immediately after registering it -- so a test that has the
+/// supervisor's channel should sequence on that rather than on a sleep.
+#[cfg(feature = "relay")]
+async fn until(rx: &std::sync::mpsc::Receiver<String>, want: &str) -> Vec<String> {
+    let mut seen = Vec::new();
+    for _ in 0..1000 {
+        while let Ok(line) = rx.try_recv() {
+            let hit = line == want;
+            seen.push(line);
+            if hit {
+                return seen;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("{want} never arrived; saw {seen:?}");
+}
+
 /// Read past the keepalive pings for the next frame that carries bytes.
 #[cfg(feature = "relay")]
 async fn next_binary<S>(ws: &mut tokio_tungstenite::WebSocketStream<S>) -> Vec<u8>
@@ -368,12 +417,14 @@ fn rt() -> &'static tokio::runtime::Runtime {
 #[test]
 fn the_deployment_sees_presence_and_bytes() {
     let (addr, rx) = deployment_with_relay(false);
-    rt().block_on(async {
+    let seen = rt().block_on(async {
         let (mut device, _) =
             tokio_tungstenite::connect_async(format!("ws://{addr}/park/xps?k=pk-0123456789abcdef"))
                 .await
                 .unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        // Claimable, not merely connected: the supervisor says when, and a
+        // caller that beats it is told the device is not home.
+        let seen = until(&rx, "parked:xps").await;
 
         let (mut caller, _) =
             tokio_tungstenite::connect_async(format!("ws://{addr}/s/xps?k=ck-0123456789abcdef"))
@@ -391,9 +442,12 @@ fn the_deployment_sees_presence_and_bytes() {
         assert_eq!(next_binary(&mut caller).await, b"hello");
         drop(caller);
         drop(device);
+        seen
     });
 
-    let lines = drain(&rx, 3);
+    // `parked:xps` was consumed while sequencing; the other two follow it.
+    let mut lines = seen;
+    lines.extend(drain(&rx, 2));
     assert!(lines.iter().any(|l| l == "parked:xps"), "{lines:?}");
     assert!(lines.iter().any(|l| l == "claimed:xps"), "{lines:?}");
     assert!(
@@ -426,5 +480,63 @@ fn the_deployment_can_refuse_a_leg_the_keys_admit() {
     assert!(
         lines.iter().any(|l| l == "admit:blocked:false"),
         "the supervisor should have been asked: {lines:?}"
+    );
+}
+/// A claim that beats the park is not held for it, and the leg it missed
+/// is left parked.
+///
+/// This is the relay's contract rather than a defect -- `claim_leg` takes
+/// a leg or says "not home", and never waits for one to appear -- but it
+/// is the contract that made this file flaky, so it is written down.
+/// Without it the failure is invisible for `PARK_IDLE`, which is five
+/// minutes: the device waits, nobody comes, the relay drops the leg, and
+/// the test that was reading it sees a reset with no closing handshake and
+/// no explanation. That is exactly what CI saw. Here it takes 0.75s.
+///
+/// The lesson for everything above: wait on `parked`, never on a sleep.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_claim_that_beats_the_park_is_told_not_home_and_the_leg_stays() {
+    let (addr, _relay) = relay_on_port().await;
+
+    // The caller arrives first: the pool is empty, so it is closed.
+    let (mut caller, _) =
+        tokio_tungstenite::connect_async(format!("ws://{addr}/s/xps?k=caller-secret-987654321"))
+            .await
+            .unwrap();
+    caller
+        .send(Message::Binary(b"SSH-2.0-caller\r\n".to_vec()))
+        .await
+        .ok();
+
+    // The device parks a moment later, as it would if the two raced.
+    let (mut device, _) =
+        tokio_tungstenite::connect_async(format!("ws://{addr}/park/xps?k=park-secret-0123456789"))
+            .await
+            .expect("the device could not park");
+
+    // The caller was refused...
+    match caller.next().await.unwrap().unwrap() {
+        Message::Close(Some(f)) => assert!(f.reason.contains("not home"), "{f:?}"),
+        other => panic!("expected the 1013 close, got {other:?}"),
+    }
+
+    // ...and the device now waits for a caller that already gave up. In CI
+    // this is where the test sat for PARK_IDLE (300s) before the relay
+    // dropped the leg and `next()` yielded ResetWithoutClosingHandshake.
+    // (Pings start at once -- `interval` fires on its first tick -- so the
+    // question is whether any *bytes* ever arrive.)
+    let deadline = std::time::Duration::from_millis(750);
+    let starved = tokio::time::timeout(deadline, async {
+        loop {
+            match device.next().await.expect("device leg died").unwrap() {
+                Message::Ping(_) => continue,
+                other => break other,
+            }
+        }
+    })
+    .await;
+    assert!(
+        starved.is_err(),
+        "the device should be left parked, got {starved:?}"
     );
 }
