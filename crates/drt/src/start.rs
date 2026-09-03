@@ -281,6 +281,26 @@ impl DeployDriver {
     }
 }
 
+/// The deployment, ready to be driven by a host that owns the loop — a
+/// page (doc/Wasm.md §5). Listeners are refused: a host that cannot bind
+/// a port must not run a deployment that asked for one and silently not
+/// bind it, which is the same refusal a build without `listen` makes.
+pub fn prepare(config: &RootConfig, dispatcher: Dispatcher) -> Result<DeployDriver, String> {
+    if !config.listeners.is_empty() {
+        return Err(no_listeners_here(config.listeners.len()));
+    }
+    DeployDriver::new(config, dispatcher)
+}
+
+fn no_listeners_here(count: usize) -> String {
+    format!(
+        "this config names {count} listener(s), and this build does not carry \
+         `listen` — running the deployment while silently not binding the \
+         port the config asked for is the worst of both. Build with the \
+         `listen` feature, or remove the `listeners` block"
+    )
+}
+
 /// Run the deployment to completion. Returns when the swarm drains — every
 /// instance exited — which for a server-shaped root program is never, and
 /// foreground-forever is the contract.
@@ -295,15 +315,6 @@ pub fn start(config: &RootConfig, dispatcher: Dispatcher) -> Result<(), String> 
     }
     #[cfg(not(feature = "listen"))]
     {
-        if !config.listeners.is_empty() {
-            return Err(format!(
-                "this config names {} listener(s), and this build does not carry \
-                 `listen` — running the deployment while silently not binding the \
-                 port the config asked for is the worst of both. Build with the \
-                 `listen` feature, or remove the `listeners` block",
-                config.listeners.len()
-            ));
-        }
         serve_swarm_only(config, dispatcher)
     }
 }
@@ -406,7 +417,7 @@ pub fn serve_with_observer(
 
 #[cfg(not(feature = "listen"))]
 fn serve_swarm_only(config: &RootConfig, dispatcher: Dispatcher) -> Result<(), String> {
-    let mut driver = DeployDriver::new(config, dispatcher)?;
+    let mut driver = prepare(config, dispatcher)?;
     loop {
         match driver.tick() {
             Next::Sleep(sleep) => {

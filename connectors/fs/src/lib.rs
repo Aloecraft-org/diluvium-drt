@@ -108,7 +108,7 @@ impl FsScope {
     fn resolve(&self, fs: &dyn Backend, rel: &str, must_exist: bool) -> Result<PathBuf, String> {
         let root = self.root(fs)?;
         let rel_path = Path::new(rel);
-        if rel_path.is_absolute() {
+        if names_a_root(rel_path) {
             return Err(format!(
                 "'{rel}' is absolute; name a path inside the granted scope"
             ));
@@ -145,6 +145,14 @@ impl FsScope {
         }
         Ok(resolved)
     }
+}
+
+/// Does the path start at a root? `has_root` rather than `is_absolute`:
+/// on `wasm32-unknown-unknown` std counts `/etc/hosts` as not absolute (it
+/// is neither unix nor wasi there), and the jail's answer must not depend
+/// on which target it is asked on. A prefix (`C:`) counts too.
+fn names_a_root(path: &Path) -> bool {
+    path.has_root() || path.is_absolute()
 }
 
 fn outside(rel: &str) -> String {

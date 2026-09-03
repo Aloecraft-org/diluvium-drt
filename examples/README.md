@@ -70,6 +70,15 @@ cargo build --profile release-small -p drt --no-default-features --features wasi
 cd examples && DRT=../script/drt-wasip2.sh ./run-all.sh
 ```
 
+And against the browser build, in Chromium: the same `cmd` strings typed
+at the in-page shell, the same `expected.txt`, by the runner in
+[`crates/drt-web/browser-test`](../crates/drt-web/browser-test):
+
+```
+script/drt-web.sh                                   # needs WASI_SDK_PATH and the pinned wasm-bindgen
+cd crates/drt-web/browser-test && npm ci && npx playwright install chromium && npm test
+```
+
 Every directory is self-contained: it runs from inside itself and touches
 nothing outside itself. Start with the `cd` — paths inside a config resolve
 against the directory you are standing in, so a config naming `./workspace`
@@ -113,8 +122,9 @@ Named rather than omitted, so you are not left looking for them.
   The half only `drt start` has — the supervisor, the admit question asked
   before a leg proceeds, the STUN pair — is in [`rendezvous/`](rendezvous),
   which wants a machine on either side and so is neither numbered nor gated.
-- **The browser tier.** The same swarm runs in a page over a JS host bridge
-  (`doc/Browser.md`). These examples are a terminal and a binary.
+- **The browser tier.** The same runtime runs in a page behind a terminal
+  contract (`doc/Browser.md`), and the gate above already runs these
+  examples there. What is not numbered is the page itself.
 - **Your own API.** `05-calling-a-rest-api-live` reaches GitHub's because it
   has to name one origin. Pointing it elsewhere is an edit to
   `allowlist.json` and nothing else.

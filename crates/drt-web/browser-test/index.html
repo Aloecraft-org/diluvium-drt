@@ -1,0 +1,130 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>drt in the browser</title>
+<style>
+  body { margin: 0; padding: 1rem 1.25rem; background: #101418; color: #d8dee4;
+         font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  h1 { font-size: 1rem; margin: 0 0 .25rem; }
+  #about { margin: 0 0 1rem; white-space: pre-wrap; color: #8b97a3; }
+  #screen { margin: 0; min-height: 60vh; white-space: pre-wrap; word-break: break-all;
+            outline: none; }
+  #screen:focus::after { content: "\2588"; color: #8b97a3; }
+</style>
+<h1>drt</h1>
+<p id="about">loading pkg/drt_web.js…</p>
+<pre id="screen" tabindex="0"></pre>
+<script type="module">
+  // The page has two readers. A person gets a terminal: the <pre> above,
+  // fed through drt-term.js the way an xterm.js Terminal would be, with a
+  // hello.dlua seeded so `drt run hello.dlua` has something to run. The
+  // suite (run.mjs) gets window.drtBrowserTest: a fresh DrtTerm per
+  // example, files to seed, a cmd line to run through shell.js with stdout
+  // and stderr merged, and the REPL typed at drt-term.js for the parity
+  // check. Same module, same shell, same adapter, either way.
+  import init, { DrtTerm, buildInfo, abiVersion, setPanicHook } from './pkg/drt_web.js';
+  import { makeShell } from './shell.js';
+  import { attach } from './drt-term.js';
+
+  const decode = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+
+  let term = null;
+  let shell = null;
+  let chunks = [];
+  let decoders = [];
+
+  function fresh() {
+    if (term) term.free();
+    chunks = [];
+    decoders = [null, new TextDecoder(), new TextDecoder()];
+    term = new DrtTerm((fd, bytes) => chunks.push(decoders[fd].decode(bytes, { stream: true })));
+    shell = makeShell({ term, write: (fd, text) => chunks.push(text) });
+  }
+
+  const harness = {
+    ready: init().then(() => {
+      setPanicHook();
+      return true;
+    }),
+    buildInfo: (json) => buildInfo(json),
+    abiVersion: () => abiVersion(),
+    seed({ cwd, files, dirs = [] }) {
+      fresh();
+      for (const d of dirs) term.putDir(d);
+      for (const { path, data } of files) term.putFile(path, decode(data));
+      term.setCwd(cwd);
+    },
+    async run(line) {
+      if (!term) fresh();
+      chunks = [];
+      const status = await shell.run(line);
+      return { status, output: chunks.join('') };
+    },
+    async replTranscript(lines) {
+      const out = [];
+      let onData = () => {};
+      const fake = {
+        write: (text) => out.push(text),
+        onData: (cb) => {
+          onData = cb;
+          return { dispose: () => { onData = () => {}; } };
+        },
+      };
+      const bound = attach(DrtTerm, fake);
+      await bound.whenIdle();
+      onData('drt repl\r');
+      for (const line of lines) {
+        await bound.whenIdle();
+        onData(line + '\r');
+      }
+      await bound.whenIdle();
+      onData('\x04');
+      await bound.whenIdle();
+      bound.dispose();
+      bound.term.free();
+      term = null;
+      return out.join('');
+    },
+  };
+  window.drtBrowserTest = harness;
+
+  // depth: the person's terminal, a <pre> with a keyboard.
+  const screen = document.getElementById('screen');
+  const about = document.getElementById('about');
+  try {
+    await harness.ready;
+    about.textContent = buildInfo(false).trimEnd() + `\nabi: ${abiVersion()}\n\n` +
+      'a terminal: type `drt run hello.dlua`, `drt repl`, `drt --help`. click to focus.';
+    const terminal = {
+      write(text) {
+        for (const ch of text) {
+          if (ch === '\b') screen.textContent = screen.textContent.slice(0, -1);
+          else if (ch !== '\r') screen.textContent += ch;
+        }
+        screen.scrollTop = screen.scrollHeight;
+      },
+      onData(cb) {
+        const handler = (e) => {
+          let data = null;
+          if (e.key === 'Enter') data = '\r';
+          else if (e.key === 'Backspace') data = '\x7f';
+          else if (e.ctrlKey && e.key === 'c') data = '\x03';
+          else if (e.ctrlKey && e.key === 'd') data = '\x04';
+          else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) data = e.key;
+          if (data === null) return;
+          e.preventDefault();
+          cb(data);
+        };
+        screen.addEventListener('keydown', handler);
+        return { dispose: () => screen.removeEventListener('keydown', handler) };
+      },
+    };
+    const bound = attach(DrtTerm, terminal);
+    bound.term.putFile('/hello.dlua', new TextEncoder().encode(
+      'print("hello from a page")\nprint("the time is", host.time())\n'));
+    bound.term.setCwd('/');
+    term = null;
+  } catch (e) {
+    about.textContent = `drt_web did not load: ${(e && e.stack) || e}`;
+    throw e;
+  }
+</script>

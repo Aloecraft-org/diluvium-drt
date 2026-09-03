@@ -280,7 +280,7 @@ fn buildinfo_reports_the_embedded_diluvium_revision() {
 /// feature added to the manifest and unknown to this test fails by name.
 #[test]
 fn profile_matches_its_manifest() {
-    const PROFILES: [&str; 3] = ["full", "slim", "wasi"];
+    const PROFILES: [&str; 4] = ["full", "slim", "wasi", "web"];
     const LEAVES: [&str; 12] = [
         "connector-crypto",
         "connector-fs",

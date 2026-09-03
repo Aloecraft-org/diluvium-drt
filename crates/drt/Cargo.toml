@@ -82,6 +82,13 @@ full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-s
 # `netcheck`, `ssh`, `rest`, `ssmtp` -- cannot cross at all (tokio refuses
 # its `net` feature on wasm), so `full` is not a wasm build and this is.
 wasi = ["connector-time", "connector-fs", "connector-crypto", "connector-sql"]
+# The browser build (doc/Wasm.md D3): what `drt-web` links into a page.
+# `wasi` without `sql`, and without `listen`, because a page has neither
+# threads nor sockets to serve on; the fs connector reaches the page's
+# memory filesystem through `drt-platform`. Named here so `buildinfo`
+# reports `web` from inside the page and the examples gate can skip by
+# profile there as it does everywhere else.
+web = ["connector-time", "connector-fs", "connector-crypto"]
 connector-time = ["dep:drt-connector-time"]
 connector-ssh = ["dep:drt-connector-ssh"]
 connector-fs = ["dep:drt-connector-fs"]

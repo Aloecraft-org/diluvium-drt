@@ -89,33 +89,72 @@ jobs:
       - run: ./script/changelog.py check
       - run: ./script/changelog.py consistency
 
-  wasm:
-    # The browser tier compiles for its actual target, on every push.
+  browser:
+    # The browser tier (doc/Wasm.md D3, M4): `drt-web` for
+    # wasm32-unknown-unknown with the C core and wasi-libc linked in, the
+    # glue from the wasm-bindgen CLI the crate pins, and the examples gate
+    # run in Chromium through the in-page shell
+    # (crates/drt-web/browser-test/run.mjs) -- the same expected.txt that
+    # gates the native binary and the wasmtime build. The REPL parity
+    # check rides along: the lines in repl-script.txt typed at drt-term.js
+    # must produce what the native `drt repl` produced for them.
     #
-    # NOT in the release matrix, deliberately: `drt-web` is a cdylib, so a
-    # `.wasm` does get produced, but it currently has exactly one export
-    # (`memory`) and no callable functions — there is no wasm-bindgen
-    # export layer yet (task #31). Publishing that would put a name in
-    # releases.json for a file nobody can call, and the artifact's contents
-    # would change completely the day exports land while the name stayed
-    # the same. A release artifact is a compatibility surface; an inert one
-    # is a promise you cannot keep.
-    #
-    # What IS worth having now is this: the Lab's Stage 3 depends on
-    # drt-web still compiling for wasm32, and without this job the day it
-    # stops compiling is the day someone starts that work, not the day it
-    # broke. Thirty seconds a push to move that discovery earlier.
+    # The crate's native half -- tests/term.rs over the rlib -- runs in
+    # `test` with the rest of the workspace; this job is the browser.
     runs-on: ubuntu-latest
+    env:
+      WASI_SDK_VERSION: "27.0"
+      WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - name: Build drt-web for wasm32
-        run: cargo build -p drt-web --target wasm32-unknown-unknown
-      - name: Its tests, natively (the rlib half is why they can run at all)
-        run: cargo test -p drt-web
+        with:
+          key: browser
+      - name: wasi-sdk, cached
+        id: wasi-sdk
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/wasi-sdk
+          key: wasi-sdk-${{ env.WASI_SDK_VERSION }}-x86_64-linux
+      - name: wasi-sdk, fetched
+        if: steps.wasi-sdk.outputs.cache-hit != 'true'
+        run: |
+          set -eu
+          major=${WASI_SDK_VERSION%%.*}
+          curl -fsSL -o "$RUNNER_TEMP/wasi-sdk.tar.gz" \
+            "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${major}/wasi-sdk-${WASI_SDK_VERSION}-x86_64-linux.tar.gz"
+          tar -C "$RUNNER_TEMP" -xzf "$RUNNER_TEMP/wasi-sdk.tar.gz"
+          mv "$RUNNER_TEMP/wasi-sdk-${WASI_SDK_VERSION}-x86_64-linux" "$WASI_SDK_PATH"
+      # The CLI's version is read off the crate's pin, so the two cannot
+      # drift apart in this file; script/drt-web.sh checks them against
+      # each other again before it runs.
+      - name: wasm-bindgen-cli, the pinned version
+        run: |
+          set -eu
+          v=$(sed -n 's/^wasm-bindgen = "=\([0-9.]*\)"/\1/p' crates/drt-web/Cargo.toml)
+          curl -fsSL -o "$RUNNER_TEMP/wbg.tar.gz" \
+            "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${v}/wasm-bindgen-${v}-x86_64-unknown-linux-musl.tar.gz"
+          tar -C "$RUNNER_TEMP" -xzf "$RUNNER_TEMP/wbg.tar.gz"
+          sudo install "$RUNNER_TEMP/wasm-bindgen-${v}-x86_64-unknown-linux-musl/wasm-bindgen" /usr/local/bin/wasm-bindgen
+          wasm-bindgen --version
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/drt-web/browser-test/package-lock.json
+      - name: Build the module and its glue
+        run: script/drt-web.sh
+      - name: Playwright, and its Chromium
+        working-directory: crates/drt-web/browser-test
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: The examples gate, in Chromium
+        working-directory: crates/drt-web/browser-test
+        run: npm test
 
   wasip2:
     # The portable build (doc/Wasm.md D2, M1): `drt` itself, for

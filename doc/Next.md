@@ -185,8 +185,10 @@ roster query is a small thing hanging off it.
 **Superseded by `doc/Wasm.md` (2026-09-03).** The sizing below assumed the
 JS-host-in-the-middle design; the plan there links the C core into the
 browser module instead, measured on this tree, and re-sizes the work as
-milestones M1–M7. Kept for the record and for the "what is already
-there" list, which is still accurate.
+milestones M1–M7. M1–M4 and M7 landed the same day: the browser artifact
+ships from `release.yml`'s `build-web` leg, admitted by the examples gate
+running in Chromium (`doc/Browser.md`). Kept for the record; the "what is
+already there" list below describes the bridge that M7 retired.
 
 `drt-web` became a second-class citizen, and there is a visible feedback
 loop in this repository's own reasoning about why. `ci.yml:80-87` and

@@ -1,30 +1,35 @@
-//! The browser tier: DRT's swarm driven over a JS-hosted diluvium instance.
+//! The browser tier (doc/Wasm.md D3): the same `drt` the binary is, with
+//! the C core linked in, behind a terminal contract a page attaches
+//! xterm.js to.
 //!
-//! `doc/Browser.md` is the contract this implements; read it first. The
-//! short version: two wasm modules cannot call each other in a browser, so
-//! JS is the host in the middle. DRT's swarm — the whole `dvs.c` port —
-//! runs here in wasm, and reaches the interpreter by calling back out.
+//! Nothing here is a second runtime. [`term::Term::exec`] parses a command
+//! line with the binary's own `Cli`, assembles the same config and
+//! dispatcher, and drives the same `Solo`, `Repl` and `DeployDriver` the
+//! native loops drive -- the one thing a page cannot share is the loop
+//! itself, which may not sleep, so [`term::Session::tick`] hands the sleep
+//! to the page. The platform underneath is `drt-platform`'s browser half:
+//! a `MemFs` the page seeds, `web-time` for the clock, `getrandom`'s
+//! `wasm_js` backend, and a stdio sink the page installs -- which is also
+//! where wasi-libc's `fd_write` lands (`wasi_shim`), so the C core's
+//! `print` and the runtime's own text reach the same terminal in order.
 //!
-//! The crate is built so that almost none of it is browser-only:
-//! [`bridge::HostBridge`] is the JS contract expressed as a Rust trait, and
-//! the engine and the host are written against it. A mock bridge in the
-//! tests drives a real `Swarm`, so this gets ordinary `cargo test`
-//! coverage rather than only being exercisable in a browser.
+//! The crate is built so that almost none of it is browser-only: `term`
+//! compiles and is tested natively (`tests/term.rs`), and the two
+//! browser-only files are marshalling (`bindings`) and syscalls
+//! (`wasi_shim`).
 //!
-//! **What is not here yet (task #31), so nobody reads this crate as
-//! finished:** there is no `wasm_bindgen` in it at all. That means no
-//! exports — JS cannot call in — and no glue binding a real JS object to
-//! `HostBridge` — the wasm cannot call out. Both directions are described
-//! and neither is wired, so the crate compiles to a `.wasm` that exports
-//! only `memory`. There is also no connector/pump layer: native DRT routes
-//! guest hostcalls through `PumpHost` and a `Dispatcher`, and the browser
-//! tier's equivalent — pumping the queues the bridge already exposes out
-//! to JS-side connectors — is the third piece of #31.
+//! ## surface block
+//!
+//! - [`term::Term`], [`term::Session`], [`term::Step`]: the contract.
+//! - `bindings` (browser only): the wasm-bindgen exports -- `DrtTerm`,
+//!   `DrtSession`, `abiVersion`, `buildInfo`, `setPanicHook`.
+//! - `wasi_shim` (browser only): wasi-libc's seventeen syscalls.
 
-pub mod bridge;
-pub mod engine;
-pub mod host;
+pub mod term;
 
-pub use bridge::{Driven, HostBridge, InstanceHandle};
-pub use engine::{BrowserEngine, BrowserInstance};
-pub use host::JsHost;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod bindings;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod wasi_shim;
+
+pub use term::{Session, Step, Term};

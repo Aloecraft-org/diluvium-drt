@@ -528,25 +528,46 @@ what it is over. Contents:
   certain to be linked.
 - **`platform.rs`** — the browser side of `drt-platform`'s traits over
   the host object: `now`, `random`, the fs seed/drain, the output sink.
-- **`Cargo.toml`** — `wasm-bindgen = "=0.2.127"`, pinned, with the
-  branch's sentence about why; `serde-wasm-bindgen`, `js-sys`,
-  `console_error_panic_hook` as the branch has them. The `.cargo/config.toml`
+- **`Cargo.toml`** — `wasm-bindgen = "=0.2.114"`, pinned. Not 0.2.127
+  as first planned: `ego_transport` pins `=0.2.114` and a lockfile holds
+  one version, so the pin stays where the workspace's is, and 0.2.114's
+  one objection to this module (§2.3, `__instance_terminated`) is met by
+  defining that flag in `bindings.rs` -- a `u32` the linker exports as
+  the `i32` global the glue reads -- to be deleted when the pin moves.
+  `js-sys`, `console_error_panic_hook`. The `.cargo/config.toml`
   rustflags for the target: `--cfg getrandom_backend="wasm_js"` and
-  `-C link-arg=--allow-undefined` (the latter only until every symbol is
-  accounted for; the build should then drop it so a new undefined symbol
-  is a link error rather than a silent `env` import — the same argument
-  `diluvium-sys`'s `assert_object_format` makes).
+  nothing else -- `--allow-undefined` turned out unnecessary, every
+  symbol is accounted for, and a new undefined one is a link error.
 - **`build.rs`** — copies `libc.a` from `WASI_SDK_PATH`'s sysroot into
   `OUT_DIR` under a name that is not `c`, and links it. The same
   `WASI_SDK_PATH` `diluvium-sys` already requires for this target, so no
   new environment variable.
+- **`start`** (`bindings.rs`, `#[wasm_bindgen(start)]`) — calls
+  `__wasm_call_ctors` once at load: the reactor convention by hand.
+  Found the hard way: a module that carries constructors and never calls
+  them gets wasm-ld's *command* treatment instead, every export wrapped
+  to run the constructors before and libc's destructors after, and the
+  destructor flushes stdout into the sink, which allocates a JS value
+  through an export, which runs the destructors -- a stack overflow on
+  the first `print`, in the first browser run of the suite.
+- **`script/drt-web.sh`** — `cargo build` for the target plus
+  `wasm-bindgen --target web` into `browser-test/pkg/`, refusing a CLI
+  whose version is not the crate's pin; and it names
+  `script/drt-web-cc.sh` as the C compiler, which is the wasi-sdk's clang
+  minus `-DLUA_USE_C89` (§7).
+
+Not in the crate, by the measurements: `platform.rs` (the leaf adapters
+are `drt-platform`'s and the page hands over nothing but a sink) and
+`swarm.rs` (the Instances panel's export table, M5).
 
 The build produces `drt_web_bg.wasm` and `drt_web.js` (wasm-bindgen
-`--target web`), and one hand-written `drt-term.js` (~150 lines) that
-binds a `DrtTerm` to an xterm.js `Terminal`: `onData` → `feed`, the sink →
-`terminal.write`, `tick` scheduling via `setTimeout`, and a readline
-addon for line editing. That file is the CDN audience's entry point and
-the Lab's.
+`--target web`), and two hand-written files: `drt-term.js`, which binds
+a `DrtTerm` to anything with xterm.js's `write` and `onData` -- a `$ `
+prompt, a line editor, `dv> `/`>> ` when a session wants a line, `tick`
+scheduling via `setTimeout` -- and `shell.js` behind it, just enough sh
+to run the examples' `cmd` strings (`;`, quotes, `$?`, `echo`, `drt`).
+Those two files are the CDN audience's entry point and the Lab's, and
+they ship in `drt_web.tar.gz` beside the module (doc/Browser.md).
 
 **Panic posture** (from §2.4): the `guard` wrapper stays because it is
 free, and no export may rely on it. A page that catches a trap discards
@@ -674,7 +695,19 @@ the next tick, and an idle deployment's tick cadence matches
 `IDLE_TICK`/`next_deadline` exactly (the relay-spins-a-core regression
 test). Lands alone.
 
-**M4 — `drt-web`, second shape. ~1.5-2 weeks.** §4.4 and §5: the wasi-libc
+**M4 — `drt-web`, second shape. ~1.5-2 weeks. Landed 2026-09-03**
+(`crates/drt-web`: `term.rs`, `bindings.rs`, `wasi_shim.rs`, `build.rs`;
+`crates/drt/src/cli.rs` is the binary's `main.rs` moved into the library
+so a page parses the same command line; the `web` profile in
+`crates/drt/Cargo.toml` and `buildinfo`; `script/drt-web.sh`;
+`browser-test/` with `shell.js`, `drt-term.js`, `run.mjs`; the `browser`
+job in `ci.yml`; `build-web` and `profile.web.connectors` in
+`release.yml`. The gate: 01, 02, 03, 04, 06, 08, 12 and the REPL parity
+check pass in Chromium 141, 10 skipped by profile or network -- the same
+seven examples wasmtime passes. Two things the suite found on its first
+run that nothing else would have: the command-export recursion, and the
+C core's 32-bit integers, both in §4.4 and §7. The swarm exports move to
+M5, where their consumer is.) §4.4 and §5: the wasi-libc
 link and the syscall shim, the wasm-bindgen pin move, `DrtTerm`, the
 swarm exports from the branch, `drt-term.js`, and a Playwright suite (from
 the branch's harness) that runs examples `01`, `02`, `03`, `06` and `12`
@@ -707,7 +740,10 @@ directly there. Gate: `examples/08` and a listener example served under
 serves a fetchpoint from wasmtime, which is the "completely portable"
 half of the ask.
 
-**M7 — retire the JS-host bridge.** Delete `bridge.rs`, `engine.rs`,
+**M7 — retire the JS-host bridge. Landed 2026-09-03, with M4** (the
+four files deleted in the same change that replaced them, since the
+crate could not carry both shapes; `doc/Browser.md` rewritten to the
+terminal contract). Delete `bridge.rs`, `engine.rs`,
 `host.rs`, `tests/bridge.rs` and the branch's `js_bridge.rs`; rewrite
 `doc/Browser.md` to the terminal contract and the export table; close the
 branch. Zero risk once M4's suite is green, and not before.
@@ -737,11 +773,22 @@ served-deployment story.
   `ego_platform`'s shape, and fold it in when `drt` takes `ego_transport`
   on wasm — at which point `ego_platform` is in the browser build anyway.
   Reversible either way; the traits are the same four.
-- **The wasm-bindgen pin, across three repositories.** `=0.2.127` here;
-  `ego_transport` and `ego_platform` pin `=0.2.114`. A browser build
-  carrying transport needs one version. Upstream ask, filed with this
-  document's §2.3 as the reason; until then `drt-web` builds without
-  transport, which M4 does not need.
+- **The wasm-bindgen pin, across three repositories.** `=0.2.114`
+  everywhere, because `ego_transport` and `ego_platform` pin it and one
+  lockfile holds one version; `drt-web` pays for that with the
+  `__instance_terminated` definition in `bindings.rs` (§2.3, §4.4).
+  Upstream ask: move `ego_transport`'s pin to 0.2.127 or later, and the
+  definition here is deleted the same day. Not blocking anything.
+- **`-DLUA_USE_C89` in diluvium-sys, for `wasm32-unknown-unknown`.** The
+  flag dates from the target having no libc and makes `lua_Integer` a
+  32-bit `long`; `host.time()` -- milliseconds since the epoch -- does not
+  fit, and the browser suite found it on its first run (01 and 12 fail on
+  the clock). The module links wasi-libc now, so the core can be the same
+  C99 build the wasip2 target gets. Upstream ask, in diluvium-sys's
+  `Platform::Browser` flags: drop the define. Until then
+  `script/drt-web-cc.sh` strips it, and `script/drt-web.sh` names that
+  wrapper as the target's CC. The wrapper is the only thing in this tree
+  that knows diluvium-sys's flags; delete it when the ask lands.
 - **Whether the Lab's cells should run on `drt` too.** One runtime is the
   doctrine; the notebook kernel is Lua-with-more, unsealed, and `drt run`
   is sealed by design. A `drt` verb that hosts an unsealed evaluator
@@ -780,9 +827,20 @@ cd examples && DRT=../script/drt-wasip2.sh ./run-all.sh
 `wasmtime run --allow-precompiled ... drt.cwasm` for the 10 ms start.
 Serving needs `-S inherit-network=y -S tcp=y` and M6.
 
+**The browser build and gate**, exactly as run (the pieces below are
+what the spike established and `crates/drt-web` now carries):
+
+```sh
+export WASI_SDK_PATH=/opt/wasi-sdk-27.0-x86_64-linux
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.114 --locked   # the crate's pin, exactly
+script/drt-web.sh                       # -> crates/drt-web/browser-test/pkg
+cd crates/drt-web/browser-test && npm ci && npx playwright install chromium && npm test
+```
+
 **The browser spike**, reduced to its three load-bearing pieces. A
-`cdylib` over `drt-swarm` (default features) and `wasm-bindgen =
-"=0.2.127"`, with `.cargo/config.toml`:
+`cdylib` over `drt-swarm` (default features) and `wasm-bindgen`, with
+`.cargo/config.toml`:
 
 ```toml
 [target.wasm32-unknown-unknown]

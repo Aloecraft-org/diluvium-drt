@@ -1172,8 +1172,12 @@ dependencies = [
 name = "drt-web"
 version = "0.4.1"
 dependencies = [
- "drt-caps",
+ "clap",
+ "console_error_panic_hook",
+ "drt",
  "drt-config",
+ "drt-connector",
+ "drt-platform",
  "drt-swarm",
  "js-sys",
  "wasm-bindgen",

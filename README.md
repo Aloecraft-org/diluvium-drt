@@ -27,7 +27,7 @@ hostcall encoding (moved here from diluvium).
 | [`crates/drt-connector`](crates/drt-connector) | The `Connector` trait, registry, capability gating, and the dispatcher that guarantees every drained request is answered. Mocks implement the same trait; guests cannot tell. |
 | [`crates/drt-swarm`](crates/drt-swarm) | The swarm: `dvs.c` semantics ported over the `Engine` seam (instance table, attenuated caps with provenance, lifecycle drain, budgets, hibernation + `wake_on_message`); the snapshot store; endpoint refs. |
 | [`crates/drt`](crates/drt) | The binary: `run` \| `start` \| `repl` \| `relay` \| `tunnel` \| `ps` — see SPEC.md §13a. |
-| [`crates/drt-web`](crates/drt-web) | The browser tier: an `Engine` over a JS host bridge, so the same swarm runs in a page. See [`doc/Browser.md`](doc/Browser.md). |
+| [`crates/drt-web`](crates/drt-web) | The browser tier: the same `drt`, C core linked in, behind a terminal contract a page attaches xterm.js to. See [`doc/Browser.md`](doc/Browser.md). |
 | [`connectors/`](connectors) | Connector implementations, each feature-gated: `time`, `fs` and `sql` (each a granted directory) and `ssh` (client, `host:ssh/exec`) today; `listen` and `exec` per SPEC.md §7. |
 
 ## Building
@@ -118,8 +118,9 @@ in another process, which is the control endpoint's job and lands with sshd.
 
 A seams-only build (`--no-default-features`) compiles the traits without the
 C core. The wasm targets link the C core in — `drt` itself builds for
-`wasm32-wasip2` and runs under wasmtime today; the browser build and the
-plan for both are [`doc/Wasm.md`](doc/Wasm.md).
+`wasm32-wasip2` and runs under wasmtime, and `drt-web` is the same runtime
+for a page, where the examples pass through an in-page shell in Chromium;
+the plan and the recipes for both are [`doc/Wasm.md`](doc/Wasm.md).
 
 ## Writing a program
 

@@ -1,0 +1,12 @@
+{
+  "name": "drt-browser-test",
+  "private": true,
+  "description": "The browser suite: the examples gate run through drt-web in Chromium",
+  "type": "module",
+  "scripts": {
+    "test": "node run.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.56.1"
+  }
+}

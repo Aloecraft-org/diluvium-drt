@@ -170,11 +170,11 @@ link resolves today, and the message is deliberately the *only* place it
 appears — a missing `relay` block or an unparseable program are different
 problems, and answering those with a package manager would be noise.
 
-### wasm32-wasip2 is in the matrix; the browser is not, yet
+### Both wasm targets are in the matrix
 
-Two wasm targets, two answers, both decided by the rule every leg in the
-matrix obeys: an artifact joins when it can be verified the way the others
-are -- by *running* it.
+Two wasm targets, two artifacts, both admitted by the rule every leg in
+the matrix obeys: an artifact joins when it can be verified the way the
+others are -- by *running* it.
 
 **`drt_wasip2.wasm` ships**, from the `build-wasip2` job (2026-09-03,
 doc/Wasm.md M1). It is `drt` itself, built for `wasm32-wasip2` with the
@@ -196,16 +196,26 @@ the acceptor spawns one per connection (doc/Wasm.md M6 is the rewrite).
 A config naming a listener is refused by name, as it is on any build
 without the feature.
 
-**The browser artifact does not ship yet**, and the reason is the one
-this section has always given: nothing on the runner can verify it the
-way the others are verified. What admits it is doc/Wasm.md M4 -- the
-examples run in Chromium and diffed against `expected.txt`. A node smoke
-step asserting `abiVersion() === 1`, which an earlier draft of this
-section proposed as the trigger, would not: doc/Next.md §7 records the
-one browser-vs-native divergence this project has actually met, and node
-cannot see it. Meanwhile `ci.yml`'s `wasm` job compiles `drt-web` for
-wasm32-unknown-unknown on every push, which guards a different property
--- *does it still build* -- and is not a substitute for the release entry.
+**`drt_web.tar.gz` ships**, from the `build-web` job (2026-09-03,
+doc/Wasm.md M4), and it is admitted by exactly what this section said
+would admit it: the examples run in Chromium, through the in-page shell,
+and are diffed against `expected.txt` before the artifact is uploaded --
+the same gate the native binary and the wasmtime build pass, plus the
+REPL parity check (`crates/drt-web/browser-test`). The tarball is the
+`web` profile of `drt` -- `time`, `fs`, `crypto` -- with the C core and
+wasi-libc linked in: `drt_web_bg.wasm`, the wasm-bindgen glue
+`drt_web.js`, and `drt-term.js` with `shell.js` behind it, which is what
+attaches the module to a terminal (doc/Browser.md). BUILDINFO gains
+`profile.web.connectors`, read off the module *inside Chromium* -- the
+runner writes the page's `buildinfo` beside the tarball -- because a
+browser module cannot be asked from a shell and the rule is that the
+bytes say what they carry, not the YAML. A node smoke step asserting
+`abiVersion() === 1`, which an earlier draft proposed as the trigger,
+would not have done: doc/Next.md §7 records the one browser-vs-native
+divergence this project had met before this suite, and node cannot see
+it; the suite found a second one on its first run (the C core built with
+32-bit integers for the browser, doc/Wasm.md §7) that no smoke step
+would have either.
 
 An earlier draft of this section argued instead that publishing an inert
 artifact would create a compatibility surface whose contents change while
@@ -469,9 +479,20 @@ script/drt-wasip2.sh run examples/hello.dlua        # wasmtime, with the flags i
 cd examples && DRT=../script/drt-wasip2.sh ./run-all.sh
 ```
 
+The browser build, which is what `build-web` publishes. It needs the
+wasm-bindgen CLI at the exact version `crates/drt-web/Cargo.toml` pins
+(the script refuses any other), and Playwright's Chromium for the suite:
+
+```
+export WASI_SDK_PATH=/opt/wasi-sdk-27.0-x86_64-linux
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version "$(sed -n 's/^wasm-bindgen = "=\([0-9.]*\)"/\1/p' crates/drt-web/Cargo.toml)" --locked
+script/drt-web.sh                                    # cargo build + wasm-bindgen, into crates/drt-web/browser-test/pkg
+cd crates/drt-web/browser-test && npm ci && npx playwright install chromium && npm test
+```
+
 `--no-default-features` still carries the swarm and the capability layers
-without the C core, and is what `ci.yml`'s `wasm` job builds `drt-web` as
-until doc/Wasm.md M4 lands.
+without the C core, for a host that brings its own engine.
 
 ## Installing
 

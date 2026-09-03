@@ -278,9 +278,92 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  build-web:
+    # The browser leg (doc/Wasm.md D3, M4): `drt-web` for
+    # wasm32-unknown-unknown, the `web` profile, with the C core and
+    # wasi-libc linked in. Proven the way the wasip2 leg is and harder: the
+    # browser suite -- the examples gate through the in-page shell, in
+    # Chromium, plus the REPL parity check -- runs before the artifact is
+    # uploaded. Ships as one tarball, because a page needs all of it: the
+    # module, wasm-bindgen's glue, and drt-term.js with shell.js behind it.
+    # `buildinfo` is read off the module inside Chromium (run.mjs writes
+    # it out) so publish can put the profile in BUILDINFO the same way it
+    # does for every other leg: from the bytes, not from YAML.
+    name: Build (web)
+    needs: [preflight, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      WASI_SDK_VERSION: "27.0"
+      WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: browser
+      - name: wasi-sdk, cached
+        id: wasi-sdk
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/wasi-sdk
+          key: wasi-sdk-${{ env.WASI_SDK_VERSION }}-x86_64-linux
+      - name: wasi-sdk, fetched
+        if: steps.wasi-sdk.outputs.cache-hit != 'true'
+        run: |
+          set -eu
+          major=${WASI_SDK_VERSION%%.*}
+          curl -fsSL -o "$RUNNER_TEMP/wasi-sdk.tar.gz" \
+            "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${major}/wasi-sdk-${WASI_SDK_VERSION}-x86_64-linux.tar.gz"
+          tar -C "$RUNNER_TEMP" -xzf "$RUNNER_TEMP/wasi-sdk.tar.gz"
+          mv "$RUNNER_TEMP/wasi-sdk-${WASI_SDK_VERSION}-x86_64-linux" "$WASI_SDK_PATH"
+      - name: wasm-bindgen-cli, the pinned version
+        run: |
+          set -eu
+          v=$(sed -n 's/^wasm-bindgen = "=\([0-9.]*\)"/\1/p' crates/drt-web/Cargo.toml)
+          curl -fsSL -o "$RUNNER_TEMP/wbg.tar.gz" \
+            "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${v}/wasm-bindgen-${v}-x86_64-unknown-linux-musl.tar.gz"
+          tar -C "$RUNNER_TEMP" -xzf "$RUNNER_TEMP/wbg.tar.gz"
+          sudo install "$RUNNER_TEMP/wasm-bindgen-${v}-x86_64-unknown-linux-musl/wasm-bindgen" /usr/local/bin/wasm-bindgen
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/drt-web/browser-test/package-lock.json
+      - name: Build the web profile
+        run: DRT_WEB_PROFILE=release-small script/drt-web.sh
+      - name: The browser suite, in Chromium
+        working-directory: crates/drt-web/browser-test
+        run: |
+          set -eu
+          npm ci
+          npx playwright install --with-deps chromium
+          DRT_WEB_BUILDINFO="$GITHUB_WORKSPACE/drt_web.buildinfo.txt" npm test
+          grep -q '^profile: web$' "$GITHUB_WORKSPACE/drt_web.buildinfo.txt"
+      - name: Package
+        run: |
+          set -eu
+          mkdir drt_web
+          pkg=crates/drt-web/browser-test
+          cp "$pkg/pkg/drt_web.js" "$pkg/pkg/drt_web_bg.wasm" "$pkg/pkg/drt_web.d.ts" \
+             "$pkg/pkg/drt_web_bg.wasm.d.ts" "$pkg/drt-term.js" "$pkg/shell.js" drt_web/
+          tar -czf drt_web.tar.gz drt_web
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drt-web
+          path: |
+            drt_web.tar.gz
+            drt_web.buildinfo.txt
+          if-no-files-found: error
+          retention-days: 30
+
   publish:
     name: Publish release
-    needs: [preflight, test, build, build-wasip2]
+    needs: [preflight, test, build, build-wasip2, build-web]
     if: needs.preflight.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -348,6 +431,10 @@ jobs:
           # The wasip2 component runs under wasmtime; same question, same
           # answer format, read off the artifact (doc/Wasm.md D2).
           WASI_CONNECTORS=$(wasmtime run -W exceptions=y ./drt_wasip2.wasm buildinfo 2>/dev/null | sed -n 's/^connectors: //p')
+          # The browser module answered `buildinfo` inside Chromium in the
+          # build-web job, which wrote the answer beside the tarball; that
+          # is as close to "read off the artifact" as a page gets.
+          WEB_CONNECTORS=$(sed -n 's/^connectors: //p' drt_web.buildinfo.txt 2>/dev/null || true)
           {
             echo "tag: ${{ needs.preflight.outputs.tag }}"
             echo "commit: ${{ needs.preflight.outputs.sha }}"
@@ -366,6 +453,9 @@ jobs:
             # `drt_wasip2.wasm`: run it with
             #   wasmtime run -W exceptions=y --dir . drt_wasip2.wasm run app.dlua
             echo "profile.wasi.connectors: ${WASI_CONNECTORS:-unknown}"
+            # `drt_web.tar.gz`: drt_web_bg.wasm, drt_web.js, drt-term.js and
+            # shell.js -- attach it to a terminal per doc/Browser.md.
+            echo "profile.web.connectors: ${WEB_CONNECTORS:-unknown}"
           } > BUILDINFO.txt
           sha256sum drt_* BUILDINFO.txt > SHA256SUMS.txt
           cat BUILDINFO.txt SHA256SUMS.txt

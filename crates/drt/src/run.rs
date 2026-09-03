@@ -24,12 +24,13 @@ use crate::drive::{Next, Outcome, Solo};
 /// and the explanation is not this file's to hold.
 const BUDGET_ESCAPE_DOC: &str = "doc/Ask-0.5.0-Reply.md \u{a7}1.2";
 
-pub fn run(
+/// Load the program under the ceiling. Nothing runs until the first tick.
+pub fn prepare(
     program: &Path,
     dispatcher: Arc<Dispatcher>,
     caps: Vec<Grant>,
     budget: drt_config::Budget,
-) -> Result<(), String> {
+) -> Result<Solo, String> {
     let source = drt_platform::fs::read_to_string(program)
         .map_err(|e| format!("cannot read {}: {e}", program.display()))?;
     let name = program
@@ -42,7 +43,7 @@ pub fn run(
     // no config). What is actually reachable is the intersection with what
     // this build wires — an unwired family answers `denied` either way.
     let caps: Arc<CapSet> = CapSet::root(caps);
-    let mut solo = Solo::load(
+    Solo::load(
         &engine,
         LoadSpec {
             program: ProgramBytes::Source(&source),
@@ -51,42 +52,58 @@ pub fn run(
             unsafe_stdlib: false,
         },
         caps,
-        dispatcher.clone(),
-    )?;
+        dispatcher,
+    )
+}
 
+/// What a tick's answer means for the run: `None` while the host should
+/// sleep and tick again, `Some` when the run is over — cleanly, or with
+/// the sentence `drt run` says for it. The wording lives here so a
+/// terminal in a page says what a shell says.
+pub fn settle(next: &Next, dispatcher: &Dispatcher) -> Option<Result<(), String>> {
+    Some(match next {
+        Next::Sleep(_) => return None,
+        Next::Done(Outcome::Exited) => finish(dispatcher),
+        Next::Done(Outcome::Exceeded) => Err(format!(
+            "the program exhausted its instruction budget and then \
+             continued: the budget was caught as an ordinary error and \
+             stopped being enforced. Exit status reports it because \
+             nothing else can ({BUDGET_ESCAPE_DOC})."
+        )),
+        Next::Failed(why) => Err(why.clone()),
+        Next::Stuck { for_space: true } => Err(
+            "the program is parked waiting for space in a queue this run never drains".to_string(),
+        ),
+        Next::Stuck { for_space: false } => Err(
+            "the program is parked waiting on queues nothing in `drt run` will push to \
+             (a served deployment or a swarm parent would); it will never wake"
+                .to_string(),
+        ),
+        // `run` feeds no input queue, so a tick never asks for one.
+        Next::Input => {
+            Err("the program is waiting for input, and `drt run` has none to give".into())
+        }
+    })
+}
+
+/// The native loop: [`prepare`], then tick and sleep until [`settle`] says
+/// it is over.
+pub fn run(
+    program: &Path,
+    dispatcher: Arc<Dispatcher>,
+    caps: Vec<Grant>,
+    budget: drt_config::Budget,
+) -> Result<(), String> {
+    let mut solo = prepare(program, dispatcher.clone(), caps, budget)?;
     loop {
-        match solo.tick(None) {
-            // We own the clock (the instance has none): honour the ask.
-            Next::Sleep(how_long) => std::thread::sleep(how_long),
-            Next::Done(Outcome::Exited) => return finish(&dispatcher),
-            Next::Done(Outcome::Exceeded) => {
-                return Err(format!(
-                    "the program exhausted its instruction budget and then \
-                     continued: the budget was caught as an ordinary error and \
-                     stopped being enforced. Exit status reports it because \
-                     nothing else can ({BUDGET_ESCAPE_DOC})."
-                ))
-            }
-            Next::Failed(why) => return Err(why),
-            Next::Stuck { for_space: true } => {
-                return Err(
-                    "the program is parked waiting for space in a queue this run never drains"
-                        .to_string(),
-                )
-            }
-            Next::Stuck { for_space: false } => {
-                return Err(
-                    "the program is parked waiting on queues nothing in `drt run` will push to \
-                     (a served deployment or a swarm parent would); it will never wake"
-                        .to_string(),
-                )
-            }
-            // `run` feeds no input queue, so a tick never asks for one.
-            Next::Input => {
-                return Err(
-                    "the program is waiting for input, and `drt run` has none to give".into(),
-                )
-            }
+        let next = solo.tick(None);
+        // We own the clock (the instance has none): honour the ask.
+        if let Next::Sleep(how_long) = next {
+            std::thread::sleep(how_long);
+            continue;
+        }
+        if let Some(ended) = settle(&next, &dispatcher) {
+            return ended;
         }
     }
 }
