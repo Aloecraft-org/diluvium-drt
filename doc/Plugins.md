@@ -100,11 +100,13 @@ family, same status vocabulary, same token echo.
 - `PluginConnector: Connector`, over a `Channel` trait with the platform
   code in leaf impls. `ProcessChannel` natively: fork and exec with the
   discipline `connectors/exec` already has (own process group, fd 3
-  kept, absolute path, no `PATH`), a reader thread pushing reply frames
-  over an mpsc into the drive loop. That is the bridge shape the relay,
-  STUN and http listener already use, and it needs no tokio, so the
-  no-reactor failure class cannot reach it. A browser `Channel` later is
-  a JS function or Worker speaking the same frame bodies.
+  kept, absolute path, no `PATH`), and the frames driven by a polled
+  state machine over the non-blocking socket, stepped from the drive loop
+  (§4.1) -- not a reader thread, because the same state machine has to
+  run where there are no threads. It needs no tokio, so the no-reactor
+  failure class cannot reach it. A `tcp` channel obtains its stream by
+  dialing instead of forking and shares everything else; a browser
+  `Channel` later is a WebSocket or a Worker speaking the same frames.
 - Error mapping is fixed by the wire: a `value` becomes `Reply::ok`; an
   `error` becomes `Reply::error` with class, code and message folded into
   `detail` exactly as `dhost_plugin.c`'s `fail_call` spells it, so
@@ -134,20 +136,131 @@ so it can honour it. Two tables for the same thing would be the mistake.
 A blocking `PluginConnector` in the style of `rest` is a fair stopgap for
 `drt run` but not for a deployment.
 
-## 4. Per target
+## 4. Per target, and the transport that decides it
 
-Natively, the process transport. On wasip2 there are no threads and no
-subprocesses, so the process transport is cfg'd off and plugins are
-honestly native-only in the first cut; the eventual portable transport is
-a wasm component, which SPEC.md §7 already names as the only place WIT
-enters. In the browser the transport is a JS function or Worker, and it
-depends on the deferred pump exactly as `fetch` does.
+The first draft of this section said plugins were native-only because a
+plugin is a process and wasip2 cannot spawn one. That is true and it is
+the wrong conclusion. The protocol is frames over a byte stream; the
+socketpair on fd 3 is one way to *obtain* the stream, and it is the
+only part of the design that needs a fork. Separate the two and plugins
+run everywhere the stream does.
 
-The safe order against the wasm branch: codec, manifest and process
-channel first, testable against `plugin_echo.c` with no drive-loop
-change; then config, the `.host.lua` key and `capabilities/list`; then
-the in-flight integration after M3 merges. The JS-host bridge files
-`drt-web` deletes in M7 are not a foundation for a browser transport.
+### 4.1 The transports
+
+| transport | obtains the stream by | who starts the plugin | works on |
+|---|---|---|---|
+| `socketpair` | DRT forks, execs an absolute path, hands over fd 3 | DRT, per deployment | native unix; the C host's, kept for its manifests |
+| `tcp` | DRT dials an address, loopback by default | the operator: a service, a sidecar, a Windows service | native unix, native windows, **wasip2 under wasmtime** |
+| websocket | the page dials | the page | the browser tier, later |
+| worker | `postMessage` | the page | the browser tier, later |
+
+The frame bodies are identical on every row, which is the claim
+`rest_plugin.mjs` already makes for two of them. A plugin written for
+fd 3 becomes a `tcp` plugin by changing where it reads and writes and
+nothing else.
+
+**`tcp` is the one that reaches wasip2, and it is measured, not
+inferred.** `doc/Wasm.md` §2.2 recorded `std::net` binding under
+`wasmtime -S inherit-network=y -S tcp=y`, and M6 (`ee22ed6` on the wasm
+branch) serves a deployment's listener from wasmtime through
+non-blocking `std::net` sockets stepped from the drive loop, with no
+`wasi:io/poll` crate and no threads. The plugin channel is that
+acceptor's client half: a blocking `connect` at startup, so a plugin
+that is not there is a refusal by name before anything runs; then
+`set_nonblocking`, and one small state machine per plugin -- write
+frames with the partial write retained until the socket takes the rest,
+read frames as their length prefix completes, hand each reply to the
+in-flight table -- polled every tick the way M6 polls its connections.
+BUILD8 §2.6's non-blocking descriptor with partial-write retention is
+already this design; the C host arrived at it for backpressure, and it
+is also what a target with no threads needs.
+
+That polled state machine is also the right native implementation. A
+socketpair is a byte stream too; set it non-blocking and the same code
+drives both transports, and the reader thread §3.2 proposed goes away.
+One `FrameStream` over any non-blocking `Read + Write`, two ways to
+obtain one today, and the browser's later.
+
+### 4.2 What it buys
+
+- **Windows without a native `drt`.** wasmtime runs on Windows, and
+  `drt.wasm` under it carries the `wasi` profile. Every capability that
+  profile lacks can be a plugin: a Node program, a Python program, a
+  native helper, listening on loopback. That is the whole of the ask
+  answered, if `wasi:sockets` under wasmtime on Windows behaves as it
+  does on Linux -- expected, not measured, and the first thing to
+  measure.
+- **The connectors that cannot cross come back.** `rest`, `ssmtp`,
+  `ssh`, `tunnel`, `relay`, `stun` and `netcheck` are gated off wasm by
+  tokio (`doc/Wasm.md` §2.1). Served as plugins by a native process,
+  they reach a wasm `drt` unchanged and unported. Upstream's C
+  `rest_plugin` and its Node twin are such a process already.
+- **A future native Windows build needs this transport anyway.** There
+  is no fd 3 on Windows; a Windows `drt` would speak `tcp` to its
+  plugins from the first day.
+
+### 4.3 What it costs, and what changes
+
+- **The security posture moves, and the doc has to say so.** BUILD8 §2.7
+  ships no plugin authentication because a socketpair has no other end:
+  parentage is structural. A loopback port has other ends -- every
+  process on the box -- so the `tcp` transport needs the one thing the
+  socketpair did not: a shared secret, named by the `plugins` block
+  (`secret_env` or `secret_file`, the way `crypto` names its key),
+  presented in the hello frame of §3.3 and checked by the plugin before it
+  answers anything else. Bind to loopback by default; a non-loopback
+  address is a deliberate act the config spells out, and it is a network
+  surface in GUARANTEES.md's sense.
+- **Lifecycle is the operator's.** DRT started and reaped its socketpair
+  plugins; a `tcp` plugin is a service something else supervises, which
+  is the division SPEC.md §13a already draws for the process itself. A
+  plugin that goes away mid-call answers `transport`-class errors to the
+  calls in flight, which the C host's error classes were designed for;
+  DRT reconnects with backoff and refuses by name if the plugin never
+  returns.
+- **The hello frame stops being optional.** It carries the secret and
+  the scope, and it is the one addition to the C protocol. A plugin
+  written against BUILD8 §2 that does not know it answers `bad_target`,
+  which DRT reads as "no scope, no secret": legal for a `socketpair`
+  plugin, refused for a `tcp` one.
+- **The manifest grows one value.** `transport` already exists; `"tcp"`
+  joins `"socketpair"`, and the address lives in the deployment's
+  `plugins` block, not the manifest, because where a service listens is
+  the operator's fact. The C host refuses an unknown transport by name,
+  so a `tcp` manifest does not silently load there.
+
+### 4.4 Sizing the wasip2 half
+
+| piece | size |
+|---|---|
+| the `FrameStream` state machine over a non-blocking stream, shared by both transports | ~2 days, with M6's polled connection as the model |
+| `tcp` in config and manifest, the hello frame with secret and scope, reconnect | ~1 day |
+| a wasmtime test: the echo plugin as a loopback service, a `drt.wasm` calling it through the wasip2 gate the wasm branch already runs in CI | ~1 day |
+| the Windows measurement: wasmtime plus `-S tcp` on a Windows runner, one echo round trip | ~half a day, and it decides whether the claim above is true |
+
+On top of §3's channel work, not instead of it; the codec, manifest and
+`PluginConnector` are shared.
+
+### 4.5 What stays impossible under wasmtime, so nobody plans around it
+
+- Spawning. wasip2 has no process API, so `socketpair` plugins and
+  `exec` stay native-only. The plugin has to be running already.
+- Loading a second component at runtime. A composed component --
+  `drt.wasm` linked with a plugin component through `wac` -- is the route
+  where WIT enters (SPEC.md §7), and it is static: the operator composes,
+  the result is one component. It serves pure-logic plugins that can live
+  inside WASI; it cannot serve a browser or anything else that needs a
+  process. Later, and separately.
+- The browser tier. A page has no TCP; its transports are the WebSocket
+  and the Worker, with the same frames.
+
+The safe order against the wasm branch is unchanged: codec, manifest and
+`FrameStream` first, testable against `plugin_echo.c` over a socketpair
+with no drive-loop change; then config, the `.host.lua` key and
+`capabilities/list`; then the in-flight integration and the `tcp`
+transport after M3 and M6 merge, since both are their code. The JS-host
+bridge files `drt-web` deletes in M7 are not a foundation for a browser
+transport.
 
 An acceptance test comes free: the same guest against builtin `rest` and
 against upstream's C `rest_plugin` wired as a plugin, identical replies.
@@ -164,6 +277,9 @@ That is the `cap7_plugins` slice finally in scope.
    deployment's answer is `capabilities/list`.
 4. Sequencing: plugins wait for M3, or the deferred pump is pulled forward
    as shared work.
+5. Whether `tcp` ships in the first cut beside `socketpair`, or after it.
+   Recommendation: beside it. The polled `FrameStream` serves both, and
+   `tcp` is the transport every target after unix needs.
 
 The first plugin, and the reason to build the channel now, is the
 browser capability: `doc/Playwright.md`.
