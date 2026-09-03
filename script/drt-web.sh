@@ -11,7 +11,8 @@
 #                        version must equal the crate's pin in
 #                        crates/drt-web/Cargo.toml; the check is below.
 #        DRT_WEB_PROFILE cargo profile (default: release; release-small
-#                        for the artifact that ships)
+#                        for the artifact that ships). Its `strip` is
+#                        overridden to none -- see the build below.
 #        CARGO_TARGET_DIR  as cargo reads it
 
 set -eu
@@ -43,7 +44,16 @@ case $PROFILE in
     *)   dir=$PROFILE ;;
 esac
 
-cargo build -p drt-web --target wasm32-unknown-unknown --profile "$PROFILE"
+# Never stripped at the cargo level, whatever the profile says. wasm-bindgen
+# finds the module's externref table through its symbol, and a stripped
+# module fails the run with "externref table required for catch wrappers" --
+# a module that carries exception-handling instructions, which this one does
+# for the C core's `longjmp` (doc/Wasm.md §2.3), needs that table found. The
+# artifact does not pay for it: `release-small` unstripped is smaller than
+# `release`, because opt-level, LTO and codegen-units do the real work and
+# the symbols largely do not survive `wasm-bindgen` anyway.
+strip_key=CARGO_PROFILE_$(printf '%s' "$PROFILE" | tr 'a-z-' 'A-Z_')_STRIP
+env "$strip_key=none"     cargo build -p drt-web --target wasm32-unknown-unknown --profile "$PROFILE"
 module=$TARGET_DIR/wasm32-unknown-unknown/$dir/drt_web.wasm
 "$WASM_BINDGEN" --target web --out-dir "$OUT" --out-name drt_web "$module"
 printf 'drt-web.sh: %s (%s bytes)\n' "$OUT/drt_web_bg.wasm" "$(wc -c < "$OUT/drt_web_bg.wasm")"

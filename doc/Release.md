@@ -97,6 +97,38 @@ is why pushing the tag by hand is the whole fix rather than a workaround.
 Use a dispatch for a *rehearsal* (`publish` off, no tag), which is what
 it is for. Only push the tag once that is green.
 
+## v0.5.0rc1's rehearsal — two failures CI could not have caught
+
+Both were real, both were release-only, and the rehearsal is the only
+thing that runs them. Recorded because the shape recurs: a job that only
+the release runs is a job nothing gates.
+
+**`x86_64-unknown-linux-musl-ar`, which `musl-tools` does not ship.**
+`diluvium-sys`'s build script archives the C core itself and, with no
+`AR` in the environment, asks for `<triple>-ar`. The matrix already set
+`CC=musl-gcc` for the compile — the first rehearsal's lesson — and this
+is the same lesson one step later, for the archive. `AR=ar` is the fix:
+binutils' archiver takes musl-gcc's ELF objects, and an archiver does
+not need to be target-specific. Verified by reproducing the failure
+locally and then building the full profile through to a `static-pie`,
+stripped binary that passes the release's own smoke test.
+
+**`strip = "symbols"` hid the externref table from wasm-bindgen.** The
+`release-small` profile strips, wasm-bindgen finds the module's externref
+table through its symbol, and a stripped module fails with `externref
+table required for catch wrappers` — a module carrying exception-handling
+instructions, which this one does for the C core's `longjmp`, needs that
+table found. `script/drt-web.sh` now overrides `strip` to none for the
+browser build whatever the profile says. It costs nothing: `release-small`
+unstripped is 1,893,140 bytes, still smaller than `release`'s 2,060,948,
+because opt-level, LTO and codegen-units do the real work.
+
+**Why CI was blind to the second one.** The `browser` job built the
+default `release` profile and the release built `release-small`, so CI
+gated a near neighbour of the artifact rather than the artifact. It now
+builds `release-small` too. A release-only build path is a build path
+with no gate, and the fix is to stop having one.
+
 ## v0.3.1 — published by hand, three days late
 
 **Corrected 2026-09-01.** An earlier version of this section said v0.3.1 was
