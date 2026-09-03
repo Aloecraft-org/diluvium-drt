@@ -1,7 +1,7 @@
 # What only you can verify
 
 **Audience: whoever is running the examples on a real machine.** Written
-against `v0.4.0rc1`, current as of `v0.4.0`.
+against `v0.4.0rc1`, current as of `v0.4.1`.
 
 Everything in `examples/` runs green in this container (`run-all.sh`: 15
 ok, 0 failed, 1 skipped). That number is worth less than it looks, because

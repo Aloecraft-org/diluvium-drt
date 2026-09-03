@@ -1,6 +1,7 @@
 granted:
   an ordinary message                    ok     sent
   a subject that wants to be From        ok     sent
+  a reply, threaded                      ok     sent
 
 refused:
   someone@evil.example.net               error  'someone@evil.example.net' is outside this instance's granted recipients
@@ -35,5 +36,21 @@ what reached the relay:
   Content-Type: text/plain; charset=utf-8
   
   the sender is not this program's to choose
+  .
+  QUIT
+  
+  EHLO example.com
+  MAIL FROM:<no-reply@example.com>
+  RCPT TO:<someone@example.com>
+  DATA
+  From: Notifications <no-reply@example.com>
+  To: someone@example.com
+  Subject: Re: Hello
+  In-Reply-To: <20260903.42@mail.example.com>
+  References: <20260903.42@mail.example.com>
+  MIME-Version: 1.0
+  Content-Type: text/plain; charset=utf-8
+  
+  threaded under the message this answers
   .
   QUIT

@@ -5,7 +5,7 @@
 set -u
 DRT="${DRT:-drt}"
 rm -f wire.txt
-python3 relay.py 2 >relay.log 2>&1 &
+python3 relay.py 3 >relay.log 2>&1 &
 until grep -q ready relay.log 2>/dev/null; do sleep 0.1; done
 "$DRT" run --config deploy.json
 wait %1 2>/dev/null

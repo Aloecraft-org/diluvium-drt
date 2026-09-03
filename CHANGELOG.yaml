@@ -59,13 +59,75 @@ schema: 1
 repo: Aloecraft-org/diluvium-drt
 
 releases:
+  - version: 0.4.1
+    tag: v0.4.1
+    date: 2026-09-03
+    status: released
+    stable: true
+    mirror: true
+    latest: true
+    dv_abi: 1
+    diluvium: 515160f645874fc82de001fea7f68803f47bbc58
+    connectors:
+      full: [time, fs, crypto, sql, ssh, rest, ssmtp, listen]
+      slim: [time, fs, crypto, listen]
+    summary: |
+      `ssmtp/send` threads. A reply can name the message it answers, so a
+      client files it under that conversation rather than beside it. And
+      the examples gate passes under its own documented command, which
+      it did not.
+
+      A patch, honestly: the connector set is v0.4.0's, so a package
+      declaring `requires.connectors` sees nothing new. The call surface
+      grew by two optional fields and nothing was removed.
+    added:
+      - |
+        **`ssmtp/send` takes `in_reply_to` and `references`.** A reply had
+        no way to say what it answered: the call was `{to, subject, body}`,
+        so the only threading a program could do was `Re:` on the subject,
+        which is a guess a client may or may not make. `in_reply_to` is
+        the parent's `Message-ID` as its header spelled it; `references`
+        is the thread, oldest first, and defaults to `in_reply_to` --
+        which is what a reply to a thread's first message carries.
+
+        These two are the guest's to set because neither routes: a relay
+        reads nothing from them and a client only threads on them. So the
+        check is on shape rather than on trust. An id reads `<id@host>`;
+        the brackets are supplied when a source such as JMAP strips them,
+        and a token that cannot be an id is refused by name and by field.
+        A line ending inside either is a **fold**, not an injection: a
+        `References` line long enough to have been folded by its sender
+        arrives with a CRLF in it, so whitespace separates ids there rather
+        than refusing the value, and nothing of the guest's text reaches
+        the wire as written -- what follows a fold is one more id inside
+        the same header, never a header of its own. Long lists fold at 78
+        on the way out, per RFC 5322.
+
+        No other header is the guest's, still. What a message could also
+        carry, and the argument for each, is in `doc/Next.md` under
+        `ssmtp`: a `Message-ID` the connector mints and returns, `Date`,
+        `Auto-Submitted`, `Cc` under the same allowlist -- and `Reply-To`,
+        which is the scope's and never the program's.
+
+        `examples/15-sending-mail` sends a third message, a reply, so the
+        two lines are on the transcript where a client looks for them.
+    fixed:
+      - |
+        **`examples/run-all.sh` broke `13` and `15` under its own documented
+        command.** `DRT=../target/release/drt ./run-all.sh` is relative to
+        `examples/`, and the runner resolved that to an absolute path for
+        `PATH` but left the relative one in the environment -- so the two
+        `demo.sh` scripts that honour `$DRT`, running from inside their own
+        directories, named a file that was not there. `13` failed by name
+        and `15` waited for a relay connection that never came until the
+        timeout. The absolute path is exported now, and the fourteen that
+        only use `PATH` are unchanged.
   - version: 0.4.0
     tag: v0.4.0
     date: 2026-09-02
     status: released
     stable: true
     mirror: true
-    latest: true
     dv_abi: 1
     diluvium: 515160f645874fc82de001fea7f68803f47bbc58
     connectors:

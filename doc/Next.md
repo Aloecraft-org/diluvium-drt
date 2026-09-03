@@ -345,6 +345,55 @@ send AUTH before STARTTLS. Those are three-quarters of the connector.
 The other three items below are unaffected and still want the shared
 predicate.
 
+### What `ssmtp/send` still cannot say, and which of it is safe
+
+A reply can now name what it answers — `in_reply_to` and `references`
+landed as guest-settable because neither routes: a relay reads nothing
+from them, a client only threads on them, so the check is on shape and not
+on trust. That is the test for every other header a program might want,
+and applying it sorts the rest into three piles. Sized against the code:
+each is under half a day, and none needs a scope change except the last.
+
+**The connector should supply, and the guest cannot ask for:**
+
+- **`Message-ID`**, minted here as `<random@sender-domain>`, written on the
+  wire, and **returned in the reply** beside `recipients`. Without it the
+  relay assigns one the program never sees, so a program can answer a
+  thread but cannot recognise an answer to its own mail, nor thread its
+  own follow-up under its own first message. Entropy is `getrandom`,
+  already in the tree behind `crypto`. One caveat to document rather than
+  hide: SES rewrites `Message-ID` to its own, so under SES the returned id
+  is the one the guest sent and not the one the recipient will quote — the
+  honest fix there is to also return the relay's `250` text, which carries
+  SES's id.
+- **`Date`**. RFC 5322 requires it; relays add one when it is missing, but
+  a message that arrives at a filter without it scores as spam
+  (SpamAssassin's `MISSING_DATE`). Host-side clock, not a guest read.
+
+**The guest may set, because the value is an enum or is checked by the
+scope that already exists:**
+
+- **`Auto-Submitted`** (RFC 3834): `auto-generated` or `auto-replied`. The
+  one that matters for a program that answers mail — a responder on the
+  other end must not answer an `auto-replied` message and will answer a
+  plain one, and two programs answering each other is a loop with no
+  floor. A fixed vocabulary, so nothing to inject.
+- **`Cc`**, and `Bcc` if wanted: recipients under the same `allow` check
+  and the same `MAX_RECIPIENTS` bound as `to`, since a `Cc` is a `RCPT TO`
+  with a different header. Routing, but routing the scope already
+  governs.
+
+**The scope's, never the guest's:**
+
+- **`Reply-To`**. It is where answers go, which is the forgery `from` being
+  scope-only exists to prevent: a program that could set it sends mail
+  from the deployment's address with replies diverted to any address it
+  likes. An operator-side `reply_to` in the scope, beside `from`.
+
+**Not a free-form `headers` map**, whatever the denylist. A list of names
+a guest may not set is a list that is one RFC behind; the named-argument
+shape above is an allowlist, and every entry on it carries its own check.
+
 ### If this is built, build the predicate once
 
 The shape that serves all four: a scope may carry an optional `when` — a

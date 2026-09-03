@@ -8,7 +8,7 @@ transcription of what it ought to say. A **drt app** is a config plus a
 program; the first two examples are that sentence taken apart, and most of the
 rest are one program run under two or three configs, so every difference
 between the outputs is the config's doing and not the program's. This is not a
-reference. Everything here is v0.4.0.
+reference. Everything here is v0.4.1.
 
 | directory | what it teaches | the command |
 |---|---|---|
