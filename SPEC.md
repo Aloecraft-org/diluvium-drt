@@ -78,6 +78,10 @@ the EH scar tissue. If same-module linking fails, fallback is the nested-module
 shape (diluvium-wasmtime) on wasip2 and the existing JS-host pattern in browser
 — acceptable, but know which world you're in before building.
 
+*Answered (2026-08-26, upstream, `bindings/rust/WASM-SPIKE.md`): same-module
+linking works on all three targets, so the fallback is not needed. DRT's
+own measurements and the port plan are `doc/Wasm.md`.*
+
 Then: **complete the `diluvium-sys` transcription** (upstream, in the diluvium
 repo). Present today: new/free/load/last_error, queue family, run/resume/
 waitset_get, set_notify. Missing: `dv_set_budget`, `dv_usage`, `dv_memory`,

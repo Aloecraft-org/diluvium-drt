@@ -116,7 +116,9 @@ arbitration.
 in another process, which is the control endpoint's job and lands with sshd.
 
 A seams-only build (`--no-default-features`) compiles the traits without the
-C core — the shape the wasm targets start from.
+C core. The wasm targets link the C core in — `drt` itself builds for
+`wasm32-wasip2` and runs under wasmtime today; the browser build and the
+plan for both are [`doc/Wasm.md`](doc/Wasm.md).
 
 ## Writing a program
 

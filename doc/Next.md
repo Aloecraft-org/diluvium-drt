@@ -182,6 +182,12 @@ roster query is a small thing hanging off it.
 
 ### 7. A verified browser release — ~1 week minimal, 2-3 weeks useful
 
+**Superseded by `doc/Wasm.md` (2026-09-03).** The sizing below assumed the
+JS-host-in-the-middle design; the plan there links the C core into the
+browser module instead, measured on this tree, and re-sizes the work as
+milestones M1–M7. Kept for the record and for the "what is already
+there" list, which is still accurate.
+
 `drt-web` became a second-class citizen, and there is a visible feedback
 loop in this repository's own reasoning about why. `ci.yml:80-87` and
 `doc/Release.md` both argue — correctly — that wasm32 stays out of the

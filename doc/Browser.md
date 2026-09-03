@@ -5,6 +5,16 @@ This file is the interface between them, and DRT defines it for the same
 reason DRT defines the relay's wire format: whoever owns the trait writes
 the contract, and the other side consumes it.
 
+**Superseded in part by `doc/Wasm.md` (2026-09-03).** The JS-host shape
+below — the swarm in wasm calling out to a JS-hosted interpreter — was
+SPEC.md §4's fallback for the case where the C core could not be linked
+into the same module. It can (measured on this tree; `doc/Wasm.md` §2.3),
+so the browser tier becomes the same `drt` library with the C core
+linked in, behind a terminal contract. What survives from this document
+is the **export table** (the Lab's Instances panel drives it) and the
+error rules; the import table and `handleOf` retire with the bridge at
+`doc/Wasm.md` M7.
+
 **Status:** `crates/drt-web` implements the Rust half — the engine, the
 host, and the bridge — proven natively by a mock bridge that drives a real
 `Swarm` (`crates/drt-web/tests/bridge.rs`). The wasm-bindgen export layer
