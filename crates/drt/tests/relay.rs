@@ -8,12 +8,57 @@ use drt_config::{RelayConfig, RelayLabel};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
-async fn relay_on_port() -> (std::net::SocketAddr, ()) {
-    // Bind first so the test knows the port; serve() takes the config's
-    // bind string, so pick a free port the same way the OS does.
+/// A port the OS just handed out, and nobody else holds *yet*.
+///
+/// `serve()` takes a bind string, not a listener, so a test has to name a
+/// port before the relay owns it — which leaves a window between the probe
+/// closing and the relay binding that any other test in the workspace can
+/// win. It has been won: CI run 127's `test` job died on "relay cannot
+/// bind 127.0.0.1:44073: Address already in use" with nothing in the
+/// change anywhere near the relay. So a caller pairs this with
+/// [`accepting`] and tries again if it loses the race, rather than
+/// reporting someone else's port as this test's failure.
+fn free_port() -> std::net::SocketAddr {
     let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = probe.local_addr().unwrap();
     drop(probe);
+    addr
+}
+
+/// Wait for something to start accepting on `addr`, up to a second.
+/// False means the relay never came up — the race above, almost always.
+fn accepting(addr: std::net::SocketAddr) -> bool {
+    for _ in 0..100 {
+        if std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(50)).is_ok()
+        {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    false
+}
+
+/// How many times a lost port race is worth retrying before the failure
+/// is real. Three is generous: losing twice in a row is not a race.
+const PORT_TRIES: usize = 3;
+
+async fn relay_on_port() -> (std::net::SocketAddr, ()) {
+    for attempt in 1..=PORT_TRIES {
+        let addr = start_relay(free_port()).await;
+        if accepting(addr) {
+            return (addr, ());
+        }
+        assert!(
+            attempt < PORT_TRIES,
+            "the relay never accepted on {addr} in {PORT_TRIES} attempts, so this is \
+             not a lost port race"
+        );
+    }
+    unreachable!("the loop returns or asserts")
+}
+
+/// The relay itself, on the port it was told.
+async fn start_relay(addr: std::net::SocketAddr) -> std::net::SocketAddr {
     let config = RelayConfig {
         bind: addr.to_string(),
         labels: [(
@@ -32,8 +77,7 @@ async fn relay_on_port() -> (std::net::SocketAddr, ()) {
     tokio::spawn(async move {
         let _ = serve(relay).await;
     });
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    (addr, ())
+    addr
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -213,11 +257,28 @@ end\n";
 fn deployment_with_relay(
     arbitrating: bool,
 ) -> (std::net::SocketAddr, std::sync::mpsc::Receiver<String>) {
-    use drt_connector::{Dispatcher, Registry};
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let relay_addr = probe.local_addr().unwrap();
-    drop(probe);
+    // The same lost-race retry as `relay_on_port`, and the site that
+    // actually lost it (CI run 127).
+    for attempt in 1..=PORT_TRIES {
+        let (addr, rx) = start_deployment(arbitrating, free_port());
+        if accepting(addr) {
+            return (addr, rx);
+        }
+        assert!(
+            attempt < PORT_TRIES,
+            "the deployment's relay never accepted on {addr} in {PORT_TRIES} attempts, \
+             so this is not a lost port race"
+        );
+    }
+    unreachable!("the loop returns or asserts")
+}
 
+#[cfg(feature = "relay")]
+fn start_deployment(
+    arbitrating: bool,
+    relay_addr: std::net::SocketAddr,
+) -> (std::net::SocketAddr, std::sync::mpsc::Receiver<String>) {
+    use drt_connector::{Dispatcher, Registry};
     let program = serde_json::to_string(WATCHER).unwrap();
     let reply_queue = if arbitrating { "relay_out" } else { "" };
     let cfg: drt_config::RootConfig = serde_json::from_str(&format!(
@@ -258,7 +319,8 @@ fn deployment_with_relay(
             },
         );
     });
-    std::thread::sleep(std::time::Duration::from_millis(400));
+    // No fixed sleep: the caller waits for the relay to accept, which is
+    // the thing this was sleeping in the hope of.
     (relay_addr, rx)
 }
 
