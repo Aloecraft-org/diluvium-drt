@@ -5,19 +5,19 @@
 //! `host/calls` through the dispatcher into `host/replies` (every drained
 //! request answered), honour park timeouts on our clock, and call a park
 //! that nothing will ever fire what it is — a deadlock the program can see.
+//!
+//! The loop itself is [`crate::drive::Solo`]'s; this file is the native
+//! host around it — the one that may sleep — and the wording of what a
+//! stuck program is told.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use drt_caps::{CapSet, Grant};
 use drt_connector::Dispatcher;
-use drt_swarm::engine::{
-    diluvium_engine::DiluviumEngine, Engine, EngineError, LoadSpec, ProgramBytes, Step,
-};
+use drt_swarm::engine::{diluvium_engine::DiluviumEngine, LoadSpec, ProgramBytes};
 
-/// The queue names `doc/Host.md` fixes so guests are portable between hosts.
-const CALLS: &str = "host/calls";
-const REPLIES: &str = "host/replies";
+use crate::drive::{Next, Outcome, Solo};
 
 /// Where the budget-escape refusal below sends the reader. A pointer, not a
 /// message: the failure needs more explanation than an error line can carry
@@ -26,7 +26,7 @@ const BUDGET_ESCAPE_DOC: &str = "doc/Ask-0.5.0-Reply.md \u{a7}1.2";
 
 pub fn run(
     program: &Path,
-    dispatcher: &Dispatcher,
+    dispatcher: Arc<Dispatcher>,
     caps: Vec<Grant>,
     budget: drt_config::Budget,
 ) -> Result<(), String> {
@@ -38,39 +38,28 @@ pub fn run(
         .unwrap_or("program");
 
     let engine = DiluviumEngine::new().map_err(|e| e.to_string())?;
-    let mut inst = engine
-        .load(LoadSpec {
-            program: ProgramBytes::Source(&source),
-            name,
-            budget,
-            unsafe_stdlib: false,
-        })
-        .map_err(|e| e.to_string())?;
-
     // The ceiling the config set (or the wide local default when there is
     // no config). What is actually reachable is the intersection with what
     // this build wires — an unwired family answers `denied` either way.
     let caps: Arc<CapSet> = CapSet::root(caps);
+    let mut solo = Solo::load(
+        &engine,
+        LoadSpec {
+            program: ProgramBytes::Source(&source),
+            name,
+            budget,
+            unsafe_stdlib: false,
+        },
+        caps,
+        dispatcher.clone(),
+    )?;
 
-    let mut step = inst.run().map_err(guest_error)?;
     loop {
-        let wait = match step {
-            // A program that finished is not necessarily a program that
-            // stayed inside its budget. Instruction exhaustion arrives in
-            // the guest as an ordinary Lua error, so a `pcall` catches it
-            // -- and at the pin, the hook clears itself before raising
-            // (`src/dv.c:219`), so nothing re-arms and the rest of the run
-            // is unbounded. Reporting exit 0 for that would make `drt run`
-            // the only place in DRT that hides it: `drt start` already
-            // classifies a stop as `exceeded` from the same flag
-            // (`drt-swarm/src/swarm.rs:829`), and a supervisor reads it.
-            //
-            // This is not enforcement and does not pretend to be -- the
-            // program has already run. It is the difference between a
-            // budget that was escaped and a budget that was escaped
-            // silently. The enforcement fix is upstream; the brief is
-            // doc/Ask-0.5.0-Reply.md §1.2.
-            Step::Done if inst.exceeded() => {
+        match solo.tick(None) {
+            // We own the clock (the instance has none): honour the ask.
+            Next::Sleep(how_long) => std::thread::sleep(how_long),
+            Next::Done(Outcome::Exited) => return finish(&dispatcher),
+            Next::Done(Outcome::Exceeded) => {
                 return Err(format!(
                     "the program exhausted its instruction budget and then \
                      continued: the budget was caught as an ordinary error and \
@@ -78,50 +67,27 @@ pub fn run(
                      nothing else can ({BUDGET_ESCAPE_DOC})."
                 ))
             }
-            Step::Done => return finish(dispatcher),
-            Step::Parked(wait) => wait,
-        };
-
-        // Looked up per park, not once: the guest declares these queues at
-        // runtime (through the `host` library or by hand), so they may not
-        // exist until after the first step.
-        let calls = inst.queue(CALLS);
-        let replies = inst.queue(REPLIES);
-
-        // The hostcall pump: drain every pending request and answer each one.
-        let mut answered = false;
-        if let (Some(cq), Some(rq)) = (calls, replies) {
-            while let Some(raw) = inst.pop(cq).map_err(guest_error)? {
-                let reply = pollster::block_on(dispatcher.dispatch(&caps, &raw));
-                let bytes = drt_hostcall::to_bytes(&reply).map_err(|e| e.to_string())?;
-                if !inst.push(rq, &bytes).map_err(guest_error)?.is_accepted() {
-                    return Err(format!(
-                        "a reply had nowhere to land: '{REPLIES}' is full or disabled; \
-                         size the reply queue for the requests kept outstanding"
-                    ));
-                }
-                answered = true;
+            Next::Failed(why) => return Err(why),
+            Next::Stuck { for_space: true } => {
+                return Err(
+                    "the program is parked waiting for space in a queue this run never drains"
+                        .to_string(),
+                )
+            }
+            Next::Stuck { for_space: false } => {
+                return Err(
+                    "the program is parked waiting on queues nothing in `drt run` will push to \
+                     (a served deployment or a swarm parent would); it will never wake"
+                        .to_string(),
+                )
+            }
+            // `run` feeds no input queue, so a tick never asks for one.
+            Next::Input => {
+                return Err(
+                    "the program is waiting for input, and `drt run` has none to give".into(),
+                )
             }
         }
-
-        step = if answered && replies.is_some_and(|rq| wait.queues().contains(&rq)) {
-            inst.resume(replies.unwrap()).map_err(guest_error)?
-        } else if let Some(timeout) = wait.timeout {
-            // We own the clock (the instance has none): honour the ask.
-            std::thread::sleep(timeout);
-            inst.resume_timeout().map_err(guest_error)?
-        } else if wait.for_space {
-            return Err(
-                "the program is parked waiting for space in a queue this run never drains"
-                    .to_string(),
-            );
-        } else {
-            return Err(
-                "the program is parked waiting on queues nothing in `drt run` will push to \
-                 (a served deployment or a swarm parent would); it will never wake"
-                    .to_string(),
-            );
-        };
     }
 }
 
@@ -145,8 +111,4 @@ pub fn finish(dispatcher: &Dispatcher) -> Result<(), String> {
         return Ok(());
     }
     Err(lost.join("; "))
-}
-
-fn guest_error(e: EngineError) -> String {
-    e.to_string()
 }

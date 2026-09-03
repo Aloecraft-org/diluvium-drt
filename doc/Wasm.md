@@ -661,7 +661,12 @@ the three connectors' existing tests green natively, and
 `cargo build -p drt --no-default-features --features connector-time,connector-fs,connector-crypto --target wasm32-unknown-unknown`
 green (the red cell in §2.1). No behaviour change on any shipping target.
 
-**M3 — the driver and the deferred pump. ~3-4 days.** `crates/drt/src/drive.rs`;
+**M3 — the driver and the deferred pump. ~3-4 days. Landed 2026-09-03**
+(`crates/drt/src/drive.rs`: `Solo::tick` for `run` and `repl`,
+`start::DeployDriver` for the deployment; `Dispatcher::route` and
+`PendingCall`; `drt_swarm::pump::Pump`, the in-flight table; `pollster` is
+gone from the runtime crates; `tests/drive.rs` pins the deferred answer
+and the cadence). `crates/drt/src/drive.rs`;
 `run`, `repl`, `start` over it; the pump's in-flight table. Gate: every
 existing test, the examples gate natively and under wasmtime, and two new
 tests — a mock connector that answers on the second poll is delivered on

@@ -431,11 +431,11 @@ fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
             // The old wording here said it "needs a tokio reactor (`start`
             // brings one)". That was wrong twice: `start` does NOT bring one
             // to the hostcall path — its drive loop is on the main thread and
-            // the relay/STUN runtimes are on others — and every hostcall
-            // path answers through `pollster::block_on` (run.rs:67,
-            // repl.rs:73, pump.rs:47). So `ssh/exec` panicked from every
-            // guest loop, and this comment is why it read as expected. The
-            // connector carries its own runtime now.
+            // the relay/STUN runtimes are on others — and no hostcall path
+            // runs a reactor: the pump polls a connector's future on the
+            // loop's own cadence (drt-swarm/src/pump.rs). So `ssh/exec`
+            // panicked from every guest loop, and this comment is why it
+            // read as expected. The connector carries its own runtime now.
             #[cfg(feature = "connector-ssh")]
             "ssh" => registry
                 .wire(
@@ -522,7 +522,7 @@ fn main() -> ExitCode {
             };
             match run::run(
                 &path,
-                &dispatcher,
+                std::sync::Arc::new(dispatcher),
                 config::ceiling(&config),
                 config.root.budget,
             ) {
@@ -639,7 +639,11 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Command::Repl => {
-            match repl::repl(&dispatcher, config::ceiling(&config), config.root.budget) {
+            match repl::repl(
+                std::sync::Arc::new(dispatcher),
+                config::ceiling(&config),
+                config.root.budget,
+            ) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("drt repl: {e}");

@@ -103,6 +103,12 @@ pub trait SwarmHost {
     fn drive(&mut self, id: InstanceId, caps: &CapSet, inst: &mut dyn Instance) -> Driven;
     fn attached(&mut self, _id: InstanceId) {}
     fn detached(&mut self, _id: InstanceId) {}
+    /// The slot is gone for good: death, a kill, a subtree torn down.
+    /// `detached` cannot tell that from a hibernation, and a host holding
+    /// something per instance that must outlive residency but not the
+    /// instance — a hostcall answer still in flight — needs the difference.
+    /// A host that holds nothing across residency implements neither.
+    fn released(&mut self, _id: InstanceId) {}
 }
 
 /// A host whose `drive` is one `run` or `resume` — the single-threaded
@@ -364,6 +370,7 @@ impl<H: SwarmHost> Swarm<H> {
         if self.slots[index].inst.is_some() {
             self.host.detached(InstanceId(id));
         }
+        self.host.released(InstanceId(id));
         self.index.remove(&id);
         self.slots[index] = Slot::free();
         // The slot is free; the handle is not reused.

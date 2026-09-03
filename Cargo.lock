@@ -948,6 +948,7 @@ dependencies = [
 name = "drt"
 version = "0.4.1"
 dependencies = [
+ "async-trait",
  "clap",
  "drt-caps",
  "drt-config",
@@ -965,7 +966,6 @@ dependencies = [
  "ego_transport",
  "futures-util",
  "httparse",
- "pollster",
  "rmpv",
  "serde_json",
  "tempfile",
@@ -1161,7 +1161,6 @@ dependencies = [
  "drt-config",
  "drt-connector",
  "drt-hostcall",
- "pollster",
  "rmp-serde",
  "rmpv",
  "serde",

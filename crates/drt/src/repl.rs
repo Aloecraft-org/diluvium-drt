@@ -9,7 +9,10 @@
 //! The split is the point. "Line in, text out" is a contract a terminal
 //! satisfies today and an xterm.js in a browser satisfies unchanged, over
 //! the same two queues — so there is one REPL with one behavior, not a
-//! desktop one and a web one that drift.
+//! desktop one and a web one that drift. [`Repl`] is the half both share:
+//! it never reads a terminal and never sleeps; its `tick` says when a line
+//! is wanted (doc/Wasm.md D6, D8), and [`repl`] is the native loop that
+//! reads one from stdin.
 //!
 //! What this is *not* is `repl --attach`: reaching into a **running**
 //! deployment is the control endpoint's job (SPEC.md §13a), and it lands
@@ -20,113 +23,146 @@ use std::sync::Arc;
 
 use drt_caps::{CapSet, Grant};
 use drt_connector::Dispatcher;
-use drt_swarm::engine::{
-    diluvium_engine::DiluviumEngine, Engine, EngineError, LoadSpec, ProgramBytes, Step,
-};
+use drt_platform::stdio;
+use drt_swarm::engine::{diluvium_engine::DiluviumEngine, LoadSpec, ProgramBytes};
+
+use crate::drive::{Next, Solo};
 
 const PROGRAM: &str = include_str!("repl.dlua");
 const IN: &str = "repl/in";
 const OUT: &str = "repl/out";
-const CALLS: &str = "host/calls";
-const REPLIES: &str = "host/replies";
 
+/// The REPL instance, driven by whoever has the terminal.
+pub struct Repl {
+    solo: Solo,
+    /// Text carried over from a line that ended mid-expression.
+    pending: String,
+    /// The last answer said the line was unfinished: ask for more.
+    want_more: bool,
+}
+
+impl Repl {
+    pub fn new(
+        dispatcher: Arc<Dispatcher>,
+        caps: Vec<Grant>,
+        budget: drt_config::Budget,
+    ) -> Result<Self, String> {
+        let engine = DiluviumEngine::new().map_err(|e| e.to_string())?;
+        let caps: Arc<CapSet> = CapSet::root(caps);
+        let solo = Solo::load(
+            &engine,
+            LoadSpec {
+                program: ProgramBytes::Source(PROGRAM),
+                name: "repl",
+                budget,
+                // The REPL's own source is ours, not the user's, and the
+                // lines it evaluates run under the same stdlib every other
+                // guest gets. A REPL is not a way around the sandbox.
+                unsafe_stdlib: false,
+            },
+            caps,
+            dispatcher,
+        )?;
+        Ok(Repl {
+            solo,
+            pending: String::new(),
+            want_more: false,
+        })
+    }
+
+    /// Advance, print whatever the last line produced, and say what is
+    /// needed next. [`Next::Input`] means a line; whether it continues an
+    /// unfinished one is [`Repl::continuing`].
+    pub fn tick(&mut self) -> Next {
+        let next = self.solo.tick(Some(IN));
+        // Whatever the last line produced, before asking for the next one.
+        self.print_answers();
+        match next {
+            // Not waiting for us: a park this terminal can never wake.
+            Next::Stuck { .. } => {
+                Next::Failed("the repl parked on something the terminal cannot wake".into())
+            }
+            other => other,
+        }
+    }
+
+    /// Whether the next line continues an unfinished one.
+    pub fn continuing(&self) -> bool {
+        self.want_more
+    }
+
+    /// Feed one line. Returns whether anything was sent: a blank line
+    /// outside a continuation is nothing to evaluate and is not sent.
+    pub fn feed(&mut self, line: &str) -> Result<bool, String> {
+        if !self.want_more && line.trim().is_empty() {
+            return Ok(false);
+        }
+        if !self.pending.is_empty() {
+            self.pending.push('\n');
+        }
+        self.pending.push_str(line);
+        let Some(input) = self.solo.queue(IN) else {
+            return Err("the repl program never declared its input queue".into());
+        };
+        let mut msg = Vec::new();
+        rmpv::encode::write_value(&mut msg, &rmpv::Value::from(self.pending.as_str()))
+            .map_err(|e| e.to_string())?;
+        if !self.solo.push(input, &msg)?.is_accepted() {
+            return Err("the repl's input queue is full".into());
+        }
+        Ok(true)
+    }
+
+    pub fn dispatcher(&self) -> &Dispatcher {
+        self.solo.dispatcher()
+    }
+
+    // depth: answers
+
+    fn print_answers(&mut self) {
+        let Some(out) = self.solo.queue(OUT) else {
+            return;
+        };
+        let mut want_more = false;
+        while let Ok(Some(raw)) = self.solo.pop(out) {
+            want_more = print_answer(&raw) || want_more;
+        }
+        self.want_more = want_more;
+        if !want_more {
+            self.pending.clear();
+        }
+    }
+}
+
+/// The native terminal: stdin lines in, answers on stdout, everything else
+/// on stderr — so `drt repl < script.dlua > out` gives clean output, the
+/// prompt being furniture and the answers the product.
 pub fn repl(
-    dispatcher: &Dispatcher,
+    dispatcher: Arc<Dispatcher>,
     caps: Vec<Grant>,
     budget: drt_config::Budget,
 ) -> Result<(), String> {
-    let engine = DiluviumEngine::new().map_err(|e| e.to_string())?;
-    let mut inst = engine
-        .load(LoadSpec {
-            program: ProgramBytes::Source(PROGRAM),
-            name: "repl",
-            budget,
-            // The REPL's own source is ours, not the user's, and the lines
-            // it evaluates run under the same stdlib every other guest
-            // gets. A REPL is not a way around the sandbox.
-            unsafe_stdlib: false,
-        })
-        .map_err(|e| e.to_string())?;
-
-    let caps: Arc<CapSet> = CapSet::root(caps);
+    let mut repl = Repl::new(dispatcher, caps, budget)?;
     let stdin = std::io::stdin();
     let mut lines = stdin.lock().lines();
-    // Text carried over from a line that ended mid-expression.
-    let mut pending = String::new();
 
     eprintln!("drt repl — ^D to leave");
-    let mut step = inst.run().map_err(guest_error)?;
     loop {
-        let wait = match step {
-            Step::Done => return Ok(()),
-            Step::Parked(wait) => wait,
-        };
-
-        // Answer every drained hostcall before anything else, exactly as
-        // `drt run` does: a request left unanswered is the one thing the
-        // host protocol forbids.
-        let calls = inst.queue(CALLS);
-        let replies = inst.queue(REPLIES);
-        let mut answered = false;
-        if let (Some(cq), Some(rq)) = (calls, replies) {
-            while let Some(raw) = inst.pop(cq).map_err(guest_error)? {
-                let reply = pollster::block_on(dispatcher.dispatch(&caps, &raw));
-                let bytes = drt_hostcall::to_bytes(&reply).map_err(|e| e.to_string())?;
-                if !inst.push(rq, &bytes).map_err(guest_error)?.is_accepted() {
-                    return Err(format!("a reply had nowhere to land: '{REPLIES}' is full"));
-                }
-                answered = true;
+        match repl.tick() {
+            Next::Sleep(how_long) => std::thread::sleep(how_long),
+            Next::Input => {
+                let Some(line) = prompt(&mut lines, repl.continuing())? else {
+                    eprintln!();
+                    return Ok(());
+                };
+                repl.feed(&line)?;
+            }
+            Next::Done(_) => return Ok(()),
+            Next::Failed(why) => return Err(why),
+            Next::Stuck { .. } => {
+                return Err("the repl parked on something the terminal cannot wake".into())
             }
         }
-        if answered && replies.is_some_and(|rq| wait.queues().contains(&rq)) {
-            step = inst.resume(replies.unwrap()).map_err(guest_error)?;
-            continue;
-        }
-
-        // Whatever the last line produced, before asking for the next one.
-        let mut want_more = false;
-        if let Some(oq) = inst.queue(OUT) {
-            while let Some(raw) = inst.pop(oq).map_err(guest_error)? {
-                want_more = print_answer(&raw) || want_more;
-            }
-        }
-        if !want_more {
-            pending.clear();
-        }
-
-        let Some(inq) = inst.queue(IN) else {
-            return Err("the repl program never declared its input queue".into());
-        };
-        if !wait.queues().contains(&inq) {
-            // Not waiting for us: a timeout is ours to honour, anything
-            // else is a park this terminal can never wake.
-            if let Some(timeout) = wait.timeout {
-                std::thread::sleep(timeout);
-                step = inst.resume_timeout().map_err(guest_error)?;
-                continue;
-            }
-            return Err("the repl parked on something the terminal cannot wake".into());
-        }
-
-        let Some(line) = prompt(&mut lines, want_more)? else {
-            eprintln!();
-            return Ok(());
-        };
-        if !want_more && line.trim().is_empty() {
-            continue;
-        }
-        if !pending.is_empty() {
-            pending.push('\n');
-        }
-        pending.push_str(&line);
-
-        let mut msg = Vec::new();
-        rmpv::encode::write_value(&mut msg, &rmpv::Value::from(pending.as_str()))
-            .map_err(|e| e.to_string())?;
-        if !inst.push(inq, &msg).map_err(guest_error)?.is_accepted() {
-            return Err("the repl's input queue is full".into());
-        }
-        step = inst.resume(inq).map_err(guest_error)?;
     }
 }
 
@@ -146,11 +182,18 @@ fn print_answer(raw: &[u8]) -> bool {
     if get("more").and_then(|v| v.as_bool()).unwrap_or(false) {
         return true;
     }
-    match (get("ok").and_then(|v| v.as_bool()).unwrap_or(false), text) {
-        (true, Some(t)) => println!("{t}"),
+    let ok = get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+    match (ok, text) {
+        (true, Some(t)) => {
+            let _ = writeln!(stdio::stdout(), "{t}");
+        }
         (true, None) => {}
-        (false, Some(t)) => eprintln!("{t}"),
-        (false, None) => eprintln!("the repl answered nothing"),
+        (false, Some(t)) => {
+            let _ = writeln!(stdio::stderr(), "{t}");
+        }
+        (false, None) => {
+            let _ = writeln!(stdio::stderr(), "the repl answered nothing");
+        }
     }
     false
 }
@@ -159,16 +202,10 @@ fn prompt(
     lines: &mut std::io::Lines<std::io::StdinLock<'_>>,
     continuing: bool,
 ) -> Result<Option<String>, String> {
-    // stderr, so `drt repl < script.dlua > out` gives clean output: the
-    // prompt is furniture, the answers are the product.
     eprint!("{}", if continuing { ">> " } else { "dv> " });
     std::io::stderr().flush().map_err(|e| e.to_string())?;
     match lines.next() {
         Some(line) => line.map(Some).map_err(|e| e.to_string()),
         None => Ok(None),
     }
-}
-
-fn guest_error(e: EngineError) -> String {
-    e.to_string()
 }

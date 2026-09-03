@@ -20,22 +20,26 @@
 //! are the terminal's.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use drt_caps::CapSet;
 use drt_config::RootConfig;
 use drt_connector::Dispatcher;
+use drt_platform::clock::Instant;
 use drt_swarm::engine::diluvium_engine::DiluviumEngine;
 use drt_swarm::engine::{Instance, QueueStatus, Step, WaitSet};
 use drt_swarm::pump::PumpHost;
 use drt_swarm::swarm::{Driven, Swarm, SwarmHost};
 use drt_swarm::InstanceId;
 
+use crate::drive::{Next, Outcome};
+
 /// How long the drive loop sleeps when a step moved nothing. Latency is
 /// bounded by it; idle cost is one step per tick. Event-driven wakeups
 /// arrive with the listeners, which is when a socket exists to select on.
-const IDLE_TICK: Duration = Duration::from_millis(1);
+pub const IDLE_TICK: Duration = Duration::from_millis(1);
 
 /// `StepHost` with a clock: resume a parked instance when a waited queue is
 /// ready, or when its own stated timeout has elapsed — whichever comes
@@ -141,7 +145,11 @@ impl SwarmHost for DeployHost {
                 // no supervisor but this process, and a deployment that
                 // drains silently after a root fault reads as a mystery
                 // exit, not a diagnosis.
-                eprintln!("drt: instance {} faulted: {e}", id.0);
+                let _ = writeln!(
+                    drt_platform::stdio::stderr(),
+                    "drt: instance {} faulted: {e}",
+                    id.0
+                );
                 Driven::Faulted(e.to_string())
             }
         }
@@ -209,6 +217,70 @@ fn next_deadline(host: &DeployHost) -> Option<Instant> {
     host.parked.values().filter_map(|p| p.deadline).min()
 }
 
+/// The deployment, driven one step at a time (doc/Wasm.md D6): the swarm,
+/// its residency policy, and the clock arithmetic that says how long the
+/// host may sleep before the next step is due. Never sleeps itself — the
+/// native loops in this file do, and a page schedules a timer.
+pub struct DeployDriver {
+    sw: Deployment,
+    root: InstanceId,
+    max_resident: Option<usize>,
+}
+
+impl DeployDriver {
+    pub fn new(config: &RootConfig, dispatcher: Dispatcher) -> Result<Self, String> {
+        let (sw, root) = deployment(config, dispatcher)?;
+        Ok(DeployDriver {
+            sw,
+            root,
+            max_resident: config.residency.map(|r| r.max_resident),
+        })
+    }
+
+    /// One step of the swarm, and the residency policy after it. Returns
+    /// how many instances are alive, which is the loop's own termination
+    /// condition.
+    pub fn step(&mut self) -> usize {
+        let alive = self.sw.step();
+        if let Some(max_resident) = self.max_resident {
+            enforce_residency(&mut self.sw, self.root, max_resident);
+        }
+        alive
+    }
+
+    /// How long the host may sleep before the next step is due: until the
+    /// earliest park deadline, and never longer than [`IDLE_TICK`].
+    pub fn idle(&self) -> Duration {
+        next_deadline(self.sw.host().inner())
+            .map(|d| d.saturating_duration_since(Instant::now()).min(IDLE_TICK))
+            .unwrap_or(IDLE_TICK)
+    }
+
+    /// [`DeployDriver::step`] and [`DeployDriver::idle`] as one answer, for
+    /// a host with nothing to do between steps but wait.
+    pub fn tick(&mut self) -> Next {
+        if self.step() == 0 {
+            Next::Done(Outcome::Exited)
+        } else {
+            Next::Sleep(self.idle())
+        }
+    }
+
+    pub fn root(&self) -> InstanceId {
+        self.root
+    }
+
+    /// The swarm, for a host that pumps its queues directly — the listener
+    /// bridge, the relay's control plane, an observer.
+    pub fn deployment_mut(&mut self) -> &mut Deployment {
+        &mut self.sw
+    }
+
+    pub fn dispatcher(&self) -> &Dispatcher {
+        self.sw.host().dispatcher()
+    }
+}
+
 /// Run the deployment to completion. Returns when the swarm drains — every
 /// instance exited — which for a server-shaped root program is never, and
 /// foreground-forever is the contract.
@@ -265,7 +337,8 @@ pub fn serve_with_observer(
     bound: crate::listen::Bound,
     mut observe: impl FnMut(&mut Deployment, InstanceId),
 ) -> Result<(), String> {
-    let (mut sw, root) = deployment(config, dispatcher)?;
+    let mut driver = DeployDriver::new(config, dispatcher)?;
+    let root = driver.root();
 
     // The relay, if the config names one, on its own runtime beside this
     // loop. Its events and questions reach the root over the queue bridge
@@ -297,14 +370,15 @@ pub fn serve_with_observer(
     // `queue.declare` and answer an early connection 503 for arriving
     // while the deployment was still clearing its throat.
     loop {
-        let alive = sw.step();
-        pump_replies(&mut sw, root, &bound);
+        let alive = driver.step();
+        let sw = driver.deployment_mut();
+        pump_replies(sw, root, &bound);
         #[cfg(feature = "relay")]
         if let Some(relay) = relay.as_mut() {
             // Answers first: a question asked last pass is waiting, and a
             // caller is holding a socket open for it.
-            relay.collect(&mut sw, root);
-            relay.deliver(&mut sw, root);
+            relay.collect(sw, root);
+            relay.deliver(sw, root);
         }
         #[cfg(feature = "stun")]
         if let Some(stun) = stun.as_mut() {
@@ -313,44 +387,36 @@ pub fn serve_with_observer(
             // counters are cumulative, not deltas, so nothing is lost.
             stun.report(&mut |queue, msg| sw.push(root, queue, msg).is_ok());
         }
-        if let Some(residency) = config.residency {
-            enforce_residency(&mut sw, root, residency.max_resident);
-        }
-        observe(&mut sw, root);
+        observe(sw, root);
         if alive == 0 {
             // The program chose to exit; ports serving a drained swarm
             // would answer 503 forever, and a supervisor should see the
             // exit instead.
-            return crate::run::finish(sw.host().dispatcher());
+            return crate::run::finish(driver.dispatcher());
         }
-        let sleep = next_deadline(sw.host().inner())
-            .map(|d| d.saturating_duration_since(Instant::now()).min(IDLE_TICK))
-            .unwrap_or(IDLE_TICK);
+        let sleep = driver.idle();
         if let Some(ingress) = bound.next_within(sleep) {
-            deliver(&mut sw, root, &bound, ingress);
+            deliver(driver.deployment_mut(), root, &bound, ingress);
         }
         while let Some(ingress) = bound.try_next() {
-            deliver(&mut sw, root, &bound, ingress);
+            deliver(driver.deployment_mut(), root, &bound, ingress);
         }
     }
 }
 
 #[cfg(not(feature = "listen"))]
 fn serve_swarm_only(config: &RootConfig, dispatcher: Dispatcher) -> Result<(), String> {
-    let (mut sw, root) = deployment(config, dispatcher)?;
+    let mut driver = DeployDriver::new(config, dispatcher)?;
     loop {
-        let alive = sw.step();
-        if let Some(residency) = config.residency {
-            enforce_residency(&mut sw, root, residency.max_resident);
-        }
-        if alive == 0 {
-            return crate::run::finish(sw.host().dispatcher());
-        }
-        let sleep = next_deadline(sw.host().inner())
-            .map(|d| d.saturating_duration_since(Instant::now()).min(IDLE_TICK))
-            .unwrap_or(IDLE_TICK);
-        if !sleep.is_zero() {
-            std::thread::sleep(sleep);
+        match driver.tick() {
+            Next::Sleep(sleep) => {
+                if !sleep.is_zero() {
+                    std::thread::sleep(sleep);
+                }
+            }
+            Next::Done(_) => return crate::run::finish(driver.dispatcher()),
+            Next::Input | Next::Stuck { .. } => unreachable!("a deployment asks only for time"),
+            Next::Failed(why) => return Err(why),
         }
     }
 }
