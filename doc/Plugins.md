@@ -288,6 +288,16 @@ the other side: the untrusted program runs inside wasmtime, and
 everything it can reach is a process the operator started under a scope
 the config named.
 
+**Accepted by the owner, 2026-09-03, as the shape.** Two observations
+carried it: no `exec/run` inside wasmtime will surprise nobody, and a
+plugin that runs something external on a box is already native to that
+box, so a helper that starts it is what one would expect there anyway.
+The helper is one per box, never one per plugin, and it exists in
+exactly one configuration -- a wasm `drt` on a box -- which is also the
+configuration that wants the program sandboxed and every capability
+outside it. On a native `drt` the `spawn` transport starts plugins
+directly and there is no helper at all. The decisions in §5 stay open.
+
 **And the other answer for Windows is not wasmtime.** `slim` carries no
 tokio, no russh and no `aws-lc-sys`; a `x86_64-pc-windows-gnu`
 cross-build with mingw as `$CC` for the C core is a day to rehearse in
