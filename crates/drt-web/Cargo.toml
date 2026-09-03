@@ -26,7 +26,9 @@ drt-connector = { workspace = true }
 # target therefore needs a wasi-sdk named by WASI_SDK_PATH, for the C core
 # and (in build.rs) for wasi-libc.
 drt-swarm = { workspace = true }
+drt-caps = { workspace = true }
 clap = { workspace = true }
+serde_json = "1"
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 # PINNED, and it must stay pinned: the wasm-bindgen ABI is unstable across

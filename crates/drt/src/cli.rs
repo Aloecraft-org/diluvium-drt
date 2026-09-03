@@ -525,7 +525,12 @@ pub fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
 /// carries that need no scope of their own — the zero-ceremony case. `fs`
 /// is not among them on purpose: it has no default place, and inventing one
 /// on the program's behalf is the wrong the scope model exists to fix.
-fn local_defaults(config: &mut RootConfig) {
+///
+/// Public because [`assemble`] is not the only assembly any more: a page
+/// building a swarm without a config (`drt-web`'s `swarm` module) is
+/// entitled to the same zero-ceremony case a config-less `drt run` gets,
+/// and getting it from here is what keeps the two the same.
+pub fn local_defaults(config: &mut RootConfig) {
     if cfg!(feature = "connector-time") {
         config.connectors.insert("time".into(), Default::default());
     }

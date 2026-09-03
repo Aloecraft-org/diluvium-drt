@@ -245,8 +245,37 @@ not a fourth integration; it is this one.
 
 ## The swarm exports
 
-The earlier draft's `Swarm` table -- the instances panel's `dvs_*` twins
--- is not in this module yet; the Lab's Instances panel still has
-`diluvium_swarm_wasi.wasm` for it. When it lands it lands here, beside
-`DrtTerm`, over the same `Deployment` a `drt start` session drives;
-doc/Wasm.md M5 is where that is scheduled.
+`DrtSwarm`, beside `DrtTerm`, over the same `Deployment` a `drt start`
+session drives. The Instances panel's sixteen `dvs_*` calls have twins
+here, named the way JavaScript names things and taking ids where `dvs_*`
+took pointers -- a page building p2p apps never touches a pointer, so DRT
+does not impersonate a C ABI to be adopted. `swarm.js`'s
+`swarmCapable(exports)` is where a second backend is recognised, and a
+`drtCapable` beside it is the migration.
+
+```js
+const sw = new DrtSwarm(0, 0);            // maxInstances, spawnsPerStep; 0 = default
+const root = sw.root(bytes);              // caps and budget default to a config's ceiling
+while (sw.step() > 0) { /* a round */ }
+sw.ids(); sw.parent(id); sw.alive(); sw.slotsAllocated();
+sw.caps(id); sw.holds(id, 'host:time'); sw.mayGrant(id, cap); sw.budget(id);
+sw.push(id, queue, msgpackBytes); sw.kill(id);
+sw.hibernate(id); sw.wake(id); sw.resident(id); sw.wakeOnMessage(id); sw.cachedSize(id);
+sw.allowHibernation(b); sw.allowBytecode(b); sw.allowUnsafeStdlib(b); sw.setHostIdentity(s);
+sw.free();
+```
+
+`new DrtSwarm(max, spawns, configJson)` takes the JSON `drt run --config`
+takes, for a page that wants `fs` scoped somewhere; without one it gets
+the connectors this build carries that need no scope, which is what a
+config-less `drt run` gets. `caps` and `budget` on `root` are a config's
+own two fields, so nobody learns a second dialect for them.
+
+Two places the table stops matching, both deliberate. `dvs_last_error`
+has no twin: an error is thrown where it happens rather than left for a
+host to poll. And `parent` answers `undefined` for an id that is not in
+the roster, where `dvs_parent` had only 0 to say for both that and the
+root. What a host gains by moving is everything a `Deployment` is over a
+bare swarm -- connectors behind the grants, hibernation and wake, the
+residency policy -- so the panel stops being a viewer of the C swarm and
+becomes a host of this one. +184 KB on the module.

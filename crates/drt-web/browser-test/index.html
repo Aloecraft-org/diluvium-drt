@@ -31,7 +31,7 @@
   // moves the cursor, redraws a line, clears to the end -- so a <pre> that
   // appends characters would now be a third terminal emulator to get
   // wrong, which is the thing D8 exists to avoid.
-  import init, { DrtTerm, DrtEditor, buildInfo, abiVersion, setPanicHook } from './pkg/drt_web.js';
+  import init, { DrtTerm, DrtEditor, DrtSwarm, buildInfo, abiVersion, setPanicHook } from './pkg/drt_web.js';
   import { makeShell } from './shell.js';
   import { attach } from './drt-term.js';
 
@@ -57,6 +57,34 @@
     }),
     buildInfo: (json) => buildInfo(json),
     abiVersion: () => abiVersion(),
+    // The swarm table, driven the way the Lab's Instances panel drives
+    // it: root a program, step until it settles, and read the roster and
+    // its capability answers back. What this proves is that the exports
+    // are a swarm and not a shape -- the instance runs, is asked what it
+    // holds, and is killed.
+    swarmRoundTrip(source) {
+      const sw = new DrtSwarm(0, 0);
+      const out = {};
+      try {
+        const root = sw.root(new TextEncoder().encode(source));
+        out.root = root;
+        out.parent = sw.parent(root) ?? null;
+        out.holdsTime = sw.holds(root, 'host:time');
+        out.holdsLifecycle = sw.holds(root, 'lifecycle');
+        out.parentOfNobody = sw.parent(9999) ?? null;
+        out.caps = sw.caps(root);
+        out.resident = sw.resident(root);
+        out.slots = sw.slotsAllocated();
+        let steps = 0;
+        while (sw.step() > 0 && steps < 100) steps += 1;
+        out.steps = steps;
+        out.aliveAfter = sw.alive();
+        out.idsAfter = sw.ids();
+      } finally {
+        sw.free();
+      }
+      return out;
+    },
     seed({ cwd, files, dirs = [] }) {
       fresh();
       for (const d of dirs) term.putDir(d);

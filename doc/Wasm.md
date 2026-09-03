@@ -929,6 +929,16 @@ old M5 that was really ours); completion candidates from the guest (§5,
 all three); and the sealed/unsealed verb (host 1). Everything else on
 this list is a consumer's own work against a surface that now exists.
 
+**Two of the three landed 2026-09-03.** Completion came with M8: Tab in
+a page serves the names the running instance answered with, through the
+same `drt::repl::Names` a tty completes through. The `Swarm` exports are
+`crates/drt-web/src/swarm.rs` and `DrtSwarm` beside `DrtTerm`, over the
+`Deployment` `drt start` drives rather than a bare swarm, so a panel that
+moves gains connectors behind the grants, hibernation and wake, and the
+residency policy; the `swarm-table` check roots a program, steps it to
+exit and reads the roster and its capability answers back. +184 KB. The
+sealed/unsealed verb is below.
+
 **M6 — `listen` on wasip2. ~2-3 days. Landed 2026-09-03**
 (`crates/drt/src/listen.rs`: the bridge's parsing and response bytes
 made pure and shared, an `Acceptor` trait the serve loop is generic

@@ -12,6 +12,7 @@
 use wasm_bindgen::prelude::*;
 
 use crate::editor::{Editor, Outcome};
+use crate::swarm::{self, Swarm as SwarmDeployment};
 use crate::term::{Session, Step, Term};
 
 /// The flag wasm-bindgen 0.2.114 reads before every export call once a
@@ -254,5 +255,153 @@ impl DrtEditor {
     #[wasm_bindgen(js_name = setCandidates)]
     pub fn set_candidates(&self, names: Vec<String>) {
         self.inner.set_candidates(names);
+    }
+}
+
+/// The instances table: `dvs.c`'s sixteen, over a `Deployment`.
+///
+/// `swarm.js` recognises a backend by the shape of its exports, so this is
+/// the shape, named the way JavaScript names things and taking ids where
+/// `dvs_*` took pointers. Every fallible call throws rather than setting
+/// something to poll, which is the one place the table deliberately stops
+/// matching -- `dvs_last_error` has no twin here.
+#[wasm_bindgen]
+pub struct DrtSwarm {
+    inner: SwarmDeployment,
+}
+
+#[wasm_bindgen]
+impl DrtSwarm {
+    /// A swarm over this build's connectors, or over the ones `config`
+    /// names -- the same JSON `drt run --config` takes.
+    ///
+    /// Zero for either limit means the swarm's own default, as
+    /// `dvsjs_new` meant it.
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        max_instances: u32,
+        spawns_per_step: u32,
+        config: Option<String>,
+    ) -> Result<DrtSwarm, JsValue> {
+        SwarmDeployment::new(max_instances, spawns_per_step, config.as_deref())
+            .map(|inner| DrtSwarm { inner })
+            .map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// The first instance, from source, the capabilities it may hold and
+    /// its budget. `caps` and `budget` are a config's own two fields as
+    /// JSON, so a page writes what it would write on disk.
+    pub fn root(
+        &mut self,
+        code: &[u8],
+        caps: Option<String>,
+        budget: Option<String>,
+    ) -> Result<u32, JsValue> {
+        self.inner
+            .root(
+                code,
+                caps.as_deref().unwrap_or(swarm::DEFAULT_CAPS),
+                budget.as_deref().unwrap_or("{}"),
+            )
+            .map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// One round; answers how many instances are alive.
+    pub fn step(&mut self) -> usize {
+        self.inner.step()
+    }
+
+    pub fn alive(&self) -> usize {
+        self.inner.alive()
+    }
+
+    /// The roster, as ids rather than the pointer `dvs_instance` returned.
+    pub fn ids(&self) -> Vec<u32> {
+        self.inner.ids()
+    }
+
+    #[wasm_bindgen(js_name = slotsAllocated)]
+    pub fn slots_allocated(&self) -> usize {
+        self.inner.slots_allocated()
+    }
+
+    /// Who spawned `id`: 0 for the root, whose parent is nobody, and
+    /// `undefined` for an id that is not in the roster. `dvs_parent`
+    /// answered 0 for both, having no way to say the second.
+    pub fn parent(&self, id: u32) -> Option<u32> {
+        self.inner.parent(id)
+    }
+
+    pub fn resident(&self, id: u32) -> bool {
+        self.inner.resident(id)
+    }
+
+    #[wasm_bindgen(js_name = cachedSize)]
+    pub fn cached_size(&self, id: u32) -> usize {
+        self.inner.cached_size(id)
+    }
+
+    #[wasm_bindgen(js_name = wakeOnMessage)]
+    pub fn wake_on_message(&self, id: u32) -> bool {
+        self.inner.wake_on_message(id)
+    }
+
+    /// What `id` may hold, as the JSON a config would have written.
+    pub fn caps(&self, id: u32) -> Option<String> {
+        self.inner.caps(id)
+    }
+
+    pub fn holds(&self, id: u32, cap: &str) -> bool {
+        self.inner.holds(id, cap)
+    }
+
+    /// Whether `parent` could pass `cap` to something it spawns -- what a
+    /// panel asks before offering the button.
+    #[wasm_bindgen(js_name = mayGrant)]
+    pub fn may_grant(&self, parent: u32, cap: &str) -> bool {
+        self.inner.may_grant(parent, cap)
+    }
+
+    pub fn budget(&self, id: u32) -> Option<String> {
+        self.inner.budget(id)
+    }
+
+    /// A msgpack message onto one of `id`'s queues.
+    pub fn push(&mut self, id: u32, queue: &str, msg: &[u8]) -> Result<(), JsValue> {
+        self.inner
+            .push(id, queue, msg)
+            .map_err(|e| JsValue::from_str(&e))
+    }
+
+    pub fn kill(&mut self, id: u32) -> Result<(), JsValue> {
+        self.inner.kill(id).map_err(|e| JsValue::from_str(&e))
+    }
+
+    pub fn hibernate(&mut self, id: u32) -> Result<(), JsValue> {
+        self.inner.hibernate(id).map_err(|e| JsValue::from_str(&e))
+    }
+
+    pub fn wake(&mut self, id: u32) -> Result<(), JsValue> {
+        self.inner.wake(id).map_err(|e| JsValue::from_str(&e))
+    }
+
+    #[wasm_bindgen(js_name = allowHibernation)]
+    pub fn allow_hibernation(&mut self, allow: bool) {
+        self.inner.allow_hibernation(allow);
+    }
+
+    #[wasm_bindgen(js_name = allowBytecode)]
+    pub fn allow_bytecode(&mut self, allow: bool) {
+        self.inner.allow_bytecode(allow);
+    }
+
+    #[wasm_bindgen(js_name = allowUnsafeStdlib)]
+    pub fn allow_unsafe_stdlib(&mut self, allow: bool) {
+        self.inner.allow_unsafe_stdlib(allow);
+    }
+
+    #[wasm_bindgen(js_name = setHostIdentity)]
+    pub fn set_host_identity(&mut self, identity: Option<String>) {
+        self.inner.set_host_identity(identity.as_deref());
     }
 }

@@ -296,6 +296,41 @@ for (const name of examples) {
   }
 }
 
+// The swarm table (doc/Wasm.md M5): the Lab's Instances panel replaces
+// sixteen `dvs_*` calls with these, so the check is that they drive a real
+// swarm rather than that they exist. A program is rooted, stepped to
+// completion, and asked what it holds -- `host:time` yes and `lifecycle`
+// no, from the same `host:*` ceiling a config-less run gets, which is a
+// question about the capability set and not about which connectors the
+// build happens to carry.
+{
+  const name = 'swarm-table';
+  try {
+    const r = await withTimeout(
+      page.evaluate(() => window.drtBrowserTest.swarmRoundTrip('print("swarm")\n')),
+      TIMEOUT * 1000,
+    );
+    const wrong = [];
+    if (r.root !== 1) wrong.push(`root id ${r.root}, expected 1`);
+    if (r.parent !== 0) wrong.push(`root has parent ${r.parent}, expected 0`);
+    if (r.parentOfNobody !== null) wrong.push('an id not in the roster has a parent');
+    if (!r.holdsTime) wrong.push('root does not hold host:time');
+    if (r.holdsLifecycle) wrong.push('root holds lifecycle, which host:* does not imply');
+    if (!r.resident) wrong.push('root is not resident');
+    if (r.slots !== 1) wrong.push(`${r.slots} slots allocated, expected 1`);
+    if (r.aliveAfter !== 0) wrong.push(`${r.aliveAfter} alive after it exited`);
+    if (r.idsAfter.length !== 0) wrong.push(`roster is ${JSON.stringify(r.idsAfter)} after it exited`);
+    if (wrong.length === 0) {
+      console.log(`ok       ${name.padEnd(24)} root, step to exit, roster and caps back`);
+      nOk += 1;
+    } else {
+      fail(name, wrong.join('; '));
+    }
+  } catch (e) {
+    fail(name, e === TIMED_OUT ? `timed out after ${TIMEOUT}s` : `the page threw: ${e.message}`);
+  }
+}
+
 // The REPL, typed at drt-term.js, against what the native binary said to
 // the same lines. The page echoes what is typed and the native transcript
 // (stdin from a file) does not, so the echoes are removed before the diff;
