@@ -12,12 +12,18 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
-## [0.4.1] - unreleased
+## [0.4.1] - 2026-09-03
 
 `v0.4.1` &middot; dv ABI 1 &middot; diluvium `515160f64587`
 
 `ssmtp/send` threads. A reply can name the message it answers, so a
-client files it under that conversation rather than beside it.
+client files it under that conversation rather than beside it. And
+the examples gate passes under its own documented command, which
+it did not.
+
+A patch, honestly: the connector set is v0.4.0's, so a package
+declaring `requires.connectors` sees nothing new. The call surface
+grew by two optional fields and nothing was removed.
 
 ### Connectors
 

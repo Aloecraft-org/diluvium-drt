@@ -61,10 +61,11 @@ repo: Aloecraft-org/diluvium-drt
 releases:
   - version: 0.4.1
     tag: v0.4.1
-    date: null
-    status: unreleased
+    date: 2026-09-03
+    status: released
     stable: true
-    mirror: false
+    mirror: true
+    latest: true
     dv_abi: 1
     diluvium: 515160f645874fc82de001fea7f68803f47bbc58
     connectors:
@@ -72,7 +73,13 @@ releases:
       slim: [time, fs, crypto, listen]
     summary: |
       `ssmtp/send` threads. A reply can name the message it answers, so a
-      client files it under that conversation rather than beside it.
+      client files it under that conversation rather than beside it. And
+      the examples gate passes under its own documented command, which
+      it did not.
+
+      A patch, honestly: the connector set is v0.4.0's, so a package
+      declaring `requires.connectors` sees nothing new. The call surface
+      grew by two optional fields and nothing was removed.
     added:
       - |
         **`ssmtp/send` takes `in_reply_to` and `references`.** A reply had
@@ -121,7 +128,6 @@ releases:
     status: released
     stable: true
     mirror: true
-    latest: true
     dv_abi: 1
     diluvium: 515160f645874fc82de001fea7f68803f47bbc58
     connectors:
