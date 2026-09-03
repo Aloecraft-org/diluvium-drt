@@ -186,11 +186,13 @@ for the C core and wasi-libc, the wasm-bindgen CLI at the version
 it. Two things the script carries that a reader would otherwise
 re-discover:
 
-- **The C core is compiled without `-DLUA_USE_C89`.** diluvium-sys passes
-  that flag for `wasm32-unknown-unknown`, from when the target had no
-  libc; it makes `lua_Integer` 32 bits, and a millisecond timestamp does
-  not fit one. `script/drt-web-cc.sh` removes it until diluvium-sys does
-  (doc/Wasm.md §7).
+- **The C core wants a diluvium new enough to pin its numeric types.**
+  Before `44b60fc` upstream, `-DLUA_USE_C89` -- which diluvium-sys passes
+  for this target, from when it had no libc -- also made `lua_Integer` 32
+  bits, so `host.time()` overflowed in a page and nowhere else.
+  `luaconf.h` now pins the types on every target, and this tree's pin is
+  past that commit; a build against an older diluvium fails examples 01
+  and 12 on the clock (doc/Wasm.md §7).
 - **The module starts by calling wasi-libc's constructors** (`start` in
   `bindings.rs`), the reactor convention done by hand. Without that call
   wasm-ld wraps every export as a WASI *command* -- constructors before,

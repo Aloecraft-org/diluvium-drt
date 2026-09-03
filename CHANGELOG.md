@@ -12,6 +12,103 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
+## [0.5.0] - unreleased
+
+`v0.5.0` &middot; dv ABI 1 &middot; diluvium `f4d52516380c`
+
+Two wasm artifacts, and one runtime behind all three of them.
+`drt_wasip2.wasm` is `drt` itself under wasmtime; `drt_web.tar.gz`
+is the same `drt` in a page, with the C core linked into the module
+and a terminal contract to attach xterm.js to. Neither is a second
+implementation: the examples gate is the conformance oracle on
+every target, diffing one `expected.txt` natively, under wasmtime,
+and in Chromium.
+
+A minor digit rather than a patch, by the rule the connector list
+makes: two profiles are new (`wasi`, `web`) and `wasi` carries
+`listen`, so BUILDINFO's list is not v0.4.2's and a package
+declaring `requires.connectors` resolves differently against them.
+`full` and `slim` are unchanged, and nothing that existed behaves
+differently on a native build.
+
+The plan and its measurements are `doc/Wasm.md`; the embedding
+contract is `doc/Browser.md`; `doc/Platforms.md` is the matrix.
+
+### Connectors
+
+- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `listen`
+- `slim`: `time`, `fs`, `crypto`, `listen`
+- `wasi`: `time`, `fs`, `crypto`, `sql`, `listen`
+- `web`: `time`, `fs`, `crypto`
+
+### Added
+
+- **`drt` on `wasm32-wasip2`, released as `drt_wasip2.wasm`.** The
+  binary itself, built with the `wasi` profile -- `time`, `fs`,
+  `crypto`, `sql`, `listen` -- and run under wasmtime with
+  `script/drt-wasip2.sh`, which carries the flags the C core's
+  `setjmp`/`longjmp` lowering needs. It proves itself the way the
+  native legs do and then harder: the examples gate runs through
+  the wrapper before the artifact is uploaded.
+- **`drt` in a browser, released as `drt_web.tar.gz`.** The `web`
+  profile with the C core and wasi-libc linked into one module, so
+  it imports nothing but wasm-bindgen's glue -- wasi-libc's
+  seventeen syscalls are defined inside it, and `fd_write` reaches
+  the same sink the runtime's own output does. The tarball carries
+  the module, its glue, and `drt-term.js`/`shell.js`: a host
+  constructs its own xterm.js `Terminal`, calls `attach`, and has a
+  `$ ` prompt running `drt run`, `drt repl` and `drt buildinfo`.
+  The gate is the examples in Chromium, a REPL transcript diffed
+  against the native binary's, and a real xterm.js typed into.
+- **`drt start` serves from wasmtime.** wasip2 has sockets and no
+  threads, so the listener gained a second acceptor: non-blocking
+  `std::net`, one state machine per connection, stepped from the
+  drive loop. The bridge's contract is unchanged -- one request per
+  connection as a message on a queue, headers by allowlist only --
+  and `examples/17-serving-http` is the deployment, curl'd both
+  natively and under wasmtime.
+- **Line editing in `drt repl`, behind the `cli` feature.** History,
+  word motions, undo, and Tab whose candidates are the names the
+  running instance answers with rather than a list the host
+  hard-coded. One editor (`ego-cli`) rather than one per host. In
+  `full` for now: its native backend wants an async runtime, and
+  `slim` carries none.
+- **`crates/drt-platform`.** The four places DRT touches a platform
+  -- clock, entropy, the filesystem, stdio -- behind one seam, so
+  nothing above them is target-aware. In a page the clock is
+  `web-time`, the filesystem is a `MemFs` the page seeds, and stdio
+  is a sink the page installs.
+
+### Changed
+
+- **The drive loop inverted, and the hostcall pump defers.**
+  `run`, `repl` and `start` no longer own loops that block:
+  `tick()` advances an instance as far as it can and returns what
+  the host should do next, and the host owns the sleeping. A
+  connector that cannot answer at once is parked in an in-flight
+  table and polled on the loop's cadence instead of stalling every
+  instance -- which also removes the failure mode
+  `doc/Failure-Modes.md` records for `rest`.
+- The command surface moved from `main.rs` into `drt::cli`, so a
+  page parses the same command line the binary parses, with the
+  same `--help` and the same exit statuses.
+
+### Removed
+
+- **The browser tier's JS host bridge.** `drt-web` was an `Engine`
+  over a JS-hosted interpreter, which was SPEC.md §4's fallback for
+  the case where the C core could not be linked into the same
+  module. It can, so the fallback is gone rather than kept as a
+  second engine path.
+
+### Fixed
+
+- The fs connector's jail tests for a root with `has_root` rather
+  than `is_absolute`, which `std` answers differently on
+  `wasm32-unknown-unknown` -- an absolute path was refused
+  natively and by a different rule in a page.
+
+
 ## [0.4.2] - 2026-09-03
 
 `v0.4.2` &middot; dv ABI 1 &middot; diluvium `515160f64587`

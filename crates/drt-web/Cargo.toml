@@ -18,7 +18,7 @@ crate-type = ["cdylib", "rlib"]
 # workspace dependency's default features cannot be turned off from here,
 # and the default `slim` carries `listen`, which is threads and sockets a
 # page does not have.
-drt = { path = "../drt", version = "0.4.2", default-features = false, features = ["web"] }
+drt = { path = "../drt", version = "0.5.0", default-features = false, features = ["web"] }
 drt-platform = { workspace = true }
 drt-config = { workspace = true }
 drt-connector = { workspace = true }

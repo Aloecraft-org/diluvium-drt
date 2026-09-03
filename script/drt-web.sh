@@ -43,15 +43,6 @@ case $PROFILE in
     *)   dir=$PROFILE ;;
 esac
 
-# The C core, compiled without the 32-bit-integer flag diluvium-sys still
-# passes for this target (see drt-web-cc.sh). Both variables, because
-# diluvium-sys takes an explicit CC as the whole toolchain and then looks
-# for `llvm-ar` on PATH. Cargo does not rerun diluvium-sys's build script
-# when only these change, so after editing drt-web-cc.sh:
-#     cargo clean -p diluvium-sys --target wasm32-unknown-unknown
-export CC_wasm32_unknown_unknown=${CC_wasm32_unknown_unknown:-$HERE/script/drt-web-cc.sh}
-export AR_wasm32_unknown_unknown=${AR_wasm32_unknown_unknown:-$WASI_SDK_PATH/bin/llvm-ar}
-
 cargo build -p drt-web --target wasm32-unknown-unknown --profile "$PROFILE"
 module=$TARGET_DIR/wasm32-unknown-unknown/$dir/drt_web.wasm
 "$WASM_BINDGEN" --target web --out-dir "$OUT" --out-name drt_web "$module"

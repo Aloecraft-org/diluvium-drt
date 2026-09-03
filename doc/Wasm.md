@@ -630,8 +630,8 @@ what it is over. Contents:
 - **`script/drt-web.sh`** — `cargo build` for the target plus
   `wasm-bindgen --target web` into `browser-test/pkg/`, refusing a CLI
   whose version is not the crate's pin; and it names
-  `script/drt-web-cc.sh` as the C compiler, which is the wasi-sdk's clang
-  minus `-DLUA_USE_C89` (§7).
+  nothing else: the C core needed a compiler wrapper here until upstream
+  pinned the numeric types (§7).
 
 Not in the crate, by the measurements: `platform.rs` (the leaf adapters
 are `drt-platform`'s and the page hands over nothing but a sink) and
@@ -847,14 +847,18 @@ than to a stand-in: it types into an actual xterm.js `Terminal` in
 Chromium and reads the assertion out of that terminal's own rendered
 buffer.
 
-**Host 1: the diluvium homepage panel.** Its reference implementation is
-`diluvium/doc/repl-reference.html`, and it is today three hand-written
-things that this replaces outright: a WASI shim in the page (45 imports,
-an `ENOSYS` `Proxy`, `fd_write` reassembling iovecs — `wasi_shim.rs`
-does this inside the module, so nothing is imported); a ~120-line `Repl`
+**Host 1: the diluvium homepage panel.** It lives at `site/` in the
+diluvium repository as of `f47747f`, and its terminal is three files —
+`site/static/assets/repl/{terminal.js, runtime.js, wasi.js}` over a
+vendored xterm.js — which is exactly the three hand-written things this
+replaces outright: a WASI shim in the page (45 imports, an `ENOSYS`
+`Proxy`, `fd_write` reassembling iovecs — `wasi_shim.rs`
+does this inside the module, so nothing is imported); a `Repl`
 class doing arrows, `^A`/`^E`/`^U`, history and Tab (D8's one editor);
 and `init_lua`/`repl_eval`/`repl_complete` as the evaluation protocol
-(`repl.dlua` over two queues). What the panel gains is everything else
+(`repl.dlua` over two queues). `diluvium/doc/repl-reference.html` is the
+annotated reference the three were built from and reads as the
+specification of what is being replaced. What the panel gains is everything else
 `drt` is: `drt run`, `drt buildinfo`, capabilities, a filesystem, and
 `--help` that matches the binary's.
 
@@ -869,6 +873,15 @@ supports it: `LoadSpec::unsafe_stdlib`, refused for `drt run` on
 purpose), or the homepage keeps the language kernel for its REPL tab and
 uses `drt` for a second one. Not this plan's call, but this plan should
 not pretend the swap is free.
+
+Upstream moved on this while M5 was being written: `b09e825` exposes
+`diluvium_repl_load` and `diluvium_repl_complete` to Rust behind a
+diluvium-sys `lua` feature, with `luaL_checkversion` as the guard. That
+is the unsealed evaluator reachable from Rust rather than only from a
+page's JS, which makes the first option buildable — and it is the same
+`drepl.c` the homepage calls today, so a `drt` verb over it would answer
+"keep typing" and complete names identically. It is deliberately off by
+default, "the same kind of statement `DV_FLAG_UNSAFE_STDLIB` makes".
 
 **Host 2: the Lab** (`diluvium-lab`, ~1 week). A **Terminal** tool in the
 rail (`src/notebook/panel.js` registration, xterm.js vendored) over
@@ -924,7 +937,20 @@ terminal contract). Delete `bridge.rs`, `engine.rs`,
 `doc/Browser.md` to the terminal contract and the export table; close the
 branch. Zero risk once M4's suite is green, and not before.
 
-**M8 — one line editor, `ego-cli`'s. ~3-4 days.** D8, §2.6. `ego_cli` in
+**M8 — one line editor, `ego-cli`'s. ~3-4 days. Native half landed
+2026-09-03** (`cli` in `crates/drt/Cargo.toml`, in `full` and not in
+`slim`; `repl.rs` split into `piped` — a pipe, prompts on stderr, byte
+for byte what it was — and `edited`, the tty, over `ego_cli::Session`;
+`Repl::names` and the `{complete}` message in `repl.dlua`, so Tab's
+candidates are the names the running instance answered with;
+`tests/editor.rs` scripts five behaviours through `MemTerminal`. `drt
+repl` on a tty now has history, word motions, undo and Tab; it had none
+of them. **Still to do:** `cli` into `slim` once ego-cli#3's branch
+lands on `main` (below), and the browser half — `drt-web` keeps
+`drt-term.js`'s printable-and-backspace loop until
+`XtermTerminal::attach` replaces it.)
+
+*The plan as written:* D8, §2.6. `ego_cli` in
 `crates/drt` behind a `cli` feature, with `Session` driven at the one
 seam §5 identifies (`Step::Input`, where the instance is parked and the
 host has nothing else to do): `repl.rs`'s native half becomes the
@@ -956,6 +982,35 @@ until it lands `cli` rides `full` — which carries tokio already, for the
 relay and the STUN server — so `slim` keeps its promise and the smallest
 build is the one still without an editor. That is the backwards half of
 the second option, and it is meant to be temporary.
+
+*Answered upstream the same day, and measured here.* ego-cli#3 came back
+with a `runtime` feature (default on) and a `term::blocking::BlockingNative`
+that needs no executor, on `claude/ego-cli-cross-platform-7m8d6v`. Three
+corrections to the sketch this document had: `ego_platform::io::Stdout`
+cannot stay on the write side — it wraps tokio's, which panics with no
+runtime in scope, so the blocking backend writes with `std::io::Write`;
+a second type rather than a feature that redefines `NativeTerminal`,
+because a feature unifies across the build graph and would decide for
+every crate in it at once; and `ego_platform` itself has to become
+optional, since it is a hard dependency and takes tokio with `full` —
+gating `History::load`/`save` is the only user-visible loss, and
+`encode`/`decode` stay pure.
+
+Tried against this tree with the dependency pointed at that branch and
+`default-features = false`, and `drt`'s `cli` feature taking
+`futures-executor` in place of `dep:tokio`:
+
+| | crates | `release-small` |
+|---|---|---|
+| `slim` | 76 | 1,493,464 |
+| `slim` + `cli`, runtime-free | 108 | 1,646,400 |
+
+**+153 KB, +10.2%, and `cargo tree -i tokio` finds nothing** — where the
+runtime backend cost +248 KB and an async runtime. All five of
+`tests/editor.rs` pass over it unchanged. So the move is two lines (`cli`
+out of `full` and into `slim`, `dep:tokio` to `dep:futures-executor`)
+once that work reaches ego-cli's `main`; this tree does not point at a
+feature branch in the meantime.
 
 **Later, named so they are not mistaken for forgotten:** the plugin
 channel and a `browser/*` capability over it, both assessed against M3's
@@ -1004,16 +1059,25 @@ week for the served-deployment story."
   `__instance_terminated` definition in `bindings.rs` (§2.3, §4.4).
   Upstream ask: move `ego_transport`'s pin to 0.2.127 or later, and the
   definition here is deleted the same day. Not blocking anything.
-- **`-DLUA_USE_C89` in diluvium-sys, for `wasm32-unknown-unknown`.** The
-  flag dates from the target having no libc and makes `lua_Integer` a
-  32-bit `long`; `host.time()` -- milliseconds since the epoch -- does not
-  fit, and the browser suite found it on its first run (01 and 12 fail on
-  the clock). The module links wasi-libc now, so the core can be the same
-  C99 build the wasip2 target gets. Upstream ask, in diluvium-sys's
-  `Platform::Browser` flags: drop the define. Until then
-  `script/drt-web-cc.sh` strips it, and `script/drt-web.sh` names that
-  wrapper as the target's CC. The wrapper is the only thing in this tree
-  that knows diluvium-sys's flags; delete it when the ask lands.
+- ~~**`-DLUA_USE_C89` in diluvium-sys, for `wasm32-unknown-unknown`.**~~
+  **Fixed upstream 2026-09-03, and better than the ask.** The flag dates
+  from the target having no libc and made `lua_Integer` a 32-bit `long`;
+  `host.time()` -- milliseconds since the epoch -- did not fit, and the
+  browser suite found it on its first run (01 and 12 failing on the
+  clock). The ask here was for diluvium-sys to drop the define for this
+  target, and `script/drt-web-cc.sh` stripped it meanwhile. Upstream fixed
+  the cause instead: `luaconf.h` now pins `long long` and `double` on
+  every target (`44b60fc`, "Pin the numeric types, so a chunk loads on
+  every build"), because `LUA_USE_C89` is a statement about the *library*
+  a target has and was carrying a second, unrelated decision about
+  numeric width. So the flag is harmless now and the browser gets 64-bit
+  integers like everything else. Verified here: with the diluvium pin
+  moved to `f4d5251` and the stock wasi-sdk clang -- no wrapper -- 01, 12,
+  the xterm embedding and the REPL parity check all pass. The wrapper is
+  deleted. Two things came with the fix that are worth knowing: chunks
+  now carry a pinned header, so bytecode from an older build is refused
+  by name rather than misread (DRT ships text, so nothing here changes),
+  and `math.maxinteger` in a page stops being 2147483647.
 - **Whether the Lab's cells should run on `drt` too.** One runtime is the
   doctrine; the notebook kernel is Lua-with-more, unsealed, and `drt run`
   is sealed by design. A `drt` verb that hosts an unsealed evaluator
