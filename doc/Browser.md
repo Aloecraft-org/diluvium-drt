@@ -332,5 +332,39 @@ its window is picked up on the next keystroke, because that is when
 upper-cased bytes back. It ships so a host can check its plumbing before
 SSH is in the way.
 
+### Being reachable: `relay-leg.js`
+
+The snippet above assumes the page already has a socket. A page has no
+inbound address, so where the socket comes from is the other half of the
+question, and the answer is DRT's rendezvous relay -- the same one a
+laptop behind CGNAT uses. The page parks an outbound leg by label; a
+caller claims the label through `drt tunnel`; the relay splices them.
+
+```js
+const leg = park(
+  `wss://${label}--tunnel.${zone}/park/${label}?k=${parkKey}`,
+  () => server.serve(onShell),                     // one socket per claim
+  { onEvent: (name) => show(name) },               // parked | claimed | closed
+);
+```
+
+Then, from anywhere:
+
+```sh
+ssh -o ProxyCommand="drt tunnel wss://<label>--tunnel.<zone>/s/<label>?k=<caller>" you@<label>
+```
+
+`open` is called once per claim, and a claimed leg is replaced
+immediately -- the relay's replenish-on-claim, which is why a second
+caller finds somebody home. `onEvent` is where a host gets presence
+without asking anything: a panel that says *the tab is reachable* is
+watching `parked` and `closed`. `leg.close()` stops it, and a label with
+no parked leg tells a caller nobody is home.
+
+Nothing in the relay's protocol is new here: it is URLs, HTTP status and
+binary frames, built so `websocat` could speak it, and a browser
+`WebSocket` is that kind of client. `relay-leg.js` is a socket, a
+first-byte test and a re-park.
+
 +1,521,413 bytes on the module, which is what a server, two key exchanges
 and a cipher suite cost.

@@ -1,16 +1,16 @@
 # SSH into a browser: what is measured, and what blocks it
 
-**Status:** built, 2026-09-04, against russh 0.63.2 and DRT's `web`
-profile. Every claim below was run, not reasoned about. The upstream half
-is written and merged into the fork (§4); DRT's transport and its SSH
-server are built, and **a standard `ssh(1)` client reaches a DRT shell
-inside Chromium in the browser suite** (§5).
+**Status:** built, end to end, 2026-09-04, against russh 0.63.2 and DRT's
+`web` profile. Every claim below was run, not reasoned about. The upstream
+half is written and merged into the fork (§4); DRT's transport, its SSH
+server and the relay leg are built, and the browser suite runs **`ssh -o
+ProxyCommand="drt tunnel ..."` into a DRT shell in Chromium, over a real
+`drt relay`** (§5).
 
 **The ask.** A standard `ssh` client, pointed through `drt tunnel` as a
 `ProxyCommand`, reaching a terminal inside a page running DRT — the same
-DRT anyone can import from a CDN, not a Lab-only capability. Everything
-but the `ProxyCommand` now works; the suite bridges the bytes over a TCP
-port instead, which is the same job with a shorter wire.
+DRT anyone can import from a CDN, not a Lab-only capability. That sentence
+is now a check in the browser suite, run on every push.
 
 ---
 
@@ -28,10 +28,11 @@ The estimate this replaces was "hard, probably a native helper". That was
 wrong twice over: the hard part was never the crypto, and the fix was a
 day rather than a port.
 
-DRT's own half followed the same day: the transport, the server, and a
-gate in which OpenSSH 9.6 authenticates with a publickey, gets a pty, and
-runs `drt run hello.dlua` inside a page (§5). What is left is `drt
-tunnel` in front of it and the wording in `GUARANTEES.md` (§7).
+DRT's own half followed the same day: the transport, the server, the
+relay leg, and two gates — OpenSSH 9.6 authenticating with a publickey and
+running `drt run hello.dlua` inside a page, once over a bridge the suite
+makes and once over a real `drt relay` with `drt tunnel` as the
+`ProxyCommand` (§5). What is left is the wording in `GUARANTEES.md` (§7).
 
 ## 2. What the chain already has
 
@@ -207,6 +208,40 @@ side alone:
   size on every keystroke — so a client resizing its window is picked up
   with no event plumbing on the page's side at all.
 
+### The carrier: `drt tunnel`, end to end
+
+A page has no inbound address, which is the same problem the relay was
+written for. So the page is the *device*: `relay-leg.js` parks an outbound
+leg by label, and `drt tunnel` claims it as `ssh`'s `ProxyCommand`.
+
+```
+ssh -o ProxyCommand="drt tunnel wss://<label>--tunnel.<zone>/s/<label>?k=<caller>"
+      |
+   drt relay          park/claim by URL, spliced, byte-counted
+      |
+   the page           relay-leg.js -> DrtSocket -> DrtSshServer
+```
+
+Nothing new is on the wire. The relay's protocol is URLs, HTTP status and
+raw binary frames — it was built so `websocat` could speak it — and a
+browser `WebSocket` is exactly that kind of dumb client, answering pings
+itself. So the page's whole side is a `WebSocket`, a first-byte test, and
+a re-park; `relay-leg.js` is about eighty lines and all of the protocol is
+in the two URL shapes.
+
+The first byte *is* the claim, which is what lets replenish-on-claim work
+with no control channel: when a leg's first byte arrives it becomes a
+session and a fresh leg is parked at once, so the next caller finds
+somebody home. The suite asserts that — two `parked` events for one claim
+— because a page that serves one caller and then goes dark would pass
+every other check here.
+
+`ssh-through-a-relay` in the browser suite is the whole diagram with
+nothing stubbed: a real `drt relay` on a free port, the page parking, and
+`ssh -o ProxyCommand="drt tunnel ws://.../s/page"` running `drt run` and
+getting what the page's runtime printed. It needs a native `drt` carrying
+`relay` and `tunnel`, which CI and the release job now build.
+
 ## 6. What is not decided
 
 - **How long we carry the patch.** DRT points `[patch.crates-io]` at the
@@ -225,9 +260,15 @@ side alone:
   `web` connector list is unchanged (`time`, `fs`, `crypto`) — this is a
   server, not a connector — so nothing a package declares resolves
   differently. Revisit if a page that wants no server has to care.
-- **`drt tunnel` in front of it.** The suite bridges TCP; the product
-  bridges a relay and a WebSocket. Same bytes, and `drt tunnel` already
-  exists — what is untried is the two of them end to end.
+- **`wss://` rather than `ws://`.** The suite's relay is on loopback
+  without TLS. The edge terminates TLS in production and the browser's
+  `WebSocket` speaks `wss://` natively, so this is a certificate away
+  rather than a code change — but it is untried here, and "untried" is
+  the honest word.
+- **A page's own re-park across a sleep.** `relay-leg.js` backs off and
+  re-parks when the relay drops an idle leg. A tab that was suspended for
+  an hour is the case with no test, because the suite has no way to
+  suspend one.
 
 ## 7. The posture, since this is a listener in someone's browser
 

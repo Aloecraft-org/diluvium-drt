@@ -124,6 +124,11 @@ to DRT by swapping the binary and editing no files.
 including the control plane a supervisor uses for presence, metering and
 arbitration.
 
+The device half can also be a browser tab: a page that parks a leg runs an
+SSH server, and the caller line above is unchanged — same client, same
+`ProxyCommand`, a terminal inside a page.
+[`doc/Browser.md`](doc/Browser.md) is the recipe.
+
 **Reaching a machine that has no address** is a ladder, and every rung is a
 verb above: `netcheck` says what the network can do, `stun` measures the NAT
 mapping that decides it, the relay carries what cannot be reached directly,
