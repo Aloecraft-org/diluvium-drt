@@ -35,6 +35,7 @@
   import { makeShell } from './shell.js';
   import { attach } from './drt-term.js';
   import { terminalFor } from './ssh-terminal.js';
+  import { park } from './relay-leg.js';
 
   const decode = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
   // The other direction, for the SSH bridge: Playwright's exposed
@@ -42,6 +43,7 @@
   const b64 = (bytes) => btoa(String.fromCharCode(...bytes));
   const sshSockets = new Map();
   const sshShells = new Map();
+  const sshParked = new Map();
 
   let term = null;
   let shell = null;
@@ -169,6 +171,35 @@
         await window.sshClosed(id);
       })();
       return { fingerprint: server.fingerprint, authorized: server.authorized };
+    },
+    // The whole chain (doc/SshInBrowser.md): the page parks a leg on a
+    // real `drt relay`, and `ssh -o ProxyCommand="drt tunnel ..."` claims
+    // it. Nothing is bridged by the suite here -- the bytes go over the
+    // relay the way they will in production, and the only thing this adds
+    // is the label and the keys.
+    sshPark(url, hostKey, authorizedKeys) {
+      const server = new DrtSshServer(hostKey, authorizedKeys);
+      const events = [];
+      const leg = park(
+        url,
+        () =>
+          server.serve((shell) => {
+            const terminal = terminalFor(shell);
+            const bound = attach(DrtTerm, terminal, { DrtEditor, banner: 'drt over a relay' });
+            bound.term.putFile('/hello.dlua', new TextEncoder().encode(
+              'print("hello through a tunnel")\n'));
+            bound.term.setCwd('/');
+          }),
+        { onEvent: (name) => events.push(name) },
+      );
+      sshParked.set(1, { leg, events });
+      return true;
+    },
+    sshParkEvents: () => (sshParked.get(1) ? sshParked.get(1).events : []),
+    sshUnpark() {
+      const held = sshParked.get(1);
+      if (held) held.leg.close();
+      sshParked.delete(1);
     },
     sshDeliver(id, data) {
       const socket = sshSockets.get(id);

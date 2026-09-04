@@ -298,8 +298,9 @@ jobs:
     # Chromium, plus the REPL parity check -- runs before the artifact is
     # uploaded. Ships as one tarball, because a page needs all of it: the
     # module, wasm-bindgen's glue, drt-term.js with shell.js behind it, and
-    # ssh-terminal.js, which is what makes an SSH session into the terminal
-    # object drt-term.js already takes (doc/SshInBrowser.md).
+    # ssh-terminal.js and relay-leg.js, which are what make an SSH session
+    # into the terminal object drt-term.js already takes and what parks the
+    # page on a rendezvous relay (doc/SshInBrowser.md).
     # `buildinfo` is read off the module inside Chromium (run.mjs writes
     # it out) so publish can put the profile in BUILDINFO the same way it
     # does for every other leg: from the bytes, not from YAML.
@@ -353,6 +354,11 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: crates/drt-web/browser-test/package-lock.json
+      # The whole-chain check runs this as the relay and as `ssh`'s
+      # ProxyCommand. A release that ships the browser module without
+      # exercising its headline path is the `strip` gap again.
+      - name: A native drt, for the relay and the tunnel
+        run: cargo build -p drt --no-default-features --features full
       - name: Build the web profile
         run: DRT_WEB_PROFILE=release-small script/drt-web.sh
       - name: The browser suite, in Chromium
@@ -370,7 +376,7 @@ jobs:
           pkg=crates/drt-web/browser-test
           cp "$pkg/pkg/drt_web.js" "$pkg/pkg/drt_web_bg.wasm" "$pkg/pkg/drt_web.d.ts" \
              "$pkg/pkg/drt_web_bg.wasm.d.ts" "$pkg/drt-term.js" "$pkg/shell.js" \
-             "$pkg/ssh-terminal.js" drt_web/
+             "$pkg/ssh-terminal.js" "$pkg/relay-leg.js" drt_web/
           tar -czf drt_web.tar.gz drt_web
       - uses: actions/upload-artifact@v4
         with:

@@ -118,6 +118,11 @@ to DRT by swapping the binary and editing no files.
 including the control plane a supervisor uses for presence, metering and
 arbitration.
 
+The device half can also be a browser tab: a page that parks a leg runs an
+SSH server, and the caller line above is unchanged — same client, same
+`ProxyCommand`, a terminal inside a page.
+[`doc/Browser.md`](doc/Browser.md) is the recipe.
+
 `drt ps` and REPL *attach* are still ahead: both reach a deployment running
 in another process, which is the control endpoint's job and lands with sshd.
 

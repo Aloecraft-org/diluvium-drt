@@ -590,6 +590,17 @@ contract is `doc/Browser.md`; `doc/Platforms.md` is the matrix.
   connector list is unchanged, because this is a server rather than
   a connector. The plan and the measurements are
   `doc/SshInBrowser.md`.
+- **`drt tunnel` reaches a page.** The chain the README describes,
+  end to end and gated: a page parks an outbound leg on `drt relay`
+  by label (`relay-leg.js`), `ssh -o ProxyCommand="drt tunnel
+  wss://.../s/<label>?k=..."` claims it, and the relay splices
+  them. Nothing new is on the wire -- the relay's protocol is URLs
+  and binary frames, built so `websocat` could speak it, and a
+  browser `WebSocket` is that kind of client. A claimed leg is
+  replaced at once, so a second caller finds somebody home, and
+  `onEvent` gives a host presence without asking anything. The
+  browser suite runs the whole diagram against a real relay and a
+  real `drt tunnel`.
 - **`crates/drt-platform`.** The four places DRT touches a platform
   -- clock, entropy, the filesystem, stdio -- behind one seam, so
   nothing above them is target-aware. In a page the clock is

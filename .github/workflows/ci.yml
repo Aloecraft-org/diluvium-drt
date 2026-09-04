@@ -102,9 +102,11 @@ jobs:
     # The crate's native half -- tests/term.rs over the rlib -- runs in
     # `test` with the rest of the workspace; this job is the browser.
     #
-    # `ssh-into-the-page` rides along and needs `ssh` and `ssh-keygen`,
-    # which ubuntu-latest carries. The suite names the skip if they are
-    # missing rather than passing without them (doc/SshInBrowser.md).
+    # `ssh-into-the-page` and `ssh-through-a-relay` ride along. They need
+    # `ssh` and `ssh-keygen`, which ubuntu-latest carries, and a native
+    # `drt` for the relay and the ProxyCommand, built below. The suite
+    # names either skip rather than passing without them
+    # (doc/SshInBrowser.md).
     runs-on: ubuntu-latest
     env:
       WASI_SDK_VERSION: "27.0"
@@ -159,6 +161,11 @@ jobs:
       # release-only failure (`strip` hiding the externref table from
       # wasm-bindgen) reached a rehearsal because nothing here built what
       # the release does.
+      # The whole-chain check runs this as the relay and as `ssh`'s
+      # ProxyCommand: a page parking a leg, a standard client claiming it.
+      # `full` because that is the profile carrying `relay` and `tunnel`.
+      - name: A native drt, for the relay and the tunnel
+        run: cargo build -p drt --no-default-features --features full
       - name: Build the module and its glue
         run: DRT_WEB_PROFILE=release-small script/drt-web.sh
       - name: Playwright, and its Chromium
