@@ -16,11 +16,13 @@ a claim that was not measured, the text says so.
 
 And one background fact that shaped both: the Lab has not moved since
 `diluvium-host` became DRT, because DRT's wasm story was not ready for it to
-move to. `doc/Browser.md` designed a browser tier and `doc/Next.md` §7
-sized it, and the honest summary of both is that wasm has been a second
-tier — a separate crate, a different engine path, a JS host in the middle,
-and nothing in the release. This document is the plan that makes it the
-same runtime.
+move to. **Stale as of 2026-09-04** — it has moved a great deal, and what it
+now carries is `doc/Lab.md`; the sentence is kept because it is what the plan
+below was written against. `doc/Browser.md` designed a browser tier and
+`doc/Next.md` §7 sized it, and the honest summary of both is that wasm has
+been a second tier — a separate crate, a different engine path, a JS host
+in the middle, and nothing in the release. This document is the plan that
+makes it the same runtime.
 
 **Read `doc/Browser.md`, `doc/HostBaseline.md` and `doc/Next.md` §7 first**
 if you have not; this supersedes the first's architecture and the third's

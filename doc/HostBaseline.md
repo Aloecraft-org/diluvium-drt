@@ -122,6 +122,10 @@ call and its REPL has no line editor at all — pressing Up feeds a raw
 `\x1b` into the line, and because `0x1b` is Lua's *bytecode signature*
 byte, the REPL answers `attempt to load a binary chunk (mode is 't')`.
 
+**Read `doc/Lab.md` §4 before citing the Lab row.** That measurement
+predates build10's deferred-hostcall seam, which is the mechanism whose
+absence the next paragraph blames, so it needs re-running.
+
 Lab's failure is the one this document exists to name. It is not a missing
 connector: the browser has `Date.now()`. It is that the REPL evaluates on a
 thread that cannot park, so the queue round-trip underneath `host.time()`
