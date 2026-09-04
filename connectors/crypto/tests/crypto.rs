@@ -758,6 +758,12 @@ fn an_unknown_call_in_the_family_is_an_error_not_a_panic() {
     assert!(err.contains("no call 'crypto/sign_anything'"), "{err}");
 }
 
+/// `crypto/random` is a *baseline* family (doc/HostBaseline.md): every DRT
+/// host must answer it, and the Lab's JavaScript host answers it with the
+/// same argument, the same default and the same range. So the numbers below
+/// are a cross-host contract rather than this connector's preference --
+/// changing one means changing two hosts, and rule 5 there is why there is
+/// no second spelling of it to change instead.
 #[test]
 fn random_bounds_are_refusals() {
     let c = CryptoConnector::new();

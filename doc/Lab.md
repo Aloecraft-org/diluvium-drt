@@ -74,7 +74,8 @@ This is the finding that decides the shape of everything below.
 | `sql` | yes, over vendored sql.js, with a granted scope | no |
 | `rest` | yes, over `fetch`, prefix allowlist | no |
 | `js/invoke` | **yes** | **no** |
-| random | `rng/int`, `rng/bytes` | `crypto/random` |
+| `crypto/random` | yes | yes |
+| `rng/int`, `rng/bytes` | yes | no — see below |
 | listener | yes (`Listener`) | no (a page has no socket to bind) |
 
 `jsConnector(invoke)` answers `js/invoke` — a guest calling a JavaScript
@@ -90,15 +91,26 @@ connector axis it is ahead, and **swapping the Lab's kernel for DRT today
 would lose `sql`, `rest` and `js/invoke`.** The path that closes that gap
 is `doc/Plugins.md`, not this document.
 
-The `random` row is a different kind of finding and the more important
-one. A guest wanting random bytes writes `rng/bytes` on one host and
-`crypto/random` on the other: the same program does not run on both. That
-is the *"sorry, that's different in Lab"* failure the browser-first plan
-existed to prevent, it has already happened in miniature, and it went
-unnoticed because nothing compares the two hosts. Which spelling is
-canonical is `doc/Host.md`'s to say and is not settled here; what is
-settled is that a divergence of exactly this shape survived in both trees
-until somebody read them side by side.
+The `rng` rows are a different kind of finding, and a milder one than the
+first draft of this document claimed. **The two hosts do not disagree
+about the baseline.** `crypto/random` is what `src/dhostlib.h` binds as
+`host.crypto.random(nbytes?)`, and both hosts answer it identically —
+same argument, same default of 32, same 1..1024 range, same hex answer —
+so a guest asking for entropy runs unchanged on either.
+
+What the Lab has *in addition* is an `rng` connector answering `rng/int`
+and `rng/bytes`: a host-local family that overlaps a baseline one,
+reachable only through `host.call` because nothing in the `host` library
+binds it, with two call sites in the Lab's own demo and test material
+(`swarm-programs.js`, `test/swarm.spec.js`). Nothing is broken today.
+
+It is still a divergence, and it is settled in `doc/HostBaseline.md` rule
+5: one spelling per family, the library fixes it, `rng/*` retires in the
+Lab rather than being ported here. The argument that makes it more than
+tidiness is that `rng/int`'s one non-redundant feature — a *ranged*
+integer — is modulo-biased as implemented, so porting it would copy a
+subtle bug into a second host. A ranged integer belongs in `dhostlib.h`
+with rejection sampling, where both hosts inherit one correct version.
 
 ## 4. Three corrections to DRT's own documents
 
@@ -164,10 +176,13 @@ That is a stronger conformance test than either repository currently has,
 and it is only available because the two hosts are different. It is a
 reason to keep them both for a while rather than to hurry the merge.
 
-§3's `rng/bytes` versus `crypto/random` is the argument in one line: a
-divergence in the guest-visible surface, sitting in two repositories,
-found by reading rather than by running. The button would have caught it
-the first time anybody asked a guest for a random number.
+§3 is the argument, including how it went. Reading the two trees side by
+side turned up a real divergence — a host-local family overlapping a
+baseline one — and, on the first pass, a *claimed* divergence that was
+not there: the two hosts agree on `crypto/random` exactly, and this
+document said otherwise until somebody checked `dhostlib.h`. Both halves
+argue for the button. Reading catches things nothing else was looking
+for, and gets them wrong; running is what tells you which.
 
 ## 7. Versions: two axes, and the fix is to show both
 
@@ -222,9 +237,10 @@ capability for uniformity, which is the wrong direction.
 
 ## 10. What I would do, in order
 
-1. **Settle `rng/*` versus `crypto/random`** (§3). It is one call, it is
-   a real divergence today, and it is the cheapest possible proof that
-   the comparison in §6 is worth having.
+1. ~~Settle `rng/*` versus `crypto/random`~~ — **done**, 2026-09-04:
+   `doc/HostBaseline.md` rule 5. `crypto/random` is canonical and both
+   hosts already agree on it; `rng/*` retires in the Lab (two call
+   sites) and is not ported here.
 2. **Re-measure `doc/HostBaseline.md`'s claim** against build10. One
    afternoon, and it decides how much of the browser-first argument still
    applies.
