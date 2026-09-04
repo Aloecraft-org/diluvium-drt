@@ -6,7 +6,7 @@ A guest must not be able to tell hosts apart. That is the whole of the
 doctrine — README's "the two are concentric, not parallel: there is never a
 second runtime with different behavior for the same program" — and this
 document is the operational half of it. It names the smallest set of
-hostcall families a host has to answer, and the four rules that make an
+hostcall families a host has to answer, and the rules that make an
 *absent* family safe.
 
 It exists because DRT is about to have more than one host. The native CLI
@@ -53,7 +53,7 @@ Note what is *not* here: nothing about grants. The baseline says a host must
 deployment that does not grant `host:time` gets `denied`, on every host,
 identically — and that is the baseline working, not a gap in it.
 
-## The four rules
+## The rules
 
 These matter more than the table.
 
@@ -79,6 +79,38 @@ These matter more than the table.
    Rules 2 and 3 are what a host on the wrong side of rule 1 falls back to.
    A host may be missing a baseline family; it may not be silent or
    inventive about it.
+
+5. **One spelling per family, and the library fixes it.** A host may not
+   answer a baseline family under a second name, and a host-local extra
+   that overlaps one is a divergence even while nothing is broken: the
+   spellings a guest may rely on are the ones `src/dhostlib.h` binds, and
+   a call reachable only through `host.call` is portable by nobody's
+   guarantee. Settled once already — see below.
+
+### Settled: `crypto/random`, not `rng/*` (2026-09-04)
+
+The canonical call for entropy is **`crypto/random`**: `dhostlib.h` binds
+it as `host.crypto.random(nbytes?) -> hex string`, `host/dhost.c` answers
+it, and it is the third row of the table above. DRT and the Lab already
+agree on it *exactly* — same name, same `bytes` argument, same default of
+32, same 1..1024 range, same hex answer — so a guest calling
+`host.crypto.random(n)` runs unchanged on both, and there is no baseline
+divergence between them.
+
+The Lab additionally wires an `rng` connector answering `rng/int` and
+`rng/bytes` (`src/kernel/connectors.js`). It is not a second spelling of
+the baseline — `crypto/random` is answered beside it — but it is a
+host-local family overlapping one, reachable only through `host.call`,
+with two call sites in the Lab's own demo and test material. Under rule 5
+it should be retired there rather than ported here, and DRT should not
+grow an `rng` connector.
+
+The reason that is not merely tidiness: `rng/int`'s one non-redundant
+feature is a *ranged* integer, and the implementation is modulo-biased
+(`min + (v % (max - min + 1))`). Porting it would copy a subtle bug into
+a second host, which is precisely what a second spelling costs. If a
+ranged integer is wanted, it belongs in `dhostlib.h` with rejection
+sampling, where both hosts inherit one correct implementation.
 
 ## What this buys
 

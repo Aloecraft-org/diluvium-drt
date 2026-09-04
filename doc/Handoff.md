@@ -174,7 +174,7 @@ that is where the guest API is defined, not in this repository.
 What actually shipped instead, which is what the barrier really needed:
 
 - `doc/HostBaseline.md` — the three families every DRT host must answer
-  (`time`, `time/monotonic`, `crypto/random`) and the four rules that make
+  (`time`, `time/monotonic`, `crypto/random`) and the rules that make
   an absent family safe. This is the owner's ask ("a standard set of
   functions any DRT host needs to either provide or stub"), and it is what
   makes `drt-web` checkable rather than merely unfinished.
