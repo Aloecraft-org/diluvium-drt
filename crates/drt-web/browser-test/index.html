@@ -31,11 +31,17 @@
   // moves the cursor, redraws a line, clears to the end -- so a <pre> that
   // appends characters would now be a third terminal emulator to get
   // wrong, which is the thing D8 exists to avoid.
-  import init, { DrtTerm, DrtEditor, DrtSwarm, DrtSocket, buildInfo, abiVersion, setPanicHook } from './pkg/drt_web.js';
+  import init, { DrtTerm, DrtEditor, DrtSwarm, DrtSocket, DrtSshServer, buildInfo, abiVersion, setPanicHook } from './pkg/drt_web.js';
   import { makeShell } from './shell.js';
   import { attach } from './drt-term.js';
+  import { terminalFor } from './ssh-terminal.js';
 
   const decode = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  // The other direction, for the SSH bridge: Playwright's exposed
+  // functions carry JSON, so bytes travel as base64 either way.
+  const b64 = (bytes) => btoa(String.fromCharCode(...bytes));
+  const sshSockets = new Map();
+  const sshShells = new Map();
 
   let term = null;
   let shell = null;
@@ -131,6 +137,50 @@
         at += chunk.length;
       }
       return { sent, afterClose, ended, chunks: back.length, echoed: new TextDecoder().decode(joined) };
+    },
+    // SSH into the page (doc/SshInBrowser.md). The suite drives this
+    // with a real `ssh` client: run.mjs listens on a TCP port, shuttles
+    // bytes between that socket and the one below, and points `ssh` at
+    // it. So what is under test is the product's claim -- a standard
+    // client gets a terminal into a page -- rather than two things we
+    // wrote agreeing with each other.
+    //
+    // The shell behind the session is the page's own: `terminalFor` makes
+    // the SSH channel into the object `attach` takes, and everything
+    // after that is M8's editor and shell.js, unchanged.
+    sshHostKey: () => DrtSshServer.generateHostKey(),
+    sshServe(id, hostKey, authorizedKeys) {
+      const server = new DrtSshServer(hostKey, authorizedKeys);
+      const socket = server.serve((shell) => {
+        const terminal = terminalFor(shell);
+        const bound = attach(DrtTerm, terminal, { DrtEditor, banner: 'drt in a page' });
+        bound.term.putFile('/hello.dlua', new TextEncoder().encode(
+          'print("hello over ssh")\n'));
+        bound.term.setCwd('/');
+        sshShells.set(id, { terminal, bound });
+      });
+      sshSockets.set(id, socket);
+      (async () => {
+        for (;;) {
+          const out = await socket.nextOutgoing();
+          if (out === undefined) break;
+          await window.sshOutgoing(id, b64(out));
+        }
+        await window.sshClosed(id);
+      })();
+      return { fingerprint: server.fingerprint, authorized: server.authorized };
+    },
+    sshDeliver(id, data) {
+      const socket = sshSockets.get(id);
+      return socket ? socket.deliver(decode(data)) : false;
+    },
+    sshClose(id) {
+      const held = sshShells.get(id);
+      if (held) held.bound.dispose();
+      const socket = sshSockets.get(id);
+      if (socket) socket.close();
+      sshShells.delete(id);
+      sshSockets.delete(id);
     },
     seed({ cwd, files, dirs = [] }) {
       fresh();

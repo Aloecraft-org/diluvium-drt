@@ -76,6 +76,23 @@ ego_transport = { git = "https://github.com/Aloecraft-org/ego-transport" }
 # (ForeignActor — merged upstream; the adapter is the next milestone) and
 # ego-platform. Declared the day the first crate here depends on them.
 
+# russh from the fork, for one reason: the SSH *server* does not build for
+# `wasm32-unknown-unknown` upstream, and SSH into a page is the capability
+# `drt tunnel` was built to reach (doc/SshInBrowser.md). The fork is
+# `v0.63.2` plus one commit -- timers behind `russh_util::time`, the
+# server's `cfg`s relaxed -- and it changes nothing off wasm: `cargo test
+# -p russh --lib` is the same 175 before and after.
+#
+# A patch rather than a git dependency on `drt-web` alone, because the
+# tree already carries russh through `ego_transport` and two copies of a
+# crypto library is not a thing to ship. So this is also a 0.63.1 ->
+# 0.63.2 bump for the native `ssh` connector, which is what one russh
+# means.
+#
+# It comes out when the PR lands upstream.
+[patch.crates-io]
+russh = { git = "https://github.com/Aloecraft-org/russh", branch = "main" }
+
 # Size-tuned release for the distribution question (SPEC §3's slim profile
 # wants to travel): `cargo build --profile release-small -p drt`.
 [profile.release-small]

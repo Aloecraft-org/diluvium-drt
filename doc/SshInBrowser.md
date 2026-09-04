@@ -1,19 +1,22 @@
 # SSH into a browser: what is measured, and what blocks it
 
-**Status:** measurement, 2026-09-04, against russh 0.63.2 and DRT's `web`
-profile. Every claim below was run, not reasoned about. **The upstream
-half is written and proven** (§4), and **DRT's transport is built and
-gated in Chromium** (§5). What is left is the session on top of it.
+**Status:** built, 2026-09-04, against russh 0.63.2 and DRT's `web`
+profile. Every claim below was run, not reasoned about. The upstream half
+is written and merged into the fork (§4); DRT's transport and its SSH
+server are built, and **a standard `ssh(1)` client reaches a DRT shell
+inside Chromium in the browser suite** (§5).
 
 **The ask.** A standard `ssh` client, pointed through `drt tunnel` as a
 `ProxyCommand`, reaching a terminal inside a page running DRT — the same
-DRT anyone can import from a CDN, not a Lab-only capability.
+DRT anyone can import from a CDN, not a Lab-only capability. Everything
+but the `ProxyCommand` now works; the suite bridges the bytes over a TCP
+port instead, which is the same job with a shorter wire.
 
 ---
 
 ## 1. The verdict
 
-**Buildable, and the one blocker is now fixed.** A russh server and
+**Built.** A russh server and
 client, both running in Chromium, complete a real SSH handshake — key
 exchange, publickey authentication, a session channel, data echoed back
 through the cipher — in **33 ms**. The patch is one commit on `v0.63.2`,
@@ -23,8 +26,12 @@ both times (ssh-agent tests, no agent on the machine).
 
 The estimate this replaces was "hard, probably a native helper". That was
 wrong twice over: the hard part was never the crypto, and the fix was a
-day rather than a port. What is left is **DRT's own**, and none of it
-waits on anyone.
+day rather than a port.
+
+DRT's own half followed the same day: the transport, the server, and a
+gate in which OpenSSH 9.6 authenticates with a publickey, gets a pty, and
+runs `drt run hello.dlua` inside a page (§5). What is left is `drt
+tunnel` in front of it and the wording in `GUARANTEES.md` (§7).
 
 ## 2. What the chain already has
 
@@ -123,7 +130,9 @@ It reads as a contribution rather than a fork because it finishes a job
 the crate visibly started: `russh-util` exists *because* someone wanted
 russh on wasm and wrote `spawn_local` and a chrono `Instant` for it.
 
-## 5. DRT's half: the byte stream, built
+## 5. DRT's half, built
+
+### The byte stream a page owns
 
 `crates/drt-web/src/ws.rs`, exported as `DrtSocket`. The shape is the one
 §4's `Send` note predicted, and it is the whole design: **the page owns
@@ -149,25 +158,76 @@ upper-cases what it reads, so the answer cannot be an echo of the
 delivery path. It comes back in two chunks and then EOF, in the
 `release-small` module the release ships.
 
-The consumer is `startEcho` today: the transport's own gate, a protocol's
-worth of ambiguity removed. The SSH session replaces that consumer and
-nothing else. It stays in the shipped module deliberately — the browser
-gate builds the shipping profile, so a diagnostic that is not there is a
-diagnostic that is not tested, and a host integrating the transport wants
-a way to check the plumbing before a protocol is in the way.
+`startEcho` remains as the transport's own gate — a protocol's worth of
+ambiguity removed — and ships deliberately: the browser gate builds the
+shipping profile, so a diagnostic that is not in the artifact is a
+diagnostic nothing tests, and a host wiring a socket up wants to check the
+plumbing before a protocol is in the way.
+
+### The server, and what a standard client gets
+
+`crates/drt-web/src/ssh.rs`, exported as `DrtSshServer`. The posture is
+the ssh *client* connector's pointed the other way, and it is in the types
+rather than in a warning: no password method, and `Authorized` is a list
+of `authorized_keys` lines with no "accept anyone" variant, so an empty
+one authenticates nobody. That is the shape the ask named — make the
+dangerous thing hard to reach by accident, not the capability hard to use.
+A host key is the page's to keep; `generateHostKey` hands one back rather
+than holding it, because a host key that changes on reload trains whoever
+connects to click through the warning that says it changed.
+
+The handler holds channel ends and nothing else, which is how it satisfies
+`H: Handler + Send` — the same split as the stream below it, one layer up.
+A second task, which is not `Send` and never enters russh, owns the JS
+side. So §6's open question is answered rather than open.
+
+What a client gets is the page's own shell. `ssh-terminal.js` turns a
+session into the four things `attach` takes — `write`, `onData`, `cols`,
+`rows` — and everything above that is M8's editor and `shell.js`,
+unchanged. There is no second terminal implementation: `ego_cli`'s is the
+one, over xterm.js in a tab and over a channel from a client.
+
+Three tests natively (`crates/drt-web/tests/ssh.rs`): a named key gets a
+shell that carries bytes both ways with the window it asked for, an
+unnamed key is refused, and an empty authorized set refuses everybody.
+Then `ssh-into-the-page` in the browser suite, which is the product's
+claim run rather than argued: OpenSSH 9.6, its own key, `-tt` for a pty,
+through a TCP bridge into the page, printing what the page's own runtime
+printed.
+
+Two things that gate found, both real and neither visible from the Rust
+side alone:
+
+- **`ssh` with a pipe for stdin requests a 0x0 pty.** Legal on the wire,
+  and not a terminal: a line editor with no columns draws a prompt and has
+  nowhere to put a keystroke. The server now hands such a client 80x24,
+  which is what `sshd` does.
+- **A window change had nowhere to land.** The size is now an atomic the
+  handler updates and the shell reads, and `ego_cli` asks a terminal its
+  size on every keystroke — so a client resizing its window is picked up
+  with no event plumbing on the page's side at all.
 
 ## 6. What is not decided
 
 - **How long we carry the patch.** DRT points `[patch.crates-io]` at the
   fork, the way it already points at the ego crates, so nothing waits on
   review. What is open is only whether the PR lands and when.
-- **Which profile pays the +456 KB.** `web` names its connectors
-  explicitly, so this is a profile question with an existing answer shape.
-- **`H: Send`, the handler.** `run_stream` requires it of the handler as
-  well as the stream. §5 settled the stream; the handler is DRT's to
-  write, and whether it can hold only `Send` things — or needs the same
-  channel-end treatment for whatever reaches the guest — is the next
-  thing to find out rather than the next thing to assume.
+- **Whether `web` keeps paying for it.** Measured rather than estimated,
+  and the estimate was low: `drt_web_bg.wasm` goes from **1,915,072 to
+  3,436,485 bytes**, +79%, or 1,089,348 gzipped. The +456 KB in §3 was the
+  client alone in a crate of its own; a server, both key exchanges and the
+  cipher suite cost more than that.
+
+  It ships in `web` for now, and the reason is the gate rather than the
+  bytes: a second artifact means either running the browser suite twice or
+  shipping the untested one, and a release-only failure reaching a
+  rehearsal is exactly what building `release-small` in CI was for. The
+  `web` connector list is unchanged (`time`, `fs`, `crypto`) — this is a
+  server, not a connector — so nothing a package declares resolves
+  differently. Revisit if a page that wants no server has to care.
+- **`drt tunnel` in front of it.** The suite bridges TCP; the product
+  bridges a relay and a WebSocket. Same bytes, and `drt tunnel` already
+  exists — what is untried is the two of them end to end.
 
 ## 7. The posture, since this is a listener in someone's browser
 
@@ -184,4 +244,7 @@ The accident worth engineering against is narrower than "a user does
 something dangerous": **a page enabling the server without realising it
 is reachable from outside the tab.** That is a defaults-and-wording
 problem, and `GUARANTEES.md` should say it as plainly as it says it for
-`exec`.
+`exec`. What is in the code already: no password method, no way to
+authorize a key without naming it, and an empty list that admits nobody
+rather than everybody. What is not yet written is the sentence in
+`GUARANTEES.md`.

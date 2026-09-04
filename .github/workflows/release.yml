@@ -297,7 +297,9 @@ jobs:
     # browser suite -- the examples gate through the in-page shell, in
     # Chromium, plus the REPL parity check -- runs before the artifact is
     # uploaded. Ships as one tarball, because a page needs all of it: the
-    # module, wasm-bindgen's glue, and drt-term.js with shell.js behind it.
+    # module, wasm-bindgen's glue, drt-term.js with shell.js behind it, and
+    # ssh-terminal.js, which is what makes an SSH session into the terminal
+    # object drt-term.js already takes (doc/SshInBrowser.md).
     # `buildinfo` is read off the module inside Chromium (run.mjs writes
     # it out) so publish can put the profile in BUILDINFO the same way it
     # does for every other leg: from the bytes, not from YAML.
@@ -367,7 +369,8 @@ jobs:
           mkdir drt_web
           pkg=crates/drt-web/browser-test
           cp "$pkg/pkg/drt_web.js" "$pkg/pkg/drt_web_bg.wasm" "$pkg/pkg/drt_web.d.ts" \
-             "$pkg/pkg/drt_web_bg.wasm.d.ts" "$pkg/drt-term.js" "$pkg/shell.js" drt_web/
+             "$pkg/pkg/drt_web_bg.wasm.d.ts" "$pkg/drt-term.js" "$pkg/shell.js" \
+             "$pkg/ssh-terminal.js" drt_web/
           tar -czf drt_web.tar.gz drt_web
       - uses: actions/upload-artifact@v4
         with:

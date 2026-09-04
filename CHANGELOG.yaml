@@ -645,12 +645,36 @@ releases:
         drives, so a panel driving the C swarm's sixteen entry points
         has twins for them here.
       - |
+        **SSH into a page.** A standard `ssh` client reaches a DRT shell
+        running in a browser: publickey authentication against keys the
+        page names, a pty, and behind it the same editor and shell a tab
+        gets. `DrtSocket` is the transport -- the page keeps the socket,
+        Rust keeps a `Send` byte stream, so an `RTCDataChannel` or a
+        relayed pair works the same way -- and `DrtSshServer` is the
+        server over it, with `ssh-terminal.js` making a session into the
+        terminal object `attach` already takes. No password method and no
+        way to authorize a key without naming it; an empty list admits
+        nobody. Gated by OpenSSH 9.6 in the browser suite, running `drt
+        run` inside Chromium, and by three tests natively. The `web`
+        module grows from 1,915,072 to 3,436,485 bytes for it; the `web`
+        connector list is unchanged, because this is a server rather than
+        a connector. The plan and the measurements are
+        `doc/SshInBrowser.md`.
+      - |
         **`crates/drt-platform`.** The four places DRT touches a platform
         -- clock, entropy, the filesystem, stdio -- behind one seam, so
         nothing above them is target-aware. In a page the clock is
         `web-time`, the filesystem is a `MemFs` the page seeds, and stdio
         is a sink the page installs.
     changed:
+      - |
+        **russh 0.63.1 -> 0.63.2, from a fork.** Upstream's SSH *server*
+        does not build for `wasm32-unknown-unknown`: two clocks panic and
+        the server is `cfg`'d out at 23 sites. The fork is `v0.63.2` plus
+        one commit -- timers behind `russh_util::time`, those `cfg`s
+        relaxed -- and it changes nothing off wasm, so the native `ssh`
+        connector rides the same crate rather than a second copy. Pointed
+        at by `[patch.crates-io]`, and it comes out when the PR lands.
       - |
         **wasm-bindgen `=0.2.114` -> `=0.2.127`, and a workaround
         deleted.** 0.2.114 refused a module carrying the C core's

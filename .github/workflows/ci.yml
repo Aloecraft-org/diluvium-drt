@@ -101,6 +101,10 @@ jobs:
     #
     # The crate's native half -- tests/term.rs over the rlib -- runs in
     # `test` with the rest of the workspace; this job is the browser.
+    #
+    # `ssh-into-the-page` rides along and needs `ssh` and `ssh-keygen`,
+    # which ubuntu-latest carries. The suite names the skip if they are
+    # missing rather than passing without them (doc/SshInBrowser.md).
     runs-on: ubuntu-latest
     env:
       WASI_SDK_VERSION: "27.0"
