@@ -9,10 +9,15 @@
 // examples/NN-*/ with a meta.json is one example; its files are seeded
 // into the page's memory filesystem; its "cmd" runs through the in-page
 // shell with stdout and stderr merged; "normalise" is applied to both
-// sides; the two are diffed. A skip is named and is never a pass. Then
-// the REPL parity check: repl-script.txt typed at drt-term.js, against
-// the transcript the native binary produced for the same lines
-// (repl-expected.txt).
+// sides; the two are diffed. A skip is named and is never a pass.
+//
+// Then the checks that are not examples, because what they exercise is a
+// page rather than a program: `xterm-embedding`, the contract against a
+// real Terminal; `swarm-table`, the instances table driven the way a host
+// drives it; `socket-echo`, the byte stream a page owns
+// (doc/SshInBrowser.md); and `repl-parity`, repl-script.txt typed at
+// drt-term.js against the transcript the native binary produced for the
+// same lines (repl-expected.txt).
 //
 // usage: node run.mjs [--net] [--list] [example ...]
 //   --net    also run examples whose meta.json sets "needs_network"
@@ -322,6 +327,38 @@ for (const name of examples) {
     if (r.idsAfter.length !== 0) wrong.push(`roster is ${JSON.stringify(r.idsAfter)} after it exited`);
     if (wrong.length === 0) {
       console.log(`ok       ${name.padEnd(24)} root, step to exit, roster and caps back`);
+      nOk += 1;
+    } else {
+      fail(name, wrong.join('; '));
+    }
+  } catch (e) {
+    fail(name, e === TIMED_OUT ? `timed out after ${TIMEOUT}s` : `the page threw: ${e.message}`);
+  }
+}
+
+// The transport (doc/SshInBrowser.md): the page owns the socket, Rust owns
+// a `Send` byte stream, and bytes cross both ways. What makes this worth a
+// browser check rather than only the native tests in ws.rs is the boundary
+// itself -- a Uint8Array in, a promise per chunk out, and the page's pump
+// loop learning from `undefined` that the session is over. `startEcho`
+// upper-cases so the answer cannot be an echo of the delivery path.
+{
+  const name = 'socket-echo';
+  const said = ['ssh ', 'in a page'];
+  try {
+    const r = await withTimeout(
+      page.evaluate((m) => window.drtBrowserTest.socketEcho(m), said),
+      TIMEOUT * 1000,
+    );
+    const wrong = [];
+    if (!r.sent) wrong.push('a deliver to a live socket was refused');
+    if (r.echoed !== said.join('').toUpperCase()) {
+      wrong.push(`came back as ${JSON.stringify(r.echoed)}`);
+    }
+    if (r.afterClose) wrong.push('a deliver after close was accepted');
+    if (!r.ended) wrong.push("closing the wire did not end the page's pump loop");
+    if (wrong.length === 0) {
+      console.log(`ok       ${name.padEnd(24)} bytes out and back in ${r.chunks} chunk(s), then EOF`);
       nOk += 1;
     } else {
       fail(name, wrong.join('; '));

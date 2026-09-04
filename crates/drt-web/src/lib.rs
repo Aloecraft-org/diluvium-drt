@@ -27,6 +27,9 @@
 //!   xterm.js object.
 //! - `swarm`: the instances table -- `dvs.c`'s sixteen, over a
 //!   `Deployment`.
+//! - `ws`: a byte stream over the page's socket, for protocols that want
+//!   one. The page keeps the socket; this keeps channel ends, which is
+//!   what makes the stream `Send`.
 //! - `wasi_shim` (browser only): wasi-libc's seventeen syscalls.
 
 pub mod term;
@@ -36,6 +39,7 @@ pub mod bindings;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod editor;
 pub mod swarm;
+pub mod ws;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod wasi_shim;

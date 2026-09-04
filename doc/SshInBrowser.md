@@ -2,7 +2,8 @@
 
 **Status:** measurement, 2026-09-04, against russh 0.63.2 and DRT's `web`
 profile. Every claim below was run, not reasoned about. **The upstream
-half is now written and proven** (§4); DRT's half is not.
+half is written and proven** (§4), and **DRT's transport is built and
+gated in Chromium** (§5). What is left is the session on top of it.
 
 **The ask.** A standard `ssh` client, pointed through `drt tunnel` as a
 `ProxyCommand`, reaching a terminal inside a page running DRT — the same
@@ -122,22 +123,53 @@ It reads as a contribution rather than a fork because it finishes a job
 the crate visibly started: `russh-util` exists *because* someone wanted
 russh on wasm and wrote `spawn_local` and a chrono `Instant` for it.
 
-## 5. What is not decided
+## 5. DRT's half: the byte stream, built
+
+`crates/drt-web/src/ws.rs`, exported as `DrtSocket`. The shape is the one
+§4's `Send` note predicted, and it is the whole design: **the page owns
+the socket and Rust owns two channel ends.** A `WebSocket` is a `JsValue`
+and therefore not `Send`; `run_stream` wants `R: AsyncRead + AsyncWrite +
+Send`. A stream holding the socket could not be handed to it, and a
+stream holding channel ends can — the same split `XtermTerminal` already
+uses for the keyboard, for the same reason.
+
+Nothing in it imports a WebSocket API. A page hands over whatever it
+has — a real `WebSocket`, an `RTCDataChannel`, a relayed pair, a test
+double — and pumps three calls: `deliver` what arrived, `await
+nextOutgoing()` for what Rust wants written, `close` when the wire goes.
+The Rust side reads end of input when the page closes, and the page's
+loop ends when Rust's consumer drops the stream, so neither half has to
+be told twice.
+
+What proves it: four tests natively — bytes both ways with a short read
+left over, close as EOF rather than as an error, a write with nobody left
+as `BrokenPipe`, and the `Send` bound itself — and `socket-echo` in the
+browser suite, which runs the page's real loop against a Rust task that
+upper-cases what it reads, so the answer cannot be an echo of the
+delivery path. It comes back in two chunks and then EOF, in the
+`release-small` module the release ships.
+
+The consumer is `startEcho` today: the transport's own gate, a protocol's
+worth of ambiguity removed. The SSH session replaces that consumer and
+nothing else. It stays in the shipped module deliberately — the browser
+gate builds the shipping profile, so a diagnostic that is not there is a
+diagnostic that is not tested, and a host integrating the transport wants
+a way to check the plumbing before a protocol is in the way.
+
+## 6. What is not decided
 
 - **How long we carry the patch.** DRT points `[patch.crates-io]` at the
   fork, the way it already points at the ego crates, so nothing waits on
   review. What is open is only whether the PR lands and when.
 - **Which profile pays the +456 KB.** `web` names its connectors
   explicitly, so this is a profile question with an existing answer shape.
-- **`Send`.** `run_stream` requires `H: Send` and `R: Send`. In-memory
-  that is free; a WebSocket-backed stream holds a `JsValue` and is not.
-  The shape that asks upstream for nothing further is the one
-  `XtermTerminal` already uses, and it is what DRT is building: the
-  socket stays in JS, and the Rust stream holds only channel ends, which
-  *are* `Send`. A separately spawned pump owns the socket and never
-  enters russh's future.
+- **`H: Send`, the handler.** `run_stream` requires it of the handler as
+  well as the stream. §5 settled the stream; the handler is DRT's to
+  write, and whether it can hold only `Send` things — or needs the same
+  channel-end treatment for whatever reaches the guest — is the next
+  thing to find out rather than the next thing to assume.
 
-## 6. The posture, since this is a listener in someone's browser
+## 7. The posture, since this is a listener in someone's browser
 
 Named here because the capability is the point and hiding it would be the
 wrong lesson. What DRT already has is the answer: whoever reaches the
