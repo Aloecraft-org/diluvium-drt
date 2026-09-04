@@ -47,6 +47,22 @@
 //! the origin that was just authorised, and re-checking each hop is a
 //! policy the guest is better placed to decide than we are. A 30x comes
 //! back as a 30x, with its `location` header intact.
+//!
+//! ## The framing ends the body, not the connection
+//!
+//! [`BodyEnd`] is read off the response head and is what the read loop
+//! stops on. This is not a refinement: reading to EOF instead cost issue
+//! #10 an afternoon and blocked a deployment entirely. Every response
+//! Amazon Bedrock sends arrives complete and is then followed by a TCP
+//! close with no TLS `close_notify`, which rustls reports as
+//! `UnexpectedEof` — so a connector that reads one byte past the body it
+//! already has fails a call the server answered `200`.
+//!
+//! A close without `close_notify` is therefore recorded and judged, never
+//! raised on sight: it is an error only for a body the framing says is
+//! unfinished, and then the message names what was expected and what
+//! arrived, because "the connection is broken" is what sent that
+//! afternoon to the network and the credentials rather than to this loop.
 
 use std::net::IpAddr;
 use std::time::Duration;
@@ -79,9 +95,34 @@ mod limits {
 /// Headers as they cross the boundary: name → value, names lowercased.
 pub type Headers = std::collections::BTreeMap<String, String>;
 
-/// A parsed response head: status, the headers that survived the bounds,
-/// and how many bytes of head were consumed.
-pub type Head = (u16, Vec<(String, String)>, usize);
+/// A parsed response head: the status, the headers that survived the
+/// bounds, how many bytes of head were consumed, and how the body after it
+/// is framed.
+pub struct Head {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub consumed: usize,
+    pub body_end: BodyEnd,
+}
+
+/// How a response body ends (RFC 9112 §6.3). This is the whole of what
+/// separates a complete body from a truncated one, which is why the read
+/// loop is written around it rather than around EOF: to a TLS layer, a
+/// peer that closes politely and a peer that cuts the connection look the
+/// same, and only the framing knows the difference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyEnd {
+    /// `content-length: N`, and also the statuses that carry no body
+    /// whatever their headers say (1xx, 204, 304), which are `Length(0)`.
+    Length(usize),
+    /// `transfer-encoding: chunked`: the zero-size chunk ends it.
+    Chunked,
+    /// Neither header, so the close *is* the framing (RFC 9112 §6.3 item
+    /// 8). A truncation cannot be told from an ending here, by
+    /// construction — distinguishing them is what `content-length` is for,
+    /// and this response sent none.
+    Close,
+}
 
 /// A URL, split. Mirrors the C plugin's `struct url`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -420,6 +461,7 @@ struct PostArgs {
 /// is bytes here rather than the base64-in-string the manifest's JSON
 /// Schema has to use — same value, one less encoding for the guest to
 /// undo, and what the C host's msgpack reply also carries.
+#[derive(Debug)]
 struct Response {
     status: u16,
     headers: Vec<(String, String)>,
@@ -663,7 +705,7 @@ pub fn request_bytes(
 }
 
 /// Parse a response head, applying the bounds. Returns the status, the kept
-/// headers and how many bytes of head were consumed.
+/// headers, how many bytes of head were consumed, and the body framing.
 pub fn parse_head(buf: &[u8]) -> Result<Option<Head>, String> {
     let mut hbuf = [httparse::EMPTY_HEADER; 128];
     let mut resp = httparse::Response::new(&mut hbuf);
@@ -686,8 +728,81 @@ pub fn parse_head(buf: &[u8]) -> Result<Option<Head>, String> {
                 }
                 kept.push((name, value.to_string()));
             }
-            Ok(Some((status, kept, n)))
+            Ok(Some(Head {
+                status,
+                headers: kept,
+                consumed: n,
+                body_end: framing(status, resp.headers)?,
+            }))
         }
+    }
+}
+
+// depth: which of RFC 9112 §6.3's rules ends this body
+//
+// Read off every header the response sent rather than off the bounded
+// list `parse_head` keeps: a `content-length` past `RESP_HDRS` is still
+// the framing, and losing it would send the read loop back to waiting for
+// an EOF — which is the failure this whole path exists to avoid.
+fn framing(status: u16, headers: &[httparse::Header]) -> Result<BodyEnd, String> {
+    let mut length: Option<usize> = None;
+    let mut chunked = false;
+    for h in headers {
+        if h.name.eq_ignore_ascii_case("transfer-encoding") {
+            chunked |= String::from_utf8_lossy(h.value)
+                .to_ascii_lowercase()
+                .contains("chunked");
+        } else if h.name.eq_ignore_ascii_case("content-length") {
+            let n = std::str::from_utf8(h.value)
+                .ok()
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .ok_or("status: the response's content-length is not a number")?;
+            // Two that disagree is the request-smuggling shape, and
+            // picking one of them is how a reader gets played off against
+            // the next hop. There is no next hop here, and it is still not
+            // ours to guess.
+            if length.is_some_and(|prev| prev != n) {
+                return Err("status: the response carries two different content-lengths".into());
+            }
+            length = Some(n);
+        }
+    }
+    // No body at all for these, whatever the headers say.
+    if (100..200).contains(&status) || status == 204 || status == 304 {
+        return Ok(BodyEnd::Length(0));
+    }
+    // §6.1: when a message carries both, `transfer-encoding` wins and
+    // `content-length` is discarded.
+    if chunked {
+        return Ok(BodyEnd::Chunked);
+    }
+    Ok(length.map_or(BodyEnd::Close, BodyEnd::Length))
+}
+
+/// The head that answers the request: the first that is not interim.
+///
+/// RFC 9110 §15.2 — a client must parse a 1xx and carry on to the response
+/// that follows it. Unprompted ones are ordinary (103 Early Hints, from
+/// more than one CDN), and since the loop below now stops the moment a
+/// head says the body is complete, taking one as the answer would hand the
+/// guest an empty body and a status the server never meant as its reply.
+///
+/// `consumed` counts from the start of `buf`, interim heads included, so
+/// the body still begins where it says.
+fn final_head(buf: &[u8]) -> Result<Option<Head>, String> {
+    let mut at = 0;
+    loop {
+        let Some(h) = parse_head(&buf[at..])? else {
+            return Ok(None);
+        };
+        if (100..200).contains(&h.status) {
+            at += h.consumed;
+            continue;
+        }
+        return Ok(Some(Head {
+            consumed: at + h.consumed,
+            ..h
+        }));
     }
 }
 
@@ -768,17 +883,60 @@ async fn exchange<S: AsyncReadExt + AsyncWriteExt + Unpin>(
     let mut buf = Vec::new();
     let mut chunk = [0u8; 16 * 1024];
     let mut head: Option<Head> = None;
+    // A chunked response is framing, not content. Fed as bytes land rather
+    // than decoded at the end, because the loop below asks after every read
+    // whether the body has ended and only the decoder knows.
+    let mut chunks = Dechunker::default();
+    // The peer dropped the connection without the TLS `close_notify` that
+    // frames a clean end. Recorded rather than raised: it is an error only
+    // for a body the framing says is unfinished, and a great many servers
+    // -- every one behind Amazon Bedrock among them -- end a complete
+    // response exactly this way.
+    let mut unclean = false;
     loop {
-        let n = sock
-            .read(&mut chunk)
-            .await
-            .map_err(|e| format!("read: {e}"))?;
+        // Stop where the framing says the body ends, never at EOF. Reading
+        // on past a body already complete is issue #10: every byte had
+        // arrived, and the read that failed was the one after the last one
+        // that mattered.
+        if let Some(h) = &head {
+            let done = match h.body_end {
+                BodyEnd::Length(n) => buf.len() - h.consumed.min(buf.len()) >= n,
+                BodyEnd::Chunked => chunks.done,
+                BodyEnd::Close => false,
+            };
+            if done {
+                break;
+            }
+        }
+        let n = match sock.read(&mut chunk).await {
+            Ok(n) => n,
+            // What rustls answers for a peer that closed the connection
+            // without a `close_notify`. Whether it matters is the framing's
+            // question, asked after the loop.
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                unclean = true;
+                0
+            }
+            Err(e) => return Err(format!("read: {e}")),
+        };
         if n == 0 {
             break;
         }
         buf.extend_from_slice(&chunk[..n]);
         if head.is_none() {
-            head = parse_head(&buf)?;
+            head = final_head(&buf)?;
+        }
+        if let Some(h) = &head {
+            // A length we would refuse is refused now, rather than after
+            // reading the megabytes it names.
+            if let BodyEnd::Length(n) = h.body_end {
+                if n > limits::MAX_BODY {
+                    return Err("too_large".into());
+                }
+            }
+            if h.body_end == BodyEnd::Chunked {
+                chunks.feed(&buf[h.consumed.min(buf.len())..])?;
+            }
         }
         // Bound the whole transfer, head included, so a response that never
         // ends cannot grow this buffer without limit.
@@ -786,32 +944,67 @@ async fn exchange<S: AsyncReadExt + AsyncWriteExt + Unpin>(
             return Err("too_large".into());
         }
     }
-    let Some((status, headers, consumed)) = head.or(parse_head(&buf)?) else {
+    let Some(head) = head.or(final_head(&buf)?) else {
         return Err("status: the response head never completed".into());
     };
-    let raw = &buf[consumed.min(buf.len())..];
-    // A chunked response is framing, not content. `connection: close` makes
-    // read-to-EOF terminate, which is why this went unnoticed -- the bytes
-    // all arrive, and then the guest is handed the chunk headers along with
-    // them: `5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n` instead of
-    // "hello world", answered `ok`. A server may choose chunked for any
-    // response and it is the only way to answer without knowing the length
-    // in advance, so this is not an exotic path.
-    let chunked = headers
-        .iter()
-        .any(|(n, v)| n == "transfer-encoding" && v.to_ascii_lowercase().contains("chunked"));
-    let body = if chunked { dechunk(raw)? } else { raw.to_vec() };
+    let raw = &buf[head.consumed.min(buf.len())..];
+    let body = match head.body_end {
+        BodyEnd::Length(n) => {
+            if raw.len() < n {
+                return Err(short_body(raw.len(), Some(n), unclean));
+            }
+            // Anything past the length is not this response's.
+            raw[..n].to_vec()
+        }
+        // The head may have completed on the very last read, leaving frames
+        // unfed; `feed` resumes where it stopped, so this is a no-op when it
+        // did not. Without the terminating chunk the body is short, which is
+        // the same silent-corruption shape as handing the guest
+        // `5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n` and answering `ok`.
+        BodyEnd::Chunked => {
+            chunks.feed(raw)?;
+            if !chunks.done {
+                return Err(short_body(raw.len(), None, unclean));
+            }
+            chunks.out
+        }
+        // The close is the framing, so the close ends the body -- with or
+        // without `close_notify`, there being nothing here that could tell
+        // the two apart.
+        BodyEnd::Close => raw.to_vec(),
+    };
     if body.len() > limits::MAX_BODY {
         return Err("too_large".into());
     }
     Ok(Response {
-        status,
-        headers,
+        status: head.status,
+        headers: head.headers,
         body,
     })
 }
 
-// depth: chunked transfer decoding (RFC 9112 §7.1)
+/// What a body that ended early is reported as.
+///
+/// It names what was expected and what arrived because the rustls error it
+/// replaces named neither: "the connection is broken" reads as a network
+/// or credential problem, and issue #10 spent an afternoon there before
+/// reaching this loop. `want` is the `content-length`, or `None` for a
+/// chunked body that never reached its final chunk.
+fn short_body(got: usize, want: Option<usize>, unclean: bool) -> String {
+    let close = if unclean {
+        "the peer closed without close_notify"
+    } else {
+        "the peer closed"
+    };
+    match want {
+        Some(n) => format!("read: read {got} of {n} bytes, then {close}"),
+        None => {
+            format!("read: the chunked body reached no final chunk in {got} bytes, then {close}")
+        }
+    }
+}
+
+// depth: chunked transfer decoding (RFC 9112 §7.1), resumable
 //
 // Deliberately strict. A frame this cannot read is an error rather than a
 // best-effort salvage, because the failure being fixed here is exactly a
@@ -820,40 +1013,64 @@ async fn exchange<S: AsyncReadExt + AsyncWriteExt + Unpin>(
 // discarded: they are headers, the head is already parsed, and admitting a
 // second header block after the bounds were applied would let a response
 // past `RESP_HDRS`.
-fn dechunk(mut raw: &[u8]) -> Result<Vec<u8>, String> {
-    fn line(raw: &[u8]) -> Option<(&[u8], &[u8])> {
-        let at = raw.windows(2).position(|w| w == b"\r\n")?;
-        Some((&raw[..at], &raw[at + 2..]))
-    }
-    let mut out = Vec::new();
-    loop {
-        let Some((head, rest)) = line(raw) else {
-            return Err("chunked: a chunk header never ended".into());
-        };
-        // `size` may carry chunk extensions after a `;`, which are ignored.
-        let size_text = match head.iter().position(|&b| b == b';') {
-            Some(at) => &head[..at],
-            None => head,
-        };
-        let size_text = std::str::from_utf8(size_text)
-            .map_err(|_| "chunked: a chunk size was not text".to_string())?
-            .trim();
-        let size = usize::from_str_radix(size_text, 16)
-            .map_err(|_| format!("chunked: '{size_text}' is not a chunk size"))?;
-        if size == 0 {
-            return Ok(out);
+//
+// Resumable because `exchange` asks after every read whether the body has
+// ended, and re-decoding the whole buffer to answer would be quadratic in
+// the size of a 16 MB response. A frame that has not arrived whole is not
+// an error -- it is a frame to wait for.
+#[derive(Default)]
+struct Dechunker {
+    /// The decoded body so far.
+    out: Vec<u8>,
+    /// How far into the raw body whole frames have been read. The next
+    /// `feed` starts here.
+    at: usize,
+    /// The zero-size chunk arrived, so `out` is the whole body.
+    done: bool,
+}
+
+impl Dechunker {
+    /// Read every whole frame `raw` holds beyond what earlier calls read.
+    /// `raw` is the same body, extended: each call must be given the bytes
+    /// the last one saw plus whatever has arrived since.
+    fn feed(&mut self, raw: &[u8]) -> Result<(), String> {
+        while !self.done {
+            let rest = &raw[self.at.min(raw.len())..];
+            // The size line, once it has arrived whole.
+            let Some(eol) = rest.windows(2).position(|w| w == b"\r\n") else {
+                return Ok(());
+            };
+            // `size` may carry chunk extensions after a `;`, which are ignored.
+            let head = &rest[..eol];
+            let size_text = match head.iter().position(|&b| b == b';') {
+                Some(at) => &head[..at],
+                None => head,
+            };
+            let size_text = std::str::from_utf8(size_text)
+                .map_err(|_| "chunked: a chunk size was not text".to_string())?
+                .trim();
+            let size = usize::from_str_radix(size_text, 16)
+                .map_err(|_| format!("chunked: '{size_text}' is not a chunk size"))?;
+            let data = eol + 2;
+            if size == 0 {
+                self.at += data;
+                self.done = true;
+                return Ok(());
+            }
+            if self.out.len() + size > limits::MAX_BODY {
+                return Err("too_large".into());
+            }
+            // The chunk, and the CRLF its size promises after it.
+            if rest.len() < data + size + 2 {
+                return Ok(());
+            }
+            if &rest[data + size..data + size + 2] != b"\r\n" {
+                return Err("chunked: a chunk did not end where its size said".into());
+            }
+            self.out.extend_from_slice(&rest[data..data + size]);
+            self.at += data + size + 2;
         }
-        if out.len() + size > limits::MAX_BODY {
-            return Err("too_large".into());
-        }
-        if rest.len() < size + 2 {
-            return Err("chunked: a chunk was shorter than its size".into());
-        }
-        out.extend_from_slice(&rest[..size]);
-        if &rest[size..size + 2] != b"\r\n" {
-            return Err("chunked: a chunk did not end where its size said".into());
-        }
-        raw = &rest[size + 2..];
+        Ok(())
     }
 }
 
@@ -863,6 +1080,19 @@ mod tests {
 
     fn scope_of(v: rmpv::Value) -> Scope {
         Scope(v)
+    }
+
+    /// The decoder over a body that has already arrived whole. Production
+    /// feeds `Dechunker` as bytes land; these tests are about the frames,
+    /// so they hand it all of them at once. Stopping short of the final
+    /// chunk is a truncation here, which is what `exchange` also calls it.
+    fn dechunk(raw: &[u8]) -> Result<Vec<u8>, String> {
+        let mut d = Dechunker::default();
+        d.feed(raw)?;
+        if !d.done {
+            return Err("chunked: the body reached no final chunk".into());
+        }
+        Ok(d.out)
     }
 
     /// A bare entry, for the request-building tests.
@@ -1065,15 +1295,18 @@ mod tests {
         let raw = format!(
             "HTTP/1.1 302 Found\r\nlocation: /next\r\nx-big: {long_value}\r\ncontent-type: text/plain\r\n\r\nbody"
         );
-        let (status, headers, consumed) = parse_head(raw.as_bytes()).unwrap().unwrap();
-        assert_eq!(status, 302);
-        assert!(headers.iter().any(|(n, v)| n == "location" && v == "/next"));
+        let head = parse_head(raw.as_bytes()).unwrap().unwrap();
+        assert_eq!(head.status, 302);
+        assert!(head
+            .headers
+            .iter()
+            .any(|(n, v)| n == "location" && v == "/next"));
         assert!(
-            !headers.iter().any(|(n, _)| n == "x-big"),
+            !head.headers.iter().any(|(n, _)| n == "x-big"),
             "an oversized header is dropped, not clipped"
         );
-        assert!(headers.iter().any(|(n, _)| n == "content-type"));
-        assert_eq!(&raw.as_bytes()[consumed..], b"body");
+        assert!(head.headers.iter().any(|(n, _)| n == "content-type"));
+        assert_eq!(&raw.as_bytes()[head.consumed..], b"body");
     }
 
     #[test]
@@ -1241,12 +1474,14 @@ mod tests {
     fn response_headers_come_back_to_the_guest() {
         let raw =
             "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nx-request-id: abc\r\n\r\n{}";
-        let (status, headers, _) = parse_head(raw.as_bytes()).unwrap().unwrap();
-        assert_eq!(status, 200);
-        assert!(headers
+        let head = parse_head(raw.as_bytes()).unwrap().unwrap();
+        assert_eq!(head.status, 200);
+        assert!(head
+            .headers
             .iter()
             .any(|(n, v)| n == "x-request-id" && v == "abc"));
-        assert!(headers
+        assert!(head
+            .headers
             .iter()
             .any(|(n, v)| n == "content-type" && v == "application/json"));
     }
@@ -1334,6 +1569,205 @@ mod tests {
                 "must refuse rather than salvage: {:?}",
                 String::from_utf8_lossy(bad)
             );
+        }
+    }
+
+    /// A socket that answers `bytes` and then fails the way rustls does for
+    /// a peer that closed the TCP connection without a TLS `close_notify`.
+    ///
+    /// The whole of issue #10, and no TCP test can produce it: the error is
+    /// raised by the TLS layer, over a connection that carried every byte
+    /// it promised. Amazon Bedrock ends every response this way, so every
+    /// `rest/post` from a guest failed against a server answering 200.
+    struct UncleanClose {
+        bytes: Vec<u8>,
+        at: usize,
+    }
+
+    impl UncleanClose {
+        fn new(bytes: &[u8]) -> Self {
+            UncleanClose {
+                bytes: bytes.to_vec(),
+                at: 0,
+            }
+        }
+    }
+
+    impl tokio::io::AsyncRead for UncleanClose {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            if self.at >= self.bytes.len() {
+                return std::task::Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "peer closed connection without sending TLS close_notify",
+                )));
+            }
+            let n = buf.remaining().min(self.bytes.len() - self.at);
+            let at = self.at;
+            buf.put_slice(&self.bytes[at..at + n]);
+            self.at += n;
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    impl tokio::io::AsyncWrite for UncleanClose {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    const REQ: &[u8] = b"GET / HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n";
+
+    /// Issue #10: a complete response, failed for how the peer hung up.
+    ///
+    /// The bytes have all arrived and `content-length` says so. The read
+    /// that used to fail was the one *after* the last one that mattered --
+    /// so the fix is that there is no such read, not that its error is
+    /// swallowed. Both framings, because a server picks either.
+    #[tokio::test]
+    async fn a_complete_body_survives_a_close_without_close_notify() {
+        let sock = UncleanClose::new(b"HTTP/1.1 200 OK\r\ncontent-length: 11\r\n\r\nhello world");
+        let r = exchange(sock, REQ).await.unwrap();
+        assert_eq!(r.status, 200);
+        assert_eq!(r.body, b"hello world");
+
+        let sock = UncleanClose::new(
+            b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n",
+        );
+        assert_eq!(exchange(sock, REQ).await.unwrap().body, b"hello world");
+    }
+
+    /// With no length and no chunking the close *is* the framing, so the
+    /// close ends the body -- politely framed or not. There is nothing here
+    /// that could tell a truncation from an ending, which is the reason
+    /// `content-length` exists and the reason the test below can be strict.
+    #[tokio::test]
+    async fn a_close_framed_body_takes_the_close_as_its_end() {
+        let sock = UncleanClose::new(b"HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\n\r\nhello");
+        assert_eq!(exchange(sock, REQ).await.unwrap().body, b"hello");
+    }
+
+    /// A body genuinely cut short still fails, and says what it counted.
+    ///
+    /// The rustls message this replaces named neither the expectation nor
+    /// the arrival, so it read as a broken network and sent the reporter to
+    /// the credentials for an afternoon. These assertions are on the words.
+    #[tokio::test]
+    async fn a_truncated_body_fails_naming_what_was_expected() {
+        let sock = UncleanClose::new(b"HTTP/1.1 200 OK\r\ncontent-length: 11\r\n\r\nhello");
+        let e = exchange(sock, REQ).await.unwrap_err();
+        assert!(e.contains("read 5 of 11 bytes"), "{e}");
+        assert!(e.contains("without close_notify"), "{e}");
+
+        let sock = UncleanClose::new(
+            b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n",
+        );
+        let e = exchange(sock, REQ).await.unwrap_err();
+        assert!(e.contains("no final chunk"), "{e}");
+    }
+
+    /// The framing ends the read, so a connection left open after a
+    /// complete body does not hold the call until its timeout.
+    ///
+    /// The server here answers and then says nothing and closes nothing,
+    /// which is what a peer ignoring `connection: close` does. Before this,
+    /// every such call took `timeout_ms` and then failed.
+    #[tokio::test]
+    async fn a_framed_body_returns_without_waiting_for_a_close() {
+        for (head, wire, want) in [
+            (
+                "content-length: 11",
+                &b"hello world"[..],
+                &b"hello world"[..],
+            ),
+            (
+                "transfer-encoding: chunked",
+                &b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"[..],
+                &b"hello world"[..],
+            ),
+            // 204 carries no body whatever its headers say, so there is
+            // nothing to wait for either.
+            ("content-type: text/plain", &b""[..], &b""[..]),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let status = if wire.is_empty() {
+                "204 No Content"
+            } else {
+                "200 OK"
+            };
+            let response = format!("HTTP/1.1 {status}\r\n{head}\r\n\r\n").into_bytes();
+            let wire = wire.to_vec();
+            let held = tokio::spawn(async move {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut scratch = [0u8; 1024];
+                let _ = sock.read(&mut scratch).await;
+                sock.write_all(&response).await.unwrap();
+                sock.write_all(&wire).await.unwrap();
+                // Never closed: the framing is what has to end the read.
+                std::future::pending::<()>().await;
+            });
+            let sock = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap();
+            let r = tokio::time::timeout(Duration::from_secs(5), exchange(sock, REQ))
+                .await
+                .expect("the framing must end the read, not the timeout")
+                .unwrap();
+            assert_eq!(r.body, want);
+            held.abort();
+        }
+    }
+
+    /// An interim 1xx is not the answer, and stopping on one would now be
+    /// easy: it frames a body of zero bytes, which is complete on arrival.
+    /// 103 Early Hints is sent unprompted by more than one CDN.
+    #[tokio::test]
+    async fn an_interim_response_is_skipped_rather_than_answered() {
+        let sock = UncleanClose::new(
+            b"HTTP/1.1 103 Early Hints\r\nlink: </s.css>; rel=preload\r\n\r\n\
+              HTTP/1.1 200 OK\r\ncontent-length: 11\r\n\r\nhello world",
+        );
+        let r = exchange(sock, REQ).await.unwrap();
+        assert_eq!(r.status, 200);
+        assert_eq!(r.body, b"hello world");
+        assert!(r.headers.iter().any(|(n, _)| n == "content-length"));
+    }
+
+    /// The decoder is fed as bytes land, so a frame split across reads must
+    /// be resumed rather than re-read or refused.
+    #[test]
+    fn chunked_frames_split_across_reads_are_resumed() {
+        let whole = b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n";
+        // The body ends at the zero-size chunk's own line; the trailer
+        // block after it is read and discarded, so it is not waited for.
+        let ends_at = whole.len() - 2;
+        for cut in 1..whole.len() {
+            let mut d = Dechunker::default();
+            d.feed(&whole[..cut]).unwrap();
+            assert_eq!(d.done, cut >= ends_at, "cut at {cut}");
+            d.feed(whole).unwrap();
+            assert!(d.done, "cut at {cut}");
+            assert_eq!(d.out, b"hello world", "cut at {cut}");
         }
     }
 
