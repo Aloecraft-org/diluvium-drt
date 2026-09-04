@@ -15,17 +15,6 @@ use crate::editor::{Editor, Outcome};
 use crate::swarm::{self, Swarm as SwarmDeployment};
 use crate::term::{Session, Step, Term};
 
-/// The flag wasm-bindgen 0.2.114 reads before every export call once a
-/// module carries exception-handling instructions -- which this one does,
-/// for the C core's `longjmp` (doc/Wasm.md §2.3). The crate defines it
-/// only under `panic = "unwind"`, and a browser build panics by aborting,
-/// so it is defined here: a `u32` the linker exports as an `i32` global
-/// holding its address, which is the shape the glue expects. It is zero
-/// until the glue marks the instance terminated. Delete when the pin in
-/// `Cargo.toml` moves to >= 0.2.127, which defines it unconditionally.
-#[no_mangle]
-pub static mut __instance_terminated: u32 = 0;
-
 extern "C" {
     /// wasi-libc's constructors, as the linker collected them.
     fn __wasm_call_ctors();

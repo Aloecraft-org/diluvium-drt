@@ -16,7 +16,7 @@ drt-connector = { workspace = true }
 # connector that needs a system library to have been installed first is the
 # two-binary cliff wearing another hat. It costs footprint, which is why sql
 # is in the `full` profile and not `slim`.
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 [dev-dependencies]
 drt-hostcall = { workspace = true }

@@ -357,13 +357,21 @@ module's first data segment sits at exactly 1,048,576, so bytes 0..1 MiB
 are the shadow stack) that byte is written only by a stack overflow,
 which traps on its own. With the workaround, 0.2.114 generates the glue.
 
-The same crate rebuilt against **`wasm-bindgen = "=0.2.127"`** (current on
-crates.io) exports `__instance_terminated` by itself — the crate now
-emits it — and the 0.2.127 CLI generates the glue with no C stub. So the
-pin moves to 0.2.127 and the workaround never lands in the tree. The pin
-is shared with `ego_transport` and `ego_platform` (both `=0.2.114`), so a
-browser build that carries transport needs the same move there; that is
-an upstream ask, recorded in §7.
+The same crate rebuilt against **`wasm-bindgen = "=0.2.127"`** exports
+`__instance_terminated` by itself — the crate now emits it — and the
+0.2.127 CLI generates the glue with no C stub.
+
+*What actually happened, 2026-09-03.* The pin could not move at M4,
+because `ego_transport` and `ego_platform` pinned `=0.2.114` and a
+workspace holds one version, so the workaround did land after all —
+though as a `#[no_mangle] pub static mut` in `bindings.rs` rather than
+the C stub above, which is the same global by a cheaper route. Then the
+upstream ask §7 recorded was answered: the ego crates moved to 0.2.127,
+each tagging `pre-wasm-bindgen-0.2.127` at the commit before, and DRT
+followed the same day. The pin is `=0.2.127`, the static is deleted, and
+the browser suite is 10 ok on it. Nothing else in this section changed:
+the CLI's `try_table` walk is the same, and what moved is only who
+exports the global it demands.
 
 **In Chromium 141.** The page installs `globalThis.__drt_write` to
 collect output, calls `init()`, and runs nine programs through the C

@@ -159,9 +159,16 @@ jobs:
             # LFS symbols (__fprintf_chk, fopen64) do not exist in musl, as
             # the first rehearsal proved at link time. The cc-crate users
             # (aws-lc-sys, bundled sqlite) honour the same variable.
+            # AR for the same reason as CC, one step later: the build
+            # script archives the C core itself, and with no `AR` it asks
+            # for `x86_64-unknown-linux-musl-ar`, which `musl-tools` does
+            # not ship -- the second rehearsal proved that the way the
+            # first proved CC. Binutils `ar` archives musl-gcc's ELF
+            # objects; the archiver does not need to be target-specific.
             setup: >-
               sudo apt-get update && sudo apt-get install -y musl-tools cmake
               && echo "CC=musl-gcc" >> "$GITHUB_ENV"
+              && echo "AR=ar" >> "$GITHUB_ENV"
           - name: darwin_arm64
             os: macos-latest
             target: aarch64-apple-darwin

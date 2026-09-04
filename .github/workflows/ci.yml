@@ -150,8 +150,13 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: crates/drt-web/browser-test/package-lock.json
+      # The profile the release builds, so this job gates the artifact that
+      # ships rather than a near neighbour of it. They diverged once, and a
+      # release-only failure (`strip` hiding the externref table from
+      # wasm-bindgen) reached a rehearsal because nothing here built what
+      # the release does.
       - name: Build the module and its glue
-        run: script/drt-web.sh
+        run: DRT_WEB_PROFILE=release-small script/drt-web.sh
       - name: Playwright, and its Chromium
         working-directory: crates/drt-web/browser-test
         run: |
