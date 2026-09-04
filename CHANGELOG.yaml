@@ -658,7 +658,10 @@ releases:
         run` inside Chromium, and by three tests natively. The `web`
         module grows from 1,915,072 to 3,436,485 bytes for it; the `web`
         connector list is unchanged, because this is a server rather than
-        a connector. The plan and the measurements are
+        a connector. `GUARANTEES.md` carries the exposure -- what a
+        session can do is whatever the page's shell exposes, it is no way
+        onto the machine or into the page, and it is only as strong as
+        the page's own integrity. The plan and the measurements are
         `doc/SshInBrowser.md`.
       - |
         **`drt tunnel` reaches a page.** The chain the README describes,

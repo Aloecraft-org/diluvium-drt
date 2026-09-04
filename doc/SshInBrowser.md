@@ -5,7 +5,7 @@
 half is written and merged into the fork (§4); DRT's transport, its SSH
 server and the relay leg are built, and the browser suite runs **`ssh -o
 ProxyCommand="drt tunnel ..."` into a DRT shell in Chromium, over a real
-`drt relay`** (§5).
+`drt relay`** (§5). The posture is in `GUARANTEES.md` (§7).
 
 **The ask.** A standard `ssh` client, pointed through `drt tunnel` as a
 `ProxyCommand`, reaching a terminal inside a page running DRT — the same
@@ -285,7 +285,24 @@ The accident worth engineering against is narrower than "a user does
 something dangerous": **a page enabling the server without realising it
 is reachable from outside the tab.** That is a defaults-and-wording
 problem, and `GUARANTEES.md` should say it as plainly as it says it for
-`exec`. What is in the code already: no password method, no way to
-authorize a key without naming it, and an empty list that admits nobody
-rather than everybody. What is not yet written is the sentence in
-`GUARANTEES.md`.
+`exec`. What is in the code: no password method, no way to authorize a key
+without naming it, and an empty list that admits nobody rather than
+everybody. `GUARANTEES.md` now carries the entry — *An SSH server in a
+page is reachable from outside the tab* — and its four limits are worth
+repeating here because they are what a host actually has to decide:
+
+- **A session can do whatever the page's shell exposes**, and that is the
+  whole of the grant. With `drt-term.js` attached it is every `drt` verb
+  the build carries, `drt repl --unsafe` included. Choosing the shell is
+  the security decision; there is no second one behind it.
+- **It is not a way onto the machine.** The `web` filesystem backend is an
+  empty `MemFs`, `cfg`'d for the target, and a config-less run has no `fs`
+  connector at all. Nor is it a way into the page: no connector here can
+  execute script or reach the document.
+- **It is only as strong as the page.** An XSS on the page is the page's
+  SSH server, because the host key and the authorized list live wherever
+  the page keeps them. And the host key has to persist — one regenerated
+  on load trains whoever connects to click through the warning.
+- **The relay decides reachability, not secrecy.** SSH is end-to-end; the
+  caller key gates who can reach the label, and is not a second
+  authentication.
