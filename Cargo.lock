@@ -1345,6 +1345,7 @@ dependencies = [
  "ego_cli",
  "js-sys",
  "serde_json",
+ "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
 ]

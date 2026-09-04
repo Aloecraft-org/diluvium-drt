@@ -11,9 +11,13 @@
 
 use wasm_bindgen::prelude::*;
 
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
 use crate::editor::{Editor, Outcome};
 use crate::swarm::{self, Swarm as SwarmDeployment};
 use crate::term::{Session, Step, Term};
+use crate::ws;
 
 extern "C" {
     /// wasi-libc's constructors, as the linker collected them.
@@ -392,5 +396,118 @@ impl DrtSwarm {
     #[wasm_bindgen(js_name = setHostIdentity)]
     pub fn set_host_identity(&mut self, identity: Option<String>) {
         self.inner.set_host_identity(identity.as_deref());
+    }
+}
+
+/// The page's end of a byte stream (`ws.rs`).
+///
+/// The page owns the socket and pumps this; the Rust half is a `Send`
+/// stream a protocol can be handed. What consumes that stream is the
+/// caller's -- today [`DrtSocket::start_echo`], to prove the path; an SSH
+/// session once `russh` is wired (doc/SshInBrowser.md).
+#[wasm_bindgen]
+pub struct DrtSocket {
+    socket: ws::Socket,
+    /// Held apart from `socket` because `nextOutgoing` becomes a promise
+    /// that outlives the call: taken for the await and put back after, the
+    /// same shape `DrtEditor` uses on its session.
+    outgoing: Rc<RefCell<Option<ws::Outgoing>>>,
+    /// Set by `close`, and read by the one `nextOutgoing` that can miss it:
+    /// a call parked on the await holds the queue, so clearing the cell
+    /// does not reach it, and it would put the queue back afterwards and
+    /// leave the page pumping into a socket that is gone.
+    closed: Rc<Cell<bool>>,
+    stream: Option<ws::WsStream>,
+}
+
+#[wasm_bindgen]
+impl DrtSocket {
+    /// A socket and the stream it drives.
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> DrtSocket {
+        let (stream, mut socket) = ws::channel();
+        let outgoing = socket.take_outgoing();
+        DrtSocket {
+            socket,
+            outgoing: Rc::new(RefCell::new(outgoing)),
+            closed: Rc::new(Cell::new(false)),
+            stream: Some(stream),
+        }
+    }
+
+    /// Bytes that arrived on the wire. `false` once the stream is gone,
+    /// which is the page's cue to stop delivering.
+    pub fn deliver(&self, bytes: &[u8]) -> bool {
+        self.socket.deliver(bytes.to_vec())
+    }
+
+    /// The next chunk to write, or `undefined` when the stream is over --
+    /// which is how the page's pump loop learns to close the socket.
+    #[wasm_bindgen(js_name = nextOutgoing)]
+    pub fn next_outgoing(&self) -> js_sys::Promise {
+        let held = self.outgoing.clone();
+        let closed = self.closed.clone();
+        wasm_bindgen_futures::future_to_promise(async move {
+            let Some(mut rx) = held.borrow_mut().take() else {
+                return Ok(JsValue::UNDEFINED);
+            };
+            let got = rx.recv().await;
+            if !closed.get() {
+                *held.borrow_mut() = Some(rx);
+            }
+            Ok(match got {
+                Some(bytes) => js_sys::Uint8Array::from(&bytes[..]).into(),
+                None => JsValue::UNDEFINED,
+            })
+        })
+    }
+
+    /// The wire closed: reads see end of input.
+    pub fn close(&mut self) {
+        self.socket.close();
+        self.closed.set(true);
+        *self.outgoing.borrow_mut() = None;
+    }
+
+    /// Read the stream and write it back upper-cased, until end of input.
+    ///
+    /// The transport's own gate: it proves bytes cross the page, reach
+    /// Rust as a stream, and come back, without a protocol in the way. The
+    /// SSH session replaces this consumer and nothing else.
+    ///
+    /// It ships. The browser gate builds the profile the release builds,
+    /// so a diagnostic held out of the artifact is a diagnostic nothing
+    /// tests -- and a host wiring a socket up wants to check the plumbing
+    /// before a protocol is in the way.
+    #[wasm_bindgen(js_name = startEcho)]
+    pub fn start_echo(&mut self) -> Result<(), JsValue> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut stream = self
+            .stream
+            .take()
+            .ok_or_else(|| JsValue::from_str("this socket's stream is already taken"))?;
+        wasm_bindgen_futures::spawn_local(async move {
+            let mut buf = [0u8; 4096];
+            loop {
+                match stream.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        buf[..n].make_ascii_uppercase();
+                        if stream.write_all(&buf[..n]).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+            let _ = stream.shutdown().await;
+        });
+        Ok(())
+    }
+}
+
+impl Default for DrtSocket {
+    fn default() -> Self {
+        Self::new()
     }
 }

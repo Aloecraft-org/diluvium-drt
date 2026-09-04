@@ -31,7 +31,7 @@
   // moves the cursor, redraws a line, clears to the end -- so a <pre> that
   // appends characters would now be a third terminal emulator to get
   // wrong, which is the thing D8 exists to avoid.
-  import init, { DrtTerm, DrtEditor, DrtSwarm, buildInfo, abiVersion, setPanicHook } from './pkg/drt_web.js';
+  import init, { DrtTerm, DrtEditor, DrtSwarm, DrtSocket, buildInfo, abiVersion, setPanicHook } from './pkg/drt_web.js';
   import { makeShell } from './shell.js';
   import { attach } from './drt-term.js';
 
@@ -84,6 +84,53 @@
         sw.free();
       }
       return out;
+    },
+    // The transport (doc/SshInBrowser.md): a byte stream whose socket
+    // stays in the page. This is the page's whole side of it -- deliver
+    // what arrives, pump what Rust wants written, close when the wire
+    // does -- and the loop below is the one from `ws.rs`'s header with a
+    // WebSocket swapped for the caller's strings. `startEcho` stands in
+    // for the SSH session: what is under test is the stream, not what
+    // reads it.
+    async socketEcho(messages) {
+      const socket = new DrtSocket();
+      socket.startEcho();
+      const back = [];
+      const pump = (async () => {
+        for (;;) {
+          const out = await socket.nextOutgoing();
+          if (out === undefined) break;
+          back.push(out);
+        }
+      })();
+
+      const encoder = new TextEncoder();
+      const want = messages.join('').length;
+      const size = () => back.reduce((n, b) => n + b.length, 0);
+      const sent = messages.every((m) => socket.deliver(encoder.encode(m)));
+      const deadline = Date.now() + 5000;
+      while (size() < want && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 0));
+      }
+
+      // Closing must end both halves: Rust reads end of input, the task
+      // above it stops and drops the stream, and that is what the page's
+      // pump loop sees.
+      socket.close();
+      const afterClose = socket.deliver(encoder.encode('too late'));
+      const ended = await Promise.race([
+        pump.then(() => true),
+        new Promise((r) => setTimeout(() => r(false), 5000)),
+      ]);
+      socket.free();
+
+      const joined = new Uint8Array(size());
+      let at = 0;
+      for (const chunk of back) {
+        joined.set(chunk, at);
+        at += chunk.length;
+      }
+      return { sent, afterClose, ended, chunks: back.length, echoed: new TextDecoder().decode(joined) };
     },
     seed({ cwd, files, dirs = [] }) {
       fresh();
