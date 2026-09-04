@@ -15,6 +15,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::editor::{Editor, Outcome};
+use crate::ssh;
 use crate::swarm::{self, Swarm as SwarmDeployment};
 use crate::term::{Session, Step, Term};
 use crate::ws;
@@ -425,13 +426,22 @@ impl DrtSocket {
     /// A socket and the stream it drives.
     #[wasm_bindgen(constructor)]
     pub fn new() -> DrtSocket {
-        let (stream, mut socket) = ws::channel();
+        let (stream, socket) = ws::channel();
+        let mut it = DrtSocket::over(socket);
+        it.stream = Some(stream);
+        it
+    }
+
+    /// The page's half of a stream something else already holds -- what
+    /// `DrtSshServer::serve` hands back. `startEcho` has nothing to start
+    /// on one of these, and says so.
+    pub(crate) fn over(mut socket: ws::Socket) -> DrtSocket {
         let outgoing = socket.take_outgoing();
         DrtSocket {
             socket,
             outgoing: Rc::new(RefCell::new(outgoing)),
             closed: Rc::new(Cell::new(false)),
-            stream: Some(stream),
+            stream: None,
         }
     }
 
@@ -509,5 +519,211 @@ impl DrtSocket {
 impl Default for DrtSocket {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// depth: SSH into the page (doc/SshInBrowser.md)
+// ---------------------------------------------------------------------------
+
+/// An SSH server the page serves connections to.
+///
+/// The posture is `ssh.rs`'s and it is not softened here: a host key the
+/// page keeps, `authorized_keys` lines naming who may log in, and no way
+/// to say "anyone". `generateHostKey` hands a key *back* rather than
+/// holding one, because a host key that changes on reload trains whoever
+/// connects to click through the warning that says it changed.
+///
+/// ```js
+/// const server = new DrtSshServer(hostKey, authorizedKeys);
+/// const socket = server.serve((shell) => attachShell(shell));
+/// // ...then pump `socket` against a WebSocket, as with DrtSocket.
+/// ```
+#[wasm_bindgen]
+pub struct DrtSshServer {
+    /// Kept as text and parsed per connection: `Config` wants an owned
+    /// key, and one Ed25519 parse per connection is nothing next to a key
+    /// exchange. Validated in the constructor, so a bad key is an error
+    /// where it was typed rather than when someone connects.
+    host_key: String,
+    fingerprint: String,
+    authorized: ssh::Authorized,
+}
+
+#[wasm_bindgen]
+impl DrtSshServer {
+    /// `hostKey` is an OpenSSH private key; `authorizedKeys` is the
+    /// contents of an `authorized_keys` file. An empty one authenticates
+    /// nobody, which is what a page that has not decided should get.
+    #[wasm_bindgen(constructor)]
+    pub fn new(host_key: &str, authorized_keys: &str) -> Result<DrtSshServer, JsValue> {
+        let parsed =
+            ssh::HostKey::parse(host_key).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let authorized = ssh::Authorized::parse(authorized_keys)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(DrtSshServer {
+            host_key: host_key.to_string(),
+            fingerprint: parsed.fingerprint(),
+            authorized,
+        })
+    }
+
+    /// A fresh OpenSSH private key, for the page to store. Not held here:
+    /// see the type's note.
+    #[wasm_bindgen(js_name = generateHostKey)]
+    pub fn generate_host_key() -> Result<String, JsValue> {
+        ssh::HostKey::generate().map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// `SHA256:...`, what `ssh` prints on first connection. Show it beside
+    /// the terminal and whoever connects can check it instead of trusting
+    /// on first use.
+    #[wasm_bindgen(getter)]
+    pub fn fingerprint(&self) -> String {
+        self.fingerprint.clone()
+    }
+
+    /// How many keys may log in. `0` is a server nobody can reach.
+    #[wasm_bindgen(getter)]
+    pub fn authorized(&self) -> usize {
+        self.authorized.len()
+    }
+
+    /// Serve one connection, and return the socket the page pumps for it
+    /// -- the same `DrtSocket` contract, because it is the same transport.
+    ///
+    /// `onShell` is called with a [`DrtShell`] each time the client asks
+    /// for a terminal.
+    pub fn serve(&self, on_shell: js_sys::Function) -> Result<DrtSocket, JsValue> {
+        let host_key =
+            ssh::HostKey::parse(&self.host_key).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let authorized = self.authorized.clone();
+        let (stream, socket) = ws::channel();
+        let (shells, mut opened) = tokio::sync::mpsc::channel(4);
+
+        // Two tasks rather than one: the connection's future is `Send` and
+        // holds no JS (that is what lets russh have it), and the loop that
+        // calls into the page is not `Send` and never enters russh. The
+        // channel between them is the seam.
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = ssh::serve(stream, host_key, authorized, shells).await;
+        });
+        wasm_bindgen_futures::spawn_local(async move {
+            while let Some(shell) = opened.recv().await {
+                let window = shell.window.clone();
+                let (reader, writer) = shell.split();
+                // One task drains the writes, so what a terminal writes
+                // reaches the client in the order it was written. Without
+                // it every `write` would be its own promise racing the
+                // others, and a redrawn line would arrive scrambled.
+                let (to_client, mut queued) = tokio::sync::mpsc::channel::<ToClient>(ws::DEPTH);
+                wasm_bindgen_futures::spawn_local(async move {
+                    while let Some(next) = queued.recv().await {
+                        match next {
+                            ToClient::Data(bytes) => {
+                                if writer.write(bytes).await.is_err() {
+                                    break;
+                                }
+                            }
+                            // In the queue rather than beside it: a close
+                            // that overtook a pending write would cut off
+                            // the last thing the program said.
+                            ToClient::Close(status) => {
+                                writer.close(status).await;
+                                break;
+                            }
+                        }
+                    }
+                });
+                let handed = DrtShell {
+                    window,
+                    reader: Rc::new(RefCell::new(Some(reader))),
+                    to_client,
+                };
+                if on_shell
+                    .call1(&JsValue::NULL, &JsValue::from(handed))
+                    .is_err()
+                {
+                    // The page threw. Its terminal is not coming, and the
+                    // client is better told than left at a blank screen.
+                    break;
+                }
+            }
+        });
+        Ok(DrtSocket::over(socket))
+    }
+}
+
+/// One SSH session's terminal.
+///
+/// Shaped for the object `attach` already takes (doc/Browser.md): bytes
+/// out, bytes in, and a window. What turns it into that object is a few
+/// lines of JS -- `ssh-terminal.js` -- rather than a second terminal
+/// implementation in Rust.
+#[wasm_bindgen]
+pub struct DrtShell {
+    /// Read on every `cols`/`rows`, because a client can resize mid
+    /// session and `ego_cli` asks a terminal its size on every keystroke.
+    window: ssh::Window,
+    /// Taken for the read's await and put back after, as `DrtEditor` does
+    /// with its session: a promise outlives the call that made it.
+    reader: Rc<RefCell<Option<ssh::ShellReader>>>,
+    /// Writes go through one queue, drained in order by the task
+    /// `DrtSshServer::serve` spawned. See there for why.
+    to_client: tokio::sync::mpsc::Sender<ToClient>,
+}
+
+/// What is queued towards the client, in order.
+enum ToClient {
+    Data(Vec<u8>),
+    Close(u32),
+}
+
+#[wasm_bindgen]
+impl DrtShell {
+    /// The client's window, as of now -- a getter rather than a number,
+    /// so a host reading it on every keystroke sees a resize the same way
+    /// it would from xterm.js.
+    #[wasm_bindgen(getter)]
+    pub fn cols(&self) -> u32 {
+        self.window.get().0
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn rows(&self) -> u32 {
+        self.window.get().1
+    }
+
+    /// What the client typed, or `undefined` once the session is over.
+    pub fn read(&self) -> js_sys::Promise {
+        let held = self.reader.clone();
+        wasm_bindgen_futures::future_to_promise(async move {
+            let Some(mut reader) = held.borrow_mut().take() else {
+                return Ok(JsValue::UNDEFINED);
+            };
+            let got = reader.read().await;
+            *held.borrow_mut() = Some(reader);
+            Ok(match got {
+                Some(bytes) => js_sys::Uint8Array::from(&bytes[..]).into(),
+                None => JsValue::UNDEFINED,
+            })
+        })
+    }
+
+    /// Write to the client's terminal, queued behind whatever is already
+    /// waiting. `false` once the session is gone.
+    ///
+    /// Not a promise, and that is the point: xterm.js's `write` is
+    /// fire-and-forget, so a host can hand this object straight to
+    /// anything that drives a terminal, and ordering is the queue's
+    /// business rather than the caller's.
+    pub fn write(&self, bytes: Vec<u8>) -> bool {
+        self.to_client.try_send(ToClient::Data(bytes)).is_ok()
+    }
+
+    /// End the session, the way a shell exiting does. Queued behind the
+    /// writes, so the last thing the program said still arrives.
+    pub fn close(&self, status: u32) -> bool {
+        self.to_client.try_send(ToClient::Close(status)).is_ok()
     }
 }

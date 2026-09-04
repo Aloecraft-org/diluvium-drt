@@ -33,7 +33,10 @@
 import { chromium } from 'playwright';
 import fs from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
+import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -155,6 +158,9 @@ const failed = [];
 const skipped = [];
 const wrongBuild = [];
 const noSocket = [];
+// No `ssh` on this machine: the one check that needs a client outside
+// the page cannot run, and says so rather than passing.
+const noSsh = [];
 
 const fail = (name, why) => {
   console.log(`FAILED   ${name.padEnd(24)} ${why}`);
@@ -368,6 +374,115 @@ for (const name of examples) {
   }
 }
 
+// SSH into the page, with the client `ssh(1)` (doc/SshInBrowser.md).
+//
+// The product's claim, run rather than argued: a *standard* client, its
+// own keys, its own pty, reaching a terminal inside a page. Nothing here
+// speaks SSH -- Node listens on a TCP port and shuttles bytes between
+// that socket and the page's, which is what `drt tunnel` does over a
+// relay and a WebSocket instead. Everything above the bytes is the real
+// thing on both sides: OpenSSH's client, russh's server, and behind it
+// M8's editor and shell.js.
+//
+// Skipped, and named, when there is no `ssh` to run.
+{
+  const name = 'ssh-into-the-page';
+  const keys = fs.mkdtempSync(path.join(os.tmpdir(), 'drt-ssh-'));
+  const key = path.join(keys, 'id_ed25519');
+  let client = null;
+  try {
+    execFileSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', 'drt-web-suite', '-f', key]);
+  } catch {
+    noSsh.push(name);
+  }
+  if (!noSsh.length) {
+    // `held` is not an optimisation. The server writes its SSH id the
+    // moment it is served, which is before `ssh` has connected, and a
+    // dropped id line means OpenSSH reads the first binary packet as the
+    // banner and refuses the connection with "invalid characters".
+    const bridge = { toPage: Promise.resolve(), socket: null, held: [] };
+    try {
+      await page.exposeFunction('sshOutgoing', (_id, data) => {
+        const bytes = Buffer.from(data, 'base64');
+        if (bridge.socket) bridge.socket.write(bytes);
+        else bridge.held.push(bytes);
+      });
+      await page.exposeFunction('sshClosed', (_id) => {
+        if (bridge.socket) bridge.socket.end();
+      });
+      const hostKey = await page.evaluate(() => window.drtBrowserTest.sshHostKey());
+      const authorized = fs.readFileSync(`${key}.pub`, 'utf8');
+      const server = await page.evaluate(
+        ([hk, ak]) => window.drtBrowserTest.sshServe(1, hk, ak),
+        [hostKey, authorized],
+      );
+
+      const listener = net.createServer((socket) => {
+        bridge.socket = socket;
+        for (const bytes of bridge.held.splice(0)) socket.write(bytes);
+        // Killing the client resets the connection, which is a normal end
+        // here and an unhandled 'error' event otherwise.
+        socket.on('error', () => {});
+        socket.on('data', (chunk) => {
+          // Chained, not fired: two `evaluate`s in flight could deliver
+          // the stream out of order, and a reordered SSH packet is a
+          // failed key exchange.
+          bridge.toPage = bridge.toPage.then(() =>
+            page.evaluate(
+              ([id, data]) => window.drtBrowserTest.sshDeliver(id, data),
+              [1, chunk.toString('base64')],
+            ),
+          );
+        });
+        socket.on('close', () => page.evaluate(() => window.drtBrowserTest.sshClose(1)));
+      });
+      listener.on('error', () => {});
+      await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
+      const port = listener.address().port;
+
+      client = spawn('ssh', [
+        '-tt', // a pty, because what is behind this is a line editor
+        '-i', key,
+        '-o', 'IdentitiesOnly=yes',
+        '-o', 'StrictHostKeyChecking=no',
+        '-o', 'UserKnownHostsFile=/dev/null',
+        '-o', 'GlobalKnownHostsFile=/dev/null',
+        '-o', 'LogLevel=ERROR',
+        '-p', String(port),
+        'whoever@127.0.0.1',
+      ]);
+      let transcript = '';
+      client.on('error', (e) => (transcript += `ssh: ${e.message}\n`));
+      client.stdout.on('data', (b) => (transcript += b.toString('utf8')));
+      client.stderr.on('data', (b) => (transcript += b.toString('utf8')));
+      client.stdin.write('drt run hello.dlua\r');
+
+      // What proves it went all the way through: a string the page's own
+      // runtime printed, which nothing in the transcript typed.
+      const said = await waitFor(() => transcript.includes('hello over ssh'), TIMEOUT * 1000);
+      const wrong = [];
+      if (server.authorized !== 1) wrong.push(`${server.authorized} authorized keys, expected 1`);
+      if (!/^SHA256:/.test(server.fingerprint)) wrong.push('the host key has no fingerprint');
+      if (!said) wrong.push(`the program never printed: ${JSON.stringify(plain(transcript).slice(-300))}`);
+      else if (!plain(transcript).includes('drt in a page')) wrong.push('the banner never arrived');
+      if (wrong.length === 0) {
+        console.log(`ok       ${name.padEnd(24)} ssh -tt -p PORT, ${server.fingerprint.slice(0, 18)}...`);
+        nOk += 1;
+      } else {
+        fail(name, wrong.join('; '));
+      }
+      listener.close();
+    } catch (e) {
+      fail(name, `the bridge threw: ${e.message}`);
+    } finally {
+      if (client) client.kill('SIGKILL');
+      fs.rmSync(keys, { recursive: true, force: true });
+    }
+  } else {
+    fs.rmSync(keys, { recursive: true, force: true });
+  }
+}
+
 // The REPL, typed at drt-term.js, against what the native binary said to
 // the same lines. The page echoes what is typed and the native transcript
 // (stdin from a file) does not, so the echoes are removed before the diff;
@@ -422,7 +537,7 @@ for (const name of examples) {
 // ---------------------------------------------------------------------------
 
 for (const n of uncovered) console.log(`NO META  ${n.padEnd(24)} not checked by anything — add a meta.json`);
-const nSkip = skipped.length + wrongBuild.length + noSocket.length;
+const nSkip = skipped.length + wrongBuild.length + noSocket.length + noSsh.length;
 const total = nOk + nFail + nSkip + uncovered.length;
 console.log('');
 console.log(`${total} check(s): ${nOk} ok, ${nFail} failed, ${nSkip} skipped, ${uncovered.length} without a meta.json`);
@@ -437,6 +552,10 @@ if (wrongBuild.length) {
 if (noSocket.length) {
   console.log(`skipped for binding a port (NOT a pass): ${noSocket.join(' ')}`);
   console.log('a page has no socket to bind; the native gate and the wasmtime one cover these.');
+}
+if (noSsh.length) {
+  console.log(`skipped for needing an ssh client (NOT a pass): ${noSsh.join(' ')}`);
+  console.log('install openssh-client; crates/drt-web/tests/ssh.rs covers the server natively.');
 }
 if (uncovered.length) console.log(`no meta.json, so unchecked: ${uncovered.join(' ')}`);
 if (nFail) console.log(`failed: ${failed.join(' ')}`);
@@ -453,6 +572,26 @@ process.exit(nFail || uncovered.length ? 1 : 0);
 // ---------------------------------------------------------------------------
 // depth: helpers
 // ---------------------------------------------------------------------------
+
+/// Poll until `done()` or the deadline. Used where the thing being waited
+/// for is a byte arriving in a transcript rather than a promise resolving.
+async function waitFor(done, ms) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (done()) return true;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  return done();
+}
+
+/// A pty transcript without the escape sequences a line editor emits.
+function plain(text) {
+  return text
+    .replace(/\u001b\][^\u0007\u001b]*(\u0007|\u001b\\)/g, '')
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    .replace(/\u001b[@-_]/g, '')
+    .replace(/\r/g, '\n');
+}
 
 function withTimeout(promise, ms) {
   if (!ms) return promise;

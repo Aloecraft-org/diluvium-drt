@@ -44,7 +44,7 @@ use tokio::sync::mpsc;
 /// waits. Unbounded would let a page that stops reading grow without limit;
 /// this is a backpressure point, not a tuning knob anyone has needed to
 /// move.
-const DEPTH: usize = 256;
+pub(crate) const DEPTH: usize = 256;
 
 /// The stream russh (or anything else taking a byte stream) is handed.
 ///
