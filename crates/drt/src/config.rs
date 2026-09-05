@@ -385,6 +385,7 @@ fn map_listener(path: &Path, block: rmpv::Value) -> Result<drt_config::Listener,
         reply_queue: "http_out".into(),
         max_body: 65536,
         conn_deadline_ms: 10_000,
+        admit_timeout_ms: 2000,
         max_conns: 64,
         headers: Vec::new(),
         resp_headers: Vec::new(),
@@ -407,6 +408,9 @@ fn map_listener(path: &Path, block: rmpv::Value) -> Result<drt_config::Listener,
             }
             "max_conns" => {
                 listener.max_conns = value.as_u64().ok_or_else(|| bad("a count"))? as usize
+            }
+            "admit_timeout_ms" => {
+                listener.admit_timeout_ms = value.as_u64().ok_or_else(|| bad("milliseconds"))?
             }
             "headers" | "resp_headers" | "response_headers" => {
                 let rmpv::Value::Array(items) = value else {

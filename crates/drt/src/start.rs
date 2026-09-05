@@ -380,15 +380,31 @@ pub fn serve_with_observer<B: Acceptor>(
         None => None,
     };
 
+    // Requests whose queue the program has not declared yet, oldest
+    // first. Stepping before delivering (below) covers a program that
+    // declares before its first park, and nothing more: a program that
+    // does real work first parks with the queue still absent, and the
+    // step has already happened. So an undelivered request waits here
+    // instead of being refused -- see `retry_held`, which is the whole of
+    // issue #11's fix.
+    let mut held: std::collections::VecDeque<Held> = std::collections::VecDeque::new();
+    // Which queues have been reported absent, so the note below is one
+    // line per queue rather than one per request.
+    let mut noted: Vec<String> = Vec::new();
+
     // Step before delivering, always: the first step runs the root to its
-    // first park, so the request queue exists before the first request is
-    // pushed at it. Delivering first would race the program's own
-    // `queue.declare` and answer an early connection 503 for arriving
-    // while the deployment was still clearing its throat.
+    // first park, so a queue declared before that park exists before the
+    // first request is pushed at it. Delivering first would race the
+    // program's own `queue.declare` and answer an early connection 503 for
+    // arriving while the deployment was still clearing its throat.
     loop {
         let alive = driver.step();
         let sw = driver.deployment_mut();
         pump_replies(sw, root, &mut bound);
+        // After the step, because the step is the only thing that can
+        // have declared the queue, and before the sleep below, because a
+        // request that can be delivered should not wait on a tick.
+        retry_held(sw, root, &mut bound, &mut held);
         #[cfg(feature = "relay")]
         if let Some(relay) = relay.as_mut() {
             // Answers first: a question asked last pass is waiting, and a
@@ -407,15 +423,42 @@ pub fn serve_with_observer<B: Acceptor>(
         if alive == 0 {
             // The program chose to exit; ports serving a drained swarm
             // would answer 503 forever, and a supervisor should see the
-            // exit instead.
+            // exit instead. Anything still waiting for a queue is waiting
+            // for a program that has gone, so it is told now rather than
+            // left to its connection's deadline.
+            for h in held.drain(..) {
+                bound.answer(
+                    h.ingress.token,
+                    crate::listen::Outcome::refused(503, "the root instance is not resident\n"),
+                );
+            }
             return crate::run::finish(driver.dispatcher());
         }
-        let sleep = driver.idle();
+        // Don't sleep past a held request's grace: this loop is what
+        // answers it, so a loop asleep for the deployment's idle is a
+        // loop that answers it late. The soonest of them rather than the
+        // oldest -- two listeners may hold different graces.
+        let sleep = match held.iter().map(|h| h.until).min() {
+            Some(until) => driver
+                .idle()
+                .min(until.saturating_duration_since(Instant::now())),
+            None => driver.idle(),
+        };
         if let Some(ingress) = bound.next_within(sleep) {
-            deliver(driver.deployment_mut(), root, &mut bound, ingress);
+            hold(
+                deliver(driver.deployment_mut(), root, &mut bound, ingress),
+                &mut bound,
+                &mut held,
+                &mut noted,
+            );
         }
         while let Some(ingress) = bound.try_next() {
-            deliver(driver.deployment_mut(), root, &mut bound, ingress);
+            hold(
+                deliver(driver.deployment_mut(), root, &mut bound, ingress),
+                &mut bound,
+                &mut held,
+                &mut noted,
+            );
         }
     }
 }
@@ -458,24 +501,42 @@ fn deployment(
     Ok((sw, root))
 }
 
+/// The text a request that outlived its grace is refused with. The C's,
+/// like the rest of them, so an operator's runbook matches either host.
+#[cfg(feature = "listen")]
+const NO_QUEUE_TEXT: &str = "the program declares no request queue\n";
+
+/// A request waiting for its queue to be declared, and when that wait
+/// runs out.
+#[cfg(feature = "listen")]
+struct Held {
+    ingress: crate::listen::Ingress,
+    until: Instant,
+}
+
 /// One parsed request onto the root's queue. The refusals and their texts
 /// are `dhost_http.c`'s, so an operator's runbook matches either host.
+///
+/// Returns the request when its queue does not exist *yet* — the one
+/// refusal that may be premature, and the only one the caller holds.
 #[cfg(feature = "listen")]
 fn deliver<B: Acceptor>(
     sw: &mut Deployment,
     root: InstanceId,
     bound: &mut B,
     ingress: crate::listen::Ingress,
-) {
+) -> Option<crate::listen::Ingress> {
     use crate::listen::Outcome;
     use drt_swarm::swarm::SwarmError;
     let queue = bound.listeners()[ingress.listener].queue.clone();
     match sw.push(root, &queue, &ingress.message) {
         Ok(_) => {} // parked in the queue; the reply pump answers
-        Err(SwarmError::UnknownQueue) => bound.answer(
-            ingress.token,
-            Outcome::refused(503, "the program declares no request queue\n"),
-        ),
+        // Not answered here. A queue absent now may be declared by the
+        // next step, and the program's boot is exactly when it is absent.
+        Err(SwarmError::UnknownQueue) => return Some(ingress),
+        // These three are answers, not races. A root that is gone does not
+        // come back, and a full queue is the C's "try again" by design --
+        // holding either would turn a definite refusal into a hang.
         Err(SwarmError::Gone | SwarmError::Unknown) => bound.answer(
             ingress.token,
             Outcome::refused(503, "the root instance is not resident\n"),
@@ -485,6 +546,77 @@ fn deliver<B: Acceptor>(
             Outcome::refused(503, "the request queue is full; try again\n"),
         ),
         Err(_) => bound.answer(ingress.token, Outcome::refused(500, "delivery failed\n")),
+    }
+    None
+}
+
+/// Park an undelivered request until its listener's `admit_timeout_ms`,
+/// noting the absent queue once so an operator diagnosing a deployment
+/// that declares nothing is not left reading response bodies.
+///
+/// A grace of zero is the old behaviour exactly: refused on the spot.
+#[cfg(feature = "listen")]
+fn hold<B: Acceptor>(
+    undelivered: Option<crate::listen::Ingress>,
+    bound: &mut B,
+    held: &mut std::collections::VecDeque<Held>,
+    noted: &mut Vec<String>,
+) {
+    use crate::listen::Outcome;
+    let Some(ingress) = undelivered else { return };
+    let rt = &bound.listeners()[ingress.listener];
+    let grace = rt.admit();
+    if grace.is_zero() {
+        bound.answer(ingress.token, Outcome::refused(503, NO_QUEUE_TEXT));
+        return;
+    }
+    if !noted.iter().any(|q| q == &rt.queue) {
+        let queue = rt.queue.clone();
+        eprintln!(
+            "drt start: no queue '{queue}' yet; holding requests for it up to {}ms \
+             (the listener's admit_timeout_ms)",
+            grace.as_millis()
+        );
+        noted.push(queue);
+    }
+    held.push_back(Held {
+        ingress,
+        until: Instant::now() + grace,
+    });
+}
+
+/// Deliver what the last step may have made deliverable, and refuse what
+/// has waited long enough.
+///
+/// Oldest first, and every pass: a request that arrived before the grace
+/// began is not made to wait behind one that arrived after it. A request
+/// whose connection has already given up (its own `conn_deadline_ms` is
+/// the shorter wait) is dropped rather than answered -- `owner_of` is
+/// `None` exactly then, on both acceptors.
+#[cfg(feature = "listen")]
+fn retry_held<B: Acceptor>(
+    sw: &mut Deployment,
+    root: InstanceId,
+    bound: &mut B,
+    held: &mut std::collections::VecDeque<Held>,
+) {
+    use crate::listen::Outcome;
+    let now = Instant::now();
+    for _ in 0..held.len() {
+        let Some(h) = held.pop_front() else { break };
+        if bound.owner_of(h.ingress.token).is_none() {
+            continue;
+        }
+        match deliver(sw, root, bound, h.ingress) {
+            None => {}
+            Some(ingress) if now >= h.until => {
+                bound.answer(ingress.token, Outcome::refused(503, NO_QUEUE_TEXT))
+            }
+            Some(ingress) => held.push_back(Held {
+                ingress,
+                until: h.until,
+            }),
+        }
     }
 }
 

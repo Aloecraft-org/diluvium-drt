@@ -173,6 +173,24 @@ pub struct Listener {
     pub conn_deadline_ms: u64,
     #[serde(default = "default_max_conns")]
     pub max_conns: usize,
+    /// How long a request waits for `queue` to *exist* before the host
+    /// answers 503 on the program's behalf.
+    ///
+    /// A listener accepts from the moment the process binds it, which is
+    /// before the program has run a line — so a request can arrive for a
+    /// queue the program has not declared yet. Answering that at once is
+    /// a definitive answer to a question the deployment has not finished
+    /// hearing, and it lands hardest on a caller that handshakes exactly
+    /// once at startup: it takes the refusal as the answer and never asks
+    /// again (issue #11).
+    ///
+    /// So the request waits, and the wait is bounded rather than open:
+    /// past this, a program that has declared nothing is a program that
+    /// declares nothing, and 503 is the truth. `0` restores the immediate
+    /// refusal. A value at or past `conn_deadline_ms` cannot be reached —
+    /// the connection's own deadline answers 504 first.
+    #[serde(default = "default_admit_grace_ms")]
+    pub admit_timeout_ms: u64,
     /// The request-header allowlist, lowercased: a header the deployment
     /// does not name never reaches the program. The bound is the C's
     /// `DH_MAX_HDRS` (16) per direction.
@@ -203,6 +221,15 @@ fn default_conn_deadline_ms() -> u64 {
 }
 fn default_max_conns() -> usize {
     64
+}
+/// Two seconds: long enough to cover a program's declare-before-serve
+/// boot (measured in tens of milliseconds on a real deployment), short
+/// enough that a deployment which never declares the queue is still told
+/// so while an operator is watching. Deliberately its own number rather
+/// than `RelayConfig`'s equal one: the two answer different questions and
+/// should be free to move apart.
+fn default_admit_grace_ms() -> u64 {
+    2000
 }
 
 /// The host-side residency policy (`doc/Hibernate.md` §9.1.2: the policy

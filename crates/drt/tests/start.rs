@@ -182,15 +182,94 @@ mod listener {
         assert!(response.contains("Connection: close\r\n"), "{response}");
     }
 
+    /// A program that boots before it declares its queue, which is the
+    /// ordinary shape: config, a schema migration, a control-plane read,
+    /// *then* the queues. `queue.wait({boot}, N)` is that work — one park
+    /// before the declare, which is all it takes.
+    const LATE_DECLARE: &str = "\
+        local boot = queue.declare('boot', {capacity = 1})\n\
+        queue.wait({boot}, 250)\n\
+        local q   = queue.declare('http_in',  {capacity = 8})\n\
+        local out = queue.declare('http_out', {capacity = 8, exported = true})\n\
+        while true do\n\
+          local id, req = queue.wait({q})\n\
+          queue.push(out, {conn = req.conn, status = 200, content_type = 'text/plain',\n\
+                           body = 'ok'})\n\
+        end\n";
+
+    /// Issue #11: a request arriving before the program declared its queue
+    /// was answered 503 on the spot, and `admit_timeout_ms` is the wait
+    /// that makes it wait instead.
+    ///
+    /// The window is small — tens of milliseconds on a real deployment —
+    /// and it lands on precisely the caller that cannot survive it: one
+    /// that handshakes once at startup, takes the refusal as the answer,
+    /// and never asks again. Two healthy services then never speak, with
+    /// nothing in either log to say why.
+    #[test]
+    fn a_request_waits_for_a_queue_the_program_has_not_declared_yet() {
+        let addr = served(
+            r#"{"scheme": "http", "address": "127.0.0.1:0"}"#,
+            LATE_DECLARE,
+        );
+        let began = std::time::Instant::now();
+        let response = roundtrip(addr, "GET / HTTP/1.1\r\nHost: t\r\n\r\n");
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+        // It waited for the declare rather than racing it, and the
+        // default grace (2s) is what let it.
+        assert!(
+            began.elapsed() >= Duration::from_millis(200),
+            "answered in {:?}, so it cannot have waited for the declare",
+            began.elapsed()
+        );
+    }
+
+    /// The wait is bounded, and what it ends with is the old answer: a
+    /// program that has declared nothing by then declares nothing.
     #[test]
     fn a_program_with_no_request_queue_answers_503() {
         let addr = served(
-            r#"{"scheme": "http", "address": "127.0.0.1:0"}"#,
+            r#"{"scheme": "http", "address": "127.0.0.1:0", "admit_timeout_ms": 150}"#,
             "local hold = queue.declare('hold', {capacity = 1})\nqueue.wait({hold})\n",
         );
+        let began = std::time::Instant::now();
         let response = roundtrip(addr, "GET / HTTP/1.1\r\nHost: t\r\n\r\n");
         assert!(response.starts_with("HTTP/1.1 503 "), "{response}");
         assert!(response.contains("declares no request queue"), "{response}");
+        assert!(began.elapsed() >= Duration::from_millis(150), "{response}");
+    }
+
+    /// Zero is the old behaviour exactly, for a deployment that would
+    /// rather its callers were told at once — and it is the setting the
+    /// bug was, so it stays reachable.
+    #[test]
+    fn a_grace_of_zero_refuses_before_the_program_can_declare() {
+        let addr = served(
+            r#"{"scheme": "http", "address": "127.0.0.1:0", "admit_timeout_ms": 0}"#,
+            LATE_DECLARE,
+        );
+        let began = std::time::Instant::now();
+        let response = roundtrip(addr, "GET / HTTP/1.1\r\nHost: t\r\n\r\n");
+        assert!(response.starts_with("HTTP/1.1 503 "), "{response}");
+        assert!(response.contains("declares no request queue"), "{response}");
+        assert!(began.elapsed() < Duration::from_millis(200), "{response}");
+    }
+
+    /// A connection that gives up first is dropped, not answered: its own
+    /// `conn_deadline_ms` is the shorter wait, so the 504 is the acceptor's
+    /// and the held request leaves without a second answer being written
+    /// at a socket nobody is reading.
+    #[test]
+    fn a_held_request_whose_connection_expires_is_dropped_not_answered() {
+        let addr = served(
+            r#"{"scheme": "http", "address": "127.0.0.1:0",
+                "conn_deadline_ms": 150, "admit_timeout_ms": 5000}"#,
+            "local hold = queue.declare('hold', {capacity = 1})\nqueue.wait({hold})\n",
+        );
+        let response = roundtrip(addr, "GET / HTTP/1.1\r\nHost: t\r\n\r\n");
+        assert!(response.starts_with("HTTP/1.1 504 "), "{response}");
+        // One response, not a 504 with a 503 written after it.
+        assert_eq!(response.matches("HTTP/1.1 ").count(), 1, "{response}");
     }
 
     /// The request-smuggling refusals, straight from the C: chunked is not
@@ -508,6 +587,27 @@ mod polled {
             response.contains("chunked bodies are not spoken here"),
             "{response}"
         );
+    }
+
+    /// Issue #11 through the acceptor wasip2 uses. The wait lives in the
+    /// drive loop, above both acceptors, and this is what says so.
+    #[test]
+    fn the_polled_acceptor_waits_for_a_late_declare_too() {
+        let addr = served(
+            "\
+             local boot = queue.declare('boot', {capacity = 1})\n\
+             queue.wait({boot}, 250)\n\
+             local q   = queue.declare('http_in',  {capacity = 8})\n\
+             local out = queue.declare('http_out', {capacity = 8, exported = true})\n\
+             while true do\n\
+               local id, req = queue.wait({q})\n\
+               queue.push(out, {conn = req.conn, status = 200,\n\
+                                content_type = 'text/plain', body = 'ok'})\n\
+             end\n",
+            r#"{"scheme": "http", "address": "127.0.0.1:0"}"#,
+        );
+        let response = roundtrip(addr, b"GET / HTTP/1.1\r\nHost: t\r\n\r\n");
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
     }
 
     #[test]

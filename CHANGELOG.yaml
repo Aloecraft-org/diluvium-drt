@@ -226,6 +226,18 @@ releases:
         than `is_absolute`, which `std` answers differently on
         `wasm32-unknown-unknown` -- an absolute path was refused
         natively and by a different rule in a page.
+    known_issues:
+      - |
+        **A request arriving before the program declares its queue is
+        answered 503 rather than held.** The window is the gap between
+        the bind and the program's `queue.declare` — tens of milliseconds
+        for a program that declares first, the whole of its boot for one
+        that does config or schema work first. It is silent, and it lands
+        on a caller that handshakes once at startup and never asks again.
+        Until the fix, declare every listener queue in the program's first
+        statements. Fixed after this candidate by `admit_timeout_ms` on
+        the listener (issue #11).
+
   - version: 0.5.0rc1
     tag: v0.5.0rc1
     date: 2026-09-03
@@ -483,6 +495,35 @@ releases:
         module. It can, so the fallback is gone rather than kept as a
         second engine path.
     fixed:
+      - |
+        **A request arriving before the program declared its queue was
+        refused rather than held.** A listener accepts from the moment
+        the process binds it, which is before the program has run a line,
+        so a request naming a queue the program has not declared yet was
+        answered `503 the program declares no request queue` on the spot
+        — a definitive answer to a question the deployment had not
+        finished hearing. Stepping the root before delivering covered a
+        program that declares before its first park and nothing else: one
+        that reads config or migrates a schema first parks with the queue
+        still absent.
+
+        The wait is now `admit_timeout_ms` on the listener, defaulting to
+        two seconds: a request waits for its queue to exist, and past the
+        grace the old refusal is still what it gets, because a program
+        that has declared nothing by then declares nothing. `0` restores
+        the immediate refusal exactly. The connection's own
+        `conn_deadline_ms` still bounds everything — a held request whose
+        caller has already given up is dropped rather than answered — so
+        this adds a wait, never a hang.
+
+        The window is tens of milliseconds and it lands on precisely the
+        caller that cannot survive it: one that handshakes **once** at
+        startup. Reported (issue #11) against prosody's `mod_rest`, which
+        probes its component once and settles on JSON or XML for the life
+        of the process, so a 503 in that window left two healthy services
+        that never exchanged a message, with nothing in either log to say
+        why. The failure is silent by construction, which is why this is
+        a fix and not a documented sharp edge.
       - |
         **`rest` read past the body it already had, and failed the call
         for how the peer hung up.** A server that closes the TCP

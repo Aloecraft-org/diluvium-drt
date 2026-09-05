@@ -35,6 +35,23 @@
 //!   connection may have hit its deadline first, and a wedged reply queue
 //!   would take every later response with it.
 //!
+//! ## A request may arrive before the program is ready for it
+//!
+//! The socket accepts from the moment the process binds it, which is
+//! before the program has run a line — so a request can arrive naming a
+//! queue the program has not declared yet. Refusing it there is a
+//! definitive answer to a question the deployment has not finished
+//! hearing, and issue #11 is what that costs: prosody's `mod_rest` probes
+//! its component **once** at startup and settles on a wire format for the
+//! life of the process, so a refusal in a 60 ms window leaves two healthy
+//! services that never exchange a message and neither log saying why.
+//!
+//! So the request waits, for [`ListenerRt::admit`] — but the waiting is
+//! `start`'s, not the acceptor's, because whether a queue exists is a
+//! question only the deployment can answer. What lives here is the
+//! duration and the connection's own deadline; `start::retry_held` is the
+//! wait itself.
+//!
 //! Two acceptors, one bridge (doc/Wasm.md M6). Natively a thread per
 //! connection over blocking sockets, with the ingress channel doubling as
 //! the drive loop's idle wait so a request never waits on a tick. On wasi
@@ -51,6 +68,8 @@
 //! - [`Acceptor`]: what the drive loop asks of a bound listener set.
 //! - [`Ingress`], [`Outcome`], [`ListenerRt`]: the bridge's types.
 //! - [`reply_token`], [`parse_reply`]: the reply side, pure.
+//! - [`ListenerRt::deadline`], [`ListenerRt::admit`]: the two waits a
+//!   request can spend — for the program, and for its queue to exist.
 //! - [`HDR_ROOM`], [`HDR_VALUE_MAX`], [`MAX_HEADERS`]: the C's bounds.
 //! - [`POLL_TICK`]: how often the polled acceptor looks while idle.
 
@@ -139,6 +158,7 @@ pub struct ListenerRt {
     max_body: usize,
     deadline: Duration,
     max_conns: usize,
+    admit: Duration,
 }
 
 impl ListenerRt {
@@ -165,6 +185,7 @@ impl ListenerRt {
             max_body: cfg.max_body,
             deadline: Duration::from_millis(cfg.conn_deadline_ms),
             max_conns: cfg.max_conns,
+            admit: Duration::from_millis(cfg.admit_timeout_ms),
         })
     }
 
@@ -172,6 +193,14 @@ impl ListenerRt {
     /// for the program, being written to.
     pub fn deadline(&self) -> Duration {
         self.deadline
+    }
+
+    /// How long a request waits for [`ListenerRt::queue`] to exist before
+    /// the host refuses on the program's behalf. The drive loop owns this
+    /// wait, not the acceptor: whether the queue exists is a question only
+    /// the deployment can answer.
+    pub fn admit(&self) -> Duration {
+        self.admit
     }
 }
 
