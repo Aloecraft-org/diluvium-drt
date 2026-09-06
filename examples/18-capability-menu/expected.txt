@@ -1,0 +1,21 @@
+$ drt run --config auditor.json
+  crypto       builtin  granted=false
+  fs           builtin  granted=false
+  time         builtin  granted=false
+  capabilities builtin  granted=true
+
+$ drt run --config worker.json
+  crypto       builtin  granted=true
+  fs           builtin  granted=true
+  time         builtin  granted=false
+  capabilities builtin  granted=true
+
+$ drt run --config ungranted.json
+drt run: [string "app.dlua"]:<line>: host.capabilities.list: denied: 'capabilities/list' is outside this instance's grants
+stack traceback:
+	[C]: in global 'error'
+	host:<line>: in function <host:<line>>
+	(...tail calls...)
+	[string "app.dlua"]:<line>: in main chunk
+	[C]: in ?
+exit 1

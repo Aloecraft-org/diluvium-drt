@@ -1081,6 +1081,29 @@ contract is `doc/Browser.md`; `doc/Platforms.md` is the matrix.
   WireGuard retransmitting handshakes for ninety seconds, which is
   sound and is not measured here. `doc/WireGuard.md` §2 says which
   step belongs to whom.
+- **Five examples for the five things that had none**, and a way for
+  the gate to skip what it cannot run. `18-capability-menu` shows
+  `capabilities/list` answering the same wiring three ways as `caps`
+  moves, including an auditor that reports a deployment's whole reach
+  while holding none of it. `19-a-tunnel-a-program-can-use` is the
+  relay end to end on one machine -- device, parked leg, `--local`
+  port, two requests through two legs -- which is the first
+  end-to-end relay demo in the set. `20-turn-relay` is the TURN
+  server beside the credential a program mints for it, and says
+  plainly that it does not prove relaying, because DRT ships no TURN
+  client and `crates/drt/tests/turn.rs` is where that is proven.
+  `21-wireguard` is the WireGuard block without a privilege -- the
+  keys and the refusals -- and `22-wireguard-interface` is the half
+  that creates the interface and asks the *kernel* what it made,
+  through `/sys`, rather than taking DRT's word for it.
+
+  That last one needs CAP_NET_ADMIN, which no ordinary CI job has, so
+  `run-all.sh` grows `needs_privilege` beside `needs_network` and
+  `needs_build`: named in the summary, never counted as a pass, and
+  run with `--privileged` by a user that has it. Without it the
+  example would have failed with "cannot create the interface", which
+  reads like a bug in the example rather than the absence of a
+  capability.
 
 ### Changed
 

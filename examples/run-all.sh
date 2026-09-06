@@ -33,6 +33,10 @@ needing a network is never counted as a pass — it is printed as
 options:
   --net        Also run examples whose meta.json sets "needs_network": true.
                Without this they are skipped, loudly.
+  --privileged Also run examples whose meta.json sets "needs_privilege".
+               These need something the process must be GIVEN -- creating a
+               tunnel interface needs CAP_NET_ADMIN -- so they cannot run in
+               an ordinary CI job and are skipped, loudly, without this.
   --list       List the examples that would run, and exit.
   --keep       Do not restore each example directory after its run.  Use
                this to inspect files an example wrote; without it, every
@@ -78,6 +82,8 @@ meta.json:
     "needs_build":   "full",              # skipped unless `drt buildinfo`
                                           # reports that profile.  `cargo
                                           # build` with no flags is SLIM.
+    "needs_privilege": "CAP_NET_ADMIN",   # skipped unless DRT_PRIVILEGED=1;
+                                          # the string names what is needed
     "needs_listener": true,               # binds a port: run here and under
                                           # wasmtime, skipped in the browser
     "normalise":     ["s|a|b|"]           # sed -e, applied to BOTH sides
@@ -190,7 +196,7 @@ j_skip() {
 parse_meta() {
     local file=$1 key
     meta_cmd=""; meta_net="false"; meta_name=""; meta_norm=(); j_err=""
-    meta_build=""
+    meta_build=""; meta_priv=""
 
     _j_s=$(cat -- "$file") || { j_err="cannot read it"; return 1; }
     _j_n=${#_j_s}; _j_i=0
@@ -214,6 +220,7 @@ parse_meta() {
             name)          j_string  || return 1; meta_name=$REPLY ;;
             needs_network) j_literal || return 1; meta_net=$REPLY ;;
             needs_build)   j_string  || return 1; meta_build=$REPLY ;;
+            needs_privilege) j_string || return 1; meta_priv=$REPLY ;;
             normalise|normalize)
                 [ "${_j_s:$_j_i:1}" = '[' ] || { j_err="\"$key\" is not an array"; return 1; }
                 _j_i=$((_j_i + 1))
@@ -272,6 +279,7 @@ restore() {    # restore <dir> <from-snapshot>
 # ---------------------------------------------------------------------------
 
 want_net=0
+want_priv=0
 do_list=0
 keep=0
 selectors=()
@@ -279,6 +287,7 @@ selectors=()
 while [ $# -gt 0 ]; do
     case $1 in
         --net)      want_net=1 ;;
+        --privileged) want_priv=1 ;;
         --list)     do_list=1 ;;
         --keep)     keep=1 ;;
         -h|--help)  usage; exit 0 ;;
@@ -410,6 +419,7 @@ n_fail=0
 failed=()
 skipped=()
 wrong_build=()
+unprivileged=()
 
 for name in ${examples[@]+"${examples[@]}"}; do
     dir=$HERE/$name
@@ -429,6 +439,17 @@ for name in ${examples[@]+"${examples[@]}"}; do
     if [ "$meta_net" = "true" ] && [ "$want_net" != 1 ]; then
         printf 'skipped  %-24s (needs network) — pass --net to run it\n' "$name"
         skipped[${#skipped[@]}]=$name
+        continue
+    fi
+
+    # An example that needs a privilege the process was not given cannot run
+    # either, and the failure it would produce -- "cannot create the
+    # interface 'drt0'" -- reads like a bug in the example rather than the
+    # absence of CAP_NET_ADMIN.  Named and never a pass, like the two above.
+    if [ -n "$meta_priv" ] && [ "$want_priv" != 1 ]; then
+        printf 'skipped  %-24s (needs %s) — pass --privileged to run it\n' \
+            "$name" "$meta_priv"
+        unprivileged[${#unprivileged[@]}]=$name
         continue
     fi
 
@@ -509,7 +530,7 @@ done
 # Summary
 # ---------------------------------------------------------------------------
 
-n_skip=$((${#skipped[@]} + ${#wrong_build[@]}))
+n_skip=$((${#skipped[@]} + ${#wrong_build[@]} + ${#unprivileged[@]}))
 n_bare=${#uncovered[@]}
 
 for n in ${uncovered[@]+"${uncovered[@]}"}; do
@@ -531,6 +552,10 @@ fi
 if [ ${#wrong_build[@]} -gt 0 ]; then
     printf 'skipped for needing a full build (NOT a pass): %s\n' "${wrong_build[*]}"
     printf 'rebuild with --all-features to include them.\n'
+fi
+if [ ${#unprivileged[@]} -gt 0 ]; then
+    printf 'skipped for needing a privilege (NOT a pass): %s\n' "${unprivileged[*]}"
+    printf 'run as a user that has it, with --privileged, to include them.\n'
 fi
 if [ "$n_bare" -gt 0 ]; then
     printf 'no meta.json, so unchecked: %s\n' "${uncovered[*]}"

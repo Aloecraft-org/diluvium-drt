@@ -221,6 +221,22 @@ messages consumed by a subsystem.
 version read an absent `endpoint` field as "forget where the peer is",
 which made one mistyped field name tear down a working tunnel in silence.
 
+### The examples
+
+`examples/21-wireguard` is everything that needs no privilege — `drt wg
+keygen`, the two mirrored peer configs, and the refusals a config earns.
+`examples/22-wireguard-interface` is the other half: it brings the interface
+up and reads `/sys` to show the kernel really made it with the MTU the config
+named, and that it goes away with the process. That one is marked
+`needs_privilege` and the gate skips it without `--privileged`, loudly,
+because a skip is never a pass.
+
+Neither carries traffic between two peers, and `22`'s README says why: two
+WireGuard interfaces on one host have local addresses at both ends, so the
+kernel routes between them directly and nothing enters the tunnel. The
+packet-crossing is proven in `crates/drt/tests/wireguard.rs` instead, where
+the IP side is a pair of channels and no privilege is needed at all.
+
 ### What would actually prove a punch
 
 Two hosts behind two different consumer NATs, a rendezvous between them,

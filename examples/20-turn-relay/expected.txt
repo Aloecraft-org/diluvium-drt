@@ -1,0 +1,12 @@
+$ drt turn --config turn.host.lua
+drt turn: listening on 127.0.0.1:18493, relaying via 127.0.0.1
+
+$ drt run --config app.host.lua
+username <expiry>:fp-7
+password <hmac-sha1 of the username, base64>
+expires  <now + ttl>
+uri      turn:127.0.0.1:18493?transport=udp
+
+$ drt turn --config open.host.lua
+drt turn: turn: the key is missing or shorter than 16 bytes (set one of key_file, key_env, key); a relay with nothing to verify against is an open relay, and is refused
+exit 1

@@ -1,0 +1,11 @@
+{
+  "name": "18-capability-menu",
+  "teaches": "capabilities/list answers what a deployment wired and what THIS instance may reach, in the C host's shape. It is gated on its own capability, so an auditor granted that and nothing else can report a swarm's whole reach while holding none of it.",
+  "cmd": "echo '$ drt run --config auditor.json'; drt run --config auditor.json; echo; echo '$ drt run --config worker.json'; drt run --config worker.json; echo; echo '$ drt run --config ungranted.json'; drt run --config ungranted.json; echo \"exit $?\"",
+  "needs_network": false,
+  "normalise": [
+    "s|app\\.dlua\"\\]:[0-9][0-9]*:|app.dlua\"]:<line>:|",
+    "s|host:[0-9][0-9]*:|host:<line>:|g",
+    "s|<host:[0-9][0-9]*>|<host:<line>>|g"
+  ]
+}

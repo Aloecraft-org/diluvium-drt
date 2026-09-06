@@ -1,0 +1,7 @@
+$ drt wg keygen
+<a key, 32 bytes base64>
+<a key, 32 bytes base64>
+
+$ drt wg --config wrong.host.lua
+drt wg: wireguard.address: '10.9.0.0/24' is the network address, not a host address on it. Give the address this device holds, like 10.9.0.1/24.
+exit 1

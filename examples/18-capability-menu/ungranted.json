@@ -1,0 +1,30 @@
+{
+  "_comment": "The same wiring again, with the question itself ungranted. The menu is gated like everything else: a program that may not ask does not get a quiet empty list, it gets a refusal.",
+  "program": {
+    "path": "app.dlua"
+  },
+  "_caps": "Two families, and not the question.",
+  "caps": [
+    {
+      "capability": "host:fs/read"
+    },
+    {
+      "capability": "host:crypto/*"
+    }
+  ],
+  "_connectors": "Three families wired. All three configs wire exactly these, so every difference in the output is `caps` and not the wiring.",
+  "connectors": {
+    "fs": {
+      "scope": {
+        "scope": ".",
+        "access": "read"
+      }
+    },
+    "crypto": {
+      "scope": {
+        "key": "capability-menu-example-key-000000"
+      }
+    },
+    "time": {}
+  }
+}

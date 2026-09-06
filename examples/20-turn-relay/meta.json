@@ -1,0 +1,13 @@
+{
+  "name": "20-turn-relay",
+  "teaches": "The TURN relay and the credential a program mints for it: coturn's use-auth-secret scheme, one shared secret in two blocks, and the guest never holding it. A relay with no secret is an open relay and refuses to bind.",
+  "cmd": "./demo.sh",
+  "needs_network": false,
+  "needs_build": "full",
+  "needs_listener": true,
+  "normalise": [
+    "s|^username [0-9][0-9]*:|username <expiry>:|",
+    "s|^password .*|password <hmac-sha1 of the username, base64>|",
+    "s|^expires  [0-9][0-9]*|expires  <now + ttl>|"
+  ]
+}

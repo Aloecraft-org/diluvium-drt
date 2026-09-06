@@ -1,0 +1,10 @@
+{
+  "name": "21-wireguard",
+  "teaches": "The wireguard block without a privilege: `drt wg keygen` is the pair, so setting up a peer never needs wireguard-tools, and a config that cannot work is refused before anything binds. 22-wireguard-interface is the half that creates the interface.",
+  "cmd": "./demo.sh",
+  "needs_network": false,
+  "needs_build": "full",
+  "normalise": [
+    "s|^[A-Za-z0-9+/]\\{43\\}=$|<a key, 32 bytes base64>|"
+  ]
+}

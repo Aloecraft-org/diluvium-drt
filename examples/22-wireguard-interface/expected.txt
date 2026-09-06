@@ -1,0 +1,9 @@
+$ drt wg --config fp.host.lua
+drt wg: drt-fp up on port 51820, mtu 1420, address 10.9.0.1/24, public key <this run's>
+drt wg: peer p6VqzzX91j0TRajLGT9Dlkn0TEvvk+j4m9E38LlXhSQ= allowed 10.9.0.2/32 via 127.0.0.1:51821
+
+$ cat /sys/class/net/drt-fp/mtu
+1420
+
+$ ls /sys/class/net/drt-fp   # after the process exits
+ls: cannot access '/sys/class/net/drt-fp': No such file or directory

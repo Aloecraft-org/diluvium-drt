@@ -1,0 +1,18 @@
+-- What can this instance reach?
+--
+--   drt run --config auditor.json
+--   drt run --config worker.json
+--   drt run --config ungranted.json
+--
+-- One call answers it. The same program runs under all three configs; every
+-- difference in the output is the deployment's doing.
+
+-- The menu is a list of tables, one per connector family this process wired,
+-- plus an entry for the menu itself. `granted` is asked the way a call asks:
+-- it is what THIS instance may reach, not what the process carries.
+--
+-- example: omits host.try — a program allowed to ask this is a program that
+-- should stop if the answer is refused, so the raising form is the right one
+for _, entry in ipairs(host.call("capabilities/list")) do
+    print(string.format("  %-12s %-8s granted=%s", entry.name, entry.kind, tostring(entry.granted)))
+end
