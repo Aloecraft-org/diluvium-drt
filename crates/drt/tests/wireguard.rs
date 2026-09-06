@@ -329,6 +329,7 @@ fn a_peer_with_no_endpoint_is_unreachable_until_the_endpoint_command_arrives() {
             reports,
             command_rx,
             None,
+            None,
         ));
         let packet = ipv4_udp(ip_a, ip_b, b"after the rendezvous");
         let inject = tun_a.inject.clone();
@@ -587,9 +588,20 @@ fn the_reply_queues_commands_are_read_as_written() {
         }
     );
 
+    // `remap` carries nothing at all: it asks the device about itself, so
+    // there is no peer to name and no field to get wrong.
+    assert_eq!(
+        command_from(&msg(vec![("command", "remap".into())])).unwrap(),
+        Command::Remap
+    );
+
     // And what is refused, each naming itself rather than being dropped.
     let err = command_from(&msg(vec![("command", "reboot".into())])).unwrap_err();
     assert!(err.contains("unknown command 'reboot'"), "{err}");
+    assert!(
+        err.contains("remap"),
+        "the vocabulary should list remap: {err}"
+    );
     assert!(err.contains("endpoint"), "{err}");
     let err = command_from(&msg(vec![("command", "endpoint".into())])).unwrap_err();
     assert!(err.contains("no `public_key`"), "{err}");
@@ -894,6 +906,7 @@ fn a_peer_the_config_never_named_can_be_added_and_then_reached() {
             reports,
             command_rx,
             None,
+            None,
         ));
 
         // First, the refusal: a command for a peer that is not there comes
@@ -1114,6 +1127,7 @@ fn wireguard_traffic_can_fall_back_through_a_turn_allocation() {
             reports,
             command_rx,
             allocation,
+            None,
         ));
 
         // The program read `punchable: false`, minted a credential, and
@@ -1361,6 +1375,7 @@ fn a_device_with_no_peers_still_reports_on_its_interval() {
             reports,
             command_rx,
             None,
+            None,
         ));
 
         let report = tokio::time::timeout(Duration::from_secs(5), report_rx.recv())
@@ -1418,4 +1433,213 @@ fn a_wireguard_block_may_name_no_peers_at_all() {
     let config = drt::config::load(Some(&dir.path().join("empty-ips.host.lua")))
         .expect("the loader takes it; validate is what refuses it");
     assert!(config.wireguard.unwrap().peers[0].allowed_ips.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Issue #17 §2: the machine that moves
+// ---------------------------------------------------------------------------
+
+/// The mechanism `remap` rests on: suspending gives the port back.
+///
+/// A mapping belongs to a port, so remeasuring one means binding the port
+/// the running device is holding. This is the test that says gotatun's
+/// `suspend` really releases the socket rather than merely stopping the
+/// state machine — and that `resume` takes it back and the tunnel still
+/// carries traffic afterwards. If gotatun ever changes that, `remap` is
+/// measuring a port nobody holds and this goes red first.
+#[test]
+fn suspending_gives_the_port_back_and_resuming_takes_it_again() {
+    rt().block_on(async {
+        let (secret_a, secret_b) = (
+            StaticSecret::from([0x66u8; KEY_LEN]),
+            StaticSecret::from([0x77u8; KEY_LEN]),
+        );
+        let (pub_a, pub_b) = (
+            gotatun::x25519::PublicKey::from(&secret_a),
+            gotatun::x25519::PublicKey::from(&secret_b),
+        );
+        let (port_a, port_b) = (free_port(), free_port());
+        let (ip_a, ip_b) = (Ipv4Addr::new(10, 9, 0, 1), Ipv4Addr::new(10, 9, 0, 2));
+
+        let peer_b = Peer::new(pub_b)
+            .with_endpoint(SocketAddr::from(([127, 0, 0, 1], port_b)))
+            .with_allowed_ip(ipnetwork::IpNetwork::from(std::net::IpAddr::V4(ip_b)));
+        let peer_a = Peer::new(pub_a)
+            .with_endpoint(SocketAddr::from(([127, 0, 0, 1], port_a)))
+            .with_allowed_ip(ipnetwork::IpNetwork::from(std::net::IpAddr::V4(ip_a)));
+        let (mut tun_a, tx_a, rx_a) = channel_tun();
+        let (mut tun_b, tx_b, rx_b) = channel_tun();
+        let a = device(secret_a, port_a, peer_b, tx_a, rx_a).await;
+        let _b = device(secret_b, port_b, peer_a, tx_b, rx_b).await;
+
+        // While the device is up, the port is not available: this is the
+        // whole reason `netcheck --udp-port` cannot do this job.
+        assert!(
+            UdpSocket::bind(("0.0.0.0", port_a)).is_err(),
+            "the running device should be holding port {port_a}"
+        );
+
+        a.suspend().await;
+        // And now it is -- but not the instant `suspend` returns. gotatun
+        // drops its I/O tasks' sockets after it, about 6 ms later on this
+        // machine, which is why `remap` waits rather than measuring
+        // straight away.
+        let freed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(sock) = UdpSocket::bind(("0.0.0.0", port_a)) {
+                    return sock;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("suspend released the port a measurement needs");
+        drop(freed);
+
+        a.resume().await.expect("the device came back up");
+        assert!(
+            UdpSocket::bind(("0.0.0.0", port_a)).is_err(),
+            "resume should have taken port {port_a} back"
+        );
+
+        // And the tunnel works after the round trip, in both directions.
+        // `resume` resets sessions deliberately, so this is a fresh
+        // handshake -- the cost `remap` pays and documents.
+        let to_b = ipv4_udp(ip_a, ip_b, b"after the remap");
+        let to_a = ipv4_udp(ip_b, ip_a, b"and back the other way");
+        let (inject_a, inject_b) = (tun_a.inject.clone(), tun_b.inject.clone());
+        let sender = tokio::spawn(async move {
+            for _ in 0..100 {
+                if inject_a.send(to_b.clone()).is_err() || inject_b.send(to_a.clone()).is_err() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        });
+        expect_payload(&mut tun_b, b"after the remap").await;
+        expect_payload(&mut tun_a, b"and back the other way").await;
+        sender.abort();
+    });
+}
+
+/// `remap` measures again and answers with the mapping.
+///
+/// The laptop case end to end, as far as one machine can take it: the
+/// device is up and holding its port, the program asks, and a fresh
+/// `wireguard_mapping` comes back — measured against two real STUN
+/// servers, through the port the device gave up and took again.
+#[test]
+fn remap_measures_again_while_the_device_is_running() {
+    rt().block_on(async {
+        let one = drt::stun::bind(&drt_config::StunConfig {
+            bind: "127.0.0.1:0".into(),
+            queue: "stun_in".into(),
+            report_ms: 10_000,
+        })
+        .await
+        .expect("the first stun server bound");
+        let two = drt::stun::bind(&drt_config::StunConfig {
+            bind: "127.0.0.1:0".into(),
+            queue: "stun_in".into(),
+            report_ms: 10_000,
+        })
+        .await
+        .expect("the second stun server bound");
+        let (addr_one, addr_two) = (one.local_addr(), two.local_addr());
+        one.spawn();
+        two.spawn();
+
+        let secret = StaticSecret::from([0x88u8; KEY_LEN]);
+        let other = gotatun::x25519::PublicKey::from(&StaticSecret::from([0x99u8; KEY_LEN]));
+        let port = free_port();
+        let peer = Peer::new(other)
+            .with_endpoint(SocketAddr::from(([127, 0, 0, 1], free_port())))
+            .with_allowed_ip(ipnetwork::IpNetwork::from(std::net::IpAddr::V4(
+                Ipv4Addr::new(10, 9, 0, 2),
+            )));
+        let (_tun, tx, rx) = channel_tun();
+        let a = device(secret, port, peer, tx, rx).await;
+
+        let mut config = scope(None);
+        config.listen_port = port;
+        config.stun = vec![addr_one.to_string(), addr_two.to_string()];
+
+        let (reports, mut report_rx) = mpsc::unbounded_channel();
+        let (commands, command_rx) = mpsc::unbounded_channel();
+        let driver = tokio::spawn(drt::wireguard::drive(
+            a,
+            Duration::from_secs(5),
+            reports,
+            command_rx,
+            None,
+            Some(config),
+        ));
+
+        commands.send(Command::Remap).unwrap();
+        let report = expect_report(&mut report_rx, Duration::from_secs(15)).await;
+        match report {
+            drt::wireguard::Report::Mapping(m) => {
+                // Loopback to loopback: no NAT in the path, so both
+                // servers see one port and this is the punchable end of
+                // the scale. `punchable` is the field a program branches
+                // on; the exact classification is netcheck's own business
+                // and netcheck's own tests.
+                assert!(m.punchable, "{m:?}");
+                let address = m.address.expect("a punchable mapping has an address");
+                assert!(address.ip().is_loopback(), "{address}");
+                // The evidence names both servers and the one port they
+                // agreed on -- which is the address just published.
+                assert!(m.why.contains(&addr_one.to_string()), "{}", m.why);
+                assert!(m.why.contains(&addr_two.to_string()), "{}", m.why);
+                assert_eq!(
+                    m.why.matches(&format!("saw :{}", address.port())).count(),
+                    2,
+                    "both servers should have seen the published port: {}",
+                    m.why
+                );
+            }
+            other => panic!("expected a mapping, got {other:?}"),
+        }
+        driver.abort();
+    });
+}
+
+/// A device with nothing to ask is told so, by name.
+///
+/// `remap` needs somewhere to measure against, and a block with no `stun`
+/// has nowhere. The refusal names the field rather than failing quietly,
+/// because a program waiting on a fresh mapping would otherwise wait
+/// forever for one that was never going to come.
+#[test]
+fn remap_without_stun_servers_says_which_field_is_missing() {
+    rt().block_on(async {
+        let secret = StaticSecret::from([0xaau8; KEY_LEN]);
+        let other = gotatun::x25519::PublicKey::from(&StaticSecret::from([0xbbu8; KEY_LEN]));
+        let peer = Peer::new(other).with_allowed_ip(ipnetwork::IpNetwork::from(
+            std::net::IpAddr::V4(Ipv4Addr::new(10, 9, 0, 2)),
+        ));
+        let (_tun, tx, rx) = channel_tun();
+        let a = device(secret, free_port(), peer, tx, rx).await;
+
+        let (reports, mut report_rx) = mpsc::unbounded_channel();
+        let (commands, command_rx) = mpsc::unbounded_channel();
+        let driver = tokio::spawn(drt::wireguard::drive(
+            a,
+            Duration::from_secs(5),
+            reports,
+            command_rx,
+            None,
+            Some(scope(None)),
+        ));
+
+        commands.send(Command::Remap).unwrap();
+        match expect_report(&mut report_rx, Duration::from_secs(5)).await {
+            drt::wireguard::Report::Refused { command, reason } => {
+                assert_eq!(command, "remap");
+                assert!(reason.contains("stun"), "{reason}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        driver.abort();
+    });
 }

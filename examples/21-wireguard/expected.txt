@@ -10,3 +10,8 @@ $ drt wg check --config hub-unroutable.host.lua
 drt wg check: peer p6VqzzX91j0TRajLGT9Dlkn0TEvvk+j4m9E38LlXhSQ= is allowed 192.168.1.0/24, and nothing will reach it: outside 10.9.0.1/24, the only prefix the interface routes. It will handshake and carry nothing. Add the route yourself (`ip route add 192.168.1.0/24 dev drt0`), or narrow allowed_ips.
 ok: drt0 on port 51820, 1 peer(s), 1 warning(s)
 exit 0
+
+$ drt wg check --config rendezvous.host.lua
+ok: drt-fp on port 51820, 0 peer(s)
+    no peers named: it will create drt-fp, give it 10.9.0.1/24, measure its mapping, and wait for `add` on wg_out
+exit 0

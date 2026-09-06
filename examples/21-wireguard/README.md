@@ -13,6 +13,7 @@ cd examples/21-wireguard
 drt wg keygen
 drt wg --config wrong.host.lua
 drt wg check --config hub-unroutable.host.lua
+drt wg check --config rendezvous.host.lua
 ```
 
 ## What you should see
@@ -32,6 +33,11 @@ it: outside 10.9.0.1/24, the only prefix the interface routes. It will
 handshake and carry nothing. Add the route yourself (`ip route add
 192.168.1.0/24 dev drt0`), or narrow allowed_ips.
 ok: drt0 on port 51820, 1 peer(s), 1 warning(s)
+
+$ drt wg check --config rendezvous.host.lua
+ok: drt-fp on port 51820, 0 peer(s)
+    no peers named: it will create drt-fp, give it 10.9.0.1/24, measure its
+    mapping, and wait for `add` on wg_out
 ```
 
 ## What it teaches
@@ -86,6 +92,15 @@ and the `ip route add` that fixes it. It is a **warning and exit 0**, not a
 refusal: the config is correct and works the moment the route exists, and a
 non-zero exit would fail a deploy over a note. Route management is not DRT's
 (`doc/WireGuard.md` §4).
+
+**A block with no peers is a config, not an oversight.**
+`rendezvous.host.lua` names none, because a device that can only talk to
+peers already written into its config is a device that never needed a
+rendezvous. It comes up knowing nobody, measures its own mapping against
+the two STUN servers, publishes what it finds, and waits to be told about a
+peer on `reply_queue`. `check` says exactly that back rather than leaving
+`0 peer(s)` to read like something was forgotten — and it says so loudly if
+there is no `reply_queue`, because then nothing can ever tell it.
 
 **`drt wg pubkey` is the half `keygen` cannot give you.** A key that already
 exists — in a secret store, in a `[Interface]` stanza — still has to be

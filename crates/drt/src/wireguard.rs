@@ -105,7 +105,7 @@ pub const KEY_LEN: usize = 32;
 
 /// The commands a program may put on the reply queue. Named here rather
 /// than at their match arms so the whole vocabulary is one list.
-pub const COMMAND: [&str; 5] = ["endpoint", "keepalive", "add", "remove", "relay"];
+pub const COMMAND: [&str; 6] = ["endpoint", "keepalive", "add", "remove", "relay", "remap"];
 
 /// The events a program is sent on the queue.
 pub const EVENT: [&str; 5] = [
@@ -134,6 +134,18 @@ pub const WATCH_MS: u64 = 250;
 /// queue and into this process. Past the cap the NEWEST are dropped: the
 /// report a program is blocked on is the mapping, which is sent first.
 pub const HELD_MAX: usize = 64;
+
+/// How long a `remap` waits for the suspended device to let its port go.
+///
+/// `Device::suspend` returns before its I/O tasks have dropped their
+/// sockets — about 6 ms on the machine this was measured on — so a
+/// measurement started the instant it returns fails with "address already
+/// in use" and reports nothing. Generous by two orders of magnitude
+/// against that, because the cost of waiting too long is a slow remap and
+/// the cost of not waiting long enough is a remap that always fails.
+/// Bounded, because a port that never comes back is a fact to report
+/// rather than a loop to spin in.
+pub const PORT_RELEASE_MS: u64 = 500;
 
 // ---------------------------------------------------------------------------
 // Keys and peers: the config, translated
@@ -220,7 +232,22 @@ pub fn validate(config: &WireguardConfig) -> Result<Vec<String>, String> {
     peers(config)?;
     // Returned rather than printed: `bind` validates too, so printing here
     // said everything twice on every start.
-    Ok(unroutable(config))
+    let mut warnings = unroutable(config);
+    // A device with no peers is the config a rendezvous starts from, and
+    // it is perfectly good -- but only if something can tell it about a
+    // peer later. With no `reply_queue` there is no way to, so this one
+    // comes up, measures, and waits for a command that can never arrive.
+    // Both halves are in the config, so it can be said here.
+    if config.peers.is_empty() && config.reply_queue.is_empty() {
+        warnings.push(
+            "this block names no peers and no `reply_queue`, so nothing can ever \
+             tell it about one: it will come up, measure its mapping, and wait. \
+             A block that learns its peers at run time needs a `reply_queue` to \
+             learn them on."
+                .into(),
+        );
+    }
+    Ok(warnings)
 }
 
 /// Which `allowed_ips` no packet will ever reach, and what to do about it.
@@ -669,6 +696,19 @@ pub enum Command {
     },
     /// Give the allocation up and send straight out the socket again.
     ClearRelay,
+    /// Measure this device's own mapping again, and say what it is now.
+    ///
+    /// For the machine that moves. `wireguard_endpoint` reports a *peer*
+    /// roaming; nothing reported us roaming, so a laptop that went from
+    /// home Wi-Fi to a phone hotspot had a published endpoint that was
+    /// wrong and no event saying so. This re-runs the same measurement
+    /// `start` runs and re-emits `wireguard_mapping`, so a program can
+    /// re-join its rendezvous with an address that is true.
+    ///
+    /// **It costs a rehandshake**, because measuring needs the port back:
+    /// see [`drive`]. That is the right trade for the case it exists for
+    /// — a device whose network just changed has dead sessions anyway.
+    Remap,
 }
 
 impl Command {
@@ -680,8 +720,8 @@ impl Command {
             | Command::Keepalive { public_key, .. }
             | Command::Add { public_key, .. }
             | Command::Remove { public_key } => *public_key,
-            // Not a peer's command: it changes this device's own path.
-            Command::Relay { .. } | Command::ClearRelay => [0u8; KEY_LEN],
+            // Not a peer's command: these change this device's own path.
+            Command::Relay { .. } | Command::ClearRelay | Command::Remap => [0u8; KEY_LEN],
         }
     }
 
@@ -767,6 +807,7 @@ pub async fn drive<T: DeviceTransports>(
     reports: mpsc::UnboundedSender<Report>,
     mut commands: mpsc::UnboundedReceiver<Command>,
     allocation: Option<Allocation>,
+    config: Option<WireguardConfig>,
 ) {
     let mut last: Vec<PeerReport> = Vec::new();
     // Whether an allocation is installed, as of the last look. The
@@ -783,6 +824,13 @@ pub async fn drive<T: DeviceTransports>(
         let asked = tokio::select! {
             command = commands.recv() => {
                 let Some(command) = command else { return };
+                // `remap` asks the device about itself, and it needs the
+                // port back to do it, so it happens here where the device
+                // can be suspended rather than in `apply`.
+                if matches!(command, Command::Remap) {
+                    let _ = reports.send(remap(&device, config.as_ref()).await);
+                    continue;
+                }
                 // A relay command is the device's own path, not a peer's, so
                 // it is carried out here where the allocation lives rather
                 // than in `apply`, which only knows about peers.
@@ -858,6 +906,117 @@ pub async fn drive<T: DeviceTransports>(
             next_snapshot = tokio::time::Instant::now() + every;
         }
         last = now;
+    }
+}
+
+/// depth: wait for the suspended device to actually let its port go.
+///
+/// Binds and drops, which asks the kernel the only question that matters:
+/// is this port free? `measure` then takes it microseconds later — the
+/// same hand-off `start` already makes between measuring a port and the
+/// device binding it, with the same caveat about it not being the same
+/// socket (`doc/WireGuard.md` §2).
+#[cfg(feature = "netcheck")]
+async fn port_released(port: u16, within_ms: u64) -> bool {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(within_ms);
+    loop {
+        if std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, port)).is_ok() {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// depth: give the port back, measure, take it again.
+///
+/// A mapping belongs to a port, and measuring one means binding that port
+/// to ask about it — which the running device is holding. gotatun's
+/// `suspend` stops the connection and releases the socket, and `resume`
+/// rebinds it, so the sequence is: suspend, measure the freed port,
+/// resume. The measurement is therefore exactly the one `start` takes,
+/// with exactly the same caveat: it is the probe's socket on that port,
+/// not the device's own (`doc/WireGuard.md` §2).
+///
+/// **It costs a rehandshake.** `resume` resets every peer's session on
+/// purpose, so the tunnel comes back with a fresh handshake rather than a
+/// stale one. That is the right trade for the case this exists for — a
+/// machine whose network just changed has dead sessions already — and the
+/// wrong one on a timer, which is why this is a command and not an
+/// interval.
+///
+/// The device is resumed whatever the measurement did. A measurement that
+/// failed is a fact to report; a device left suspended over one would be a
+/// tunnel lost because a STUN server was down.
+async fn remap<T: DeviceTransports>(
+    device: &Device<T>,
+    config: Option<&WireguardConfig>,
+) -> Report {
+    let refuse = |reason: String| Report::Refused {
+        command: "remap".into(),
+        reason,
+    };
+    let Some(config) = config else {
+        return refuse(
+            "this device was not started from a config, so there is nothing to \
+             measure against."
+                .into(),
+        );
+    };
+    if config.stun.is_empty() {
+        return refuse(
+            "wireguard.stun names no servers, so there is nothing to ask what \
+             this device's mapping is. Give two, on separate addresses."
+                .into(),
+        );
+    }
+    #[cfg(not(feature = "netcheck"))]
+    {
+        let _ = device;
+        refuse(
+            "this build carries no `netcheck`, which is what measures a mapping. \
+             A build with `wireguard` and without it can still be told where a \
+             peer is; it cannot say where it is itself."
+                .into(),
+        )
+    }
+    #[cfg(feature = "netcheck")]
+    {
+        device.suspend().await;
+        // Suspending is not the same as having let go: see
+        // [`PORT_RELEASE_MS`]. Measuring before the socket is actually
+        // gone fails with "address already in use" every time, which is
+        // how this was found.
+        let released = port_released(config.listen_port, PORT_RELEASE_MS).await;
+        let measured = if released {
+            measure(config).await
+        } else {
+            Err(format!(
+                "the device did not let go of port {} within {PORT_RELEASE_MS} ms, \
+                 so there was nothing to measure on",
+                config.listen_port
+            ))
+        };
+        let resumed = device.resume().await;
+        // Resume first in the reporting too: a device that did not come
+        // back is a worse fact than a measurement that did not land, and
+        // it is the one the program has to act on.
+        if let Err(e) = resumed {
+            return refuse(format!(
+                "the device did not come back up after remeasuring, so this \
+                 tunnel is down: {e}. The mapping was {}.",
+                match &measured {
+                    Ok(m) => format!("measured as {}", m.kind),
+                    Err(e) => format!("not measured either: {e}"),
+                }
+            ));
+        }
+        match measured {
+            Ok(mapping) => Report::Mapping(mapping),
+            Err(e) => refuse(format!("could not measure the mapping: {e}")),
+        }
     }
 }
 
@@ -1074,6 +1233,10 @@ async fn apply<T: DeviceTransports>(device: &Device<T>, command: &Command) -> Re
             "relay",
             "a relay command reached the peer handler; this is a bug".into(),
         ),
+        Command::Remap => refuse(
+            "remap",
+            "a remap command reached the peer handler; this is a bug".into(),
+        ),
     }
 }
 
@@ -1171,8 +1334,18 @@ impl WireguardBridge {
         let (device, allocation) = rt.block_on(bind(config))?;
         let (commands, command_rx) = mpsc::unbounded_channel();
         let every = Duration::from_millis(config.report_ms.max(1));
+        let remap_config = config.clone();
         let runtime = std::thread::spawn(move || {
-            rt.block_on(drive(device, every, report_tx, command_rx, allocation));
+            rt.block_on(drive(
+                device,
+                every,
+                report_tx,
+                command_rx,
+                allocation,
+                // The config is kept so `remap` can measure against it
+                // later: the servers to ask and the port to ask about.
+                Some(remap_config),
+            ));
             // Leaked, not dropped. `drive` RETURNS when the bridge is
             // dropped, so unlike `stun`'s server this thread reaches the
             // end of its runtime's life -- straight into FM-1
@@ -1687,9 +1860,14 @@ pub fn command_from(value: &rmpv::Value) -> Result<Command, String> {
             COMMAND.join(", ")
         ));
     }
-    // `relay` is the one command that names no peer -- it changes how this
-    // device sends to all of them -- so it is read before the key every
-    // other command requires.
+    // `remap` names no peer and carries no field at all: it asks this
+    // device about itself.
+    if name == "remap" {
+        return Ok(Command::Remap);
+    }
+    // `relay` is the other command that names no peer -- it changes how
+    // this device sends to all of them -- so it is read before the key
+    // every other command requires.
     if name == "relay" {
         if field("clear").and_then(|v| v.as_bool()).unwrap_or(false) {
             return Ok(Command::ClearRelay);

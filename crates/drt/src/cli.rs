@@ -845,6 +845,28 @@ pub fn main(cli: Cli) -> ExitCode {
                             format!(", {} warning(s)", warnings.len())
                         }
                     );
+                    // A config with no peers is the one a rendezvous
+                    // writes, so `ok: ... 0 peer(s)` reads like a config
+                    // that forgot something. Say what it will actually do
+                    // instead of leaving the operator to guess.
+                    if wg_config.peers.is_empty() {
+                        println!(
+                            "    no peers named: it will create {}, {} measure its \
+                             mapping, and wait for `add` on {}",
+                            wg_config.interface,
+                            match &wg_config.address {
+                                Some(cidr) => format!("give it {cidr},"),
+                                None => "which needs an address before it carries \
+                                         anything,"
+                                    .into(),
+                            },
+                            if wg_config.reply_queue.is_empty() {
+                                "a reply_queue it does not have"
+                            } else {
+                                &wg_config.reply_queue
+                            }
+                        );
+                    }
                     ExitCode::SUCCESS
                 }
                 Err(e) => {

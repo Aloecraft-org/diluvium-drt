@@ -242,6 +242,34 @@ messages consumed by a subsystem.
 version read an absent `endpoint` field as "forget where the peer is",
 which made one mistyped field name tear down a working tunnel in silence.
 
+**`remap` is how a machine that moved says so.** `wireguard_endpoint`
+reports a *peer* roaming; nothing reported us roaming, so a laptop that
+went from home Wi-Fi to a phone hotspot had a published endpoint that was
+wrong and no event saying so (issue #17 §2).
+
+```lua
+-- The network changed under us. Ask again, and re-join the room.
+queue.push(wg_out, { command = "remap" })
+if msg.event == "wireguard_mapping" then rendezvous_publish(msg.address) end
+```
+
+It re-runs the measurement `start` runs and re-emits `wireguard_mapping`,
+with the same caveat about the probe's socket. **It costs a rehandshake**,
+and it has to: a mapping belongs to a port, measuring one means binding
+the port the running device is holding, so the sequence is suspend,
+measure, resume — and `resume` resets every peer's session on purpose. For
+the case it exists for that is free, because a device whose network just
+changed has dead sessions already. It is a command and not an interval for
+the same reason.
+
+One measured detail, in case it ever moves: `suspend` returns *before*
+gotatun's I/O tasks drop their sockets — about 6 ms — so `remap` waits for
+the port to actually come free (`PORT_RELEASE_MS`) rather than measuring
+into "address already in use".
+`suspending_gives_the_port_back_and_resuming_takes_it_again` is the test
+that pins that behaviour, and it is the one that goes red first if gotatun
+changes it.
+
 **The queue is safe to declare late, and `report_ms` is a clock.** Both
 were found the hard way (issue #15), by a rendezvous whose first line
 after `queue.declare` was a wait for `wireguard_mapping`:
@@ -302,6 +330,14 @@ if msg.event == "wireguard_relay" then rendezvous_publish(msg.address) end
 
 `{command = "relay", clear = true}` gives the allocation up again, so a
 deployment that later gets a direct path can stop paying for the relay.
+
+**A wrong or expired credential is refused with the wrong code**, and it
+is not DRT's to fix: the `turn` crate answers 400 where RFC 8489 §9.2.4
+says 401 with a fresh NONCE, so a browser's ICE agent — which retries a
+401 and gives up on a 400 — cannot recover from a credential that lapsed.
+`doc/TURN-401-Upstream.md` is the brief, and
+`a_forged_credential_is_refused_with_the_wrong_code_for_now` is the
+tripwire that goes red when upstream fixes it.
 
 **The allocation does not outlive the credential, and nothing warns you.**
 The `relay` command carries one username and password, and the refresh

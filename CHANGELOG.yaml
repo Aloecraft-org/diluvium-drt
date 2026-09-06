@@ -1195,6 +1195,45 @@ releases:
         says which step belongs to whom and which of them is measured.
 
       - |
+        **`remap`: the command for a machine that moves.** `start` measures
+        this device's NAT mapping once, before it binds, and nothing
+        measured it again -- so a laptop that went from home Wi-Fi to a
+        phone hotspot had an endpoint published to its rendezvous that was
+        wrong, and no event saying so. `wireguard_endpoint` reports a
+        *peer* roaming; this is the half that reports us. A program pushes
+        `{command = "remap"}` and gets a fresh `wireguard_mapping`, with
+        `punchable` re-decided, so it can re-join the room with an address
+        that is true (issue #17 §2).
+
+        It costs a rehandshake and cannot not: a mapping belongs to a port,
+        measuring one means binding the port the running device holds, so
+        the sequence is suspend, measure, resume -- and gotatun's `resume`
+        resets every peer's session on purpose. For the case this exists
+        for that is free, because a device whose network just changed has
+        dead sessions already, which is also why this is a command and not
+        an interval.
+
+        One measured thing came out of building it, and it is pinned by a
+        test rather than left as folklore: gotatun's `suspend` returns
+        **before** its I/O tasks drop their sockets -- about 6 ms -- so a
+        measurement started the instant it returns fails with "address
+        already in use" every time. `remap` waits for the port to actually
+        come free (`PORT_RELEASE_MS`), and
+        `suspending_gives_the_port_back_and_resuming_takes_it_again` is
+        what goes red first if gotatun ever changes that.
+      - |
+        **`drt wg check` reads a block that names no peers as a config
+        rather than an oversight**, which is what a rendezvous writes
+        (issue #17 §6). It says what will actually happen at startup --
+        the interface it creates, the address it gives it, that it will
+        measure its mapping and then wait for `add` on the reply queue --
+        instead of leaving `0 peer(s)` to look like something was
+        forgotten. And it warns when such a block names no `reply_queue`
+        at all, because then nothing can ever tell it about a peer: it
+        comes up, measures, and waits for a command that cannot arrive.
+        `examples/21-wireguard` gained `rendezvous.host.lua`, which is
+        that config.
+      - |
         **Five examples for the five things that had none**, and a way for
         the gate to skip what it cannot run. `18-capability-menu` shows
         `capabilities/list` answering the same wiring three ways as `caps`
@@ -1468,6 +1507,28 @@ releases:
         `peers`, `stun`, `allowed_ips`, `caps` and `headers` -- the
         reported case was `peers`, the other four were the same trap in
         the same file.
+      - |
+        **Not fixed, and not ours: `drt turn` answers 400 to a wrong or
+        expired credential where RFC 8489 §9.2.4 says 401 with a fresh
+        NONCE.** Reported as issue #17's first nit and confirmed twice
+        here -- against the crate's own client, which reports
+        `error 400`, and in its source, where
+        `authenticate_request` builds one `bad_request_msg` and sends it
+        down both the unknown-user and the failed-integrity path
+        (`turn` 0.17.2, the newest release). The challenge itself is
+        right, so a server looks correct until a credential is actually
+        wrong.
+
+        It matters because 401 means *authenticate again* and 400 means
+        *your request is malformed*: a browser's ICE agent retries the
+        first and gives up on the second, so a credential that lapses
+        mid-session takes the allocation with it. DRT cannot change it
+        from outside the crate -- the only hook is the `AuthHandler`, and
+        every `Err` it returns becomes the same 400.
+        `doc/TURN-401-Upstream.md` is the brief for filing it, and
+        `a_forged_credential_is_refused_with_the_wrong_code_for_now`
+        asserts today's 400 on purpose: that test failing is the signal
+        that upstream has fixed it.
 
   - version: 0.4.2
     tag: v0.4.2

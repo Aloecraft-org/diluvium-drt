@@ -20,3 +20,8 @@ echo
 echo '$ drt wg check --config hub-unroutable.host.lua'
 "$DRT" wg check --config hub-unroutable.host.lua
 echo "exit $?"
+
+echo
+echo '$ drt wg check --config rendezvous.host.lua'
+"$DRT" wg check --config rendezvous.host.lua
+echo "exit $?"
