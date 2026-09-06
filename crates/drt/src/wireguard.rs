@@ -843,6 +843,17 @@ pub async fn drive<T: DeviceTransports>(
                             let _ = reports.send(refusal);
                         }
                     }
+                    // Take the new state as the baseline before going
+                    // round again. Without this, a `clear` the deployment
+                    // ASKED for was reported as a failure on the very next
+                    // tick: this branch skips the check below, which then
+                    // found `relaying` still true, the allocation gone,
+                    // and nothing marking the pass as asked -- so a
+                    // program that deliberately stopped relaying was told
+                    // its relay had died.
+                    if let Some(handle) = &allocation {
+                        relaying = handle.borrow().is_some();
+                    }
                     continue;
                 }
                 if let Err(refusal) = apply(&device, &command).await {

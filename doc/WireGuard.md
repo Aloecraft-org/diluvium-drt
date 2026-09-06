@@ -156,6 +156,19 @@ key (a device anybody can be), and neither announces itself at run time —
    either uses it. A router's default-drop is what makes port preservation
    hold. This is a property of the network in the path, not something DRT
    can arrange.
+
+   A second conntrack finding, from a later run of the same lab, is worth
+   knowing because it looks like a DRT bug and is not: **a conntrack entry
+   outlives a change to the rule that created it.** A NAT switched to
+   symmetric keeps answering the *old* port-preserving mapping for the
+   flows it was already carrying — so a device that had measured through
+   that NAT reads `punchable` and believes it, correctly, about a NAT that
+   no longer behaves that way. In a lab it means rebuilding before the
+   symmetric scene. In the field it is a router that changes behaviour
+   under load, and it is the clearest argument for `remap` being a command
+   a program can issue on evidence rather than a measurement taken once at
+   startup: the mapping is not a property of the network, it is a property
+   of the network *and* the flows already through it.
 5. **Keepalives hold the mapping open.** A punched mapping with no traffic
    closes in tens of seconds. `keepalive = 25` — settable in the config
    and in the same command that sets the endpoint.
@@ -269,6 +282,22 @@ into "address already in use".
 `suspending_gives_the_port_back_and_resuming_takes_it_again` is the test
 that pins that behaviour, and it is the one that goes red first if gotatun
 changes it.
+
+**Two things that fall out of that window**, both found by driving this
+against real NATs (issue #17):
+
+- **A device mid-`remap` holds no socket at all**, for `PORT_RELEASE_MS`
+  plus the measurement. Anything that finds a deployment *by its port* —
+  `fuser -k`, a health check that probes `listen_port`, a supervisor that
+  restarts what is not listening — will miss it and may conclude it is
+  gone. Stop and check a deployment by pid.
+- **A relayed device stays relayed across a `remap`.** The allocation
+  lives on the transport factory, not on the socket pair `suspend` drops,
+  so `resume` hands the rebuilt pair the same one. `remap` while relaying
+  therefore measures the *direct* path, which is exactly what makes it
+  useful there: it is how a program learns the relay is no longer needed.
+  Held by the last act of
+  `wireguard_traffic_can_fall_back_through_a_turn_allocation`.
 
 **The queue is safe to declare late, and `report_ms` is a clock.** Both
 were found the hard way (issue #15), by a rendezvous whose first line

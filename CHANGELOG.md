@@ -116,6 +116,13 @@ an afternoon.
   whose direct socket was fine all along. It drops the allocation,
   keeps reading the socket, and the drive loop tells the deployment
   it is sending direct again.
+
+  The allocation also survives a `remap`, which is not obvious and is
+  therefore measured: it lives on the transport factory rather than
+  on the socket pair `suspend` drops, so `resume` hands the rebuilt
+  pair the same one. Remeasuring while relaying is how a program
+  learns the relay is no longer needed, so losing it there would have
+  defeated the point.
 - **`remap`, for the machine that moves.** The mapping was measured
   once, before the bind, and nothing measured it again -- so a
   laptop that went from home Wi-Fi to a phone hotspot had an
@@ -156,6 +163,22 @@ an afternoon.
 
 ### Fixed
 
+- **Giving up a TURN allocation on purpose was reported as the relay
+  having failed.** `{command = "relay", clear = true}` was answered
+  correctly -- and then, on the very next tick, with
+  `wireguard_error` saying "the turn allocation failed and was
+  dropped". The relay branch of the drive loop returns early without
+  taking the new state as its baseline, so the pass after it found
+  the allocation gone, nothing marking that pass as asked, and
+  reported a loss nobody had suffered. A rendezvous acting on it
+  would go looking for a fault that never happened, or re-allocate a
+  relay its deployment had deliberately stopped paying for.
+
+  Found while closing the one case issue #17's lab did not drive --
+  `remap` on a device that is currently relaying, which works and is
+  now held by a test. The false alarm turned up because that test
+  panics on any refusal rather than skipping what it is not looking
+  for, which the older assertions did.
 - **The block dropped the one report a rendezvous cannot start
   without, and a device with no peers never spoke at all.** Three
   fixes from issue #15, all found by running the block against the
@@ -1363,8 +1386,13 @@ contract is `doc/Browser.md`; `doc/Platforms.md` is the matrix.
   tunnel with it -- gotatun ends its receive task for good on any
   error from it, so the transport drops the allocation and keeps
   reading the socket instead of propagating, and the deployment is
-  told it is sending direct again. Proven end to end against DRT's own
-  `drt turn` server, on loopback and unprivileged
+  told it is sending direct again. The allocation also survives a
+  `remap`: it lives on the transport factory rather than on the socket
+  pair `suspend` drops, so `resume` hands the rebuilt pair the same
+  one, and remeasuring while relaying -- which is how a program learns
+  the relay is no longer needed -- does not cost the relay. Proven end
+  to end against DRT's own `drt turn` server, on loopback and
+  unprivileged
   (`wireguard_traffic_can_fall_back_through_a_turn_allocation`).
 - **A peer whose `allowed_ips` no route will reach is named at
   startup.** DRT gives the interface an address and the kernel derives
@@ -1544,6 +1572,18 @@ contract is `doc/Browser.md`; `doc/Platforms.md` is the matrix.
   than `is_absolute`, which `std` answers differently on
   `wasm32-unknown-unknown` -- an absolute path was refused
   natively and by a different rule in a page.
+- **Giving up a TURN allocation on purpose was reported as the relay
+  having failed.** `{command = "relay", clear = true}` was answered
+  correctly, and then the very next tick sent `wireguard_error`
+  saying "the turn allocation failed and was dropped". The relay
+  branch of the drive loop returns early without taking the new state
+  as its baseline, so the pass after it found the allocation gone,
+  nothing marking that pass as asked, and reported a loss nobody had
+  suffered -- which would send a rendezvous looking for a fault that
+  never happened, or make it re-allocate a relay its deployment had
+  deliberately stopped paying for. Found while measuring `remap` on a
+  relaying device, by a test that panics on any refusal rather than
+  skipping what it is not looking for.
 - **The `wireguard` block dropped the one report a rendezvous
   cannot start without, and a device with no peers never spoke at
   all.** Three fixes from issue #15, all of them found by running

@@ -1119,6 +1119,31 @@ fn wireguard_traffic_can_fall_back_through_a_turn_allocation() {
         )
         .await;
 
+        // Two STUN servers, so the device can be asked to measure itself
+        // again later while it is relaying.
+        let stun_one = drt::stun::bind(&drt_config::StunConfig {
+            bind: "127.0.0.1:0".into(),
+            queue: "stun_in".into(),
+            report_ms: 10_000,
+        })
+        .await
+        .expect("the first stun server bound");
+        let stun_two = drt::stun::bind(&drt_config::StunConfig {
+            bind: "127.0.0.1:0".into(),
+            queue: "stun_in".into(),
+            report_ms: 10_000,
+        })
+        .await
+        .expect("the second stun server bound");
+        let mut config = scope(None);
+        config.listen_port = port_a;
+        config.stun = vec![
+            stun_one.local_addr().to_string(),
+            stun_two.local_addr().to_string(),
+        ];
+        stun_one.spawn();
+        stun_two.spawn();
+
         let (reports, mut report_rx) = mpsc::unbounded_channel();
         let (commands, command_rx) = mpsc::unbounded_channel();
         let driver = tokio::spawn(drt::wireguard::drive(
@@ -1127,7 +1152,7 @@ fn wireguard_traffic_can_fall_back_through_a_turn_allocation() {
             reports,
             command_rx,
             allocation,
-            None,
+            Some(config),
         ));
 
         // The program read `punchable: false`, minted a credential, and
@@ -1194,6 +1219,77 @@ fn wireguard_traffic_can_fall_back_through_a_turn_allocation() {
 
         sender.abort();
 
+        // **A remeasurement must not cost the allocation.** `remap`
+        // suspends the device, and suspending drops the transport's sender
+        // and receiver; `resume` builds new ones. So the allocation has to
+        // be reachable from the factory rather than owned by the pair it
+        // was installed into -- which it is, because `Transport` holds the
+        // watch and hands a fresh handle to every `bind`. Measured rather
+        // than reasoned, because "it should survive" is exactly the
+        // reasoning that missed `suspend` returning before the port was
+        // actually free. Issue #17's lab lists this as the one case it did
+        // not drive.
+        commands.send(drt::wireguard::Command::Remap).unwrap();
+        loop {
+            match tokio::time::timeout(Duration::from_secs(15), report_rx.recv())
+                .await
+                .expect("the remap was answered")
+                .expect("the report channel stayed open")
+            {
+                // The mapping measured is the DIRECT socket's, not the
+                // allocation's, and that is the point of asking while
+                // relayed: it is what says whether the relay is still
+                // needed.
+                drt::wireguard::Report::Mapping(m) => {
+                    assert!(m.punchable, "{m:?}");
+                    break;
+                }
+                drt::wireguard::Report::Refused { command, reason } => {
+                    panic!("{command} refused: {reason}")
+                }
+                _ => continue,
+            }
+        }
+
+        // And it still relays afterwards, on the same allocation and the
+        // same relayed address B was told about. `resume` reset the
+        // sessions, so this is a fresh handshake carried by the relay.
+        let after = ipv4_udp(ip_a, ip_b, b"still relayed after the remap");
+        let inject = tun_a.inject.clone();
+        let sender = tokio::spawn(async move {
+            for _ in 0..100 {
+                if inject.send(after.clone()).is_err() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        });
+        expect_payload(&mut tun_b, b"still relayed after the remap").await;
+
+        sender.abort();
+
+        // And it is the RELAY that carried it, which the payload alone does
+        // not prove: WireGuard roams a peer to wherever its last
+        // authenticated packet came from, so if the allocation had been
+        // lost, A's packets would arrive direct from `port_a`, B would
+        // roam to that, and the assertion above would pass anyway. B's own
+        // idea of where A is, is the thing that can tell the two apart.
+        let seen = b
+            .read(async |d| {
+                d.peers()
+                    .await
+                    .into_iter()
+                    .find(|p| p.peer.public_key == pub_a)
+                    .and_then(|p| p.peer.endpoint)
+            })
+            .await;
+        assert_eq!(
+            seen,
+            Some(relayed),
+            "B should still be hearing A through the allocation, not direct \
+             from :{port_a}"
+        );
+
         // **Losing the relay must not lose the tunnel.** gotatun's buffered
         // receive loop ends its task for good on any error from
         // `recv_many_from`, so a transport that propagated a failed
@@ -1210,7 +1306,24 @@ fn wireguard_traffic_can_fall_back_through_a_turn_allocation() {
                 .expect("the report channel stayed open")
             {
                 drt::wireguard::Report::Relaying { address: None, .. } => break,
+                // A clear the deployment ASKED for is not a failure, and
+                // saying so would send a rendezvous looking for a fault
+                // that never happened. The relay branch used to `continue`
+                // without taking the new state as its baseline, so the
+                // next tick found the allocation gone, nothing marking the
+                // pass as asked, and reported it as a loss.
+                drt::wireguard::Report::Refused { command, reason } => {
+                    panic!("a deliberate clear was reported as {command} failing: {reason}")
+                }
                 _ => continue,
+            }
+        }
+        // And nothing arrives after it either: the tick following the
+        // clear is the one that used to carry the false alarm.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        while let Ok(report) = report_rx.try_recv() {
+            if let drt::wireguard::Report::Refused { command, reason } = report {
+                panic!("a tick after a deliberate clear reported {command} failing: {reason}");
             }
         }
 
