@@ -8,8 +8,8 @@ on.
 
 - [`c-swarm_bench-baseline.json`](c-swarm_bench-baseline.json) — `make
   swarm_bench ARGS="--json --seed 7"` at `--scale 1`, from
-  `aloecraft-org/diluvium` at `a9a6258`, gcc 13.3 `-O2`.
-  Machine: 4-vCPU Intel Xeon @ 2.80 GHz, Linux container.
+  `aloecraft-org/diluvium` at `850e00d7` (v5.5.1_build13), gcc 13.3.0 `-O2`.
+  Machine: 4-vCPU Intel(R) Xeon(R) Processor @ 2.10GHz, Linux container.
 
 - [`drt-bench-run.json`](drt-bench-run.json) — `cargo run --release -p
   drt-bench -- --json --seed 7 --repeat 5`, same machine, same day.
