@@ -11,9 +11,10 @@ where it stands; a correction is kept in place rather than quietly folded
 in. An ask that shipped with a measurement gets a measurement back.
 
 **Short version.** The four near-term asks that are `netcheck`'s and
-`buildinfo`'s (§1, §2, §3, §7) landed in rc4, with tests. TURN (§4) and
-the punch inside the tunnel (§8) are open, and the second is open in the
-way its own text says: a spec to follow, not a dependency. One thing the
+`buildinfo`'s (§1, §2, §3, §7) landed in rc4, with tests. TURN (§4)
+landed after it, the day issue #12 decided the credential shape. The
+punch inside the tunnel (§8) is open in the way its own text says: a
+spec to follow, not a dependency. One thing the
 asks did not know to ask for is in rc4 anyway and matters more to a
 fetchpoint than any of them: `rest` stalled every instance for the
 length of a call in every candidate before it.
@@ -90,17 +91,25 @@ a scope for it, which it does not yet.
 
 ## 2. Open
 
-### §4 TURN — `open`, and two repositories' work
+### §4 TURN — `landed`, once issue #12 decided the shape
 
-Confirmed as described: the server is compiled in and reachable from
-nothing, and `ephemeral_credentials()` puts the expiry where a principal
-should go. The order you gave is the right one — the credential shape
-first, in ego-transport, then a `turn` block beside `stun` here — because
-a `turn` block that binds a server nobody's credentials fit is a server
-that refuses everyone politely. Not in rc4: the first half is not this
-repository's, and the second without it is not useful. Sized at a day
-each once the credential shape is agreed, and the agreement is the part
-that needs you.
+Confirmed as described, and then decided rather than deferred: issue #12
+fixed the credential -- an optional principal, coturn's
+`<expiry>:<principal>`, HMAC-SHA1 under the shared secret, opaque to the
+server -- and ego-transport at the pin already verified both forms
+(`ephemeral_credentials_for`, `credential_principal`,
+`revoke_principal`), so the half that was this repository's could land
+the same day: a `turn` block beside `stun`, `drt turn` in the foreground,
+and inside `drt start` the counters on a timer and **every allocation's
+closing byte count with its principal, as it happens** -- the
+`turn_closed` message, which is the per-principal close accounting the
+later-tracked list asked for. The secret is `connectors.crypto.turn`'s
+three knobs, because it is the same secret, and a block with none refuses
+to bind. `crates/drt/tests/turn.rs` allocates with webrtc-rs's client
+rather than ours, and with the connector's own credential against the
+deployment's own relay, which is the two halves measured against each
+other. What `api.host.lua` gains is the line the issue wrote: the same
+secret under `turn`. The bitrate cap stays open.
 
 ### §8 `drt tunnel --direct` — `open`, as filed
 
@@ -123,8 +132,8 @@ tunnel would need closed first anyway.
 ### Later, tracked
 
 - **`--json` schema version** — landed with §1.
-- **Per-principal close accounting on TURN**, **a bitrate cap** — open,
-  and both live behind §4.
+- **Per-principal close accounting on TURN** — landed with §4, as the
+  `turn_closed` message. **A bitrate cap** — open, behind it.
 
 ---
 

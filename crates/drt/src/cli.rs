@@ -69,6 +69,7 @@ const PROFILE_FULL: &[&str] = &[
     "runtime",
     "stun",
     "tunnel",
+    "turn",
 ];
 
 #[derive(Parser)]
@@ -139,6 +140,17 @@ pub enum Command {
     /// punching can work at all.
     #[cfg(feature = "stun")]
     Stun,
+    /// The TURN relay: carry traffic for the peers `stun` says cannot
+    /// reach each other directly -- the last rung of the ladder, and the
+    /// one that costs bandwidth. Reads the `turn` block of the config;
+    /// runs foreground. Credentials are coturn's `use-auth-secret` scheme
+    /// under the block's shared secret, which is what
+    /// `crypto/turn_credential` mints, so the same secret in both blocks
+    /// is the whole deployment. Inside `drt start` the same server also
+    /// reports its counters, and every allocation's closing byte count
+    /// with its principal, to the root program.
+    #[cfg(feature = "turn")]
+    Turn,
     /// SSH over WSS, as a dumb pipe. With a URL: bridge this process's
     /// stdio to it — the OpenSSH ProxyCommand contract, so
     /// `ssh -o ProxyCommand="drt tunnel wss://gate/fp" user@fp` (and rsync,
@@ -319,6 +331,9 @@ pub fn buildinfo(json: bool) -> String {
     if cfg!(feature = "tunnel") {
         verbs.push("tunnel");
     }
+    if cfg!(feature = "turn") {
+        verbs.push("turn");
+    }
     verbs.sort_unstable();
 
     // Named by what the profile actually is, not by what was asked for: a
@@ -415,6 +430,7 @@ fn enabled_features() -> Vec<&'static str> {
     feature!("runtime");
     feature!("stun");
     feature!("tunnel");
+    feature!("turn");
     on.sort_unstable();
     on
 }
@@ -681,6 +697,27 @@ pub fn main(cli: Cli) -> ExitCode {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("drt stun: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        #[cfg(feature = "turn")]
+        Command::Turn => {
+            let Some(turn_config) = config.turn.clone() else {
+                eprintln!("drt turn: the config names no `turn` block");
+                return ExitCode::FAILURE;
+            };
+            let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
+            let outcome = runtime.block_on(crate::turn::serve(&turn_config));
+            // Leaked, not dropped: the same tokio 1.53.1 teardown
+            // use-after-free `stun` and `relay` leak theirs for, and the
+            // same reason it is always armed here (`lookup_host` parks a
+            // blocking worker). The process is exiting anyway.
+            std::mem::forget(runtime);
+            match outcome {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("drt turn: {e}");
                     ExitCode::FAILURE
                 }
             }

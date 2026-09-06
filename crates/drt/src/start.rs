@@ -384,6 +384,24 @@ pub fn serve_with_observer<B: Acceptor>(
         None => None,
     };
 
+    // The TURN relay, same arrangement again. Unlike STUN it has things
+    // to say per event -- an allocation closing is a byte count a meter
+    // must not miss -- so its bridge carries those as they happen and
+    // the counters on the timer.
+    #[cfg(feature = "turn")]
+    let mut turn = match &config.turn {
+        Some(cfg) => {
+            let bridge = crate::turn::TurnBridge::start(cfg)?;
+            eprintln!(
+                "drt turn: listening on {}, relaying via {}",
+                bridge.addr(),
+                bridge.relay_address()
+            );
+            Some(bridge)
+        }
+        None => None,
+    };
+
     // Requests whose queue the program has not declared yet, oldest
     // first. Stepping before delivering (below) covers a program that
     // declares before its first park, and nothing more: a program that
@@ -422,6 +440,13 @@ pub fn serve_with_observer<B: Acceptor>(
             // the next report carries the running totals anyway — the
             // counters are cumulative, not deltas, so nothing is lost.
             stun.report(&mut |queue, msg| sw.push(root, queue, msg).is_ok());
+        }
+        #[cfg(feature = "turn")]
+        if let Some(turn) = turn.as_mut() {
+            // Closes first and always, then the snapshot on its timer; a
+            // dropped snapshot is the next one's running totals, a
+            // dropped close is a bill that never arrives.
+            turn.report(&mut |queue, msg| sw.push(root, queue, msg).is_ok());
         }
         observe(sw, root);
         if alive == 0 {

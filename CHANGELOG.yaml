@@ -1087,6 +1087,37 @@ releases:
         nothing above them is target-aware. In a page the clock is
         `web-time`, the filesystem is a `MemFs` the page seeds, and stdio
         is a sink the page installs.
+      - |
+        **A `turn` block beside `stun`, and `drt turn`.** The relay for the
+        peers `stun` says cannot punch: ego-transport's TURN server on the
+        maintained `turn` crate, verifying coturn's `use-auth-secret`
+        scheme byte for byte -- `<expiry>:<principal>` and an HMAC-SHA1
+        under a shared secret -- which is what `crypto/turn_credential`
+        already minted, so the same secret in both blocks is the whole
+        deployment and a credential minted here verifies against coturn
+        too. The secret by the same three knobs as `connectors.crypto.turn`
+        (`key_file`, `key_env`, `key`); a block with none refuses to bind,
+        because a relay with nothing to verify is an open one. Inside
+        `drt start` the server reports its counters on a timer and every
+        allocation's closing byte count with its principal as it happens,
+        which is what makes relay bytes attributable to a name. Proven
+        against webrtc-rs's client rather than our own, and the
+        connector's credential against the deployment's relay
+        (`crates/drt/tests/turn.rs`). discofetch's DRT_ASKS §4, decided
+        in issue #12.
+      - |
+        **A Windows artifact: `drt_slim_windows_x86_64.exe`.** `slim`, for
+        x86_64-pc-windows-gnu, cross-built from a Linux runner with
+        mingw-w64 the way `doc/Platforms.md` said to rehearse it, and run
+        for real on a Windows runner before it is allowed on the release
+        page: `--version`, a smoke program, `buildinfo`, then the examples
+        gate under Git Bash, byte for byte against the same `expected.txt`
+        every other target diffs. The gate found the one difference --
+        Windows's C runtime rewrote the C core's `\n` as `\r\n` while
+        `println!` did not -- and `stdio::bytes_as_written` fixes it once
+        at startup. `full` is not built for Windows: `exec` is unix-only
+        and `full` carries aws-lc-sys through russh, the linux aarch64
+        problem again.
     changed:
       - |
         **`ssmtp/send` answers `message_id`**, minted by the host under
