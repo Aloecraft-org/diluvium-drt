@@ -1038,7 +1038,14 @@ contract is `doc/Browser.md`; `doc/Platforms.md` is the matrix.
   free, and `ssh/exec`, `rest` and `listen` reach a fetchpoint with
   no new plumbing, because it is just an IP address. `wg-quick`'s
   field names, so a `[Interface]`/`[Peer]` pair transcribes rather
-  than translates; every refusal at startup, naming what was wrong.
+  than translates -- and the interface comes up *ready*, with the
+  `address` and `mtu` the block names and the link up, so the common
+  case needs no `ip` commands at all. `drt wg keygen` prints a pair,
+  so setting up a peer never needs wireguard-tools installed, which
+  was the point. Every refusal at startup, naming what was wrong,
+  including the two that are otherwise silent: a truncated key is a
+  device nobody can reach and a swapped key pair is a device anybody
+  can be.
   On Mullvad's gotatun rather than our own, for the reason the ssh
   connector is ego-transport's: a WireGuard implementation with a
   bug in its handshake is not a slow tunnel, it is an open one.
@@ -1048,21 +1055,32 @@ contract is `doc/Browser.md`; `doc/Platforms.md` is the matrix.
   generic over its IP side -- `drt start` gives it a kernel
   interface and the tests give it channels. Needs Rust 1.95 and
   CAP_NET_ADMIN; `doc/WireGuard.md` has the measurements.
-- **A peer's endpoint is settable at run time, which is the hole
-  punch.** A punched peer has no endpoint until a rendezvous
-  supplies one, and the rendezvous is a program's business: both
-  sides measure themselves with `netcheck --udp-port` on the port
-  the `wireguard` block listens on, trade the answers over the
-  relay, and each pushes one `endpoint` command onto the block's
-  `reply_queue`. `keepalive` is the other command and the other
-  half of the job, since a punched mapping with no traffic through
-  it closes again in seconds. The program learns it worked rather
-  than assuming: reports carry `last_handshake_ms` per peer, and an
-  endpoint with no handshake is an address nobody answered at.
-  Roaming arrives as it happens, separately, because a peer that
-  moved between two snapshots would otherwise look like it never
-  moved. `reply_queue` is empty by default: a config that did not
-  ask to be steered is not steerable.
+- **A peer's endpoint is settable at run time, which is the half of
+  a hole punch a config cannot know.** A punched peer has no
+  endpoint until a rendezvous supplies one, and the rendezvous is a
+  program's business: the block measures its own NAT mapping on
+  `listen_port` immediately before binding it -- which
+  `netcheck --udp-port` cannot do once a deployment holds the port
+  -- reports the address to publish and whether publishing it is
+  worth anything, and then takes `endpoint`, `keepalive`, `add` and
+  `remove` on its reply queue. `add` matters most: a rendezvous
+  *discovers* peers, so a device that could only be told about peers
+  already in its config could not serve one. The program learns what
+  happened rather than assuming -- `last_handshake_ms` per peer, an
+  endpoint with no handshake being an address nobody answered at;
+  roaming and first handshakes reported within 250 ms; and a command
+  the device refuses comes back as `wireguard_error` to the program
+  that wrote it, instead of only to a log it is not reading.
+  Clearing an endpoint is said out loud (`clear = true`), because
+  reading an absent field as "forget this peer" made one mistyped
+  field name tear down a working tunnel in silence.
+
+  **What is not proven:** the tests run on loopback, so they show
+  DRT can be told where a peer is and will talk to it, not that a
+  hole is punched through two real NATs. The punch itself rests on
+  WireGuard retransmitting handshakes for ninety seconds, which is
+  sound and is not measured here. `doc/WireGuard.md` §2 says which
+  step belongs to whom.
 
 ### Changed
 

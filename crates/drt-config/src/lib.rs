@@ -460,12 +460,43 @@ pub struct WireguardPeer {
 /// here without a second daemon holding the socket.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WireguardConfig {
-    /// The UDP port to listen on. Zero picks one, which is fine for a
-    /// dialing peer and useless for a punched one -- a mapping is measured
-    /// per port, so a punch names its port here and passes the same number
-    /// to `netcheck --udp-port`.
-    #[serde(default)]
+    /// The UDP port to listen on. **Required, and never zero**: gotatun
+    /// reports the port it was *configured* with rather than the one it
+    /// bound, so an ephemeral port could not be read back and named to a
+    /// peer; and a NAT mapping is measured per port, so a peer that wants
+    /// to be punched to must own a stable one. 51820 is the convention.
+    #[serde(default = "default_wireguard_port")]
     pub listen_port: u16,
+    /// The address to put on the interface, as CIDR -- `10.9.0.1/24`.
+    /// Without one the interface comes up with no address and nothing can
+    /// use it, which is the `ip addr add` this block exists to avoid.
+    ///
+    /// One address, because that is what the tun layer takes; a second
+    /// (an IPv6 address beside an IPv4 one, say) is still `ip addr add`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    /// The interface MTU. 1420 by default, not 1500: WireGuard's own
+    /// overhead is 60 bytes over IPv4 and 80 over IPv6, and an interface
+    /// left at the ethernet default fragments every full-size packet.
+    #[serde(default = "default_wireguard_mtu")]
+    pub mtu: u16,
+    /// STUN servers to measure this device's own mapping with, **on
+    /// `listen_port`, immediately before the device binds it**.
+    ///
+    /// This is the one piece that makes a punch measurable rather than
+    /// hoped for. `netcheck --udp-port` cannot do it once a deployment is
+    /// running -- the device already holds the port, so the measurement
+    /// would refuse to bind, and measuring a *different* port measures a
+    /// different mapping. Measuring here, microseconds before the same
+    /// local port is bound for real, is as close as a userspace program
+    /// gets to asking about the socket it is going to use.
+    ///
+    /// Two servers minimum on separate addresses, because one server can
+    /// report an address and only two can say whether it *changed* --
+    /// which is the fact that decides whether a punch can work at all.
+    /// Empty means do not measure.
+    #[serde(default)]
+    pub stun: Vec<String>,
     /// The tunnel interface to create: `drt0`, `wg0`, `utun` on macOS.
     /// Creating one needs privilege (CAP_NET_ADMIN on Linux, root on macOS,
     /// wintun.dll on Windows), and that is the whole privilege this needs:
@@ -511,6 +542,12 @@ pub struct WireguardConfig {
 
 fn default_wireguard_interface() -> String {
     "drt0".into()
+}
+fn default_wireguard_port() -> u16 {
+    51820
+}
+fn default_wireguard_mtu() -> u16 {
+    1420
 }
 fn default_wireguard_queue() -> String {
     "wg_in".into()

@@ -324,10 +324,15 @@ fn a_peer_with_no_endpoint_is_unreachable_until_the_endpoint_command_arrives() {
         );
 
         // The rendezvous learned where B is. This is the whole command.
+        // One command, carrying the keepalive too: a punched mapping with
+        // no traffic through it closes again in tens of seconds, and two
+        // commands to open one hole is one more chance to send only the
+        // first.
         commands
             .send(Command::Endpoint {
                 public_key: *pub_b.as_bytes(),
-                endpoint: Some(SocketAddr::from(([127, 0, 0, 1], port_b))),
+                endpoint: SocketAddr::from(([127, 0, 0, 1], port_b)),
+                keepalive: Some(25),
             })
             .unwrap();
 
@@ -367,6 +372,16 @@ fn a_peer_with_no_endpoint_is_unreachable_until_the_endpoint_command_arrives() {
 // The config, and what it refuses
 // ---------------------------------------------------------------------------
 
+/// One message, as a supervisor would push it.
+fn msg(fields: Vec<(&str, rmpv::Value)>) -> rmpv::Value {
+    rmpv::Value::Map(
+        fields
+            .into_iter()
+            .map(|(k, v)| (rmpv::Value::from(k), v))
+            .collect(),
+    )
+}
+
 /// One field of an rmpv map, for reading a report back.
 fn field<'a>(value: &'a rmpv::Value, name: &str) -> &'a rmpv::Value {
     value
@@ -382,6 +397,9 @@ fn scope(key: Option<&str>) -> WireguardConfig {
     WireguardConfig {
         listen_port: 51820,
         interface: "drt0".into(),
+        address: Some("10.9.0.1/24".into()),
+        mtu: 1420,
+        stun: Vec::new(),
         private_key: key.map(str::to_string),
         private_key_file: None,
         private_key_env: None,
@@ -481,52 +499,62 @@ fn a_bad_peer_field_names_the_peer_it_came_from() {
 #[test]
 fn the_reply_queues_commands_are_read_as_written() {
     let key = B64.encode([5u8; KEY_LEN]);
-    let msg = |fields: Vec<(&str, rmpv::Value)>| {
-        rmpv::Value::Map(
-            fields
-                .into_iter()
-                .map(|(k, v)| (rmpv::Value::from(k), v))
-                .collect(),
-        )
-    };
 
-    let set = command_from(&msg(vec![
-        ("command", "endpoint".into()),
-        ("public_key", key.as_str().into()),
-        ("endpoint", "203.0.113.7:51820".into()),
-    ]))
-    .unwrap();
+    // The punch, in one message: where the peer is, and the keepalive
+    // that holds the hole open once it is.
     assert_eq!(
-        set,
+        command_from(&msg(vec![
+            ("command", "endpoint".into()),
+            ("public_key", key.as_str().into()),
+            ("endpoint", "203.0.113.7:51820".into()),
+            ("keepalive", rmpv::Value::from(25u64)),
+        ]))
+        .unwrap(),
         Command::Endpoint {
             public_key: [5u8; KEY_LEN],
+            endpoint: "203.0.113.7:51820".parse().unwrap(),
+            keepalive: Some(25),
+        }
+    );
+
+    // A peer the config never named. A rendezvous DISCOVERS peers -- that
+    // is what makes it a rendezvous -- so this is the command without
+    // which the arrangement only works for peers already known.
+    assert_eq!(
+        command_from(&msg(vec![
+            ("command", "add".into()),
+            ("public_key", key.as_str().into()),
+            (
+                "allowed_ips",
+                rmpv::Value::Array(vec!["10.9.0.2/32".into()])
+            ),
+            ("endpoint", "203.0.113.7:51820".into()),
+        ]))
+        .unwrap(),
+        Command::Add {
+            public_key: [5u8; KEY_LEN],
+            allowed_ips: vec!["10.9.0.2/32".parse().unwrap()],
             endpoint: Some("203.0.113.7:51820".parse().unwrap()),
+            keepalive: None,
         }
     );
-
-    // A Lua table cannot hold a nil value, so leaving the key out is the
-    // only way a program can say "clear it" — and it means that.
-    let cleared = command_from(&msg(vec![
-        ("command", "endpoint".into()),
-        ("public_key", key.as_str().into()),
-    ]))
-    .unwrap();
     assert_eq!(
-        cleared,
-        Command::Endpoint {
-            public_key: [5u8; KEY_LEN],
-            endpoint: None
+        command_from(&msg(vec![
+            ("command", "remove".into()),
+            ("public_key", key.as_str().into()),
+        ]))
+        .unwrap(),
+        Command::Remove {
+            public_key: [5u8; KEY_LEN]
         }
     );
-
-    let keepalive = command_from(&msg(vec![
-        ("command", "keepalive".into()),
-        ("public_key", key.as_str().into()),
-        ("seconds", rmpv::Value::from(25u64)),
-    ]))
-    .unwrap();
     assert_eq!(
-        keepalive,
+        command_from(&msg(vec![
+            ("command", "keepalive".into()),
+            ("public_key", key.as_str().into()),
+            ("keepalive", rmpv::Value::from(25u64)),
+        ]))
+        .unwrap(),
         Command::Keepalive {
             public_key: [5u8; KEY_LEN],
             seconds: Some(25)
@@ -546,6 +574,113 @@ fn the_reply_queues_commands_are_read_as_written() {
     ]))
     .unwrap_err();
     assert!(err.contains("host:port"), "{err}");
+    let err = command_from(&msg(vec![
+        ("command", "add".into()),
+        ("public_key", key.as_str().into()),
+    ]))
+    .unwrap_err();
+    assert!(err.contains("allowed_ips"), "{err}");
+}
+
+/// **The footgun that was there and is not now.** An `endpoint` command
+/// with the field absent used to mean "clear it", on the reasoning that a
+/// Lua table cannot hold a nil value. That made one mistyped field name --
+/// `endpiont`, `Endpoint` -- tear down a working tunnel in silence, which
+/// is a far worse failure than the one it avoided. Clearing is said out
+/// loud now, and an absent field is an error that explains itself.
+#[test]
+fn clearing_an_endpoint_must_be_said_out_loud() {
+    let key = B64.encode([5u8; KEY_LEN]);
+
+    let typo = command_from(&msg(vec![
+        ("command", "endpoint".into()),
+        ("public_key", key.as_str().into()),
+        ("endpiont", "203.0.113.7:51820".into()),
+    ]))
+    .unwrap_err();
+    assert!(typo.contains("clear = true"), "{typo}");
+    assert!(typo.contains("no `endpoint`"), "{typo}");
+
+    assert_eq!(
+        command_from(&msg(vec![
+            ("command", "endpoint".into()),
+            ("public_key", key.as_str().into()),
+            ("clear", rmpv::Value::Boolean(true)),
+        ]))
+        .unwrap(),
+        Command::ClearEndpoint {
+            public_key: [5u8; KEY_LEN]
+        }
+    );
+}
+
+/// A key pair `drt wg keygen` prints is one the config accepts, and two of
+/// them differ. The point of the verb is that setting up a peer never
+/// needs `wireguard-tools` installed.
+#[test]
+fn keygen_prints_a_pair_the_config_accepts() {
+    let (private, public) = drt::wireguard::keygen();
+    assert_ne!(private, public);
+    let (other, _) = drt::wireguard::keygen();
+    assert_ne!(private, other, "two keygens produced the same private key");
+
+    let mut config = scope(Some(&private));
+    assert_eq!(public_key(&private_key(&config).unwrap()), public);
+    config.peers.push(WireguardPeer {
+        public_key: public.clone(),
+        allowed_ips: vec!["10.9.0.2/32".into()],
+        endpoint: None,
+        keepalive: None,
+        preshared_key_env: None,
+    });
+    assert!(drt::wireguard::validate(&config).is_ok());
+}
+
+/// What a config cannot be, judged before anything binds.
+#[test]
+fn a_config_that_cannot_work_is_refused_before_anything_binds() {
+    let good = B64.encode([1u8; KEY_LEN]);
+
+    // Zero is not an ephemeral port here, it is a port that could never
+    // be reported honestly (gotatun answers with the CONFIGURED port) nor
+    // punched to (a mapping belongs to a port).
+    let mut zero = scope(Some(&good));
+    zero.listen_port = 0;
+    let err = drt::wireguard::validate(&zero).unwrap_err();
+    assert!(err.contains("listen_port"), "{err}");
+    assert!(err.contains("51820"), "{err}");
+
+    // The commonest transcription slip: a route's network address where a
+    // host address belongs. It yields an interface that answers to
+    // nothing, so it is an error and not a warning.
+    let mut network = scope(Some(&good));
+    network.address = Some("10.9.0.0/24".into());
+    let err = drt::wireguard::validate(&network).unwrap_err();
+    assert!(err.contains("network address"), "{err}");
+    network.address = Some("10.9.0.5/32".into());
+    assert!(drt::wireguard::validate(&network).is_ok());
+
+    // One STUN server can report an address; only two can say whether it
+    // CHANGED, which is what decides whether a punch can work at all.
+    let mut one = scope(Some(&good));
+    one.stun = vec!["stun1.example:3478".into()];
+    let err = drt::wireguard::validate(&one).unwrap_err();
+    assert!(err.contains("two servers"), "{err}");
+    one.stun.push("stun2.example:3478".into());
+    assert!(drt::wireguard::validate(&one).is_ok());
+
+    // A peer with no allowed IPs can neither be routed to nor accepted
+    // from, so it is a peer that does nothing.
+    let mut silent = scope(Some(&good));
+    silent.peers.push(WireguardPeer {
+        public_key: B64.encode([2u8; KEY_LEN]),
+        allowed_ips: Vec::new(),
+        endpoint: None,
+        keepalive: None,
+        preshared_key_env: None,
+    });
+    let err = drt::wireguard::validate(&silent).unwrap_err();
+    assert!(err.contains("allowed_ips"), "{err}");
 }
 
 /// An absent endpoint is nil on the wire and never the empty string: "not
@@ -579,6 +714,31 @@ fn a_report_says_nil_for_an_endpoint_it_does_not_have() {
         Some("198.51.100.4:51820")
     );
     assert_eq!(*field(&roam, "previous"), rmpv::Value::Nil);
+
+    // A symmetric mapping has no address worth publishing, and says so
+    // with nil rather than an address a peer could not use.
+    let symmetric =
+        drt::wireguard::report_value(&drt::wireguard::Report::Mapping(drt::wireguard::Mapping {
+            kind: "symmetric",
+            punchable: false,
+            address: None,
+            why: "a fresh mapping per destination".into(),
+        }));
+    assert_eq!(
+        field(&symmetric, "event").as_str(),
+        Some("wireguard_mapping")
+    );
+    assert_eq!(*field(&symmetric, "address"), rmpv::Value::Nil);
+    assert_eq!(*field(&symmetric, "punchable"), rmpv::Value::Boolean(false));
+
+    // And a refusal reaches the program that caused it, not just a log.
+    let refused = drt::wireguard::report_value(&drt::wireguard::Report::Refused {
+        command: "endpoint".into(),
+        reason: "no peer abc".into(),
+    });
+    assert_eq!(field(&refused, "event").as_str(), Some("wireguard_error"));
+    assert_eq!(field(&refused, "command").as_str(), Some("endpoint"));
+    assert_eq!(field(&refused, "reason").as_str(), Some("no peer abc"));
 }
 
 /// The block loads from a `.host.lua` the way every other block does, with
@@ -596,6 +756,8 @@ fn the_wireguard_block_loads_with_wg_quicks_field_names() {
     listen_port = 51820,
     interface = "drt0",
     private_key_env = "WG_KEY",
+    address = "10.9.0.1/24",
+    mtu = 1420,
     queue = "wg_in",
     reply_queue = "wg_out",
     report_ms = 5000,
@@ -617,6 +779,8 @@ fn the_wireguard_block_loads_with_wg_quicks_field_names() {
     assert_eq!(wg.listen_port, 51820);
     assert_eq!(wg.interface, "drt0");
     assert_eq!(wg.private_key_env.as_deref(), Some("WG_KEY"));
+    assert_eq!(wg.address.as_deref(), Some("10.9.0.1/24"));
+    assert_eq!(wg.mtu, 1420);
     assert_eq!(wg.reply_queue, "wg_out");
     assert_eq!(wg.report_ms, 5000);
     assert_eq!(wg.peers.len(), 1);
@@ -642,4 +806,133 @@ fn the_wireguard_block_loads_with_wg_quicks_field_names() {
     .unwrap();
     let err = drt::config::load(Some(&dir.path().join("anon.host.lua"))).unwrap_err();
     assert!(err.contains("public_key"), "{err}");
+}
+
+/// A peer the config never named, added at run time and then reachable.
+///
+/// This is the case a rendezvous actually produces: a deployment that
+/// learns of a peer it has never heard of, with an address measured a
+/// second ago. Without `add` the whole arrangement only works for peers
+/// already written into the config — which is the case that never needed
+/// a rendezvous.
+///
+/// It also covers the refusal path, and it is the test that found the
+/// sharpest thing in this whole feature: **gotatun 0.9.2 does not route
+/// for a device that was built with no peers**, even after peers are added
+/// at run time. Build one with an empty peer list, add a peer, send to its
+/// allowed IP, and nothing leaves; add any peer at build time and the same
+/// runtime add works. `apply` forces the connection to rebuild when the
+/// first peer arrives, and this test is what holds that fix in place --
+/// remove it and this goes red while every other test stays green.
+#[test]
+fn a_peer_the_config_never_named_can_be_added_and_then_reached() {
+    rt().block_on(async {
+        let (secret_a, secret_b) = (
+            StaticSecret::from([0x33u8; KEY_LEN]),
+            StaticSecret::from([0x44u8; KEY_LEN]),
+        );
+        let (pub_a, pub_b) = (
+            gotatun::x25519::PublicKey::from(&secret_a),
+            gotatun::x25519::PublicKey::from(&secret_b),
+        );
+        let (port_a, port_b) = (free_port(), free_port());
+        let (ip_a, ip_b) = (Ipv4Addr::new(10, 9, 0, 1), Ipv4Addr::new(10, 9, 0, 2));
+
+        // B knows A. A knows NOBODY: it is started with a peer list that
+        // does not mention B at all, which is what a config looks like
+        // before a rendezvous has run.
+        let peer_a = Peer::new(pub_a)
+            .with_endpoint(SocketAddr::from(([127, 0, 0, 1], port_a)))
+            .with_allowed_ip(ipnetwork::IpNetwork::from(std::net::IpAddr::V4(ip_a)));
+        let (tun_a, tx_a, rx_a) = channel_tun();
+        let (mut tun_b, tx_b, rx_b) = channel_tun();
+        let a = DeviceBuilder::new()
+            .with_default_udp()
+            .with_ip_pair(tx_a, rx_a)
+            .with_listen_port(port_a)
+            .with_private_key(secret_a)
+            .build()
+            .await
+            .expect("a device with no peers still comes up");
+        let _b = device(secret_b, port_b, peer_a, tx_b, rx_b).await;
+
+        let (reports, mut report_rx) = mpsc::unbounded_channel();
+        let (commands, command_rx) = mpsc::unbounded_channel();
+        let driver = tokio::spawn(drt::wireguard::drive(
+            a,
+            Duration::from_millis(50),
+            reports,
+            command_rx,
+        ));
+
+        // First, the refusal: a command for a peer that is not there comes
+        // back to the program that sent it, so a supervisor waiting on a
+        // handshake learns its key was wrong instead of concluding the
+        // network is bad.
+        commands
+            .send(Command::Endpoint {
+                public_key: *pub_b.as_bytes(),
+                endpoint: SocketAddr::from(([127, 0, 0, 1], port_b)),
+                keepalive: None,
+            })
+            .unwrap();
+        let refusal = tokio::time::timeout(Duration::from_secs(5), report_rx.recv())
+            .await
+            .expect("the refusal came back")
+            .expect("the report channel stayed open");
+        match refusal {
+            drt::wireguard::Report::Refused { command, reason } => {
+                assert_eq!(command, "endpoint");
+                assert!(reason.contains(&B64.encode(pub_b.as_bytes())), "{reason}");
+                assert!(reason.contains("add"), "{reason}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+
+        // Now the rendezvous result: who the peer is, what it owns, and
+        // where it turned out to be, in one command.
+        commands
+            .send(Command::Add {
+                public_key: *pub_b.as_bytes(),
+                allowed_ips: vec![ipnetwork::IpNetwork::from(std::net::IpAddr::V4(ip_b))],
+                endpoint: Some(SocketAddr::from(([127, 0, 0, 1], port_b))),
+                keepalive: Some(25),
+            })
+            .unwrap();
+
+        // The supervisor is told the add worked, on the same pass -- not
+        // at the next snapshot, and not never. (It was "never" until this
+        // test was written: see the comment in `drive`.)
+        let seen = tokio::time::timeout(Duration::from_secs(5), report_rx.recv())
+            .await
+            .expect("a report came back on the pass that carried out the add")
+            .expect("the report channel stayed open");
+        match seen {
+            drt::wireguard::Report::Peers(peers) => {
+                let added = peers
+                    .iter()
+                    .find(|p| p.public_key == B64.encode(pub_b.as_bytes()))
+                    .expect("the added peer is in the report");
+                assert_eq!(
+                    added.endpoint,
+                    Some(SocketAddr::from(([127, 0, 0, 1], port_b)))
+                );
+            }
+            other => panic!("expected the peer list, got {other:?}"),
+        }
+
+        let packet = ipv4_udp(ip_a, ip_b, b"a peer we had never heard of");
+        let inject = tun_a.inject.clone();
+        let sender = tokio::spawn(async move {
+            for _ in 0..100 {
+                if inject.send(packet.clone()).is_err() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        });
+        expect_payload(&mut tun_b, b"a peer we had never heard of").await;
+        sender.abort();
+        driver.abort();
+    });
 }

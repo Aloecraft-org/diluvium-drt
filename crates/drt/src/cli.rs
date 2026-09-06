@@ -73,6 +73,17 @@ const PROFILE_FULL: &[&str] = &[
     "wireguard",
 ];
 
+/// What `drt wg` can do besides serve.
+#[cfg(feature = "wireguard")]
+#[derive(clap::Subcommand)]
+pub enum WgAction {
+    /// Print a fresh key pair: the private key on the first line, its
+    /// public key on the second. `wg genkey | wg pubkey` without
+    /// wireguard-tools, which is the point -- a block that needed those
+    /// installed to produce a key would not have removed the dependency.
+    Keygen,
+}
+
 #[derive(Parser)]
 #[command(name = "drt", version, about = "The Diluvium RunTime")]
 pub struct Cli {
@@ -165,7 +176,10 @@ pub enum Command {
     /// Creating the interface needs CAP_NET_ADMIN or root on Linux, root
     /// on macOS, and wintun.dll on Windows. Nothing else here does.
     #[cfg(feature = "wireguard")]
-    Wg,
+    Wg {
+        #[command(subcommand)]
+        action: Option<WgAction>,
+    },
     /// SSH over WSS, as a dumb pipe. With a URL: bridge this process's
     /// stdio to it — the OpenSSH ProxyCommand contract, so
     /// `ssh -o ProxyCommand="drt tunnel wss://gate/fp" user@fp` (and rsync,
@@ -753,7 +767,20 @@ pub fn main(cli: Cli) -> ExitCode {
             }
         }
         #[cfg(feature = "wireguard")]
-        Command::Wg => {
+        Command::Wg {
+            action: Some(WgAction::Keygen),
+        } => {
+            // Two lines, in the order a config wants them, and on stdout
+            // so `drt wg keygen | head -1` is a private key and nothing
+            // else. A key printed among prose is a key someone will paste
+            // with the prose.
+            let (private, public) = crate::wireguard::keygen();
+            println!("{private}");
+            println!("{public}");
+            ExitCode::SUCCESS
+        }
+        #[cfg(feature = "wireguard")]
+        Command::Wg { action: None } => {
             let Some(wg_config) = config.wireguard.clone() else {
                 eprintln!("drt wg: the config names no `wireguard` block");
                 return ExitCode::FAILURE;

@@ -28,15 +28,35 @@
 //! first — its `Device` is generic over **both** transports, which is what
 //! makes it embeddable here rather than merely linkable:
 //!
-//! - The UDP side is a trait, so the device can be handed the socket
-//!   `netcheck --udp-port` measured rather than binding its own behind
-//!   our back and getting a different mapping.
+//! - The UDP side is a trait. What that buys today is [`measure`]: the
+//!   mapping of a probe socket on the same local port, taken microseconds
+//!   before the device binds that port — because `netcheck --udp-port`
+//!   cannot bind a port the running device already holds. Handing the
+//!   device the *same* socket remains possible and is not implemented;
+//!   `doc/WireGuard.md` §2 says so rather than implying otherwise.
 //! - The IP side is a trait, so `drt start` gives it a kernel interface
 //!   and the tests give it channels — the same device, proven without
 //!   privileges (`crates/drt/tests/wireguard.rs` runs two of them in one
 //!   process and passes a real packet between them).
 //!
-//! ## The punch, which is the reason for the reply queue
+//! ## The punch, and what is not proven about it
+//!
+//! **The deployment-side half is here and tested; the punch itself is
+//! not measured in this repository.** What the tests prove is that DRT
+//! can measure its own mapping, be told where a peer is — including a
+//! peer the config never named — and then talk to it. They run on
+//! loopback, so there is no NAT in the path and no mapping to punch
+//! through.
+//!
+//! The punch proper rests on a property of WireGuard rather than of this
+//! file: a peer with an endpoint and no session retransmits a handshake
+//! initiation every five seconds for ninety, so once both sides know
+//! where the other is, the simultaneous-open that opens a NAT mapping
+//! falls out of the protocol's own behaviour. That is sound and
+//! well-established; it is also not something measured here.
+//! `doc/WireGuard.md` §2 states which step belongs to whom.
+//!
+//! ## The reply queue, which is why any of this composes
 //!
 //! A punched peer has no endpoint until the rendezvous supplies one, and
 //! the rendezvous is a program's business, not a config's: two deployments
@@ -77,10 +97,24 @@ pub const KEY_LEN: usize = 32;
 
 /// The commands a program may put on the reply queue. Named here rather
 /// than at their match arms so the whole vocabulary is one list.
-pub const COMMAND: [&str; 2] = ["endpoint", "keepalive"];
+pub const COMMAND: [&str; 4] = ["endpoint", "keepalive", "add", "remove"];
 
 /// The events a program is sent on the queue.
-pub const EVENT: [&str; 2] = ["wireguard", "wireguard_endpoint"];
+pub const EVENT: [&str; 4] = [
+    "wireguard",
+    "wireguard_endpoint",
+    "wireguard_mapping",
+    "wireguard_error",
+];
+
+/// How often the device is polled for a change worth reporting.
+///
+/// Separate from `report_ms`, which is how often a full snapshot is sent,
+/// and much shorter than it: watching a punch means watching for a
+/// handshake that either lands within a second or two or never lands at
+/// all, and a supervisor learning at the next ten-second snapshot cannot
+/// tell "it worked" from "it worked eventually".
+pub const WATCH_MS: u64 = 250;
 
 // ---------------------------------------------------------------------------
 // Keys and peers: the config, translated
@@ -106,6 +140,66 @@ pub fn parse_key(label: &str, text: &str) -> Result<[u8; KEY_LEN], String> {
             bytes.len()
         )
     })
+}
+
+/// Everything about the block that can be judged without touching the
+/// network or the machine. Called before anything is bound, so a bad
+/// config fails `drt start` at the line that names it.
+pub fn validate(config: &WireguardConfig) -> Result<(), String> {
+    // Zero is refused rather than defaulted, because it cannot be
+    // reported honestly and cannot be punched to. gotatun answers
+    // `listen_port()` with the port it was CONFIGURED with, not the one
+    // it bound, so an ephemeral port would be printed as "0" and could
+    // never be named to a peer; and a NAT mapping is measured per port,
+    // so a peer that wants to be reached must own a stable one.
+    if config.listen_port == 0 {
+        return Err("wireguard: listen_port must be a real port (51820 is the \
+                    convention). Zero would take an ephemeral one, which cannot \
+                    be read back to tell a peer, and cannot have its NAT mapping \
+                    measured, since a mapping belongs to a port."
+            .into());
+    }
+    if let Some(cidr) = &config.address {
+        let net: IpNetwork = cidr.parse().map_err(|e| {
+            format!("wireguard.address: '{cidr}' is not a CIDR address like 10.9.0.1/24 ({e})")
+        })?;
+        // The network address itself is not an address a host holds. A
+        // `10.9.0.0/24` here is the commonest transcription slip from a
+        // route table, and it produces an interface that answers to
+        // nothing rather than an error.
+        let host_bits = match net {
+            IpNetwork::V4(_) => 32,
+            IpNetwork::V6(_) => 128,
+        };
+        if net.prefix() < host_bits && net.ip() == net.network() {
+            return Err(format!(
+                "wireguard.address: '{cidr}' is the network address, not a host address \
+                 on it. Give the address this device holds, like 10.9.0.1/24."
+            ));
+        }
+    }
+    if config.mtu < 576 {
+        return Err(format!(
+            "wireguard.mtu: {} is below the 576 every IPv4 host must accept",
+            config.mtu
+        ));
+    }
+    // One STUN server can report an address; only two can say whether it
+    // CHANGED between vantage points, which is the fact that decides
+    // whether a punch can work. Refusing one is the same rule
+    // `netcheck` applies, for the same reason.
+    if config.stun.len() == 1 {
+        return Err(
+            "wireguard.stun: classifying a NAT mapping needs two servers on \
+                    separate addresses; one server can report an address but only two \
+                    can say whether it changed, which is what decides whether a punch \
+                    is possible. Give two, or none."
+                .into(),
+        );
+    }
+    private_key(config)?;
+    peers(config)?;
+    Ok(())
 }
 
 /// This device's private key, by the same three knobs as every other
@@ -144,6 +238,30 @@ pub fn private_key(config: &WireguardConfig) -> Result<StaticSecret, String> {
     )?))
 }
 
+/// A fresh key pair, base64: the private key this device would use and
+/// the public key its peers would name it by.
+///
+/// Here because `wg genkey | wg pubkey` is the one step of setting up a
+/// WireGuard peer that this block otherwise leaves to the tools it exists
+/// to not need — and because an operator who has to install `wireguard-
+/// tools` to generate a key has learned that the dependency was never
+/// really gone.
+///
+/// The bytes are the platform CSPRNG's, the same source `crypto/random`
+/// answers from. `StaticSecret::from` clamps them, which is Curve25519's
+/// own requirement and the reason a key is not simply 32 random bytes.
+pub fn keygen() -> (String, String) {
+    let mut bytes = [0u8; KEY_LEN];
+    // Infallible on every platform DRT builds a device for; a key that
+    // could not be generated would be a refusal, not a weak key.
+    let _ = drt_platform::entropy::fill(&mut bytes);
+    let secret = StaticSecret::from(bytes);
+    (
+        base64::engine::general_purpose::STANDARD.encode(secret.to_bytes()),
+        public_key(&secret),
+    )
+}
+
 /// The public key to hand a peer, base64, as `wg pubkey` would print it.
 pub fn public_key(secret: &StaticSecret) -> String {
     base64::engine::general_purpose::STANDARD.encode(PublicKey::from(secret).as_bytes())
@@ -168,6 +286,13 @@ pub fn peer(spec: &WireguardPeer) -> Result<Peer, String> {
                 .parse::<SocketAddr>()
                 .map_err(|e| format!("{label}.endpoint: '{endpoint}' is not a host:port ({e})"))?,
         );
+    }
+    if spec.allowed_ips.is_empty() {
+        return Err(format!(
+            "{label}.allowed_ips: empty. A peer with no allowed IPs can neither be \
+             routed to nor accepted from -- WireGuard's cryptokey routing drops \
+             every packet either way -- so this is a peer that does nothing."
+        ));
     }
     peer.keepalive = spec.keepalive;
     if let Some(var) = &spec.preshared_key_env {
@@ -195,48 +320,195 @@ pub fn peers(config: &WireguardConfig) -> Result<Vec<Peer>, String> {
 /// here so the signatures below read as what they are.
 pub type Kernel = gotatun::device::DefaultDeviceTransports;
 
-/// Create the interface, bind the port, and add the configured peers.
+/// Create the tunnel interface, **with an address, an MTU, and the link
+/// up**.
 ///
-/// Everything that can be refused is refused here, at startup, with the
-/// thing that was wrong named: a key that is not a key, a CIDR that is not
-/// a network, a port already held, an interface that needs a privilege
-/// this process does not have. A deployment that gets past this line has a
-/// device that is up.
+/// gotatun's own `TunDevice::from_name` takes the `tun` crate's default
+/// configuration, which sets none of those: the interface appears, has no
+/// address, and is down. That is an interface nothing can use until the
+/// operator runs `ip addr add` and `ip link set up` by hand — which is
+/// precisely the `wg-quick` work this block exists to replace. So the
+/// configuration is built here instead.
+///
+/// One address, because that is what the layer beneath takes. A second —
+/// an IPv6 address beside an IPv4 one — is still `ip addr add`, and
+/// `doc/WireGuard.md` says so rather than pretending otherwise.
+fn interface(
+    config: &WireguardConfig,
+) -> Result<gotatun::tun::tun_async_device::TunDevice, String> {
+    let mut tun = gotatun::tun::tun::Configuration::default();
+    tun.tun_name(&config.interface).mtu(config.mtu).up();
+    if let Some(cidr) = &config.address {
+        let net: IpNetwork = cidr
+            .parse()
+            .map_err(|e| format!("wireguard.address: '{cidr}' is not a CIDR address ({e})"))?;
+        tun.address(net.ip()).netmask(net.mask());
+    }
+    let device = gotatun::tun::tun::create_as_async(&tun).map_err(|e| {
+        format!(
+            "wireguard: cannot create the interface '{}': {e}\n\
+             Creating a tunnel interface needs a privilege, and it is the only \
+             one this needs: CAP_NET_ADMIN (or root) on Linux, root on macOS, \
+             wintun.dll beside the binary on Windows.",
+            config.interface
+        )
+    })?;
+    gotatun::tun::tun_async_device::TunDevice::from_tun_device(device).map_err(|e| {
+        format!(
+            "wireguard: the interface '{}' is unusable: {e}",
+            config.interface
+        )
+    })
+}
+
+/// What STUN saw of the socket this device is about to bind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mapping {
+    /// `independent`, `symmetric` or `open`, in `netcheck`'s words.
+    pub kind: &'static str,
+    /// Whether a peer can be punched to at [`Mapping::address`]. False for
+    /// a symmetric NAT, where what a STUN server saw says nothing about
+    /// what a peer would see.
+    pub punchable: bool,
+    /// The address to publish to a rendezvous, when there is one.
+    pub address: Option<SocketAddr>,
+    /// What was measured, in one line, for a log or a refusal.
+    pub why: String,
+}
+
+/// Measure this device's own mapping, on `listen_port`, **before** the
+/// device binds it.
+///
+/// This is the piece that makes a punch measurable rather than hoped for,
+/// and it exists here rather than as `netcheck --udp-port` because
+/// `netcheck` cannot do this job once a deployment is running: the device
+/// holds the port, so a second bind refuses, and measuring a *different*
+/// port measures a different mapping. Measuring here — same local port,
+/// microseconds before the device takes it — is as close as a userspace
+/// program gets to asking about the socket it is going to use.
+///
+/// **It is still not the same socket.** The mapping measured belongs to
+/// the probe's socket on that port; the device then binds the same local
+/// port and gets its own. On an endpoint-independent NAT the external
+/// mapping is a function of the internal port, so the answer holds; on a
+/// symmetric NAT it does not, which is exactly what `punchable: false`
+/// reports. `doc/WireGuard.md` §2 states the limit rather than burying it.
+#[cfg(feature = "netcheck")]
+pub async fn measure(config: &WireguardConfig) -> Result<Mapping, String> {
+    let servers: Vec<&str> = config.stun.iter().map(String::as_str).collect();
+    let (mapping, ports, address) =
+        crate::netcheck::gather::udp_mapping(&servers, Some(config.listen_port)).await?;
+    let seen: Vec<String> = ports
+        .iter()
+        .map(|(server, port)| format!("{server} saw :{port}"))
+        .collect();
+    let (kind, punchable, why) = match mapping {
+        crate::netcheck::UdpMapping::Open => (
+            "open",
+            true,
+            format!("no NAT in the path ({})", seen.join(", ")),
+        ),
+        crate::netcheck::UdpMapping::Independent => (
+            "independent",
+            true,
+            format!(
+                "one mapping for every destination, so a peer can reach it ({})",
+                seen.join(", ")
+            ),
+        ),
+        crate::netcheck::UdpMapping::Symmetric => (
+            "symmetric",
+            false,
+            format!(
+                "a fresh mapping per destination, so what a STUN server saw says \
+                 nothing about what a peer would see; punching cannot work from \
+                 here and a relay is the path ({})",
+                seen.join(", ")
+            ),
+        ),
+    };
+    // The port to publish is the one the servers agreed on, and only when
+    // they agreed: a symmetric mapping has no single port to name.
+    let port = ports.first().map(|(_, p)| *p);
+    let address = match (punchable, address, port) {
+        (true, Some(ip), Some(port)) => Some(SocketAddr::new(ip, port)),
+        _ => None,
+    };
+    Ok(Mapping {
+        kind,
+        punchable,
+        address,
+        why,
+    })
+}
+
+/// Bind the port and add the configured peers, on an interface that is
+/// already up.
+///
+/// Everything that can be refused is refused before this returns, with
+/// the thing that was wrong named: a key that is not a key, a CIDR that is
+/// not a network, a port already held, an interface that needs a privilege
+/// this process has not got. A deployment that gets past this line has a
+/// device that is up and addressable.
 pub async fn bind(config: &WireguardConfig) -> Result<Device<Kernel>, String> {
+    validate(config)?;
     let secret = private_key(config)?;
     let peers = peers(config)?;
+    let tun = interface(config)?;
     DeviceBuilder::new()
         .with_default_udp()
-        .create_tun(&config.interface)
-        .map_err(|e| {
-            format!(
-                "wireguard: cannot create the interface '{}': {e}\n\
-                 Creating a tunnel interface needs a privilege: CAP_NET_ADMIN \
-                 (or root) on Linux, root on macOS, wintun.dll beside the binary \
-                 on Windows. Nothing else here does.",
-                config.interface
-            )
-        })?
+        .with_ip(tun)
         .with_listen_port(config.listen_port)
         .with_private_key(secret)
         .with_peers(peers)
         .build()
         .await
-        .map_err(|e| format!("wireguard: cannot bind port {}: {e}", config.listen_port))
+        .map_err(|e| {
+            format!(
+                "wireguard: cannot bind UDP port {}: {e}",
+                config.listen_port
+            )
+        })
 }
 
 /// `drt wg`: bring the device up and hold it up, foreground.
 ///
 /// Prints the public key, because a peer cannot be configured without it
-/// and deriving it by hand means running `wg pubkey` against a secret an
-/// operator would then have on a terminal.
+/// and deriving it by hand means running `wg pubkey` against a secret on
+/// a terminal — the tool this block exists to not need.
 pub async fn serve(config: &WireguardConfig) -> Result<(), String> {
+    validate(config)?;
     let secret = private_key(config)?;
+    #[cfg(feature = "netcheck")]
+    if !config.stun.is_empty() {
+        match measure(config).await {
+            Ok(m) => eprintln!(
+                "drt wg: mapping {} on port {} -- {}{}",
+                m.kind,
+                config.listen_port,
+                m.why,
+                m.address
+                    .map(|a| format!("; publish {a}"))
+                    .unwrap_or_default()
+            ),
+            // A measurement that fails is a measurement, not a tunnel: the
+            // device still comes up, and a peer with a configured endpoint
+            // still works. Refusing to start over it would trade a working
+            // tunnel for an unanswered question.
+            Err(e) => eprintln!("drt wg: could not measure the mapping: {e}"),
+        }
+    }
     let mut device = bind(config).await?;
-    let port = device.read(async |d| d.listen_port()).await;
     eprintln!(
-        "drt wg: {} up on port {port}, public key {}",
+        "drt wg: {} up on port {}, mtu {}{}, public key {}",
         config.interface,
+        config.listen_port,
+        config.mtu,
+        config
+            .address
+            .as_deref()
+            .map(|a| format!(", address {a}"))
+            .unwrap_or_else(|| ", no address (set `address`, or ip addr add)".into()),
         public_key(&secret)
     );
     for spec in &config.peers {
@@ -261,20 +533,50 @@ pub async fn serve(config: &WireguardConfig) -> Result<(), String> {
 /// What a program may ask of a running device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    /// Point a peer at an address, or clear it. This is the punch: the
-    /// rendezvous learned where the far side actually is, and this is how
-    /// the device is told.
+    /// Point a peer at an address. This is the punch: the rendezvous
+    /// learned where the far side actually is, and this is how the device
+    /// is told. `keepalive` rides along because it is the other half of
+    /// the same job — a punched mapping with no traffic through it closes
+    /// again in tens of seconds — and two commands to open one hole is
+    /// one more chance to send only the first.
     Endpoint {
         public_key: [u8; KEY_LEN],
-        endpoint: Option<SocketAddr>,
+        endpoint: SocketAddr,
+        keepalive: Option<u16>,
     },
-    /// Set or clear a peer's keepalive interval. Beside `Endpoint` because
-    /// it is the other half of the same job: a punched mapping with no
-    /// traffic through it closes again in tens of seconds.
+    /// Forget where a peer is, so nothing is sent to a stale address.
+    /// Spelled `{command = "endpoint", clear = true}`, never as an absent
+    /// field: see [`command_from`].
+    ClearEndpoint { public_key: [u8; KEY_LEN] },
+    /// Set or clear a peer's keepalive interval on its own.
     Keepalive {
         public_key: [u8; KEY_LEN],
         seconds: Option<u16>,
     },
+    /// Add a peer the config never named. A rendezvous *discovers* peers —
+    /// that is what makes it a rendezvous — so a device that can only be
+    /// told about peers it already knows cannot serve one.
+    Add {
+        public_key: [u8; KEY_LEN],
+        allowed_ips: Vec<IpNetwork>,
+        endpoint: Option<SocketAddr>,
+        keepalive: Option<u16>,
+    },
+    /// Remove a peer, and with it any route to it.
+    Remove { public_key: [u8; KEY_LEN] },
+}
+
+impl Command {
+    /// The peer every command names.
+    pub fn public_key(&self) -> [u8; KEY_LEN] {
+        match self {
+            Command::Endpoint { public_key, .. }
+            | Command::ClearEndpoint { public_key }
+            | Command::Keepalive { public_key, .. }
+            | Command::Add { public_key, .. }
+            | Command::Remove { public_key } => *public_key,
+        }
+    }
 }
 
 /// One peer, as a supervisor sees it.
@@ -305,14 +607,33 @@ pub enum Report {
         endpoint: Option<SocketAddr>,
         previous: Option<SocketAddr>,
     },
+    /// What STUN saw of this device's own port, measured once before the
+    /// device bound it. The address a rendezvous should publish, and
+    /// whether publishing it is worth anything.
+    Mapping(Mapping),
+    /// A command the device would not carry out, and why.
+    ///
+    /// Reported rather than only logged because the program on the other
+    /// end of the reply queue is the one that wrote it, and a supervisor
+    /// waiting for a handshake that will never come should learn that its
+    /// command was malformed rather than conclude the network is bad.
+    Refused { command: String, reason: String },
 }
 
 // ---------------------------------------------------------------------------
 // depth: the task that owns the device
 // ---------------------------------------------------------------------------
 
-/// Own the device: snapshot its peers on the timer, notice roaming as it
-/// happens, and apply what the deployment asks.
+/// Own the device: watch it for changes worth reporting, send a full
+/// snapshot on the timer, and apply what the deployment asks.
+///
+/// Two cadences on purpose. Changes — a peer roaming, a handshake landing
+/// — are polled every [`WATCH_MS`] and reported as they are seen, because
+/// watching a punch means watching for a handshake that either lands
+/// within a second or two or never lands at all, and a supervisor that
+/// learns at the next ten-second snapshot cannot tell "it worked" from
+/// "it worked eventually". Full snapshots stay on `report_ms`, so a quiet
+/// tunnel does not fill a queue with the same numbers.
 ///
 /// Generic over the transports so the deployment's kernel-tun device and
 /// the tests' channel-tun devices run the *same* loop. Returns when the
@@ -324,71 +645,213 @@ pub async fn drive<T: DeviceTransports>(
     mut commands: mpsc::UnboundedReceiver<Command>,
 ) {
     let mut last: Vec<PeerReport> = Vec::new();
-    let mut tick = tokio::time::interval(every);
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut watch = tokio::time::interval(Duration::from_millis(WATCH_MS).min(every));
+    watch.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut next_snapshot = tokio::time::Instant::now();
     loop {
-        tokio::select! {
+        // Whether this pass was woken by a command, which is the one case
+        // where the program on the other end is waiting to hear back.
+        let asked = tokio::select! {
             command = commands.recv() => {
                 let Some(command) = command else { return };
-                apply(&device, command).await;
-            }
-            _ = tick.tick() => {
-                let now = snapshot(&device).await;
-                for peer in &now {
-                    let before = last.iter().find(|p| p.public_key == peer.public_key);
-                    let previous = before.and_then(|p| p.endpoint);
-                    // A peer seen for the first time WITH an endpoint has
-                    // not roamed, it has arrived; one whose endpoint
-                    // changed has.
-                    if before.is_some() && previous != peer.endpoint {
-                        let _ = reports.send(Report::Roamed {
-                            public_key: peer.public_key.clone(),
-                            endpoint: peer.endpoint,
-                            previous,
-                        });
-                    }
+                if let Err(refusal) = apply(&device, &command).await {
+                    let _ = reports.send(refusal);
+                    continue;
                 }
-                if now != last {
-                    last = now.clone();
-                    let _ = reports.send(Report::Peers(now));
-                }
+                true
             }
+            _ = watch.tick() => false,
+        };
+
+        let now = snapshot(&device).await;
+        // Roaming carries `previous`, which a snapshot cannot, so it is
+        // its own event either way.
+        let moved = announce(&reports, &last, &now);
+        let due = tokio::time::Instant::now() >= next_snapshot;
+
+        // Three reasons to send the peers: the timer, something notable
+        // changed, or a command was just carried out.
+        //
+        // That last one is not a nicety. Without it, a command that added
+        // a peer or set an endpoint would update this loop's idea of the
+        // state and emit nothing -- and the next tick, finding nothing
+        // changed since, would emit nothing either. The change would stay
+        // invisible until something ELSE moved. That is exactly the bug
+        // `a_peer_the_config_never_named_can_be_added_and_then_reached`
+        // caught: a rendezvous told the device about a peer and the
+        // supervisor was never told it had worked.
+        if now != last && (due || moved || asked) {
+            let _ = reports.send(Report::Peers(now.clone()));
         }
+        if due {
+            next_snapshot = tokio::time::Instant::now() + every;
+        }
+        last = now;
     }
 }
 
-/// depth: one command, applied. A command naming a peer the device does
-/// not have is dropped with a line rather than failing the device — the
-/// deployment's own program wrote it, and the deployment is what would
-/// stop.
-async fn apply<T: DeviceTransports>(device: &Device<T>, command: Command) {
-    let (key, known) = match command {
-        Command::Endpoint {
-            public_key,
-            endpoint,
-        } => {
-            let key = PublicKey::from(public_key);
-            let known = device
-                .write(async |d| d.modify_peer(&key, |p| p.set_endpoint(endpoint)).await)
-                .await;
-            (key, known)
+/// depth: what changed between two snapshots that a program should hear
+/// about at once rather than at the next full report. Returns whether
+/// anything did.
+fn announce(
+    reports: &mpsc::UnboundedSender<Report>,
+    last: &[PeerReport],
+    now: &[PeerReport],
+) -> bool {
+    let mut notable = false;
+    for peer in now {
+        let Some(before) = last.iter().find(|p| p.public_key == peer.public_key) else {
+            // A peer seen for the first time has not roamed, it has
+            // arrived, and the snapshot beside this carries it.
+            notable = true;
+            continue;
+        };
+        if before.endpoint != peer.endpoint {
+            let _ = reports.send(Report::Roamed {
+                public_key: peer.public_key.clone(),
+                endpoint: peer.endpoint,
+                previous: before.endpoint,
+            });
+            notable = true;
         }
-        Command::Keepalive {
-            public_key,
-            seconds,
-        } => {
-            let key = PublicKey::from(public_key);
-            let known = device
-                .write(async |d| d.modify_peer(&key, |p| p.set_keepalive(seconds)).await)
-                .await;
-            (key, known)
+        // The first handshake with a peer is the moment a punch either
+        // worked or did not, so it is an event and not a statistic.
+        if before.last_handshake_ms.is_none() && peer.last_handshake_ms.is_some() {
+            notable = true;
         }
+    }
+    // A peer that went away is notable too: something removed it.
+    notable || now.len() != last.len()
+}
+
+/// depth: one command, applied, or the refusal to report back.
+///
+/// A command naming a peer the device does not have is a refusal the
+/// program hears about — it wrote the command, and a supervisor waiting on
+/// a handshake should not have to guess that its key was wrong.
+async fn apply<T: DeviceTransports>(device: &Device<T>, command: &Command) -> Result<(), Report> {
+    let key = PublicKey::from(command.public_key());
+    let named = base64::engine::general_purpose::STANDARD.encode(key.as_bytes());
+    let refuse = |what: &str, reason: String| {
+        Err(Report::Refused {
+            command: what.to_string(),
+            reason,
+        })
     };
-    if !matches!(known, Ok(true)) {
-        eprintln!(
-            "drt start: wireguard: no peer {}",
-            base64::engine::general_purpose::STANDARD.encode(key.as_bytes())
-        );
+    let unknown = |what: &str| {
+        refuse(
+            what,
+            format!("no peer {named}; add it with `command = \"add\"` first"),
+        )
+    };
+    match command {
+        Command::Endpoint {
+            endpoint,
+            keepalive,
+            ..
+        } => {
+            let known = device
+                .write(async |d| {
+                    d.modify_peer(&key, |p| {
+                        p.set_endpoint(Some(*endpoint));
+                        if let Some(seconds) = keepalive {
+                            p.set_keepalive(Some(*seconds));
+                        }
+                    })
+                    .await
+                })
+                .await;
+            match known {
+                Ok(true) => Ok(()),
+                Ok(false) => unknown("endpoint"),
+                Err(e) => refuse("endpoint", e.to_string()),
+            }
+        }
+        Command::ClearEndpoint { .. } => {
+            let known = device
+                .write(async |d| d.modify_peer(&key, |p| p.set_endpoint(None)).await)
+                .await;
+            match known {
+                Ok(true) => Ok(()),
+                Ok(false) => unknown("endpoint"),
+                Err(e) => refuse("endpoint", e.to_string()),
+            }
+        }
+        Command::Keepalive { seconds, .. } => {
+            let known = device
+                .write(async |d| d.modify_peer(&key, |p| p.set_keepalive(*seconds)).await)
+                .await;
+            match known {
+                Ok(true) => Ok(()),
+                Ok(false) => unknown("keepalive"),
+                Err(e) => refuse("keepalive", e.to_string()),
+            }
+        }
+        Command::Add {
+            allowed_ips,
+            endpoint,
+            keepalive,
+            ..
+        } => {
+            let mut peer = Peer::new(key);
+            peer.allowed_ips = allowed_ips.clone();
+            peer.endpoint = *endpoint;
+            peer.keepalive = *keepalive;
+            // A device that had NO peers does not route what is added to
+            // it later, measured on gotatun 0.9.2: build one with an empty
+            // peer list, add a peer, send to its allowed IP, and nothing
+            // leaves. Add any peer at build time and the same runtime add
+            // works. That is exactly the config a rendezvous writes --
+            // `peers = {}`, learn them later -- so it cannot be left to
+            // the operator to discover.
+            //
+            // `suspend`/`resume` is the documented way to have the device
+            // rebuild its connection, and it costs nothing here: a device
+            // with no peers has no session to tear down.
+            let was_empty = device.read(async |d| d.peers().await.is_empty()).await;
+            match device.add_peer(peer).await {
+                Ok(true) => {
+                    if was_empty {
+                        device.suspend().await;
+                        if let Err(e) = device.resume().await {
+                            return refuse("add", format!("the device would not resume: {e}"));
+                        }
+                    }
+                    Ok(())
+                }
+                // Already present, so make it match what was asked rather
+                // than refusing: a rendezvous that re-announces a peer is
+                // doing its job, not making a mistake.
+                Ok(false) => {
+                    let allowed = allowed_ips.clone();
+                    let known = device
+                        .write(async |d| {
+                            d.modify_peer(&key, |p| {
+                                p.clear_allowed_ips();
+                                p.add_allowed_ips(allowed);
+                                if let Some(e) = endpoint {
+                                    p.set_endpoint(Some(*e));
+                                }
+                                if let Some(k) = keepalive {
+                                    p.set_keepalive(Some(*k));
+                                }
+                            })
+                            .await
+                        })
+                        .await;
+                    match known {
+                        Ok(_) => Ok(()),
+                        Err(e) => refuse("add", e.to_string()),
+                    }
+                }
+                Err(e) => refuse("add", e.to_string()),
+            }
+        }
+        Command::Remove { .. } => match device.remove_peer(&key).await {
+            Ok(true) => Ok(()),
+            Ok(false) => unknown("remove"),
+            Err(e) => refuse("remove", e.to_string()),
+        },
     }
 }
 
@@ -427,6 +890,10 @@ async fn snapshot<T: DeviceTransports>(device: &Device<T>) -> Vec<PeerReport> {
 pub struct WireguardBridge {
     reports: mpsc::UnboundedReceiver<Report>,
     commands: mpsc::UnboundedSender<Command>,
+    /// Refusals raised while READING the reply queue, which happens on the
+    /// drive loop rather than on the device's runtime, so they cannot
+    /// travel back through `reports`. Held for the same pass's `report`.
+    refusals: Vec<Report>,
     queue: String,
     reply_queue: String,
     interface: String,
@@ -447,22 +914,56 @@ impl WireguardBridge {
     pub fn start(config: &WireguardConfig) -> Result<WireguardBridge, String> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| format!("the wireguard device needs a runtime: {e}"))?;
+        validate(config)?;
         let secret = private_key(config)?;
-        let device = rt.block_on(bind(config))?;
-        let listen_port = rt.block_on(device.read(async |d| d.listen_port()));
         let (report_tx, reports) = mpsc::unbounded_channel();
+
+        // Measured BEFORE the device binds the port, and queued before
+        // anything else, because it is what a rendezvous publishes and a
+        // program should have it in hand before it trades addresses.
+        #[cfg(feature = "netcheck")]
+        if !config.stun.is_empty() {
+            match rt.block_on(measure(config)) {
+                Ok(m) => {
+                    eprintln!("drt wg: mapping {} -- {}", m.kind, m.why);
+                    let _ = report_tx.send(Report::Mapping(m));
+                }
+                // A measurement that fails is a measurement, not a tunnel:
+                // the device still comes up, and a peer with a configured
+                // endpoint still works. Refusing to start over an
+                // unanswered question would trade a working tunnel for it.
+                Err(e) => {
+                    eprintln!("drt wg: could not measure the mapping: {e}");
+                    let _ = report_tx.send(Report::Refused {
+                        command: "measure".into(),
+                        reason: e,
+                    });
+                }
+            }
+        }
+
+        let device = rt.block_on(bind(config))?;
         let (commands, command_rx) = mpsc::unbounded_channel();
         let every = Duration::from_millis(config.report_ms.max(1));
         let runtime = std::thread::spawn(move || {
             rt.block_on(drive(device, every, report_tx, command_rx));
+            // Leaked, not dropped. `drive` RETURNS when the bridge is
+            // dropped, so unlike `stun`'s server this thread reaches the
+            // end of its runtime's life -- straight into FM-1
+            // (doc/Failure-Modes.md), the tokio 1.53.1 use-after-free in
+            // runtime teardown that every foreground verb here leaks
+            // around. The deployment is on its way down; the OS reclaims
+            // what drop would have.
+            std::mem::forget(rt);
         });
         Ok(WireguardBridge {
             reports,
             commands,
+            refusals: Vec::new(),
             queue: config.queue.clone(),
             reply_queue: config.reply_queue.clone(),
             interface: config.interface.clone(),
-            listen_port,
+            listen_port: config.listen_port,
             public_key: public_key(&secret),
             _runtime: runtime,
         })
@@ -489,6 +990,9 @@ impl WireguardBridge {
     /// Push whatever the device has said onto the root's queue.
     /// Non-blocking: anything not ready now is picked up next pass.
     pub fn report(&mut self, push: &mut dyn FnMut(&str, &[u8]) -> bool) {
+        for refusal in std::mem::take(&mut self.refusals) {
+            let _ = push(&self.queue, &encode(&report_value(&refusal)));
+        }
         while let Ok(report) = self.reports.try_recv() {
             let msg = encode(&report_value(&report));
             // A full or undeclared queue is the deployment's own sizing to
@@ -520,7 +1024,13 @@ impl WireguardBridge {
                 // The deployment's own program wrote this. Naming what was
                 // wrong beats dropping it in silence, and stopping the
                 // device over it would be worse than either.
-                Err(e) => eprintln!("drt start: wireguard: {e}"),
+                Err(reason) => {
+                    eprintln!("drt start: wireguard: {reason}");
+                    self.refusals.push(Report::Refused {
+                        command: "parse".into(),
+                        reason,
+                    });
+                }
             }
         }
     }
@@ -571,6 +1081,21 @@ pub fn report_value(report: &Report) -> rmpv::Value {
             ("endpoint".into(), addr_value(*endpoint)),
             ("previous".into(), addr_value(*previous)),
         ]),
+        Report::Mapping(m) => rmpv::Value::Map(vec![
+            ("event".into(), "wireguard_mapping".into()),
+            ("mapping".into(), m.kind.into()),
+            // The one field a rendezvous needs, and nil when there is
+            // nothing worth publishing -- a symmetric mapping has no
+            // address a peer could use.
+            ("address".into(), addr_value(m.address)),
+            ("punchable".into(), rmpv::Value::Boolean(m.punchable)),
+            ("why".into(), m.why.as_str().into()),
+        ]),
+        Report::Refused { command, reason } => rmpv::Value::Map(vec![
+            ("event".into(), "wireguard_error".into()),
+            ("command".into(), command.as_str().into()),
+            ("reason".into(), reason.as_str().into()),
+        ]),
     }
 }
 
@@ -588,6 +1113,13 @@ fn addr_value(addr: Option<SocketAddr>) -> rmpv::Value {
 /// Public because it is the wire contract between a supervisor and this
 /// device, and a contract nothing can exercise without a kernel interface
 /// is a contract nothing tests.
+///
+/// **An absent `endpoint` is an error, not "clear it".** The first version
+/// of this read a missing field as a request to forget where the peer is,
+/// on the reasoning that a Lua table cannot hold a nil value. That made a
+/// typo in the field name — `endpiont`, `Endpoint` — tear down a working
+/// tunnel silently, which is a far worse failure than the one it avoided.
+/// Clearing is now `{command = "endpoint", clear = true}`, said out loud.
 pub fn command_from(value: &rmpv::Value) -> Result<Command, String> {
     let field = |name: &str| {
         value
@@ -613,31 +1145,76 @@ pub fn command_from(value: &rmpv::Value) -> Result<Command, String> {
     }
     let key_text = field("public_key")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| format!("{name}: no `public_key`"))?;
+        .ok_or_else(|| format!("{name}: no `public_key`; it is the only name a peer has"))?;
     let public_key = parse_key(&format!("{name}.public_key"), key_text)?;
-    // An absent field and an explicit nil mean the same thing on purpose:
-    // "clear it". A Lua table cannot hold a nil value, so a program that
-    // wants to clear an endpoint can only do it by leaving the key out.
-    let endpoint = field("endpoint").and_then(|v| v.as_str());
+    let keepalive = field("keepalive")
+        .and_then(|v| v.as_u64())
+        .map(|s| s as u16);
+    let endpoint = match field("endpoint").and_then(|v| v.as_str()) {
+        Some(text) => Some(text.parse::<SocketAddr>().map_err(|e| {
+            format!(
+                "{name}.endpoint: '{text}' is not a host:port ({e}). An address, \
+                     never a hostname: this is the far side of a punch, and the \
+                     rendezvous measured a number."
+            )
+        })?),
+        None => None,
+    };
+    let clearing = field("clear").and_then(|v| v.as_bool()).unwrap_or(false);
     match name {
-        "endpoint" => Ok(Command::Endpoint {
-            public_key,
-            endpoint: match endpoint {
-                Some(text) => Some(
-                    text.parse::<SocketAddr>()
-                        .map_err(|e| format!("endpoint: '{text}' is not a host:port ({e})"))?,
-                ),
-                None => None,
-            },
-        }),
+        "endpoint" => match (clearing, endpoint) {
+            (true, _) => Ok(Command::ClearEndpoint { public_key }),
+            (false, Some(endpoint)) => Ok(Command::Endpoint {
+                public_key,
+                endpoint,
+                keepalive,
+            }),
+            (false, None) => Err("endpoint: no `endpoint`. To forget where a peer is, say \
+                                  so: {command = \"endpoint\", public_key = ..., \
+                                  clear = true}. An absent field is not read as a \
+                                  request to clear, because that makes a mistyped \
+                                  field name tear down a working tunnel."
+                .to_string()),
+        },
         "keepalive" => Ok(Command::Keepalive {
             public_key,
-            seconds: field("seconds").and_then(|v| v.as_u64()).map(|s| s as u16),
+            seconds: keepalive,
         }),
+        "add" => {
+            let mut allowed_ips = Vec::new();
+            for cidr in field("allowed_ips")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| {
+                    "add: no `allowed_ips`. A peer with none can neither be routed \
+                     to nor accepted from, so adding one would add nothing."
+                        .to_string()
+                })?
+            {
+                let text = cidr
+                    .as_str()
+                    .ok_or_else(|| "add.allowed_ips: each entry is a CIDR string".to_string())?;
+                allowed_ips
+                    .push(text.parse::<IpNetwork>().map_err(|e| {
+                        format!("add.allowed_ips: '{text}' is not a network ({e})")
+                    })?);
+            }
+            if allowed_ips.is_empty() {
+                return Err("add.allowed_ips: empty; a peer with no allowed IPs does \
+                            nothing"
+                    .into());
+            }
+            Ok(Command::Add {
+                public_key,
+                allowed_ips,
+                endpoint,
+                keepalive,
+            })
+        }
+        "remove" => Ok(Command::Remove { public_key }),
         // Unreachable: the name was checked against COMMAND above, and
         // this match covers it. Kept as a refusal rather than a panic so
         // that adding a name to COMMAND and forgetting an arm is a message
-        // on stderr and not a dead deployment.
+        // on a queue and not a dead deployment.
         other => Err(format!(
             "command '{other}' is named but not implemented; this is a bug"
         )),

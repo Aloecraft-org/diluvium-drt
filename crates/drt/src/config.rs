@@ -284,8 +284,11 @@ fn map_wireguard(path: &Path, block: rmpv::Value) -> Result<drt_config::Wireguar
         return Err(format!("{}: wireguard must be a table", path.display()));
     };
     let mut wg = drt_config::WireguardConfig {
-        listen_port: 0,
+        listen_port: 51820,
         interface: "drt0".into(),
+        address: None,
+        mtu: 1420,
+        stun: Vec::new(),
         private_key: None,
         private_key_file: None,
         private_key_env: None,
@@ -310,6 +313,23 @@ fn map_wireguard(path: &Path, block: rmpv::Value) -> Result<drt_config::Wireguar
                     .ok_or_else(|| bad("an interface name"))?
                     .into()
             }
+            "address" => {
+                wg.address = Some(value.as_str().ok_or_else(|| bad("a CIDR address"))?.into())
+            }
+            "mtu" => {
+                wg.mtu = u16::try_from(value.as_u64().ok_or_else(|| bad("an MTU"))?)
+                    .map_err(|_| bad("an MTU"))?
+            }
+            "stun" => {
+                for server in value.as_array().ok_or_else(|| bad("a list of host:port"))? {
+                    wg.stun.push(
+                        server
+                            .as_str()
+                            .ok_or_else(|| bad("a list of host:port"))?
+                            .into(),
+                    );
+                }
+            }
             "private_key" => {
                 wg.private_key = Some(value.as_str().ok_or_else(|| bad("a base64 key"))?.into())
             }
@@ -333,9 +353,9 @@ fn map_wireguard(path: &Path, block: rmpv::Value) -> Result<drt_config::Wireguar
             }
             other => {
                 return Err(format!(
-                    "{}: unknown wireguard key '{other}' (known: listen_port, interface, \
-                     private_key, private_key_file, private_key_env, peers, queue, \
-                     reply_queue, report_ms)",
+                    "{}: unknown wireguard key '{other}' (known: listen_port, interface, address, mtu, \
+                     stun, private_key, private_key_file, private_key_env, peers, \
+                     queue, reply_queue, report_ms)",
                     path.display()
                 ));
             }
