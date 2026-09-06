@@ -584,6 +584,10 @@ pub fn assemble(cli: &Cli) -> Result<(RootConfig, drt_connector::Dispatcher), St
 /// The native binary: assemble, then run the verb to completion, sleeping
 /// where the driver says to.
 pub fn main(cli: Cli) -> ExitCode {
+    // Before the first byte goes out: on Windows this is what keeps the C
+    // core's `print` and this file's `eprintln!` on the same line ending.
+    // A no-op everywhere else.
+    drt_platform::stdio::bytes_as_written();
     let (config, dispatcher) = match assemble(&cli) {
         Ok(pair) => pair,
         Err(e) => {

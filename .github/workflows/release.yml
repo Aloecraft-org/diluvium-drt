@@ -177,9 +177,11 @@ jobs:
             os: macos-15-intel
             target: x86_64-apple-darwin
             setup: 'true'
-          # linux aarch64 and windows are next, not promised: the full
-          # profile carries aws-lc-sys through russh, and cross-compiling
-          # that is a job to rehearse, not to assume.
+          # linux aarch64 is next, not promised: the full profile carries
+          # aws-lc-sys through russh, and cross-compiling that is a job to
+          # rehearse, not to assume. Windows is not in this matrix because
+          # it cannot build both halves: it is `build-windows` below, slim
+          # only, and proven on a real Windows runner by `smoke-windows`.
     env:
       DRT_RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
     steps:
@@ -388,9 +390,101 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  build-windows:
+    # The Windows leg: `slim` for x86_64-pc-windows-gnu, cross-built from
+    # Linux with mingw-w64 the way doc/Platforms.md said to rehearse it.
+    # Cross rather than native for two reasons that are the same reason:
+    # diluvium-sys drives a GCC-style compiler and refuses MSVC by name,
+    # and on a Linux host it derives `x86_64-w64-mingw32-gcc` from the
+    # target triple itself, so the build needs nothing told to it that the
+    # linux_static leg does not also need. `full` is not built: `exec` is
+    # unix-only by `compile_error!`, and `full` carries aws-lc-sys through
+    # russh, which is the linux aarch64 problem again. So the artifact is
+    # `drt_slim_windows_x86_64.exe` and there is no unprefixed one -- a
+    # Windows box gets the distribution-size profile, which spawns, serves
+    # and reads files, and the connectors that need a runtime stay on the
+    # platforms that build them.
+    #
+    # A cross-built binary cannot be run here, and a binary nothing ran is
+    # what the smoke steps exist to prevent -- so it is uploaded and then
+    # run for real in `smoke-windows`, on a Windows runner.
+    name: Build (windows_x86_64)
+    needs: [preflight, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DRT_RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows_x86_64
+      - name: mingw-w64
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+      - name: Build slim
+        run: |
+          set -eu
+          cargo build --profile release-small -p drt --target x86_64-pc-windows-gnu
+          cp target/x86_64-pc-windows-gnu/release-small/drt.exe drt_slim_windows_x86_64.exe
+          file drt_slim_windows_x86_64.exe | grep -q 'PE32+ executable'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drt-windows_x86_64
+          path: drt_slim_windows_x86_64.exe
+          if-no-files-found: error
+          retention-days: 30
+
+  smoke-windows:
+    # The Windows binary, run on Windows: the same three checks the native
+    # legs make on themselves, and then the examples gate, which is the
+    # conformance oracle on every other target and is one here too. Git
+    # Bash is the shell because run-all.sh is bash and the examples' own
+    # demo.sh files are too; the runner ships it, with the coreutils, sed,
+    # diff and curl the gate needs. Every example a `slim` build can run
+    # runs; the ones that need `full` are skipped by name, as they are for
+    # the slim binary anywhere.
+    name: Smoke (windows_x86_64)
+    needs: [preflight, build-windows]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      DRT_RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: drt-windows_x86_64
+      - name: Smoke test
+        run: |
+          set -eu
+          ./drt_slim_windows_x86_64.exe --version
+          echo 'local x = 1' > smoke.lua
+          ./drt_slim_windows_x86_64.exe run smoke.lua
+          ./drt_slim_windows_x86_64.exe buildinfo | grep -qx 'profile: slim'
+          # A tagged build names its tag; a rehearsal has none and prints none.
+          if [ -n "${DRT_RELEASE_TAG:-}" ]; then
+            ./drt_slim_windows_x86_64.exe buildinfo | grep -qx "tag: $DRT_RELEASE_TAG"
+          else
+            ! ./drt_slim_windows_x86_64.exe buildinfo | grep -q '^tag:'
+          fi
+      - name: The examples gate, on Windows
+        run: |
+          set -eu
+          cd examples && DRT="$GITHUB_WORKSPACE/drt_slim_windows_x86_64.exe" ./run-all.sh
+
   publish:
     name: Publish release
-    needs: [preflight, test, build, build-wasip2, build-web]
+    needs: [preflight, test, build, build-wasip2, build-web, build-windows, smoke-windows]
     if: needs.preflight.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -477,6 +571,10 @@ jobs:
             # instead of by guessing from the artifact filename.
             echo "profile.full.connectors: ${FULL_CONNECTORS:-unknown}"
             echo "profile.slim.connectors: ${SLIM_CONNECTORS:-unknown}"
+            # `drt_slim_windows_x86_64.exe` is the slim feature set too, and
+            # the one profile Windows gets (see build-windows); the line
+            # above describes it. It answered `buildinfo` on a Windows
+            # runner in smoke-windows before it was allowed here.
             # `drt_wasip2.wasm`: run it with
             #   wasmtime run -W exceptions=y --dir . drt_wasip2.wasm run app.dlua
             echo "profile.wasi.connectors: ${WASI_CONNECTORS:-unknown}"
