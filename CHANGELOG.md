@@ -1104,6 +1104,40 @@ contract is `doc/Browser.md`; `doc/Platforms.md` is the matrix.
   example would have failed with "cannot create the interface", which
   reads like a bug in the example rather than the absence of a
   capability.
+- **The fallback for a NAT that cannot be punched: WireGuard over a
+  TURN allocation.** `punchable: false` was a dead end -- the block
+  measured the mapping, said the punch could not work, and left it
+  there. Now the program that read that mints a credential with
+  `crypto/turn_credential`, hands it over as a `relay` command, and
+  gets back the *relayed* address to publish to the rendezvous in
+  place of the measured one. Its WireGuard traffic goes through the
+  relay and the far side never learns the difference: it has an
+  endpoint, and packets arrive from it. `clear = true` gives the
+  allocation up again, so a deployment that later finds a direct path
+  stops paying for the relay.
+
+  This is the seam gotatun's device being generic over BOTH transports
+  was worth having: the UDP side is a trait, so the allocation slots in
+  underneath and the protocol never learns it is being relayed. Sends
+  go through it; receives listen on the direct socket *and* the relay,
+  which is ICE's own shape -- a peer that later becomes reachable
+  directly is still heard. `turn_fallback = true` is what makes a
+  device able to do this, and it is off by default because a device
+  that may relay gives up the batched socket read: one that never will
+  should not pay for the option. Proven end to end against DRT's own
+  `drt turn` server, on loopback and unprivileged
+  (`wireguard_traffic_can_fall_back_through_a_turn_allocation`).
+- **A peer whose `allowed_ips` no route will reach is named at
+  startup.** DRT gives the interface an address and the kernel derives
+  exactly one route from it, so a peer configured for a subnet outside
+  that prefix comes up, reports a handshake, and silently carries
+  nothing. Both numbers are in the config, so it is now a sentence at
+  startup -- which peer, which network, and the `ip route add` that
+  fixes it -- instead of an afternoon with tcpdump. A warning and not
+  a refusal: a hub whose job is to reach subnets outside its own
+  prefix is a legitimate config, and it works the moment the route
+  exists. Route management itself is still not DRT's, and
+  `doc/WireGuard.md` §4 says what it would take.
 
 ### Changed
 

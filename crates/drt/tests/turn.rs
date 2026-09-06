@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use drt_config::TurnConfig;
 use ego_transport::turn::ephemeral_credentials_for;
-use turn_client::client::{Client, ClientConfig};
+use turn::client::{Client, ClientConfig};
 use webrtc_util::Conn;
 
 /// One runtime for the whole binary, deliberately never dropped: the

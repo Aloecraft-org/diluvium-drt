@@ -288,6 +288,7 @@ fn map_wireguard(path: &Path, block: rmpv::Value) -> Result<drt_config::Wireguar
         interface: "drt0".into(),
         address: None,
         mtu: 1420,
+        turn_fallback: false,
         stun: Vec::new(),
         private_key: None,
         private_key_file: None,
@@ -315,6 +316,9 @@ fn map_wireguard(path: &Path, block: rmpv::Value) -> Result<drt_config::Wireguar
             }
             "address" => {
                 wg.address = Some(value.as_str().ok_or_else(|| bad("a CIDR address"))?.into())
+            }
+            "turn_fallback" => {
+                wg.turn_fallback = value.as_bool().ok_or_else(|| bad("true or false"))?
             }
             "mtu" => {
                 wg.mtu = u16::try_from(value.as_u64().ok_or_else(|| bad("an MTU"))?)
@@ -354,7 +358,7 @@ fn map_wireguard(path: &Path, block: rmpv::Value) -> Result<drt_config::Wireguar
             other => {
                 return Err(format!(
                     "{}: unknown wireguard key '{other}' (known: listen_port, interface, address, mtu, \
-                     stun, private_key, private_key_file, private_key_env, peers, \
+                     stun, turn_fallback, private_key, private_key_file, private_key_env, peers, \
                      queue, reply_queue, report_ms)",
                     path.display()
                 ));

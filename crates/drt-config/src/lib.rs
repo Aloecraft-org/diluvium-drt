@@ -480,6 +480,22 @@ pub struct WireguardConfig {
     /// left at the ethernet default fragments every full-size packet.
     #[serde(default = "default_wireguard_mtu")]
     pub mtu: u16,
+    /// Whether this device may be asked, at run time, to send through a
+    /// TURN allocation — the fallback for a NAT `stun` says cannot be
+    /// punched.
+    ///
+    /// Off by default, and the cost of turning it on is a real one: a
+    /// device that may relay gives up gotatun's batched `recvmmsg` read,
+    /// because a batch parked on the direct socket would starve the relayed
+    /// path. A device that will never relay should not pay for the option.
+    ///
+    /// No credential here: `crypto/turn_credential` mints one under a
+    /// secret the guest cannot read, and the program hands it over on
+    /// [`WireguardConfig::reply_queue`] when the mapping comes back
+    /// `punchable: false`. So the decision is the program's, and the
+    /// `wireguard` block never holds a TURN secret.
+    #[serde(default)]
+    pub turn_fallback: bool,
     /// STUN servers to measure this device's own mapping with, **on
     /// `listen_port`, immediately before the device binds it**.
     ///

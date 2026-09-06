@@ -78,15 +78,23 @@
 //! - Fan-out: [`Command`], what a program may ask of a running device, and
 //!   [`Report`], what it is told. Two enums, and the match on each is the
 //!   only dispatch in this file.
+//! - The UDP side: [`Transport`], which is gotatun's own socket plus the
+//!   option of a TURN allocation beside it, and [`unroutable`], which names
+//!   an `allowed_ips` no route will reach.
 
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use base64::Engine as _;
+use std::sync::Arc;
+
 use gotatun::device::{Device, DeviceBuilder, DeviceTransports, Peer};
+use gotatun::packet::{Packet, PacketBufPool};
+use gotatun::udp::{UdpRecv, UdpSend, UdpTransportFactory};
 use gotatun::x25519::{PublicKey, StaticSecret};
 use ipnetwork::IpNetwork;
 use tokio::sync::mpsc;
+use webrtc_util::Conn as _;
 
 use drt_config::{WireguardConfig, WireguardPeer};
 
@@ -97,13 +105,14 @@ pub const KEY_LEN: usize = 32;
 
 /// The commands a program may put on the reply queue. Named here rather
 /// than at their match arms so the whole vocabulary is one list.
-pub const COMMAND: [&str; 4] = ["endpoint", "keepalive", "add", "remove"];
+pub const COMMAND: [&str; 5] = ["endpoint", "keepalive", "add", "remove", "relay"];
 
 /// The events a program is sent on the queue.
-pub const EVENT: [&str; 4] = [
+pub const EVENT: [&str; 5] = [
     "wireguard",
     "wireguard_endpoint",
     "wireguard_mapping",
+    "wireguard_relay",
     "wireguard_error",
 ];
 
@@ -199,7 +208,67 @@ pub fn validate(config: &WireguardConfig) -> Result<(), String> {
     }
     private_key(config)?;
     peers(config)?;
+    for line in unroutable(config) {
+        eprintln!("drt wg: {line}");
+    }
     Ok(())
+}
+
+/// Which `allowed_ips` no packet will ever reach, and what to do about it.
+///
+/// DRT gives the interface an address and the kernel derives exactly one
+/// route from it: the on-link one for that address's own prefix. A peer
+/// whose `allowed_ips` lies outside that prefix is configured perfectly and
+/// carries nothing — WireGuard would encrypt for it happily, and nothing
+/// ever hands it a packet, because the routing table sends those addresses
+/// somewhere else entirely.
+///
+/// That is the failure this catches: a tunnel that comes up, reports a
+/// handshake, and silently drops the traffic it was built for. Both numbers
+/// are in the config, so it can be said at startup instead of discovered
+/// with tcpdump.
+///
+/// A warning and not a refusal, deliberately: the setup works the moment
+/// the operator adds the route, and a hub whose whole job is to reach
+/// subnets outside its own prefix is a legitimate config, not a mistake.
+/// Route management is not DRT's yet (`doc/WireGuard.md` §4), so the honest
+/// thing is to name the gap and the command that closes it.
+pub fn unroutable(config: &WireguardConfig) -> Vec<String> {
+    let mut said = Vec::new();
+    let on_link: Option<IpNetwork> = config.address.as_ref().and_then(|a| a.parse().ok());
+    for peer in &config.peers {
+        for cidr in &peer.allowed_ips {
+            let Ok(net) = cidr.parse::<IpNetwork>() else {
+                continue; // `peer()` refuses this by name; not this function's job.
+            };
+            // A default route is the "send everything through the tunnel"
+            // case. It needs a route too, but saying so for every VPN-shaped
+            // config would be noise where the intent is unmistakable.
+            if net.prefix() == 0 {
+                continue;
+            }
+            let covered = match on_link {
+                // Same family, and the address's prefix contains this
+                // network: the on-link route already reaches it.
+                Some(link) => link.is_ipv4() == net.is_ipv4() && link.contains(net.network()),
+                None => false,
+            };
+            if covered {
+                continue;
+            }
+            let reason = match &config.address {
+                None => "this device has no `address`, so it has no route at all".to_string(),
+                Some(addr) => format!("outside {addr}, the only prefix the interface routes"),
+            };
+            said.push(format!(
+                "peer {} is allowed {cidr}, and nothing will reach it: {reason}. \
+                 It will handshake and carry nothing. Add the route yourself \
+                 (`ip route add {cidr} dev {}`), or narrow allowed_ips.",
+                peer.public_key, config.interface
+            ));
+        }
+    }
+    said
 }
 
 /// This device's private key, by the same three knobs as every other
@@ -315,10 +384,14 @@ pub fn peers(config: &WireguardConfig) -> Result<Vec<Peer>, String> {
 // Bringing the device up
 // ---------------------------------------------------------------------------
 
-/// The transports a deployment's device uses: a real UDP socket, and a
-/// kernel tunnel interface for the IP side. gotatun's own default, named
-/// here so the signatures below read as what they are.
-pub type Kernel = gotatun::device::DefaultDeviceTransports;
+/// The transports a deployment's device uses: [`Transport`] — gotatun's own
+/// socket, with the option of a TURN allocation beside it — and a kernel
+/// tunnel interface for the IP side.
+pub type Kernel = (
+    Transport,
+    gotatun::tun::tun_async_device::TunDevice,
+    gotatun::tun::tun_async_device::TunDevice,
+);
 
 /// Create the tunnel interface, **with an address, an MTU, and the link
 /// up**.
@@ -450,13 +523,19 @@ pub async fn measure(config: &WireguardConfig) -> Result<Mapping, String> {
 /// not a network, a port already held, an interface that needs a privilege
 /// this process has not got. A deployment that gets past this line has a
 /// device that is up and addressable.
-pub async fn bind(config: &WireguardConfig) -> Result<Device<Kernel>, String> {
+pub async fn bind(
+    config: &WireguardConfig,
+) -> Result<(Device<Kernel>, Option<Allocation>), String> {
     validate(config)?;
     let secret = private_key(config)?;
     let peers = peers(config)?;
     let tun = interface(config)?;
-    DeviceBuilder::new()
-        .with_default_udp()
+    // The handle the `relay` command later installs an allocation into.
+    // Absent entirely when `turn_fallback` is off, which is what keeps the
+    // batched socket read for every device that will never relay.
+    let (transport, allocation) = Transport::new(config.turn_fallback);
+    let device = DeviceBuilder::new()
+        .with_udp(transport)
         .with_ip(tun)
         .with_listen_port(config.listen_port)
         .with_private_key(secret)
@@ -468,7 +547,8 @@ pub async fn bind(config: &WireguardConfig) -> Result<Device<Kernel>, String> {
                 "wireguard: cannot bind UDP port {}: {e}",
                 config.listen_port
             )
-        })
+        })?;
+    Ok((device, allocation))
 }
 
 /// `drt wg`: bring the device up and hold it up, foreground.
@@ -498,7 +578,7 @@ pub async fn serve(config: &WireguardConfig) -> Result<(), String> {
             Err(e) => eprintln!("drt wg: could not measure the mapping: {e}"),
         }
     }
-    let mut device = bind(config).await?;
+    let (mut device, _allocation) = bind(config).await?;
     eprintln!(
         "drt wg: {} up on port {}, mtu {}{}, public key {}",
         config.interface,
@@ -564,6 +644,22 @@ pub enum Command {
     },
     /// Remove a peer, and with it any route to it.
     Remove { public_key: [u8; KEY_LEN] },
+    /// Send through a TURN allocation from now on, taking one first.
+    ///
+    /// The fallback for a NAT `stun` says cannot be punched: the program
+    /// reads `punchable: false` off the mapping, mints a credential with
+    /// `crypto/turn_credential`, and hands it here. What comes back is the
+    /// relayed address to publish to the rendezvous **instead of** the
+    /// measured one. Names no peer: it changes how this device sends to all
+    /// of them.
+    Relay {
+        server: SocketAddr,
+        username: String,
+        password: String,
+        realm: String,
+    },
+    /// Give the allocation up and send straight out the socket again.
+    ClearRelay,
 }
 
 impl Command {
@@ -575,7 +671,15 @@ impl Command {
             | Command::Keepalive { public_key, .. }
             | Command::Add { public_key, .. }
             | Command::Remove { public_key } => *public_key,
+            // Not a peer's command: it changes this device's own path.
+            Command::Relay { .. } | Command::ClearRelay => [0u8; KEY_LEN],
         }
+    }
+
+    /// Whether this command is about the device's own path rather than one
+    /// peer, which is what decides where it is carried out.
+    pub fn is_relay(&self) -> bool {
+        matches!(self, Command::Relay { .. } | Command::ClearRelay)
     }
 }
 
@@ -611,6 +715,16 @@ pub enum Report {
     /// device bound it. The address a rendezvous should publish, and
     /// whether publishing it is worth anything.
     Mapping(Mapping),
+    /// This device is sending through a TURN allocation, and here is the
+    /// address to publish. The rendezvous should be told this instead of
+    /// whatever `wireguard_mapping` measured, because the measured one is
+    /// what could not be punched to.
+    ///
+    /// `address` is nil when a `relay` command cleared the allocation.
+    Relaying {
+        address: Option<SocketAddr>,
+        server: Option<SocketAddr>,
+    },
     /// A command the device would not carry out, and why.
     ///
     /// Reported rather than only logged because the program on the other
@@ -643,6 +757,7 @@ pub async fn drive<T: DeviceTransports>(
     every: Duration,
     reports: mpsc::UnboundedSender<Report>,
     mut commands: mpsc::UnboundedReceiver<Command>,
+    allocation: Option<Allocation>,
 ) {
     let mut last: Vec<PeerReport> = Vec::new();
     let mut watch = tokio::time::interval(Duration::from_millis(WATCH_MS).min(every));
@@ -654,6 +769,20 @@ pub async fn drive<T: DeviceTransports>(
         let asked = tokio::select! {
             command = commands.recv() => {
                 let Some(command) = command else { return };
+                // A relay command is the device's own path, not a peer's, so
+                // it is carried out here where the allocation lives rather
+                // than in `apply`, which only knows about peers.
+                if command.is_relay() {
+                    match relay(&allocation, &command).await {
+                        Ok(report) => {
+                            let _ = reports.send(report);
+                        }
+                        Err(refusal) => {
+                            let _ = reports.send(refusal);
+                        }
+                    }
+                    continue;
+                }
                 if let Err(refusal) = apply(&device, &command).await {
                     let _ = reports.send(refusal);
                     continue;
@@ -687,6 +816,51 @@ pub async fn drive<T: DeviceTransports>(
             next_snapshot = tokio::time::Instant::now() + every;
         }
         last = now;
+    }
+}
+
+/// depth: take or drop the TURN allocation every send goes through.
+async fn relay(allocation: &Option<Allocation>, command: &Command) -> Result<Report, Report> {
+    let refuse = |reason: String| {
+        Err(Report::Refused {
+            command: "relay".into(),
+            reason,
+        })
+    };
+    let Some(handle) = allocation else {
+        return refuse(
+            "this device cannot relay: set `turn_fallback = true` on the wireguard \
+             block. It is off by default because a device that may relay gives up \
+             the batched socket read to keep the relayed path from starving."
+                .into(),
+        );
+    };
+    match command {
+        Command::ClearRelay => {
+            handle.send_replace(None);
+            Ok(Report::Relaying {
+                address: None,
+                server: None,
+            })
+        }
+        Command::Relay {
+            server,
+            username,
+            password,
+            realm,
+        } => match allocate(*server, username, password, realm).await {
+            Ok(relayed) => {
+                let address = relayed.address;
+                handle.send_replace(Some(Arc::new(relayed)));
+                Ok(Report::Relaying {
+                    address: Some(address),
+                    server: Some(*server),
+                })
+            }
+            Err(e) => refuse(e),
+        },
+        // `is_relay` gates this arm; anything else reaching it is a bug.
+        other => refuse(format!("{other:?} is not a relay command; this is a bug")),
     }
 }
 
@@ -852,6 +1026,12 @@ async fn apply<T: DeviceTransports>(device: &Device<T>, command: &Command) -> Re
             Ok(false) => unknown("remove"),
             Err(e) => refuse("remove", e.to_string()),
         },
+        // The device's own path, not a peer's. `drive` routes these to
+        // `relay` before they reach here, where the allocation lives.
+        Command::Relay { .. } | Command::ClearRelay => refuse(
+            "relay",
+            "a relay command reached the peer handler; this is a bug".into(),
+        ),
     }
 }
 
@@ -942,11 +1122,11 @@ impl WireguardBridge {
             }
         }
 
-        let device = rt.block_on(bind(config))?;
+        let (device, allocation) = rt.block_on(bind(config))?;
         let (commands, command_rx) = mpsc::unbounded_channel();
         let every = Duration::from_millis(config.report_ms.max(1));
         let runtime = std::thread::spawn(move || {
-            rt.block_on(drive(device, every, report_tx, command_rx));
+            rt.block_on(drive(device, every, report_tx, command_rx, allocation));
             // Leaked, not dropped. `drive` RETURNS when the bridge is
             // dropped, so unlike `stun`'s server this thread reaches the
             // end of its runtime's life -- straight into FM-1
@@ -1037,6 +1217,262 @@ impl WireguardBridge {
 }
 
 // ---------------------------------------------------------------------------
+// The UDP transport, and the TURN allocation it can fall back to
+// ---------------------------------------------------------------------------
+
+/// A TURN allocation, live, shared between the device's sender, its receiver
+/// and the command that installed it.
+///
+/// `None` inside the lock means "allowed to relay, not relaying"; the whole
+/// thing absent (see [`Transport`]) means the device was not built to relay
+/// at all.
+/// A `watch` and not a lock, for a reason the first version got wrong: a
+/// receiver parked on the direct socket must be *woken* when an allocation
+/// appears, or it waits there forever while every packet arrives on the
+/// path it is not watching. `watch::Receiver::changed()` is that wake, and
+/// it is cancel-safe, which a select arm has to be.
+type Allocation = Arc<tokio::sync::watch::Sender<Option<Arc<Relayed>>>>;
+
+/// One TURN allocation and the address it answers at.
+///
+/// Public only because [`Allocation`] is — the handle has to be nameable by
+/// whoever builds a [`Transport`]. Its fields are not: what a caller does
+/// with an allocation is install it, and nothing else.
+pub struct Relayed {
+    conn: Arc<dyn webrtc_util::Conn + Send + Sync>,
+    /// The address to publish to a rendezvous. Packets sent here reach this
+    /// device through the TURN server.
+    address: SocketAddr,
+    /// Kept alive because dropping it drops the allocation: the client owns
+    /// the refresh loop that keeps the server from reclaiming it.
+    _client: turn::client::Client,
+}
+
+/// The device's UDP side: gotatun's own socket, plus the option of a TURN
+/// allocation beside it.
+///
+/// **Why wrap rather than replace.** gotatun's `UdpSocketFactory` does
+/// `recvmmsg` and GRO on Linux, and a device that gave that up to gain a
+/// fallback it never uses would be paying for nothing. So the direct socket
+/// is still gotatun's, and a device built without `turn_fallback` delegates
+/// every call to it — including the batched receive, which the relaying path
+/// cannot use.
+///
+/// **Why both paths stay live.** With an allocation installed, sends go
+/// through it and receives listen on *both* it and the direct socket. That
+/// is ICE's own shape: the direct path is not torn down when a relayed one
+/// appears, so a peer that later becomes reachable directly — it roamed, or
+/// its NAT let go — is still heard.
+pub struct Transport {
+    allocation: Option<Allocation>,
+}
+
+impl Transport {
+    /// A transport for a device that may be asked to relay, or one that may
+    /// not. The handle is what the command later installs an allocation
+    /// into; there is nothing to install into for a device built without.
+    pub fn new(relayable: bool) -> (Transport, Option<Allocation>) {
+        let allocation = relayable.then(|| Arc::new(tokio::sync::watch::Sender::new(None)));
+        (
+            Transport {
+                allocation: allocation.clone(),
+            },
+            allocation,
+        )
+    }
+}
+
+type DirectSend = <gotatun::udp::socket::UdpSocketFactory as UdpTransportFactory>::Send;
+type DirectRecv = <gotatun::udp::socket::UdpSocketFactory as UdpTransportFactory>::Recv;
+
+impl UdpTransportFactory for Transport {
+    type Send = Sender;
+    type Recv = Receiver;
+
+    async fn bind(
+        &mut self,
+        params: &gotatun::udp::UdpTransportFactoryParams,
+    ) -> std::io::Result<(Sender, Receiver)> {
+        let (direct_tx, direct_rx) = gotatun::udp::socket::UdpSocketFactory::default()
+            .bind(params)
+            .await?;
+        Ok((
+            Sender {
+                direct: direct_tx,
+                allocation: self.allocation.clone(),
+            },
+            Receiver {
+                direct: direct_rx,
+                allocation: self.allocation.as_ref().map(|a| a.subscribe()),
+            },
+        ))
+    }
+}
+
+/// Outbound. Through the allocation when there is one, straight out the
+/// socket when there is not.
+#[derive(Clone)]
+pub struct Sender {
+    direct: DirectSend,
+    allocation: Option<Allocation>,
+}
+
+impl UdpSend for Sender {
+    type SendManyBuf = <DirectSend as UdpSend>::SendManyBuf;
+
+    async fn send_to(&self, packet: Packet, destination: SocketAddr) -> std::io::Result<()> {
+        if let Some(handle) = &self.allocation {
+            // `borrow` and not a lock await: the send path should not queue
+            // behind whoever is installing an allocation.
+            let relayed = handle.borrow().clone();
+            if let Some(relayed) = relayed {
+                // The TURN client installs the permission for `destination`
+                // on the way past, so the peer's reply is allowed back.
+                relayed
+                    .conn
+                    .send_to(&packet, destination)
+                    .await
+                    .map_err(|e| std::io::Error::other(format!("turn relay: {e}")))?;
+                return Ok(());
+            }
+        }
+        self.direct.send_to(packet, destination).await
+    }
+
+    fn local_addr(&self) -> std::io::Result<Option<SocketAddr>> {
+        // The DIRECT address, always, even while relaying: this is what the
+        // device reports as its own port, and the relayed address is a
+        // separate fact the deployment is told about by name
+        // (`wireguard_relay`) precisely because it is not this.
+        self.direct.local_addr().map(Some)
+    }
+}
+
+/// Inbound, from either path.
+pub struct Receiver {
+    direct: DirectRecv,
+    allocation: Option<tokio::sync::watch::Receiver<Option<Arc<Relayed>>>>,
+}
+
+impl UdpRecv for Receiver {
+    type RecvManyBuf = <DirectRecv as UdpRecv>::RecvManyBuf;
+
+    async fn recv_from(
+        &mut self,
+        pool: &mut PacketBufPool,
+    ) -> std::io::Result<(Packet, SocketAddr)> {
+        let Some(watch) = self.allocation.as_mut() else {
+            return self.direct.recv_from(pool).await;
+        };
+        loop {
+            // Re-read on every pass, and watch for a change on every pass.
+            // The first version read once and then parked on whichever path
+            // existed at that moment: with no allocation yet it waited on
+            // the direct socket, an allocation arrived, and every packet
+            // after that came back through the relay — to a receiver that
+            // was not listening to it and never would be. Measured as a
+            // handshake B answered and A never heard.
+            let relayed = watch.borrow_and_update().clone();
+            let mut relayed_buf = pool.get();
+            match relayed {
+                None => {
+                    tokio::select! {
+                        direct = self.direct.recv_from(pool) => return direct,
+                        // An allocation appeared: go round and listen to it.
+                        _ = watch.changed() => continue,
+                    }
+                }
+                Some(relayed) => {
+                    tokio::select! {
+                        direct = self.direct.recv_from(pool) => return direct,
+                        got = relayed.conn.recv_from(&mut relayed_buf) => {
+                            let (n, from) = got.map_err(|e| {
+                                std::io::Error::other(format!("turn relay: {e}"))
+                            })?;
+                            relayed_buf.truncate(n);
+                            return Ok((relayed_buf, from));
+                        }
+                        // Cleared, or replaced: re-read rather than keep
+                        // reading from an allocation that is gone.
+                        _ = watch.changed() => continue,
+                    }
+                }
+            }
+        }
+    }
+
+    async fn recv_many_from(
+        &mut self,
+        recv_buf: &mut Self::RecvManyBuf,
+        pool: &mut PacketBufPool,
+        packets: &mut Vec<(Packet, SocketAddr)>,
+    ) -> std::io::Result<()> {
+        // A device that cannot relay keeps gotatun's batched read, which is
+        // the whole reason this wraps the socket instead of replacing it.
+        // One that can gives it up: a `recvmmsg` parked on the socket would
+        // starve the relayed path for as long as it waits.
+        if self.allocation.is_none() {
+            return self.direct.recv_many_from(recv_buf, pool, packets).await;
+        }
+        let (packet, from) = self.recv_from(pool).await?;
+        packets.push((packet, from));
+        Ok(())
+    }
+
+    fn enable_udp_gro(&self) -> std::io::Result<()> {
+        self.direct.enable_udp_gro()
+    }
+}
+
+/// Take an allocation on `server` with the credential the deployment minted,
+/// and answer with the address to publish.
+///
+/// The credential is not this block's to invent: `crypto/turn_credential`
+/// mints one under a secret the guest cannot read, and the program hands it
+/// here. So a deployment that relays through someone else's TURN server
+/// needs no secret in its `wireguard` block, and one that relays through its
+/// own shares exactly the secret it already shares.
+async fn allocate(
+    server: SocketAddr,
+    username: &str,
+    password: &str,
+    realm: &str,
+) -> Result<Relayed, String> {
+    let socket = tokio::net::UdpSocket::bind("0.0.0.0:0")
+        .await
+        .map_err(|e| format!("a socket for the turn client: {e}"))?;
+    let client = turn::client::Client::new(turn::client::ClientConfig {
+        stun_serv_addr: server.to_string(),
+        turn_serv_addr: server.to_string(),
+        username: username.to_string(),
+        password: password.to_string(),
+        realm: realm.to_string(),
+        software: String::new(),
+        rto_in_ms: 0,
+        conn: Arc::new(socket),
+        vnet: None,
+    })
+    .await
+    .map_err(|e| format!("turn client for {server}: {e}"))?;
+    client
+        .listen()
+        .await
+        .map_err(|e| format!("turn client for {server}: {e}"))?;
+    let conn = client
+        .allocate()
+        .await
+        .map_err(|e| format!("turn allocation on {server}: {e}"))?;
+    let address = conn
+        .local_addr()
+        .map_err(|e| format!("turn allocation on {server} has no address: {e}"))?;
+    Ok(Relayed {
+        conn: Arc::new(conn),
+        address,
+        _client: client,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // depth: the wire shapes
 // ---------------------------------------------------------------------------
 
@@ -1091,6 +1527,12 @@ pub fn report_value(report: &Report) -> rmpv::Value {
             ("punchable".into(), rmpv::Value::Boolean(m.punchable)),
             ("why".into(), m.why.as_str().into()),
         ]),
+        Report::Relaying { address, server } => rmpv::Value::Map(vec![
+            ("event".into(), "wireguard_relay".into()),
+            // The address to publish, in place of the measured one.
+            ("address".into(), addr_value(*address)),
+            ("server".into(), addr_value(*server)),
+        ]),
         Report::Refused { command, reason } => rmpv::Value::Map(vec![
             ("event".into(), "wireguard_error".into()),
             ("command".into(), command.as_str().into()),
@@ -1142,6 +1584,39 @@ pub fn command_from(value: &rmpv::Value) -> Result<Command, String> {
             "unknown command '{name}' (known: {})",
             COMMAND.join(", ")
         ));
+    }
+    // `relay` is the one command that names no peer -- it changes how this
+    // device sends to all of them -- so it is read before the key every
+    // other command requires.
+    if name == "relay" {
+        if field("clear").and_then(|v| v.as_bool()).unwrap_or(false) {
+            return Ok(Command::ClearRelay);
+        }
+        let text = field("server")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "relay: no `server`; name the TURN server as host:port".to_string())?;
+        let server = text.parse::<SocketAddr>().map_err(|e| {
+            format!(
+                "relay.server: '{text}' is not a host:port ({e}). An address, not \
+                     a hostname: this is the fallback path and it should not depend \
+                     on a resolver that may be what is broken."
+            )
+        })?;
+        let want = |k: &str| {
+            field(k)
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .ok_or_else(|| format!("relay: no `{k}`; mint one with crypto/turn_credential"))
+        };
+        return Ok(Command::Relay {
+            server,
+            username: want("username")?,
+            password: want("password")?,
+            realm: field("realm")
+                .and_then(|v| v.as_str())
+                .unwrap_or("drt")
+                .to_string(),
+        });
     }
     let key_text = field("public_key")
         .and_then(|v| v.as_str())

@@ -57,6 +57,7 @@ return {
     mtu             = 1420,           -- not 1500: WireGuard's overhead is 60-80
     private_key_env = "WG_KEY",       -- or private_key_file, or private_key
     stun            = { "stun1.example:3478", "stun2.example:3478" },
+    turn_fallback   = true,           -- may be asked to relay; see §2
     queue           = "wg_in",        -- reports land here
     reply_queue     = "wg_out",       -- commands are read here (see §2)
     report_ms       = 10000,
@@ -126,7 +127,8 @@ key (a device anybody can be), and neither announces itself at run time —
 2. **The mapping must be endpoint-independent.** If the NAT allocates a
    fresh mapping per destination ("symmetric"), the address a STUN server
    saw says nothing about what a peer would see, and no punch is possible
-   from that side. DRT classifies this and says so.
+   from that side. DRT classifies this and says so — and when the answer is
+   no, there is somewhere to go: the TURN fallback below.
 3. **They exchange addresses through a rendezvous.** A program's job, over
    the relay that already exists. **DRT does not do this**, and §4 says so.
 4. **Both sides send to each other, repeatedly, at about the same time.**
@@ -237,6 +239,59 @@ kernel routes between them directly and nothing enters the tunnel. The
 packet-crossing is proven in `crates/drt/tests/wireguard.rs` instead, where
 the IP side is a pair of channels and no privilege is needed at all.
 
+### When the punch cannot work: the TURN fallback
+
+`punchable: false` is not the end of the road, it is a fork in it. A peer
+behind a symmetric NAT can take a **TURN allocation** and publish *that*
+address to the rendezvous instead of the measured one. Its WireGuard traffic
+then goes through the relay, and the far side never learns the difference:
+it has an endpoint, and packets arrive from it.
+
+The program decides, because the program is what read `punchable: false`:
+
+```lua
+if msg.event == "wireguard_mapping" and not msg.punchable then
+  -- The credential is crypto/turn_credential's; the wireguard block
+  -- never holds a TURN secret.
+  local c = host.call("crypto/turn_credential", { user = me, ttl = 3600 })
+  queue.push(wg_out, {
+    command  = "relay",
+    server   = "203.0.113.5:3478",
+    username = c.username,
+    password = c.password,
+  })
+end
+
+-- What comes back is the address to publish, in place of the measured one.
+if msg.event == "wireguard_relay" then rendezvous_publish(msg.address) end
+```
+
+`{command = "relay", clear = true}` gives the allocation up again, so a
+deployment that later gets a direct path can stop paying for the relay.
+
+**What it costs, and the one flag.** `turn_fallback = true` on the block is
+what makes a device able to do this at all, and it is off by default because
+it is not free: a device that may relay gives up gotatun's batched
+`recvmmsg` read, since a batch parked on the direct socket would starve the
+relayed path. A device that will never relay should not pay for the option.
+
+**Both paths stay live.** With an allocation installed, sends go through it
+and receives listen on the direct socket *and* the relay. That is ICE's own
+shape — the direct path is not torn down when a relayed one appears, so a
+peer that later becomes reachable directly is still heard. It is also what
+the first version got wrong: a receiver parked on the direct socket before
+the allocation existed waited there forever while every packet arrived on
+the path it was not watching, which showed up as a handshake the far side
+answered and this one never heard. The allocation is a `watch` now, so
+installing one wakes the receiver.
+
+`wireguard_traffic_can_fall_back_through_a_turn_allocation` proves it end to
+end against DRT's own `drt turn` server: an allocation taken with a
+`crypto/turn_credential`-shaped credential, a real WireGuard handshake
+across it, and a real packet out the far side. Loopback and unprivileged, so
+— as everywhere else here — it proves the plumbing, not that it beats a real
+symmetric NAT.
+
 ### What would actually prove a punch
 
 Two hosts behind two different consumer NATs, a rendezvous between them,
@@ -310,11 +365,26 @@ and the report shows the handshake —
 
 - **No rendezvous.** §2 step 3 is a shape, not a service. The exchange is
   a program's, over the relay.
-- **No route management.** DRT creates the interface, gives it the
-  `address` and MTU the block names, and brings it up — so the common
-  case (one subnet of peers, routed by the address's own prefix) works
-  with no `ip` commands at all. A second address, or a route to something
-  outside that prefix, is still `ip addr add` / `ip route add`.
+- **No route management, but no longer in silence.** DRT creates the
+  interface, gives it the `address` and MTU the block names, and brings it
+  up — so the common case (one subnet of peers, routed by the address's own
+  prefix) works with no `ip` commands at all. A second address, or a route
+  to something outside that prefix, is still `ip addr add` /
+  `ip route add`.
+
+  What changed is that a peer whose `allowed_ips` no route will reach is
+  **named at startup**, with the command that fixes it. That case — a
+  tunnel that comes up, reports a handshake, and silently carries nothing —
+  is the one this gap actually produces, and both numbers are in the config,
+  so it can be a sentence instead of an afternoon with tcpdump. A warning
+  and not a refusal: a hub whose whole job is to reach subnets outside its
+  own prefix is a legitimate config, and it works the moment the route
+  exists.
+
+  Real route management means netlink on Linux, `PF_ROUTE` on macOS and the
+  IP Helper API on Windows — three implementations, which is why `wg-quick`
+  is a per-platform shell script. Not started, and it should be a decision
+  about whether DRT owns routes at all rather than a drive-by.
 - **No no-root mode.** The device still wants a kernel interface, so a
   deployment needs `CAP_NET_ADMIN`. The pieces for a userspace mode are
   all present — the IP side is a trait, and the tests already drive it

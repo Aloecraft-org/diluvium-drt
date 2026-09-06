@@ -304,6 +304,7 @@ fn a_peer_with_no_endpoint_is_unreachable_until_the_endpoint_command_arrives() {
             Duration::from_millis(50),
             reports,
             command_rx,
+            None,
         ));
         let packet = ipv4_udp(ip_a, ip_b, b"after the rendezvous");
         let inject = tun_a.inject.clone();
@@ -399,6 +400,7 @@ fn scope(key: Option<&str>) -> WireguardConfig {
         interface: "drt0".into(),
         address: Some("10.9.0.1/24".into()),
         mtu: 1420,
+        turn_fallback: false,
         stun: Vec::new(),
         private_key: key.map(str::to_string),
         private_key_file: None,
@@ -863,6 +865,7 @@ fn a_peer_the_config_never_named_can_be_added_and_then_reached() {
             Duration::from_millis(50),
             reports,
             command_rx,
+            None,
         ));
 
         // First, the refusal: a command for a peer that is not there comes
@@ -932,6 +935,229 @@ fn a_peer_the_config_never_named_can_be_added_and_then_reached() {
             }
         });
         expect_payload(&mut tun_b, b"a peer we had never heard of").await;
+        sender.abort();
+        driver.abort();
+    });
+}
+
+/// The failure this catches is a tunnel that comes up, reports a handshake,
+/// and carries nothing: a peer whose `allowed_ips` lies outside the
+/// interface address's own prefix, which is the only route the kernel
+/// derives. Both numbers are in the config, so it is said at startup rather
+/// than found with tcpdump.
+#[test]
+fn an_allowed_ip_no_route_will_reach_is_named_at_startup() {
+    let good = B64.encode([1u8; KEY_LEN]);
+    let peer = |cidr: &str| WireguardPeer {
+        public_key: B64.encode([2u8; KEY_LEN]),
+        allowed_ips: vec![cidr.into()],
+        endpoint: None,
+        keepalive: None,
+        preshared_key_env: None,
+    };
+
+    // Inside the interface's own prefix: the on-link route reaches it, so
+    // nothing is said.
+    let mut fine = scope(Some(&good)); // address is 10.9.0.1/24
+    fine.peers.push(peer("10.9.0.2/32"));
+    assert!(drt::wireguard::unroutable(&fine).is_empty());
+
+    // Outside it: configured perfectly, and unreachable.
+    let mut hub = scope(Some(&good));
+    hub.peers.push(peer("192.168.1.0/24"));
+    let said = drt::wireguard::unroutable(&hub);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("192.168.1.0/24"), "{}", said[0]);
+    assert!(said[0].contains("carry nothing"), "{}", said[0]);
+    // The remedy, spelled out with this interface's name in it.
+    assert!(
+        said[0].contains("ip route add 192.168.1.0/24 dev drt0"),
+        "{}",
+        said[0]
+    );
+
+    // A different family is never covered by an IPv4 prefix, however it
+    // looks: the `contains` alone would panic or mislead without the check.
+    let mut v6 = scope(Some(&good));
+    v6.peers.push(peer("fd00::/64"));
+    assert_eq!(drt::wireguard::unroutable(&v6).len(), 1);
+
+    // No address at all: nothing is routable, and the reason differs.
+    let mut homeless = scope(Some(&good));
+    homeless.address = None;
+    homeless.peers.push(peer("10.9.0.2/32"));
+    let said = drt::wireguard::unroutable(&homeless);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("no `address`"), "{}", said[0]);
+
+    // A default route is the send-everything-through-the-tunnel case. It
+    // needs a route too, but saying so for every VPN-shaped config would be
+    // noise where the intent is unmistakable.
+    let mut everything = scope(Some(&good));
+    everything.peers.push(peer("0.0.0.0/0"));
+    assert!(drt::wireguard::unroutable(&everything).is_empty());
+}
+
+/// **The fallback, end to end.** When `stun` says a NAT cannot be punched,
+/// the peer that cannot be reached takes a TURN allocation and publishes
+/// *that* address instead of the measured one. Its WireGuard traffic then
+/// goes through the relay, and the far side is none the wiser: it has an
+/// endpoint, and packets arrive from it.
+///
+/// Everything here is DRT's: the TURN server is `drt turn`'s, the
+/// credential is `crypto/turn_credential`'s scheme, and the two devices are
+/// the same ones every other test in this file uses. Loopback, unprivileged,
+/// no NAT — so what this proves is the plumbing, not that it beats a real
+/// symmetric NAT. Same limit as the punch itself (`doc/WireGuard.md` §2).
+#[test]
+fn wireguard_traffic_can_fall_back_through_a_turn_allocation() {
+    rt().block_on(async {
+        const SECRET: &str = "the-turn-secret-for-this-test-01";
+
+        // DRT's own TURN relay, on loopback.
+        let turn = drt::turn::bind(
+            &drt_config::TurnConfig {
+                bind: "127.0.0.1:0".into(),
+                relay_address: "127.0.0.1".into(),
+                relay_bind: "127.0.0.1".into(),
+                realm: "drt".into(),
+                key: Some(SECRET.into()),
+                key_file: None,
+                key_env: None,
+                max_allocations: 8,
+                queue: "turn_in".into(),
+                report_ms: 10_000,
+            },
+            None,
+        )
+        .await
+        .expect("the turn server bound");
+        let turn_addr = turn.local_addr();
+
+        // The credential a program would mint with crypto/turn_credential:
+        // coturn's use-auth-secret scheme, which is what the server verifies.
+        let (username, password) =
+            ego_transport::turn::ephemeral_credentials_for(SECRET, Duration::from_secs(300), "fp")
+                .expect("a credential");
+
+        let (secret_a, secret_b) = (
+            StaticSecret::from([0x55u8; KEY_LEN]),
+            StaticSecret::from([0x66u8; KEY_LEN]),
+        );
+        let (pub_a, pub_b) = (
+            gotatun::x25519::PublicKey::from(&secret_a),
+            gotatun::x25519::PublicKey::from(&secret_b),
+        );
+        let (port_a, port_b) = (free_port(), free_port());
+        let (ip_a, ip_b) = (Ipv4Addr::new(10, 9, 0, 1), Ipv4Addr::new(10, 9, 0, 2));
+
+        // A is the peer that cannot be punched to: it will relay.
+        let (transport_a, allocation) = drt::wireguard::Transport::new(true);
+        let (tun_a, tx_a, rx_a) = channel_tun();
+        let (mut tun_b, tx_b, rx_b) = channel_tun();
+        let a = DeviceBuilder::new()
+            .with_udp(transport_a)
+            .with_ip_pair(tx_a, rx_a)
+            .with_listen_port(port_a)
+            .with_private_key(secret_a)
+            .with_peer(
+                Peer::new(pub_b)
+                    .with_endpoint(SocketAddr::from(([127, 0, 0, 1], port_b)))
+                    .with_allowed_ip(ipnetwork::IpNetwork::from(std::net::IpAddr::V4(ip_b))),
+            )
+            .build()
+            .await
+            .expect("the relaying device came up");
+
+        let (reports, mut report_rx) = mpsc::unbounded_channel();
+        let (commands, command_rx) = mpsc::unbounded_channel();
+        let driver = tokio::spawn(drt::wireguard::drive(
+            a,
+            Duration::from_millis(50),
+            reports,
+            command_rx,
+            allocation,
+        ));
+
+        // The program read `punchable: false`, minted a credential, and
+        // hands it over. What comes back is the address to publish.
+        commands
+            .send(drt::wireguard::Command::Relay {
+                server: turn_addr,
+                username: username.clone(),
+                password: password.clone(),
+                realm: "drt".into(),
+            })
+            .unwrap();
+        let relayed = loop {
+            let report = tokio::time::timeout(Duration::from_secs(10), report_rx.recv())
+                .await
+                .expect("the relay command was answered")
+                .expect("the report channel stayed open");
+            match report {
+                drt::wireguard::Report::Relaying { address, server } => {
+                    assert_eq!(server, Some(turn_addr));
+                    break address.expect("an allocation has an address to publish");
+                }
+                drt::wireguard::Report::Refused { command, reason } => {
+                    panic!("{command} refused: {reason}")
+                }
+                _ => continue,
+            }
+        };
+        assert_ne!(
+            relayed.port(),
+            port_a,
+            "the relayed address must not be the device's own port"
+        );
+
+        assert_ne!(
+            relayed.port(),
+            port_a,
+            "the relayed address must be the allocation's, not the device's own port"
+        );
+
+        // B is told where A turned out to be: its RELAYED address, which is
+        // the only address that reaches A.
+        let _b = device(
+            secret_b,
+            port_b,
+            Peer::new(pub_a)
+                .with_endpoint(relayed)
+                .with_allowed_ip(ipnetwork::IpNetwork::from(std::net::IpAddr::V4(ip_a))),
+            tx_b,
+            rx_b,
+        )
+        .await;
+
+        // A sends. Its packets leave through the allocation, so they reach B
+        // from the relayed address B was told about, and B accepts them.
+        let packet = ipv4_udp(ip_a, ip_b, b"through the turn relay");
+        let inject = tun_a.inject.clone();
+        let sender = tokio::spawn(async move {
+            for _ in 0..100 {
+                if inject.send(packet.clone()).is_err() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        });
+        expect_payload(&mut tun_b, b"through the turn relay").await;
+
+        // And giving the allocation up is answered too, so a program that
+        // gets a direct path later can stop paying for the relay.
+        commands.send(drt::wireguard::Command::ClearRelay).unwrap();
+        loop {
+            match tokio::time::timeout(Duration::from_secs(10), report_rx.recv())
+                .await
+                .expect("the clear was answered")
+                .expect("the report channel stayed open")
+            {
+                drt::wireguard::Report::Relaying { address: None, .. } => break,
+                _ => continue,
+            }
+        }
+
         sender.abort();
         driver.abort();
     });
