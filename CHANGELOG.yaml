@@ -1179,12 +1179,20 @@ releases:
         reading an absent field as "forget this peer" made one mistyped
         field name tear down a working tunnel in silence.
 
-        **What is not proven:** the tests run on loopback, so they show
-        DRT can be told where a peer is and will talk to it, not that a
-        hole is punched through two real NATs. The punch itself rests on
-        WireGuard retransmitting handshakes for ninety seconds, which is
-        sound and is not measured here. `doc/WireGuard.md` §2 says which
-        step belongs to whom.
+        **How far it is proven:** the tests in this repository run on
+        loopback, so what they show is that DRT can be told where a peer
+        is and will then talk to it -- not that a hole is punched. The
+        punch itself has now been measured, though not here: discofetch
+        drove its own rendezvous program against this block with two
+        hosts in network namespaces behind two netfilter NATs, and got a
+        direct handshake through both of them with no relay in the path
+        (247 ms and 1747 ms), then a relayed one past a symmetric NAT
+        through `drt turn` (739 ms), packets across in each case. That is
+        `doc/WireGuard.md` §2's own "what would actually prove a punch",
+        run, and it is recorded in issue #15. What it does not settle is
+        NAT hardware DRT has not seen: the lab's NATs were netfilter on
+        one machine, not a consumer router or a carrier-grade NAT. §2
+        says which step belongs to whom and which of them is measured.
 
       - |
         **Five examples for the five things that had none**, and a way for
@@ -1424,6 +1432,42 @@ releases:
         than `is_absolute`, which `std` answers differently on
         `wasm32-unknown-unknown` -- an absolute path was refused
         natively and by a different rule in a page.
+      - |
+        **The `wireguard` block dropped the one report a rendezvous
+        cannot start without, and a device with no peers never spoke at
+        all.** Three fixes from issue #15, all of them found by running
+        the block against the program it was built for -- discofetch's
+        rendezvous, behind two netfilter NATs -- which is also the run
+        that measured the punch.
+
+        The bridge pushed every report and ignored a refusal. That is
+        right for the peer snapshot, whose next one carries the running
+        totals, and wrong for everything said once. It was worst for the
+        mapping: that one is queued before the device binds, so it goes
+        out on the bridge's first pass, which is before a root program
+        has reached the line declaring its queue -- so the report a
+        rendezvous waits for was the one guaranteed to be lost, and the
+        program waited forever. One-shot reports are held and retried
+        oldest first now, bounded, because a queue that stays full is a
+        sizing problem the deployment should see rather than one the
+        device should absorb. The same shape as the listener fix above.
+
+        `report_ms` did not tick for a device with no peers: the loop
+        sent a snapshot only when the peer list differed from the last
+        one, and an empty list never differs from an empty list. A
+        program using the interval as its clock therefore never got one
+        until a peer existed -- and no peers is exactly the config a
+        rendezvous starts from. The timer is unconditional now; changes
+        still arrive ahead of it.
+
+        `peers = {}` was refused as "must be a list of peers". Lua has
+        one table type, so `{}` is both the empty list and the empty map
+        and an encoder must pick one; the loader read lists with
+        `as_array` and refused the empty case, having resolved that same
+        ambiguity for connector scopes and nowhere else. Fixed once for
+        `peers`, `stun`, `allowed_ips`, `caps` and `headers` -- the
+        reported case was `peers`, the other four were the same trap in
+        the same file.
 
   - version: 0.4.2
     tag: v0.4.2

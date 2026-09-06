@@ -122,7 +122,7 @@ key (a device anybody can be), and neither announces itself at run time —
 
 ---
 
-## 2. The punch: what is built, and what is not proven
+## 2. The punch: what is built, and how far it is proven
 
 **Read this section before believing anything about hole punching.**
 
@@ -146,6 +146,16 @@ key (a device anybody can be), and neither announces itself at run time —
    endpoint the simultaneous-open falls out of the protocol's own
    behaviour. This is the property the whole approach rests on, and it is
    WireGuard's, not DRT's.
+
+   One thing the lab run below taught, which explains a punch that
+   "succeeds" and then never handshakes: **the far peer's first
+   unsolicited probe must be dropped, not answered.** A Linux NAT with an
+   *open* INPUT chain confirms the conntrack entry for that probe and then
+   remaps the outbound flow off the port STUN measured (51820 became 65038
+   in the lab), so the address both sides just exchanged is stale before
+   either uses it. A router's default-drop is what makes port preservation
+   hold. This is a property of the network in the path, not something DRT
+   can arrange.
 5. **Keepalives hold the mapping open.** A punched mapping with no traffic
    closes in tens of seconds. `keepalive = 25` — settable in the config
    and in the same command that sets the endpoint.
@@ -160,17 +170,20 @@ key (a device anybody can be), and neither announces itself at run time —
   reported.
 - A peer the config **never named** is added at run time and then reached
   — the case a rendezvous actually produces.
+- The reports a rendezvous cannot start without survive a queue that has
+  not been declared yet, and `report_ms` ticks for a device with no peers
+  — both found by the lab run below, both recorded in issue #15.
 
-**All three run on loopback. There is no NAT in any of them.** So they
-test that DRT can be told where a peer is and will then talk to it. They
-do **not** test that a hole gets punched through two real NATs, because
-nothing in this repository has two real NATs to punch through. Step 4
+**Every one of them runs on loopback. There is no NAT in any of them.**
+So they test that DRT can be told where a peer is and will then talk to
+it. They do **not** test that a hole gets punched through two real NATs,
+because nothing in this repository has two NATs to punch through. Step 4
 above is WireGuard's well-established behaviour, and it is the step this
-repository has not itself measured.
+repository's own tests do not reach.
 
 Calling this "the hole punch, end to end" — as an earlier version of this
-document and its commit message did — was an overstatement. It is the
-deployment-side half, tested without a NAT.
+document and its commit message did — was an overstatement. In this
+repository it is the deployment-side half, tested without a NAT.
 
 ### The measurement, and its honest limit
 
@@ -229,6 +242,21 @@ messages consumed by a subsystem.
 version read an absent `endpoint` field as "forget where the peer is",
 which made one mistyped field name tear down a working tunnel in silence.
 
+**The queue is safe to declare late, and `report_ms` is a clock.** Both
+were found the hard way (issue #15), by a rendezvous whose first line
+after `queue.declare` was a wait for `wireguard_mapping`:
+
+- Reports that are said **once** — the mapping, a roam, a relay taken or
+  lost, a refusal — are held until a push lands, so the mapping is still
+  there when a program declares its queue on its second line rather than
+  its first. Only the `wireguard` snapshot is dropped on a refused push,
+  because the next one carries the running totals. The hold is bounded;
+  a queue that stays full is a sizing problem the deployment should see.
+- `report_ms` ticks whether or not anything changed, including for a
+  device with **no peers at all** — which is exactly the config a
+  rendezvous starts from. A program can wait on the queue and get its
+  interval. Changes still arrive early, ahead of the timer.
+
 ### The examples
 
 `examples/21-wireguard` is everything that needs no privilege — `drt wg
@@ -275,6 +303,17 @@ if msg.event == "wireguard_relay" then rendezvous_publish(msg.address) end
 `{command = "relay", clear = true}` gives the allocation up again, so a
 deployment that later gets a direct path can stop paying for the relay.
 
+**The allocation does not outlive the credential, and nothing warns you.**
+The `relay` command carries one username and password, and the refresh
+loop inside the TURN client refreshes with that same pair. A
+`<expiry>:<user>` credential stops verifying at its expiry, so the first
+refresh after that is refused and the allocation — and the tunnel through
+it — goes with it. A program that wants a relayed session longer than its
+credential's TTL should mint a longer one up front. This follows from the
+design and has **not** been measured: the lab run lasted minutes and the
+TTL was an hour. Issue #17 §3 tracks making it survivable rather than
+merely documented.
+
 **What it costs, and the one flag.** `turn_fallback = true` on the block is
 what makes a device able to do this at all, and it is off by default because
 it is not free: a device that may relay gives up gotatun's batched
@@ -309,13 +348,40 @@ across it, and a real packet out the far side. Loopback and unprivileged, so
 — as everywhere else here — it proves the plumbing, not that it beats a real
 symmetric NAT.
 
-### What would actually prove a punch
+### The punch, measured — elsewhere, and in a lab
 
-Two hosts behind two different consumer NATs, a rendezvous between them,
-and a packet across with no relay in the path. That is a test this
-repository cannot run and a deployment can. Until someone runs it, treat
-the punch as *plausible on well-understood grounds* rather than as
-measured here.
+This section used to say a punch would be proven by "two hosts behind two
+different NATs, a rendezvous between them, and a packet across with no
+relay in the path", and that until someone ran it the punch was
+*plausible on well-understood grounds* rather than measured.
+
+**Someone ran it.** Not here: discofetch drove its own rendezvous program
+(`deploy/tunnel/wg-rendezvous.dlua`) against this block, with two hosts in
+network namespaces behind two netfilter MASQUERADE NATs and a router with
+a default-drop firewall. Recorded in issue #15, scoped in issue #17:
+
+- **Direct, through two NATs, no relay in the path.** Handshakes at 247 ms
+  and 1747 ms, packets across both ways.
+- **Past a symmetric NAT** (`MASQUERADE --random-fully`), with
+  `turn_fallback = true` and a `drt turn` on the segment: mapping
+  classified symmetric from two disagreeing STUN answers, allocation
+  taken, handshake at 739 ms, packet across.
+
+That is step 4 of the ladder above, measured, and the TURN fallback
+measured as the thing it exists for. It also found two bugs that no
+loopback test could have — the dropped one-shot reports and the peerless
+device that never ticked — which is the strongest argument that the run
+was worth more than the tests here.
+
+**What it still does not settle.** The NATs were netfilter on one
+machine, not consumer or carrier-grade hardware on the open internet, so
+it says nothing about NAT implementations DRT has not seen, real RTTs,
+or the middleboxes between two houses. The conntrack finding in step 4 is
+exactly the kind of thing that varies by device. Treat the punch as
+**measured against Linux NATs in a lab, and plausible on well-understood
+grounds everywhere else** — which is a materially stronger claim than
+this document could make a day ago, and still not "it works on your
+router".
 
 ## 3. What it cost
 
