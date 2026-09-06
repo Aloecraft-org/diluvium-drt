@@ -11,10 +11,11 @@ where it stands; a correction is kept in place rather than quietly folded
 in. An ask that shipped with a measurement gets a measurement back.
 
 **Short version.** The four near-term asks that are `netcheck`'s and
-`buildinfo`'s (§1, §2, §3, §7) landed in rc4, with tests. TURN (§4)
-landed after it, the day issue #12 decided the credential shape. The
-punch inside the tunnel (§8) is open in the way its own text says: a
-spec to follow, not a dependency. One thing the
+`buildinfo`'s (§1, §2, §3, §7) landed in rc4, with tests, and so did
+TURN (§4), the day issue #12 decided the credential shape, and the
+`--local` caller half issue #13 asked for. The punch inside the tunnel
+(§8) is open in the way its own text says: a spec to follow, not a
+dependency. One thing the
 asks did not know to ask for is in rc4 anyway and matters more to a
 fetchpoint than any of them: `rest` stalled every instance for the
 length of a call in every candidate before it.
