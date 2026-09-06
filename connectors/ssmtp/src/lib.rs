@@ -11,7 +11,7 @@
 //!
 //! ```text
 //! ssmtp/send {to, subject, body, in_reply_to?, references?}
-//!     -> {accepted, recipients}
+//!     -> {accepted, recipients, message_id}
 //! ```
 //!
 //! A reply threads by naming what it answers. `in_reply_to` is the parent's
@@ -115,6 +115,13 @@ pub struct SsmtpScope {
     pub user: Option<String>,
     #[serde(default)]
     pub pass: Option<String>,
+    /// The name of an environment variable holding `pass`, so the root
+    /// config on disk carries the shape and never the value -- the same
+    /// mechanism `crypto`'s `key_env` is (vera `DRT_ASKS.md` §18). Read at
+    /// startup, and an unset variable is a refusal by name there rather
+    /// than an AUTH failure at 3am.
+    #[serde(default)]
+    pub pass_env: Option<String>,
     /// The envelope sender and the `From:` header, both. **The guest cannot
     /// set this**, which is the point: an app that could choose its own From
     /// could send mail as anyone the relay will carry.
@@ -132,8 +139,17 @@ impl SsmtpScope {
         let Some(Scope(value)) = scope else {
             return Err("scope is required".into());
         };
-        let parsed: SsmtpScope = rmpv::ext::from_value(value.clone())
+        let mut parsed: SsmtpScope = rmpv::ext::from_value(value.clone())
             .map_err(|e| format!("scope does not parse: {e}"))?;
+        if let Some(var) = parsed.pass_env.take() {
+            if parsed.pass.is_some() {
+                return Err("scope names both pass and pass_env; it is one or the other".into());
+            }
+            parsed.pass =
+                Some(std::env::var(&var).map_err(|_| {
+                    format!("scope.pass_env names env var '{var}', which is not set")
+                })?);
+        }
         parsed.validate()?;
         Ok(parsed)
     }
@@ -159,6 +175,13 @@ impl SsmtpScope {
         header_safe("from", &self.from)?;
         if self.from.trim().is_empty() {
             return Err("scope.from is empty; a message needs a sender".into());
+        }
+        if domain_of(&self.from).is_none() {
+            return Err(format!(
+                "scope.from {:?} names no @domain; a Message-ID is minted under the sender's \
+                 domain and needs one",
+                self.from
+            ));
         }
         // The one that would otherwise be found by tcpdump. AUTH is
         // base64, not encryption, so a credential with no TLS under it is a
@@ -448,12 +471,104 @@ struct Message {
 /// The header block, through the blank line that ends it. The scope's
 /// sender first and the guest's fields under it, never above — which is
 /// what puts a subject of `From: x` visibly below the real one.
-fn headers(scope: &SsmtpScope, msg: &Message) -> String {
+/// What the host stamps on a message and the guest never chooses: when it
+/// left, and what to call it.
+///
+/// `Date` is required by RFC 5322 §3.6, and its absence is a spam signal
+/// to every filter that checks -- vera's first escalation digest was
+/// quarantined for it (`DRT_ASKS.md` §20). `Message-ID` is minted here
+/// rather than accepted from the guest for the reason `From` is the
+/// scope's: the domain in an id should be the sending deployment's, and an
+/// id the host assigns is one the guest cannot forge or get wrong. It is
+/// returned to the sender, so a reply can thread onto its own message and
+/// a duplicate on the wire is self-diagnosing -- one id twice is one send
+/// retried, two ids is two sends.
+pub struct Stamp {
+    pub date: String,
+    pub message_id: String,
+}
+
+impl Stamp {
+    fn now(scope: &SsmtpScope) -> Stamp {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let since = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        // A random tail beside the clock and a counter: two deployments
+        // minting in the same nanosecond do not collide, and a failed
+        // entropy read degrades to clock and counter, unique within one
+        // process either way.
+        let mut rand = [0u8; 8];
+        let _ = drt_platform::entropy::fill(&mut rand);
+        let domain = domain_of(&scope.from).unwrap_or("localhost");
+        Stamp {
+            date: rfc5322_date(since.as_secs()),
+            message_id: format!(
+                "<{}.{:09}.{}.{}@{}>",
+                since.as_secs(),
+                since.subsec_nanos(),
+                SEQ.fetch_add(1, Ordering::Relaxed),
+                rand.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                domain
+            ),
+        }
+    }
+}
+
+/// The domain a sender's address is under: `no-reply@example.com` and
+/// `Name <no-reply@example.com>` both answer `example.com`.
+pub fn domain_of(from: &str) -> Option<&str> {
+    let addr = match (from.rfind('<'), from.rfind('>')) {
+        (Some(a), Some(b)) if a < b => &from[a + 1..b],
+        _ => from,
+    };
+    let (_, domain) = addr.trim().rsplit_once('@')?;
+    (!domain.is_empty() && !domain.contains([' ', '\r', '\n'])).then_some(domain)
+}
+
+// depth: RFC 5322 §3.3 date-time from a Unix timestamp, without a calendar crate
+//
+// Days-to-civil is Howard Hinnant's algorithm; the weekday falls out of the
+// day count because 1970-01-01 was a Thursday. Always `+0000`: the host's
+// clock is UTC here, and a zone would be a claim about where the
+// deployment is that the header has no business making.
+pub fn rfc5322_date(unix_secs: u64) -> String {
+    const DAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let days = (unix_secs / 86_400) as i64;
+    let secs = unix_secs % 86_400;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{}, {:02} {} {} {:02}:{:02}:{:02} +0000",
+        DAYS[days.rem_euclid(7) as usize],
+        day,
+        MONTHS[(month - 1) as usize],
+        year,
+        secs / 3600,
+        (secs / 60) % 60,
+        secs % 60
+    )
+}
+
+fn headers(scope: &SsmtpScope, msg: &Message, stamp: &Stamp) -> String {
     let mut out = format!(
-        "From: {}\r\nTo: {}\r\nSubject: {}\r\n",
+        "From: {}\r\nTo: {}\r\nSubject: {}\r\nDate: {}\r\nMessage-ID: {}\r\n",
         scope.from,
         msg.recipients.join(", "),
-        msg.subject
+        msg.subject,
+        stamp.date,
+        stamp.message_id
     );
     if !msg.in_reply_to.is_empty() {
         out.push_str(&fold_ids("In-Reply-To", &msg.in_reply_to));
@@ -522,7 +637,12 @@ impl Connector for SsmtpConnector {
             references,
         };
 
-        let work = async { tokio::time::timeout(scope.timeout(), deliver(&scope, &msg)).await };
+        // Stamped once, before the conversation: the same `Message-ID`
+        // goes on the wire and back to the caller, so what the relay
+        // queued and what the program records are one name.
+        let stamp = Stamp::now(&scope);
+        let work =
+            async { tokio::time::timeout(scope.timeout(), deliver(&scope, &msg, &stamp)).await };
         // FM-3: `drt start` has a reactor, `drt run` does not.
         let outcome = match tokio::runtime::Handle::try_current() {
             Ok(_) => work.await,
@@ -543,6 +663,7 @@ impl Connector for SsmtpConnector {
                 "recipients".into(),
                 rmpv::Value::Array(msg.recipients.iter().map(|r| r.as_str().into()).collect()),
             ),
+            ("message_id".into(), stamp.message_id.as_str().into()),
         ]))
     }
 }
@@ -606,7 +727,7 @@ where
     }
 }
 
-async fn deliver(scope: &SsmtpScope, msg: &Message) -> Result<(), String> {
+async fn deliver(scope: &SsmtpScope, msg: &Message, stamp: &Stamp) -> Result<(), String> {
     let stream = tokio::net::TcpStream::connect((scope.host.as_str(), scope.port()))
         .await
         .map_err(|e| format!("connect: {e}"))?;
@@ -631,12 +752,12 @@ async fn deliver(scope: &SsmtpScope, msg: &Message) -> Result<(), String> {
         // EHLO again: the extensions before STARTTLS are not the ones that
         // count, and a relay may advertise AUTH only once encrypted.
         smtp!(tls, 250, "EHLO {}", ehlo_name(&scope.from));
-        session(&mut tls, scope, msg).await
+        session(&mut tls, scope, msg, stamp).await
     } else {
         let mut io = stream;
         read_reply(&mut io, 220).await?;
         smtp!(io, 250, "EHLO {}", ehlo_name(&scope.from));
-        session(&mut io, scope, msg).await
+        session(&mut io, scope, msg, stamp).await
     }
 }
 
@@ -649,7 +770,12 @@ fn ehlo_name(from: &str) -> String {
         .unwrap_or_else(|| "localhost".into())
 }
 
-async fn session<S>(mut io: &mut S, scope: &SsmtpScope, msg: &Message) -> Result<(), String>
+async fn session<S>(
+    mut io: &mut S,
+    scope: &SsmtpScope,
+    msg: &Message,
+    stamp: &Stamp,
+) -> Result<(), String>
 where
     S: tokio::io::AsyncRead + AsyncWriteExt + Unpin,
 {
@@ -667,7 +793,7 @@ where
     }
     smtp!(io, 354, "DATA");
 
-    io.write_all(headers(scope, msg).as_bytes())
+    io.write_all(headers(scope, msg, stamp).as_bytes())
         .await
         .map_err(|e| format!("send: {e}"))?;
     io.write_all(dot_stuff(&msg.body).as_bytes())

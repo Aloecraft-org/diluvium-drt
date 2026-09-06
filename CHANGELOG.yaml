@@ -832,12 +832,95 @@ releases:
       makes: two profiles are new (`wasi`, `web`) and `wasi` carries
       `listen`, so BUILDINFO's list is not v0.4.2's and a package
       declaring `requires.connectors` resolves differently against them.
-      `full` and `slim` are unchanged, and nothing that existed behaves
-      differently on a native build.
+      `full` and `slim` carry the same connectors. One thing that existed
+      does behave differently on a native build, from rc4: a slow `rest`,
+      `ssh` or `ssmtp` call parks instead of stalling every instance,
+      which the candidates before it claimed and did not do (Fixed).
+      Beside the port: diluvium build13, which is regular expressions in
+      the language; and the asks two consumers filed with evidence
+      against the candidates (Added, Changed, Fixed name each by number).
 
       The plan and its measurements are `doc/Wasm.md`; the embedding
       contract is `doc/Browser.md`; `doc/Platforms.md` is the matrix.
     added:
+      - |
+        **Regular expressions, from diluvium build13.** A backtick literal
+        is a compiled regex -- `` `(\d+)-(\d+)` `` -- and `regex` is the
+        library under it, with `find`, `match`, `gmatch`, `gsub` and
+        `split` shaped like their `string.*` twins and the pattern first
+        in every call. The engine is a Thompson NFA with Pike's submatch
+        tracking: linear in the subject, nothing backtracks, and
+        backreferences and lookaround are refused by name with the
+        reason. In every profile, since it is the language and not a
+        capability, and a sealed guest keeps it. Vera's `DRT_ASKS.md`
+        §22, whose evidence was a leaf that could not be written.
+      - |
+        **`capabilities/list`.** The menu the C host answers and DRT did
+        not: one entry per wired family in the C's shape -- `{name, kind,
+        owner, granted, visibility}` -- plus the menu itself, gated on
+        `host:capabilities/list` exactly as the C gates it, so an auditor
+        granted that and nothing else can report what a swarm reaches
+        without reaching any of it. `granted` is asked the way a call
+        would ask it, and a family held narrowly (`host:fs/read`) is
+        reported reached. Vera §14, and the one thing that turns a typo
+        in a JSON root config into something a program can see.
+      - |
+        **`journal_mode` on the `sql` scope.** Applied on open and read
+        back, because SQLite answers the pragma with the mode it is *in*:
+        a read-only open cannot convert a database and a filesystem that
+        cannot lock refuses WAL by answering `delete`, and either is a
+        refusal by name rather than a deployment quietly running a mode
+        its config does not say. A property of the place, beside
+        `access`, which a guest could not set -- the pragma writes and
+        answers a row, so `query` and `exec` both refuse it. WAL is what
+        two processes sharing one file want and what a Litestream replica
+        needs (vera §15).
+      - |
+        **Credentials by reference: `pass_env` on `ssmtp`, `{"env":
+        NAME}` for an injected `rest` header.** The mechanism `crypto`'s
+        `key_env` already is, so a root config carries the shape and
+        never the value and can be read over a shoulder or checked in. Read
+        once at startup; an unset variable is a refusal by name there,
+        not an AUTH failure at 3am (vera §18).
+      - |
+        **`extra_roots` on the `rest` scope.** PEM files whose
+        certificates are trusted *beside* webpki's public roots -- an
+        egress proxy's interception CA, typically -- and never instead of
+        them: a scope that could narrow the trust store to one certificate
+        would be a footgun, and the case that exists is a CA to add.
+        Parsed at startup, every certificate checked as a usable anchor,
+        so a wrong path or an empty file is refused by name before the
+        first call rather than as `tls` on it. Vera §23's first half and
+        discofetch §6; the proxy half is open, and named as such in
+        `doc/Ask-Vera-Reply.md`.
+      - |
+        **`netcheck --json` carries its evidence.** It emitted `verdict`,
+        `why` and `advice` and nothing else -- less than the person got
+        from the same run -- so discofetch's punch tool re-implemented
+        STUN to recover a port the text already printed. Every line of the
+        text form is now a structured pair under `evidence`: the address
+        with its CGNAT flag, the v6, the UDP mapping with each server's
+        port, the TCP views with `agrees` and `stable`, the inbound
+        results; "not measured" is `null` beside its `why`. Under a
+        `schema: 1` a script can refuse (discofetch §1, and the schema it
+        tracked for later).
+      - |
+        **`netcheck --udp-port N`.** A mapping is a fact about one flow,
+        and the probe socket bound an ephemeral port, so the mapped port
+        it reported was never the one `udp/51820` would get; on a NAT
+        that is not port-preserving the verdict was right about the
+        network and wrong about the flow that matters. The flag binds the
+        probe to a chosen port; one that cannot be bound is refused by
+        name under `udp map`, never quietly replaced (discofetch §2).
+      - |
+        **`buildinfo` names the tag.** Every candidate under 0.5.0
+        printed `version: 0.5.0`, so a box could not be asked which one
+        it ran, and discofetch pinned the installed tag in a sidecar file
+        because the binary would not say. `build.rs` stamps
+        `DRT_RELEASE_TAG` from the release workflow's environment;
+        `buildinfo` prints `tag: v0.5.0rc4` and `"tag":"v0.5.0rc4"`, or
+        no line and `null` for a local build, and the native smoke step
+        checks the binary says it back (discofetch §3).
       - |
         **`drt` on `wasm32-wasip2`, released as `drt_wasip2.wasm`.** The
         binary itself, built with the `wasi` profile -- `time`, `fs`,
@@ -899,6 +982,23 @@ releases:
         is a sink the page installs.
     changed:
       - |
+        **`ssmtp/send` answers `message_id`**, minted by the host under
+        the sender's domain -- `<secs.nanos.seq.rand@domain>` -- and
+        written on the wire, so a reply can thread onto its own message
+        and a duplicate on the wire is self-diagnosing: one id twice is
+        one send retried, two ids is two sends. Generated rather than
+        accepted, for the reason `From` is the scope's: the domain in an
+        id should be the deployment's, and an id the host assigns is one
+        the guest cannot forge (vera §20, second half). `scope.from`
+        must name an `@domain` now, checked at startup.
+      - |
+        **`netcheck`'s help stops describing a deployment** (discofetch
+        §7): `--reflect-at` is necessary because one `--reflect` is one
+        vantage whatever its name resolves to, not "until a DNS record
+        lands"; `--port` is no longer "experimental" with a server "not
+        deployed yet", and says why a deployment fact does not belong in
+        it; the STUN pair is named by zone.
+      - |
         **wasm-bindgen `=0.2.114` -> `=0.2.127`, and a workaround
         deleted.** 0.2.114 refused a module carrying the C core's
         `try_table` unless it exported `__instance_terminated`, so
@@ -940,6 +1040,14 @@ releases:
         module. It can, so the fallback is gone rather than kept as a
         second engine path.
     fixed:
+      - |
+        **`ssmtp/send` sent no `Date`.** RFC 5322 §3.6 requires it, and
+        its absence is a spam signal to every filter that checks: vera's
+        first escalation digest was quarantined for it, then released
+        with a `Date` the relay had added -- a repair a strict relay
+        refuses and a receiving filter scores. Written from the host
+        clock now, in RFC 5322's shape and always `+0000`, without a
+        calendar crate (vera §20, first half).
       - |
         **`rest`, `ssh` and `ssmtp` stalled every instance for the length
         of a call, in every 0.5.0 candidate, while the notes said they

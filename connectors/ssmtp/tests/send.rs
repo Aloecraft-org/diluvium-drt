@@ -11,7 +11,8 @@ use std::sync::{Arc, Mutex};
 use drt_caps::{Scope, ScopeType};
 use drt_connector::Connector;
 use drt_connector_ssmtp::{
-    fold_ids, msg_ids_of, SsmtpConnector, FOLD_AT_BYTES, MAX_MSGID_BYTES, MAX_REFERENCES,
+    domain_of, fold_ids, msg_ids_of, rfc5322_date, SsmtpConnector, FOLD_AT_BYTES, MAX_MSGID_BYTES,
+    MAX_REFERENCES,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -553,4 +554,123 @@ fn a_long_thread_folds_and_reads_back_whole() {
     // A single id longer than the fold stays on the field's own line.
     let long = vec![format!("<{}@example.com>", "x".repeat(2 * FOLD_AT_BYTES))];
     assert_eq!(fold_ids("In-Reply-To", &long).matches("\r\n").count(), 1);
+}
+
+/// `Date` is RFC 5322's required header, and its absence got vera's first
+/// digest quarantined (`DRT_ASKS.md` §20); `Message-ID` is minted under
+/// the sender's domain and returned, so a reply can thread onto its own
+/// message and a duplicate on the wire is self-diagnosing.
+#[tokio::test]
+async fn a_message_carries_a_date_and_a_message_id_the_sender_is_told() {
+    let (port, log) = fake_relay().await;
+    let c = SsmtpConnector::new();
+    let sc = scope_for(port, &["@example.com"]);
+    let reply = c
+        .call(
+            "ssmtp/send",
+            Some(args("someone@example.com".into(), "Hello", "a body")),
+            Some(&sc),
+        )
+        .await
+        .unwrap();
+    let returned = reply
+        .as_map()
+        .unwrap()
+        .iter()
+        .find(|(k, _)| k.as_str() == Some("message_id"))
+        .map(|(_, v)| v.as_str().unwrap().to_string())
+        .expect("send answers with the message_id it sent");
+    let sent = log.lock().unwrap().join("\n");
+    // On the wire under the sender's domain, and the same id came back.
+    assert!(
+        returned.starts_with('<') && returned.ends_with("@discofetch.net>"),
+        "{returned}"
+    );
+    assert!(sent.contains(&format!("Message-ID: {returned}")), "{sent}");
+    // A Date, in RFC 5322's shape: `Www, dd Mmm yyyy hh:mm:ss +0000`.
+    let date = sent
+        .lines()
+        .find_map(|l| l.strip_prefix("Date: "))
+        .expect("a Date header");
+    assert!(
+        date.len() == 31 && &date[3..5] == ", " && date.ends_with(" +0000"),
+        "{date}"
+    );
+    // Two sends are two ids.
+    let (port2, _) = fake_relay().await;
+    let again = c
+        .call(
+            "ssmtp/send",
+            Some(args("someone@example.com".into(), "Hello", "a body")),
+            Some(&scope_for(port2, &["@example.com"])),
+        )
+        .await
+        .unwrap();
+    let second = again
+        .as_map()
+        .unwrap()
+        .iter()
+        .find(|(k, _)| k.as_str() == Some("message_id"))
+        .map(|(_, v)| v.as_str().unwrap().to_string())
+        .unwrap();
+    assert_ne!(returned, second);
+}
+
+/// The date formatter, against a known instant: no calendar crate, so the
+/// arithmetic is pinned here.
+#[test]
+fn the_date_header_is_rfc5322_without_a_calendar_crate() {
+    assert_eq!(rfc5322_date(0), "Thu, 01 Jan 1970 00:00:00 +0000");
+    assert_eq!(
+        rfc5322_date(1_000_000_000),
+        "Sun, 09 Sep 2001 01:46:40 +0000"
+    );
+    assert_eq!(rfc5322_date(951_782_400), "Tue, 29 Feb 2000 00:00:00 +0000");
+    assert_eq!(domain_of("Name <a@example.com>"), Some("example.com"));
+    assert_eq!(domain_of("a@example.com"), Some("example.com"));
+    assert_eq!(domain_of("nobody"), None);
+}
+
+/// `pass_env` keeps the credential out of the file (vera `DRT_ASKS.md`
+/// §18), and is read at startup: an unset variable is a refusal by name
+/// there, and naming both forms is a refusal too.
+#[test]
+fn pass_env_is_read_at_startup_and_refused_by_name_when_unset() {
+    let with = |extra: Vec<(rmpv::Value, rmpv::Value)>| {
+        let mut m = vec![
+            ("host".into(), "smtp.example.com".into()),
+            ("user".into(), "vera".into()),
+            ("from".into(), "vera@example.com".into()),
+            (
+                "allow".into(),
+                rmpv::Value::Array(vec!["@example.com".into()]),
+            ),
+        ];
+        m.extend(extra);
+        Scope(rmpv::Value::Map(m))
+    };
+    let ty = SsmtpConnector::new().scope_type();
+    let e = ty
+        .validate(Some(&with(vec![(
+            "pass_env".into(),
+            "DRT_TEST_SMTP_PASS_UNSET".into(),
+        )])))
+        .unwrap_err();
+    assert!(
+        e.contains("DRT_TEST_SMTP_PASS_UNSET") && e.contains("not set"),
+        "{e}"
+    );
+    let e = ty
+        .validate(Some(&with(vec![
+            ("pass".into(), "x".into()),
+            ("pass_env".into(), "DRT_TEST_SMTP_PASS_SET".into()),
+        ])))
+        .unwrap_err();
+    assert!(e.contains("both"), "{e}");
+    std::env::set_var("DRT_TEST_SMTP_PASS_SET", "hunter2");
+    ty.validate(Some(&with(vec![(
+        "pass_env".into(),
+        "DRT_TEST_SMTP_PASS_SET".into(),
+    )])))
+    .unwrap();
 }

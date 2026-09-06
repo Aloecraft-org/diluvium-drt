@@ -61,6 +61,10 @@ use drt_connector::{CallError, CallResult, Connector};
 const MAX_DBS: usize = 8;
 const DEFAULT_MAX_RESULT_ROWS: usize = 1000;
 
+/// What `journal_mode` may name: SQLite's own set, checked at startup so a
+/// typo is a refusal by name rather than a pragma SQLite ignores.
+const JOURNAL_MODES: [&str; 6] = ["wal", "delete", "truncate", "persist", "memory", "off"];
+
 #[derive(Debug, Clone, Deserialize)]
 struct SqlScope {
     /// The granted directory. Programs name databases within it.
@@ -77,6 +81,16 @@ struct SqlScope {
     /// a read-only one does not.
     #[serde(default)]
     create: Option<bool>,
+    /// SQLite's journal mode for every database this scope opens, applied
+    /// on open and verified: `wal`, `delete`, `truncate`, `persist`,
+    /// `memory` or `off`. A property of the *place* rather than the
+    /// program, which is why it is here beside `access` and not a pragma
+    /// the guest runs -- and the guest cannot: `PRAGMA journal_mode = wal`
+    /// is refused by `query` (it writes) and by `exec` (it returns a row).
+    /// WAL is the mode two processes sharing one file want, and the one a
+    /// Litestream replica needs (vera `DRT_ASKS.md` §15).
+    #[serde(default)]
+    journal_mode: Option<String>,
 }
 
 impl SqlScope {
@@ -90,6 +104,7 @@ impl SqlScope {
                 access: None,
                 max_result_rows: None,
                 create: None,
+                journal_mode: None,
             }
         } else {
             rmpv::ext::from_value(value.clone())
@@ -105,6 +120,14 @@ impl SqlScope {
                     "config.connectors.sql.access must be \"read\" or \
                      \"readwrite\" (got '{other}')"
                 ))
+            }
+        }
+        if let Some(mode) = &parsed.journal_mode {
+            if !JOURNAL_MODES.contains(&mode.to_ascii_lowercase().as_str()) {
+                return Err(format!(
+                    "config.connectors.sql.journal_mode must be one of {} (got '{mode}')",
+                    JOURNAL_MODES.join(", ")
+                ));
             }
         }
         Ok(parsed)
@@ -180,7 +203,7 @@ struct SqlScopeType;
 
 impl ScopeType for SqlScopeType {
     fn describe(&self) -> &str {
-        "a directory: \"path\", or {scope, access?: read|readwrite, max_result_rows?, create?}"
+        "a directory: \"path\", or {scope, access?: read|readwrite, max_result_rows?, create?, journal_mode?: wal|delete|truncate|persist|memory|off}"
     }
 
     fn validate(&self, scope: Option<&Scope>) -> Result<(), String> {
@@ -302,6 +325,25 @@ impl SqlConnector {
             } | OpenFlags::SQLITE_OPEN_NO_MUTEX;
             let conn = rusqlite::Connection::open_with_flags(&path, flags)
                 .map_err(|e| CallError::new(format!("opening '{name}': {e}")))?;
+            // Asked for and then read back, because SQLite answers the
+            // pragma with the mode it *is* in: a read-only connection cannot
+            // convert a database, and a filesystem that cannot lock refuses
+            // WAL by answering `delete`. Either is a refusal by name here,
+            // never a deployment quietly running in a mode its config
+            // does not say.
+            if let Some(want) = scope.journal_mode.as_deref() {
+                let want = want.to_ascii_lowercase();
+                let got: String = conn
+                    .query_row(&format!("PRAGMA journal_mode = {want}"), [], |r| r.get(0))
+                    .map_err(|e| CallError::new(format!("opening '{name}': journal_mode: {e}")))?;
+                if got.to_ascii_lowercase() != want {
+                    return Err(CallError::new(format!(
+                        "opening '{name}': the scope asks for journal_mode {want} and SQLite \
+                         answered {got}; a read-only open cannot convert a database, and WAL \
+                         needs a filesystem SQLite can lock"
+                    )));
+                }
+            }
             open.insert(path.clone(), conn);
         }
         f(open.get(&path).expect("just inserted"))

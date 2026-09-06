@@ -475,3 +475,44 @@ fn a_connector_that_lost_nothing_reports_nothing() {
     // And on a connector that never opened anything at all.
     assert!(SqlConnector::new().finish().is_empty());
 }
+
+/// `journal_mode` is the scope's, applied on open and read back (vera
+/// `DRT_ASKS.md` §15): two processes sharing one file want WAL, a
+/// Litestream replica needs it, and a guest cannot set it -- the pragma
+/// writes and answers a row, so both `query` and `exec` refuse it.
+#[test]
+fn the_scopes_journal_mode_is_applied_on_open_and_verified() {
+    let dir = tempfile::tempdir().unwrap();
+    let sc = Scope(rmpv::Value::Map(vec![
+        ("scope".into(), dir.path().to_str().unwrap().into()),
+        ("access".into(), "readwrite".into()),
+        ("journal_mode".into(), "wal".into()),
+    ]));
+    let c = SqlConnector::new();
+    call(
+        &c,
+        &sc,
+        "sql/exec",
+        args("app", "create table t (x)", vec![]),
+    )
+    .unwrap();
+    // Read the mode back through SQLite itself, not the connector.
+    let file = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| !p.to_string_lossy().ends_with("-wal") && !p.to_string_lossy().ends_with("-shm"))
+        .unwrap();
+    let raw = rusqlite::Connection::open(&file).unwrap();
+    let mode: String = raw
+        .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(mode.to_ascii_lowercase(), "wal");
+
+    // A mode SQLite does not know is refused at startup, by name.
+    let bad = Scope(rmpv::Value::Map(vec![
+        ("scope".into(), dir.path().to_str().unwrap().into()),
+        ("journal_mode".into(), "banana".into()),
+    ]));
+    let e = c.scope_type().validate(Some(&bad)).unwrap_err();
+    assert!(e.contains("journal_mode") && e.contains("banana"), "{e}");
+}

@@ -15,6 +15,8 @@ what reached the relay:
   From: Notifications <no-reply@example.com>
   To: someone@example.com
   Subject: Hello
+  Date: <the host clock, RFC 5322>
+  Message-ID: <minted by the host, under the sender's domain>
   MIME-Version: 1.0
   Content-Type: text/plain; charset=utf-8
   
@@ -32,6 +34,8 @@ what reached the relay:
   From: Notifications <no-reply@example.com>
   To: someone@example.com
   Subject: From: me@evil.example
+  Date: <the host clock, RFC 5322>
+  Message-ID: <minted by the host, under the sender's domain>
   MIME-Version: 1.0
   Content-Type: text/plain; charset=utf-8
   
@@ -46,6 +50,8 @@ what reached the relay:
   From: Notifications <no-reply@example.com>
   To: someone@example.com
   Subject: Re: Hello
+  Date: <the host clock, RFC 5322>
+  Message-ID: <minted by the host, under the sender's domain>
   In-Reply-To: <20260903.42@mail.example.com>
   References: <20260903.42@mail.example.com>
   MIME-Version: 1.0

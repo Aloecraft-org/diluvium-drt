@@ -193,6 +193,15 @@ impl Dispatcher {
                 format!("'{}' is outside this instance's grants", req.call),
             ));
         }
+        // The menu, answered here because only the dispatcher holds both
+        // halves of the answer: what is wired, and what this instance may
+        // reach. The C host wires it as a connector (`dhost.c`,
+        // `conn_capabilities`) and gates it the same way -- a program needs
+        // `host:capabilities/list`, and an auditor granted that and nothing
+        // else can report what a swarm reaches without reaching any of it.
+        if req.call == CAPABILITIES_LIST {
+            return Routed::Answered(Reply::ok(req.tok, self.capabilities(caps)));
+        }
         let Some(wired) = self.registry.resolve(&req.call) else {
             return Routed::Answered(Reply::denied(
                 req.tok,
@@ -206,6 +215,54 @@ impl Dispatcher {
             connector: Arc::clone(&wired.connector),
             scope: wired.scope.clone(),
         })
+    }
+}
+
+/// The one call the dispatcher answers with a value of its own.
+pub const CAPABILITIES_LIST: &str = "capabilities/list";
+
+impl Dispatcher {
+    /// `capabilities/list`: one entry per wired family, in the C host's
+    /// shape -- `{name, kind, owner, granted, visibility}` -- plus the
+    /// menu itself. `granted` is asked the way a call would ask it, so the
+    /// listing cannot drift from what a call would do; a family is
+    /// `granted` when the instance holds it or anything under it, since a
+    /// program holding only `host:fs/read` reaches `fs` and should be told
+    /// so. `owner` is nil for a builtin and `visibility` is `public`: DRT
+    /// has no plugins to own a family yet and no visibility policy to
+    /// narrow one, and both fields are here so a program written against
+    /// the C host reads the same map (vera `DRT_ASKS.md` §14).
+    fn capabilities(&self, caps: &CapSet) -> rmpv::Value {
+        use drt_caps::Effect;
+        let granted = |family: &str| {
+            let cap = call_capability(family);
+            let under = format!("{cap}/");
+            caps.holds(&cap)
+                || caps
+                    .grants()
+                    .iter()
+                    .any(|g| matches!(g.effect, Effect::Grant) && g.capability.starts_with(&under))
+        };
+        let entry = |name: &str, granted: bool| {
+            rmpv::Value::Map(vec![
+                ("name".into(), name.into()),
+                ("kind".into(), "builtin".into()),
+                ("owner".into(), rmpv::Value::Nil),
+                ("granted".into(), rmpv::Value::Boolean(granted)),
+                ("visibility".into(), "public".into()),
+            ])
+        };
+        let mut out: Vec<rmpv::Value> = self
+            .registry
+            .wired
+            .keys()
+            .map(|family| entry(family, granted(family)))
+            .collect();
+        out.push(entry(
+            "capabilities",
+            caps.holds(&call_capability(CAPABILITIES_LIST)),
+        ));
+        rmpv::Value::Array(out)
     }
 }
 
@@ -315,6 +372,69 @@ mod tests {
 
     fn caps(names: &[&str]) -> Arc<CapSet> {
         CapSet::root(names.iter().map(|n| Grant::grant(*n)).collect())
+    }
+
+    /// The menu: what is wired, and whether this instance may reach it,
+    /// in the C host's shape. Gated like any call, so an ungranted program
+    /// learns nothing (vera `DRT_ASKS.md` §14).
+    #[test]
+    fn capabilities_list_names_every_wired_family_and_whether_it_is_held() {
+        fn entries(reply: &Reply) -> Vec<rmpv::Value> {
+            reply.value.as_ref().unwrap().as_array().unwrap().to_vec()
+        }
+        fn field(e: &rmpv::Value, key: &str) -> rmpv::Value {
+            let map: &[(rmpv::Value, rmpv::Value)] = e.as_map().unwrap();
+            map.iter()
+                .find(|(k, _)| k.as_str() == Some(key))
+                .unwrap()
+                .1
+                .clone()
+        }
+        fn find(entries: &[rmpv::Value], name: &str) -> rmpv::Value {
+            entries
+                .iter()
+                .find(|e| field(e, "name") == rmpv::Value::from(name))
+                .unwrap_or_else(|| panic!("no entry for {name}: {entries:?}"))
+                .clone()
+        }
+        let d = dispatcher_with_time();
+        let raw = to_bytes(&Request {
+            tok: 7,
+            call: "capabilities/list".into(),
+            args: None,
+        })
+        .unwrap();
+
+        let reply =
+            pollster::block_on(d.dispatch(&caps(&["host:capabilities/list", "host:time"]), &raw));
+        assert_eq!(reply.status, Status::Ok, "{reply:?}");
+        let all = entries(&reply);
+        let time = find(&all, "time");
+        assert_eq!(field(&time, "granted"), rmpv::Value::Boolean(true));
+        assert_eq!(field(&time, "kind"), rmpv::Value::from("builtin"));
+        assert_eq!(field(&time, "owner"), rmpv::Value::Nil);
+        assert_eq!(field(&time, "visibility"), rmpv::Value::from("public"));
+        assert_eq!(
+            field(&find(&all, "capabilities"), "granted"),
+            rmpv::Value::Boolean(true)
+        );
+
+        // Held narrowly is still reached: `host:time/x` is under `time`.
+        let reply =
+            pollster::block_on(d.dispatch(&caps(&["host:capabilities/list", "host:time/x"]), &raw));
+        assert_eq!(
+            field(&find(&entries(&reply), "time"), "granted"),
+            rmpv::Value::Boolean(true)
+        );
+
+        // Not held at all is said so, and a program without the menu is told nothing.
+        let reply = pollster::block_on(d.dispatch(&caps(&["host:capabilities/list"]), &raw));
+        assert_eq!(
+            field(&find(&entries(&reply), "time"), "granted"),
+            rmpv::Value::Boolean(false)
+        );
+        let reply = pollster::block_on(d.dispatch(&caps(&["host:time"]), &raw));
+        assert_eq!(reply.status, Status::Denied, "{reply:?}");
     }
 
     #[test]

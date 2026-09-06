@@ -12,6 +12,8 @@ serde = { workspace = true }
 rmpv = { workspace = true }
 drt-caps = { workspace = true }
 drt-connector = { workspace = true }
+# For the Message-ID's random half: the workspace's own entropy seam.
+drt-platform = { workspace = true }
 # Every one of these is already in the tree behind `rest` and `crypto`, so on
 # the `full` profile this connector adds no new dependency at all.
 tokio = { version = "1", default-features = false, features = ["net", "io-util", "time", "rt", "rt-multi-thread"] }

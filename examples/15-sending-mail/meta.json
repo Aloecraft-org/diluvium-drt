@@ -4,5 +4,8 @@
   "cmd": "./demo.sh",
   "needs_network": false,
   "needs_build": "full",
-  "normalise": []
+  "normalise": [
+    "s|^  Date: .*$|  Date: <the host clock, RFC 5322>|",
+    "s|^  Message-ID: <.*@example.com>$|  Message-ID: <minted by the host, under the sender's domain>|"
+  ]
 }

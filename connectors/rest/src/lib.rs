@@ -211,6 +211,15 @@ impl Url {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RestScope {
     allow: Vec<AllowEntry>,
+    /// Certificates trusted **in addition to** webpki's public roots, from
+    /// the PEM files `extra_roots` names -- an egress proxy's interception
+    /// CA, typically. Added, never substituted: a scope that could narrow
+    /// the trust store to one certificate would be a footgun, and the case
+    /// that exists is a CA that must be trusted beside the public ones,
+    /// not instead of them (vera `DRT_ASKS.md` §23; discofetch §6). Parsed
+    /// at startup, so a missing file or an empty one is refused by name
+    /// before any call.
+    extra_roots: Vec<tokio_rustls::rustls::pki_types::CertificateDer<'static>>,
     /// Off by default. On, private/loopback/link-local/CGNAT destinations
     /// are permitted — for a deployment whose whole job is talking to a
     /// service on its own network, stated deliberately rather than reached
@@ -251,10 +260,36 @@ enum EntryShape {
     Table {
         origin: String,
         #[serde(default)]
-        headers: std::collections::BTreeMap<String, String>,
+        headers: std::collections::BTreeMap<String, HeaderValue>,
         #[serde(default)]
         allow_headers: Option<Vec<String>>,
     },
+}
+
+/// An injected header's value in the config: the text itself, or
+/// `{"env": "NAME"}` naming an environment variable that holds it -- so a
+/// root config can be read over a shoulder, pasted into a ticket or checked
+/// in without being a credential disclosure (vera `DRT_ASKS.md` §18). The
+/// variable is read once, at startup, and one that is not set is a refusal
+/// by name there. `crypto`'s `key_env` is the same mechanism.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum HeaderValue {
+    Text(String),
+    Env { env: String },
+}
+
+impl HeaderValue {
+    fn resolve(self, origin: &str, name: &str) -> Result<String, String> {
+        match self {
+            HeaderValue::Text(v) => Ok(v),
+            HeaderValue::Env { env } => std::env::var(&env).map_err(|_| {
+                format!(
+                    "allow entry '{origin}': header '{name}' names env var '{env}', which is not set"
+                )
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -267,7 +302,41 @@ enum ScopeShape {
         allow: Vec<EntryShape>,
         #[serde(default)]
         allow_private: bool,
+        #[serde(default)]
+        extra_roots: Vec<std::path::PathBuf>,
     },
+}
+
+/// The PEM files `extra_roots` names, read and parsed at startup. Every
+/// certificate in every file must parse and each file must hold at least
+/// one, so a wrong path, an empty file or a key file handed over by
+/// mistake is a refusal by name before the first call rather than a
+/// `tls` error on it.
+fn load_roots(
+    paths: &[std::path::PathBuf],
+) -> Result<Vec<tokio_rustls::rustls::pki_types::CertificateDer<'static>>, String> {
+    use tokio_rustls::rustls::pki_types::{pem::PemObject, CertificateDer};
+    let mut out = Vec::new();
+    for path in paths {
+        let name = path.display();
+        let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(path)
+            .map_err(|e| format!("extra_roots '{name}': {e}"))?
+            .collect::<Result<_, _>>()
+            .map_err(|e| format!("extra_roots '{name}': {e}"))?;
+        if certs.is_empty() {
+            return Err(format!("extra_roots '{name}': no certificate in it"));
+        }
+        // webpki has to be able to use it, or it is trusted for nothing.
+        let mut probe = tokio_rustls::rustls::RootCertStore::empty();
+        let (_, ignored) = probe.add_parsable_certificates(certs.iter().cloned());
+        if ignored > 0 {
+            return Err(format!(
+                "extra_roots '{name}': {ignored} certificate(s) are not usable as trust anchors"
+            ));
+        }
+        out.extend(certs);
+    }
+    Ok(out)
 }
 
 impl RestScope {
@@ -284,14 +353,16 @@ impl RestScope {
                 "the rest scope is not an origin, a list of them, or {{allow, allow_private}}: {e}"
             )
         })?;
-        let (raw, allow_private) = match shape {
-            ScopeShape::One(s) => (vec![EntryShape::Origin(s)], false),
-            ScopeShape::Many(v) => (v, false),
+        let (raw, allow_private, root_files) = match shape {
+            ScopeShape::One(s) => (vec![EntryShape::Origin(s)], false, Vec::new()),
+            ScopeShape::Many(v) => (v, false, Vec::new()),
             ScopeShape::Full {
                 allow,
                 allow_private,
-            } => (allow, allow_private),
+                extra_roots,
+            } => (allow, allow_private, extra_roots),
         };
+        let extra_roots = load_roots(&root_files)?;
         let mut allow = Vec::new();
         for entry in raw {
             let (raw_origin, headers, allow_headers) = match entry {
@@ -311,6 +382,7 @@ impl RestScope {
             // to remember that HTTP header names are case-insensitive.
             let mut lowered = std::collections::BTreeMap::new();
             for (k, v) in headers {
+                let v = v.resolve(&raw_origin, &k)?;
                 let lk = k.to_ascii_lowercase();
                 if lk.is_empty() || lk.contains(['\r', '\n', ':']) || v.contains(['\r', '\n']) {
                     return Err(format!(
@@ -334,6 +406,7 @@ impl RestScope {
         Ok(RestScope {
             allow,
             allow_private,
+            extra_roots,
         })
     }
 
@@ -844,6 +917,8 @@ async fn fetch(
     if url.tls {
         let mut roots = tokio_rustls::rustls::RootCertStore::empty();
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        // The scope's `extra_roots`, beside the public ones (parsed at startup).
+        roots.add_parsable_certificates(scope.extra_roots.iter().cloned());
         // `builder()` resolves the crypto provider from rustls's own enabled
         // features and panics if more than one is on. Checked, not assumed:
         // `cargo tree -e features -i rustls` shows exactly `ring`, `std`,
@@ -1080,6 +1155,98 @@ mod tests {
 
     fn scope_of(v: rmpv::Value) -> Scope {
         Scope(v)
+    }
+
+    /// An injected header may name an environment variable instead of
+    /// carrying the value (vera `DRT_ASKS.md` §18): read once at startup,
+    /// and one that is not set is a refusal by name there.
+    #[test]
+    fn an_injected_header_may_come_from_the_environment() {
+        let entry = |var: &str| {
+            rmpv::Value::Map(vec![
+                (
+                    rmpv::Value::from("origin"),
+                    rmpv::Value::from("https://api.example"),
+                ),
+                (
+                    rmpv::Value::from("headers"),
+                    rmpv::Value::Map(vec![(
+                        rmpv::Value::from("authorization"),
+                        rmpv::Value::Map(vec![(rmpv::Value::from("env"), rmpv::Value::from(var))]),
+                    )]),
+                ),
+            ])
+        };
+        let e = RestScope::parse(Some(&scope_of(rmpv::Value::Array(vec![entry(
+            "DRT_TEST_REST_TOKEN_UNSET",
+        )]))))
+        .unwrap_err();
+        assert!(
+            e.contains("DRT_TEST_REST_TOKEN_UNSET") && e.contains("not set"),
+            "{e}"
+        );
+        std::env::set_var("DRT_TEST_REST_TOKEN_SET", "Bearer hunter2");
+        let sc = RestScope::parse(Some(&scope_of(rmpv::Value::Array(vec![entry(
+            "DRT_TEST_REST_TOKEN_SET",
+        )]))))
+        .unwrap();
+        let injected = &sc.allow[0].headers;
+        assert_eq!(
+            injected.get("authorization").map(String::as_str),
+            Some("Bearer hunter2")
+        );
+        // A plain string is still a plain string.
+        assert_eq!(
+            scope_with_terms().allow[0]
+                .headers
+                .get("x-api-key")
+                .map(String::as_str),
+            Some("sk_live_secret")
+        );
+    }
+
+    /// `extra_roots` adds to webpki's roots and never replaces them, and
+    /// every file is read at startup so a wrong path or an empty one is a
+    /// refusal by name rather than a `tls` on the first call (vera
+    /// `DRT_ASKS.md` §23, discofetch §6).
+    #[test]
+    fn extra_roots_are_parsed_at_startup_and_added_beside_webpki() {
+        let full = |roots: Vec<&str>| {
+            rmpv::Value::Map(vec![
+                (
+                    rmpv::Value::from("allow"),
+                    rmpv::Value::Array(vec![rmpv::Value::from("https://api.example")]),
+                ),
+                (
+                    rmpv::Value::from("extra_roots"),
+                    rmpv::Value::Array(roots.into_iter().map(rmpv::Value::from).collect()),
+                ),
+            ])
+        };
+        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/extra-root.pem");
+        let sc = RestScope::parse(Some(&scope_of(full(vec![fixture])))).unwrap();
+        assert_eq!(sc.extra_roots.len(), 1);
+        // And webpki's are still there: the store is a union, checked by
+        // building it the way `fetch` does.
+        let mut roots = tokio_rustls::rustls::RootCertStore::empty();
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let public = roots.len();
+        let (added, ignored) = roots.add_parsable_certificates(sc.extra_roots.iter().cloned());
+        assert_eq!((added, ignored), (1, 0));
+        assert_eq!(roots.len(), public + 1);
+
+        let e =
+            RestScope::parse(Some(&scope_of(full(vec!["/nope/does-not-exist.pem"])))).unwrap_err();
+        assert!(
+            e.contains("extra_roots") && e.contains("does-not-exist.pem"),
+            "{e}"
+        );
+
+        let empty = std::env::temp_dir().join(format!("drt-rest-empty-{}.pem", std::process::id()));
+        std::fs::write(&empty, "not a certificate\n").unwrap();
+        let e = RestScope::parse(Some(&scope_of(full(vec![empty.to_str().unwrap()])))).unwrap_err();
+        assert!(e.contains("no certificate"), "{e}");
+        let _ = std::fs::remove_file(&empty);
     }
 
     /// The decoder over a body that has already arrived whole. Production
