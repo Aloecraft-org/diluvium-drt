@@ -195,27 +195,25 @@ Everything ssh knows keeps working through it — host-key verification,
 agent forwarding, `rsync`, `-L`/`-R` — because the pipe carries ciphertext
 and nothing else.
 
-**`ssh/exec` and the relay do not compose today, and it is worth knowing
-before you plan on it.** The scope dials a `host:port`; the caller half of
-the tunnel is stdio-only, the OpenSSH `ProxyCommand` shape
-(`crates/drt/src/tunnel.rs`: `stdio_to_ws`). `--listen` is the *other*
-half — it accepts WebSockets and bridges them to a TCP target, in front of
-an sshd — so there is no mode that binds a local TCP port and dials a
-relay URL, and nothing for `scope.host` to point at.
+**`ssh/exec` and the relay compose through `--local`** (issue #13). The
+scope dials a `host:port`, and the caller half of the tunnel was
+stdio-only, the OpenSSH `ProxyCommand` shape (`crates/drt/src/tunnel.rs`:
+`stdio_to_ws`), so for a while there was nothing for `scope.host` to
+point at. Now there is: beside the deployment,
 
-Three ways out, in the order I would try them:
+```sh
+drt tunnel "wss://rendezvous.example/s/wsl?k=$CALLER_KEY" --local 127.0.0.1:2222
+```
 
-1. **Run the deployment inside WSL and use wiring A.** The relay question
-   disappears with the network hop.
-2. **Hold an `ssh -L` open** beside the deployment, itself proxied through
-   `drt tunnel`, and point `scope.host` at the forwarded port. Works today;
-   it is a second process to supervise.
-3. **The missing mode is small.** `tunnel.rs` already exposes
-   `stream_to_ws` — "bridge one already-open byte stream to the WSS url" —
-   so a TCP-listener-to-relay forwarder is that function behind an accept
-   loop, which is what `serve_ws_bridge` is for the other direction. If
-   this composition matters, that is the change to ask for rather than
-   working around it forever.
+binds a local port and gives each accepted connection its own fresh leg
+through the relay — one claim per connection, nothing multiplexed — and
+`scope.host = "127.0.0.1:2222"` is the rest. A claim the relay refuses (a
+wrong key, an unknown label) closes the local connection at once, so
+`ssh/exec` answers `error` rather than waiting on a half-open socket. It
+is a second process to supervise, the same way `--park` is on the other
+side; the in-process form (the ssh connector taking an already-open
+stream) is an ego-transport seam, filed there, and `--local` loses no
+code when it lands.
 
 If the box is on your own network, skip all of it: `ssh/exec` dials the
 address directly.

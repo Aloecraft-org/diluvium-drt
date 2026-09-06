@@ -155,13 +155,24 @@ pub enum Command {
     /// stdio to it — the OpenSSH ProxyCommand contract, so
     /// `ssh -o ProxyCommand="drt tunnel wss://gate/fp" user@fp` (and rsync,
     /// sftp, -L/-R through it) works like normal SSH over the WebSocket
-    /// carrier. With --listen/--to: accept WebSocket connections and bridge
-    /// each to a TCP target, in front of any sshd. With --park/--to: the
-    /// device side of the relay.
+    /// carrier. With a URL and --local: serve a local port instead, one
+    /// fresh leg per accepted connection, which is how a program reaches
+    /// a parked device. With --listen/--to: accept WebSocket connections
+    /// and bridge each to a TCP target, in front of any sshd. With
+    /// --park/--to: the device side of the relay.
     #[cfg(feature = "tunnel")]
     Tunnel {
         /// The wss:// or ws:// URL to bridge stdio to.
         url: Option<String>,
+        /// With a URL: bind this local address instead of using stdio,
+        /// and give each accepted connection its own fresh leg to the URL
+        /// -- one claim per connection, nothing multiplexed over one.
+        /// `ssh/exec` scoped to this address, `rest` dialing it, or a
+        /// desktop client with no ProxyCommand support, reach a parked
+        /// device this way. A claim the relay refuses closes the local
+        /// connection at once rather than leaving it half-open.
+        #[arg(long, value_name = "HOST:PORT", requires = "url")]
+        local: Option<String>,
         /// Serve the other half: accept WebSockets here…
         #[arg(long, requires = "to", conflicts_with_all = ["url", "park"])]
         listen: Option<String>,
@@ -725,21 +736,27 @@ pub fn main(cli: Cli) -> ExitCode {
         #[cfg(feature = "tunnel")]
         Command::Tunnel {
             url,
+            local,
             listen,
             to,
             park,
         } => {
             let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
-            let outcome = match (url, listen, park, to) {
-                (Some(url), _, _, _) => runtime.block_on(crate::tunnel::stdio_to_ws(&url)),
-                (None, Some(listen), None, Some(to)) => {
+            let outcome = match (url, local, listen, park, to) {
+                (Some(url), Some(local), _, _, _) => {
+                    runtime.block_on(crate::tunnel::local_to_ws(&local, &url))
+                }
+                (Some(url), None, _, _, _) => runtime.block_on(crate::tunnel::stdio_to_ws(&url)),
+                (None, None, Some(listen), None, Some(to)) => {
                     runtime.block_on(crate::tunnel::ws_to_tcp(&listen, &to))
                 }
-                (None, None, Some(park), Some(to)) => {
+                (None, None, None, Some(park), Some(to)) => {
                     runtime.block_on(crate::tunnel::park(&park, &to))
                 }
                 _ => Err(
-                    "name a URL to bridge stdio to, --listen with --to, or --park with --to".into(),
+                    "name a URL to bridge stdio to (with --local to serve a local port \
+                          instead), --listen with --to, or --park with --to"
+                        .into(),
                 ),
             };
             // Leak the runtime rather than drop it. tokio 1.53.1 has a

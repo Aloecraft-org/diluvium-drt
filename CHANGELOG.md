@@ -1005,6 +1005,18 @@ contract is `doc/Browser.md`; `doc/Platforms.md` is the matrix.
   connector's credential against the deployment's relay
   (`crates/drt/tests/turn.rs`). discofetch's DRT_ASKS §4, decided
   in issue #12.
+- **`drt tunnel <url> --local HOST:PORT`.** The program-shaped
+  caller half: a local listener where each accepted connection
+  claims one fresh leg through the relay -- N connections are N
+  legs, nothing multiplexed over one -- so `ssh/exec` scoped to that
+  address, `rest` dialing it, or a desktop client with no
+  ProxyCommand support, reach a parked device from inside a
+  program, which the stdio half could not give them. A claim the
+  relay refuses (the 403 a wrong key or an unknown label gets, or a
+  relay that is not there) closes the local connection at once
+  rather than leaving a client on a half-open socket; both
+  measured. discofetch's DRT_ASKS §11, filed as issue #13, landed
+  as filed.
 - **A Windows artifact: `drt_slim_windows_x86_64.exe`.** `slim`, for
   x86_64-pc-windows-gnu, cross-built from a Linux runner with
   mingw-w64 the way `doc/Platforms.md` said to rehearse it, and run

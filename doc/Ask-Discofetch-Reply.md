@@ -120,14 +120,19 @@ nothing about it is small. Taken at the ask's own word — a spec to
 follow, not a dependency — and nothing here is planned around it.
 
 One thing found while writing `doc/Python.md` that belongs beside this,
-because it is the same story one layer up: **`ssh/exec` and the relay do
-not compose today.** The scope dials a `host:port`; the tunnel's caller
-half is stdio-only, the ProxyCommand shape; `--listen` is the *other*
-half. So a deployment cannot reach a parked device's sshd through the
-relay from inside a program, only from a shell. The missing piece is
-small — `tunnel.rs` already exposes `stream_to_ws`, and the mode is that
-behind an accept loop — and it is the kind of gap a punch inside the
-tunnel would need closed first anyway.
+because it is the same story one layer up: **`ssh/exec` and the relay did
+not compose.** The scope dials a `host:port`; the tunnel's caller half
+was stdio-only, the ProxyCommand shape; `--listen` is the *other* half.
+So a deployment could not reach a parked device's sshd through the relay
+from inside a program, only from a shell. Filed by you as issue #13 with
+the shape spelled out, and `landed` as filed: `drt tunnel <url> --local
+HOST:PORT` binds a local listener where each accepted connection claims
+one fresh leg, N connections are N legs with nothing multiplexed, and a
+claim the relay refuses closes the local connection at once — the 403
+and the missing-relay cases both, measured in
+`crates/drt/tests/tunnel.rs`. `--local` and not `--listen`, for the
+reason the issue gives. It is the piece a punch inside the tunnel would
+need closed first, and it is closed.
 
 ### Later, tracked
 
