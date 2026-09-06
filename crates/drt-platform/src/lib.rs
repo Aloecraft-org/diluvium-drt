@@ -13,7 +13,9 @@
 //! - [`fs`]: the [`fs::Backend`] trait, [`fs::StdFs`], [`fs::MemFs`], and
 //!   the process-wide [`fs::host`] the fs connector and the program loader
 //!   read through.
-//! - [`stdio`]: `write`, `stdout`, `stderr`, and the sink a page installs.
+//! - [`stdio`]: `write`, `stdout`, `stderr`, the sink a page installs, and
+//!   `bytes_as_written`, the once-at-startup call that keeps Windows's C
+//!   runtime from rewriting the C core's line endings.
 //! - [`detect`]: which of the three this build is.
 
 pub mod clock;

@@ -24,3 +24,14 @@
 # the YAML, and CI's `changelog.py check` is what proves these match it.
 CHANGELOG.md linguist-generated=true
 changelog.json linguist-generated=true
+
+# Line endings are the repository's on every platform. The examples gate
+# diffs each `expected.txt` against a binary's bytes, and the first Windows
+# rehearsal checked those files out as CRLF -- the runner's git has
+# `core.autocrlf=true` -- so every example without a `normalise` rule
+# failed on `\r` alone while the ones with one passed, because MSYS sed
+# strips CR in text mode and `cp` does not. `eol=lf` makes the checkout
+# the bytes the gate was written against; `text=auto` leaves binaries
+# alone. (The binary's own line endings are its business:
+# `stdio::bytes_as_written`.)
+* text=auto eol=lf

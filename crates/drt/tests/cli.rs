@@ -318,7 +318,7 @@ fn buildinfo_names_the_release_tag_when_built_as_one() {
 #[test]
 fn profile_matches_its_manifest() {
     const PROFILES: [&str; 4] = ["full", "slim", "wasi", "web"];
-    const LEAVES: [&str; 15] = [
+    const LEAVES: [&str; 16] = [
         "cli",
         "connector-crypto",
         "connector-exec",
@@ -334,6 +334,7 @@ fn profile_matches_its_manifest() {
         "runtime",
         "stun",
         "tunnel",
+        "turn",
     ];
 
     // The manifest's `[features]` table, as `name -> entries`.
@@ -420,6 +421,7 @@ fn profile_matches_its_manifest() {
     feature!("runtime");
     feature!("stun");
     feature!("tunnel");
+    feature!("turn");
     enabled.sort();
 
     let expected = PROFILES

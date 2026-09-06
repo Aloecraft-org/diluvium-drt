@@ -9,6 +9,11 @@
 //! through wasi-libc's `fd_write` (doc/Wasm.md D4), and the two meet at
 //! the page's sink.
 //!
+//! On Windows the C runtime's text mode would put `\r\n` on every line
+//! the C core prints and leave `\n` on every line this module prints;
+//! [`bytes_as_written`] is the one call that stops that, made once at
+//! startup.
+//!
 //! Thread-local rather than global because a page's sink holds JS values,
 //! which are pinned to the one thread there is; natively the sink is only
 //! ever installed by a test capturing output.
@@ -75,6 +80,44 @@ pub fn write(fd: Fd, bytes: &[u8]) {
             }
         };
         let _ = result;
+    }
+}
+
+/// Make fds 1 and 2 carry bytes as written.
+///
+/// On Windows the C runtime opens its standard streams in text mode and
+/// rewrites every `\n` the C core's `print` emits as `\r\n` on the way
+/// out (`lua_writestring` is `fwrite` to `stdout`), while Rust's own
+/// `println!` writes what it is given -- so a program's output would be
+/// half one line ending and half the other, and the examples gate, which
+/// diffs one `expected.txt` on every platform, would fail every example
+/// that prints. Measured on the first Windows build (`x86_64-pc-windows-gnu`,
+/// under wine): seven of the eight examples a `slim` build can run, each
+/// differing from its `expected.txt` in nothing but `\r`. Binary mode
+/// makes the two agree, with `\n` everywhere, the way the same program
+/// prints on every other platform -- where there is no text mode to
+/// leave and this is a no-op.
+///
+/// Called once, before anything is printed; the drive loops and the REPL
+/// inherit it. Input is left alone: a console's `\r\n` is `read_line`'s
+/// to trim, as it already does.
+pub fn bytes_as_written() {
+    #[cfg(windows)]
+    {
+        use std::ffi::c_int;
+        extern "C" {
+            fn _setmode(fd: c_int, mode: c_int) -> c_int;
+        }
+        const O_BINARY: c_int = 0x8000;
+        // 1 and 2 are the CRT's own descriptors for stdout and stderr,
+        // whatever HANDLE sits under them.
+        for fd in [1, 2] {
+            // SAFETY: a CRT call on a descriptor the CRT owns. It fails
+            // only for a descriptor that is not open, which it reports
+            // rather than faults on -- and a stream that is closed gets
+            // no bytes in either mode.
+            unsafe { _setmode(fd, O_BINARY) };
+        }
     }
 }
 

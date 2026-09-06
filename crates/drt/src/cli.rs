@@ -69,6 +69,7 @@ const PROFILE_FULL: &[&str] = &[
     "runtime",
     "stun",
     "tunnel",
+    "turn",
 ];
 
 #[derive(Parser)]
@@ -139,17 +140,39 @@ pub enum Command {
     /// punching can work at all.
     #[cfg(feature = "stun")]
     Stun,
+    /// The TURN relay: carry traffic for the peers `stun` says cannot
+    /// reach each other directly -- the last rung of the ladder, and the
+    /// one that costs bandwidth. Reads the `turn` block of the config;
+    /// runs foreground. Credentials are coturn's `use-auth-secret` scheme
+    /// under the block's shared secret, which is what
+    /// `crypto/turn_credential` mints, so the same secret in both blocks
+    /// is the whole deployment. Inside `drt start` the same server also
+    /// reports its counters, and every allocation's closing byte count
+    /// with its principal, to the root program.
+    #[cfg(feature = "turn")]
+    Turn,
     /// SSH over WSS, as a dumb pipe. With a URL: bridge this process's
     /// stdio to it — the OpenSSH ProxyCommand contract, so
     /// `ssh -o ProxyCommand="drt tunnel wss://gate/fp" user@fp` (and rsync,
     /// sftp, -L/-R through it) works like normal SSH over the WebSocket
-    /// carrier. With --listen/--to: accept WebSocket connections and bridge
-    /// each to a TCP target, in front of any sshd. With --park/--to: the
-    /// device side of the relay.
+    /// carrier. With a URL and --local: serve a local port instead, one
+    /// fresh leg per accepted connection, which is how a program reaches
+    /// a parked device. With --listen/--to: accept WebSocket connections
+    /// and bridge each to a TCP target, in front of any sshd. With
+    /// --park/--to: the device side of the relay.
     #[cfg(feature = "tunnel")]
     Tunnel {
         /// The wss:// or ws:// URL to bridge stdio to.
         url: Option<String>,
+        /// With a URL: bind this local address instead of using stdio,
+        /// and give each accepted connection its own fresh leg to the URL
+        /// -- one claim per connection, nothing multiplexed over one.
+        /// `ssh/exec` scoped to this address, `rest` dialing it, or a
+        /// desktop client with no ProxyCommand support, reach a parked
+        /// device this way. A claim the relay refuses closes the local
+        /// connection at once rather than leaving it half-open.
+        #[arg(long, value_name = "HOST:PORT", requires = "url")]
+        local: Option<String>,
         /// Serve the other half: accept WebSockets here…
         #[arg(long, requires = "to", conflicts_with_all = ["url", "park"])]
         listen: Option<String>,
@@ -319,6 +342,9 @@ pub fn buildinfo(json: bool) -> String {
     if cfg!(feature = "tunnel") {
         verbs.push("tunnel");
     }
+    if cfg!(feature = "turn") {
+        verbs.push("turn");
+    }
     verbs.sort_unstable();
 
     // Named by what the profile actually is, not by what was asked for: a
@@ -415,6 +441,7 @@ fn enabled_features() -> Vec<&'static str> {
     feature!("runtime");
     feature!("stun");
     feature!("tunnel");
+    feature!("turn");
     on.sort_unstable();
     on
 }
@@ -584,6 +611,10 @@ pub fn assemble(cli: &Cli) -> Result<(RootConfig, drt_connector::Dispatcher), St
 /// The native binary: assemble, then run the verb to completion, sleeping
 /// where the driver says to.
 pub fn main(cli: Cli) -> ExitCode {
+    // Before the first byte goes out: on Windows this is what keeps the C
+    // core's `print` and this file's `eprintln!` on the same line ending.
+    // A no-op everywhere else.
+    drt_platform::stdio::bytes_as_written();
     let (config, dispatcher) = match assemble(&cli) {
         Ok(pair) => pair,
         Err(e) => {
@@ -681,24 +712,51 @@ pub fn main(cli: Cli) -> ExitCode {
                 }
             }
         }
+        #[cfg(feature = "turn")]
+        Command::Turn => {
+            let Some(turn_config) = config.turn.clone() else {
+                eprintln!("drt turn: the config names no `turn` block");
+                return ExitCode::FAILURE;
+            };
+            let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
+            let outcome = runtime.block_on(crate::turn::serve(&turn_config));
+            // Leaked, not dropped: the same tokio 1.53.1 teardown
+            // use-after-free `stun` and `relay` leak theirs for, and the
+            // same reason it is always armed here (`lookup_host` parks a
+            // blocking worker). The process is exiting anyway.
+            std::mem::forget(runtime);
+            match outcome {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("drt turn: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         #[cfg(feature = "tunnel")]
         Command::Tunnel {
             url,
+            local,
             listen,
             to,
             park,
         } => {
             let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
-            let outcome = match (url, listen, park, to) {
-                (Some(url), _, _, _) => runtime.block_on(crate::tunnel::stdio_to_ws(&url)),
-                (None, Some(listen), None, Some(to)) => {
+            let outcome = match (url, local, listen, park, to) {
+                (Some(url), Some(local), _, _, _) => {
+                    runtime.block_on(crate::tunnel::local_to_ws(&local, &url))
+                }
+                (Some(url), None, _, _, _) => runtime.block_on(crate::tunnel::stdio_to_ws(&url)),
+                (None, None, Some(listen), None, Some(to)) => {
                     runtime.block_on(crate::tunnel::ws_to_tcp(&listen, &to))
                 }
-                (None, None, Some(park), Some(to)) => {
+                (None, None, None, Some(park), Some(to)) => {
                     runtime.block_on(crate::tunnel::park(&park, &to))
                 }
                 _ => Err(
-                    "name a URL to bridge stdio to, --listen with --to, or --park with --to".into(),
+                    "name a URL to bridge stdio to (with --local to serve a local port \
+                          instead), --listen with --to, or --park with --to"
+                        .into(),
                 ),
             };
             // Leak the runtime rather than drop it. tokio 1.53.1 has a

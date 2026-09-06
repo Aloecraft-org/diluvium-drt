@@ -210,13 +210,17 @@ fn map_host_lua(path: &Path, value: rmpv::Value) -> Result<RootConfig, String> {
             // DRT's own, for the relay's reasons: the C host has no STUN.
             #[cfg(feature = "stun")]
             "stun" => config.stun = Some(map_stun(path, value)?),
+            // DRT's own, for the same reasons once more: the relay for the
+            // peers `stun` says cannot punch.
+            #[cfg(feature = "turn")]
+            "turn" => config.turn = Some(map_turn(path, value)?),
             other => {
                 // The C's loader promise, kept: an unknown key is a typo
                 // about to become a silent default, so it is an error and
                 // names itself.
                 return Err(format!(
                     "{}: unknown key '{other}' (known: supervisor, caps, \
-                     connectors, relay, stun)",
+                     connectors, relay, stun, turn)",
                     path.display()
                 ));
             }
@@ -265,6 +269,72 @@ fn map_stun(path: &Path, block: rmpv::Value) -> Result<drt_config::StunConfig, S
         (false, None) => bind,
     };
     Ok(stun)
+}
+
+/// The `turn` block: the relay for the peers `stun` says cannot punch, as
+/// `drt start` and `drt turn` run it. `bind` composes with `port` the way
+/// `stun`'s does; the secret's three knobs are `connectors.crypto.turn`'s,
+/// because it is the same secret.
+#[cfg(feature = "turn")]
+fn map_turn(path: &Path, block: rmpv::Value) -> Result<drt_config::TurnConfig, String> {
+    let rmpv::Value::Map(entries) = block else {
+        return Err(format!("{}: turn must be a table", path.display()));
+    };
+    let mut turn = drt_config::TurnConfig {
+        bind: String::new(),
+        relay_address: String::new(),
+        relay_bind: "0.0.0.0".into(),
+        realm: "drt".into(),
+        key: None,
+        key_file: None,
+        key_env: None,
+        max_allocations: 256,
+        queue: "turn_in".into(),
+        report_ms: 10_000,
+    };
+    let mut bind = String::new();
+    let mut port: Option<u64> = None;
+    for (key, value) in entries {
+        let Some(key) = key.as_str() else {
+            return Err(format!("{}: a non-string turn key", path.display()));
+        };
+        let bad = |what: &str| format!("{}: turn.{key} must be {what}", path.display());
+        match key {
+            "bind" => bind = value.as_str().ok_or_else(|| bad("an address"))?.to_string(),
+            "port" => port = Some(value.as_u64().ok_or_else(|| bad("a port number"))?),
+            "relay_address" => {
+                turn.relay_address = value.as_str().ok_or_else(|| bad("an IP address"))?.into()
+            }
+            "relay_bind" => {
+                turn.relay_bind = value.as_str().ok_or_else(|| bad("an IP address"))?.into()
+            }
+            "realm" => turn.realm = value.as_str().ok_or_else(|| bad("a realm"))?.into(),
+            "key" => turn.key = Some(value.as_str().ok_or_else(|| bad("a string"))?.into()),
+            "key_file" => turn.key_file = Some(value.as_str().ok_or_else(|| bad("a path"))?.into()),
+            "key_env" => {
+                turn.key_env = Some(value.as_str().ok_or_else(|| bad("a variable name"))?.into())
+            }
+            "max_allocations" => {
+                turn.max_allocations = value.as_u64().ok_or_else(|| bad("a count"))? as usize
+            }
+            "queue" => turn.queue = value.as_str().ok_or_else(|| bad("a queue name"))?.into(),
+            "report_ms" => turn.report_ms = value.as_u64().ok_or_else(|| bad("milliseconds"))?,
+            other => {
+                return Err(format!(
+                    "{}: unknown turn key '{other}' (known: bind, port, relay_address, \
+                     relay_bind, realm, key, key_file, key_env, max_allocations, queue, \
+                     report_ms)",
+                    path.display()
+                ));
+            }
+        }
+    }
+    turn.bind = match (bind.is_empty(), port) {
+        (true, _) => return Err(format!("{}: turn needs a bind address", path.display())),
+        (false, Some(p)) => format!("{bind}:{p}"),
+        (false, None) => bind,
+    };
+    Ok(turn)
 }
 
 /// The `relay` block: the rendezvous relay as `drt start` runs it, with

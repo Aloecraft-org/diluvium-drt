@@ -326,6 +326,88 @@ fn default_stun_report_ms() -> u64 {
     10_000
 }
 
+/// The TURN relay, as `drt start` and `drt turn` run it: the last rung of
+/// the traversal ladder, for the peers `stun` says cannot punch.
+///
+/// DRT's own, like `stun`, and for the same reason: a fetchpoint whose
+/// mapping changes per destination has no direct path, and the relay
+/// that carries it should be one the deployment runs rather than a
+/// stranger's. Credentials are coturn's `use-auth-secret` scheme byte
+/// for byte -- `<expiry>:<principal>`, and a password that is the
+/// HMAC-SHA1 of that under a shared secret -- which is what
+/// `crypto/turn_credential` mints under `connectors.crypto.turn`. The
+/// same secret in both blocks is the whole deployment, and a credential
+/// minted here verifies against coturn too, so either can stand behind
+/// the same `--ice` answer (issue #12).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnConfig {
+    /// e.g. `0.0.0.0:3478`, or a bare host paired with `port`. Faces the
+    /// world, as `stun` does, so there is no loopback default: the config
+    /// says where.
+    pub bind: String,
+    /// The address peers are told to send relayed traffic to -- on a host
+    /// behind a NAT, its public address, which is not the bound one.
+    /// Defaults to `bind`'s address when that names a specific one, and
+    /// must be given when `bind` is a wildcard: a relay handing out an
+    /// address nobody can reach fails after authentication, which is the
+    /// worst place to fail.
+    #[serde(default)]
+    pub relay_address: String,
+    /// The local address the relay sockets themselves bind to.
+    #[serde(default = "default_turn_relay_bind")]
+    pub relay_bind: String,
+    /// The authentication realm, echoed to clients.
+    #[serde(default = "default_turn_realm")]
+    pub realm: String,
+    /// The shared secret, inline. The same three knobs as
+    /// `connectors.crypto.turn`, resolved in the same order (file, then
+    /// env, then inline), because it is the same secret; one of the three
+    /// is required, and none is an open relay, which refuses to bind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// The shared secret, from a file; one trailing newline is trimmed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_file: Option<PathBuf>,
+    /// The shared secret, from the named environment variable, read once
+    /// at startup; unset is a refusal by name there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_env: Option<String>,
+    /// Hard cap on simultaneous allocations. Past it a request is refused
+    /// and counted, never queued: a relay is a buffering machine, and this
+    /// is its bound.
+    #[serde(default = "default_turn_max_allocations")]
+    pub max_allocations: usize,
+    /// Where the server's reports land on the root program inside
+    /// `drt start`: a counter snapshot on the timer below, and one
+    /// `turn_closed` per allocation as it closes, with the principal and
+    /// the bytes it relayed -- the message a meter reads.
+    #[serde(default = "default_turn_queue")]
+    pub queue: String,
+    /// How often the counters are reported. Closes are reported as they
+    /// happen whatever this says, because a short allocation that opened
+    /// and closed between two snapshots would otherwise take its byte
+    /// count with it.
+    #[serde(default = "default_turn_report_ms")]
+    pub report_ms: u64,
+}
+
+fn default_turn_relay_bind() -> String {
+    "0.0.0.0".into()
+}
+fn default_turn_realm() -> String {
+    "drt".into()
+}
+/// ego-transport's own default, and coturn-scale for one box.
+fn default_turn_max_allocations() -> usize {
+    256
+}
+fn default_turn_queue() -> String {
+    "turn_in".into()
+}
+fn default_turn_report_ms() -> u64 {
+    10_000
+}
+
 fn default_relay_queue() -> String {
     "relay_in".into()
 }
@@ -381,6 +463,8 @@ pub struct RootConfig {
     pub relay: Option<RelayConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stun: Option<StunConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<TurnConfig>,
     #[serde(default, skip_serializing_if = "Identity::is_default")]
     pub identity: Identity,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

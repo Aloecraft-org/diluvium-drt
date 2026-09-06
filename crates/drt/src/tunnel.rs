@@ -10,6 +10,8 @@
 //!
 //! ```text
 //! client half:  stdio       <-> wss://gate/fp     (ProxyCommand shape)
+//! client half:  tcp listener <-> wss://gate/fp    (--local: one leg per
+//!                                                  accepted connection)
 //! server half:  ws listener <-> 127.0.0.1:22      (in front of any sshd)
 //! ```
 //!
@@ -48,7 +50,10 @@
 //! ego-transport seam (`russh` has `connect_stream`; ego-transport's
 //! `connect` dials TCP itself today). Filed upstream; when it lands, the
 //! ssh connector's scope grows a `via` and this file loses no code — the
-//! bridge stays useful for the system ssh client forever.
+//! bridge stays useful for the system ssh client forever. Until then the
+//! composition is `--local` ([`local_to_ws`]): the connector dials a
+//! local port, and each connection there is its own leg through the
+//! relay.
 
 use std::time::Duration;
 
@@ -159,6 +164,52 @@ pub async fn serve_ws_bridge(
                 return;
             };
             let _ = pump(tcp, ws).await;
+        });
+    }
+}
+
+/// The program-shaped caller half (issue #13): a local TCP listener where
+/// each accepted connection claims one fresh leg — its own WSS connection
+/// to `url`, spliced until either side closes. `drt tunnel <url> --local
+/// 127.0.0.1:2222`, and then `ssh/exec` scoped to that address, `rest`
+/// dialing it, or a desktop client with no ProxyCommand support, all
+/// reach a parked device through the relay from inside a program, which
+/// the stdio half could not give them.
+///
+/// N concurrent local connections are N legs, and nothing is multiplexed
+/// over one: a claim is one splice and the device replenishes on claim,
+/// so the relay's accounting per leg stays true. A claim the far side
+/// refuses — a wrong key or an unknown label is a 403 at upgrade time, a
+/// relay that is down is a connect error — closes the accepted socket at
+/// once, so a client sees a refused connection and never a half-open one
+/// it sits on.
+pub async fn local_to_ws(local: &str, url: &str) -> Result<(), String> {
+    let listener = tokio::net::TcpListener::bind(local)
+        .await
+        .map_err(|e| format!("cannot bind {local}: {e}"))?;
+    eprintln!(
+        "drt tunnel: local {} claiming a leg per connection at {url}",
+        listener.local_addr().map_err(|e| e.to_string())?
+    );
+    serve_local(listener, url).await
+}
+
+/// The accept loop behind [`local_to_ws`], over a listener the caller
+/// bound — which is also how a test gets the port back.
+pub async fn serve_local(listener: tokio::net::TcpListener, url: &str) -> Result<(), String> {
+    loop {
+        let Ok((conn, peer)) = listener.accept().await else {
+            continue;
+        };
+        let url = url.to_string();
+        tokio::spawn(async move {
+            // Claim first, splice second. `stream_to_ws` dials before it
+            // pumps, so a refused claim returns here with `conn` unread
+            // and drops it -- that drop is the local close the caller
+            // sees, at once, in place of a leg that never came.
+            if let Err(e) = stream_to_ws(conn, &url).await {
+                eprintln!("drt tunnel: {peer}: {e}");
+            }
         });
     }
 }

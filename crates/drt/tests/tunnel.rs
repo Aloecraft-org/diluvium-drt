@@ -12,6 +12,8 @@
 
 #![cfg(feature = "tunnel")]
 
+use std::time::Duration;
+
 use ego_transport::ssh::{
     generate_ed25519, ClientAuthorization, HostKeyVerification, SshChannelEvent, SshChannelKind,
     SshClientConfig, SshClientConnection, SshListener, SshServerConfig,
@@ -137,4 +139,112 @@ async fn bytes_cross_the_bridge_alone() {
     let mut back = [0u8; 5];
     client.read_exact(&mut back).await.unwrap();
     assert_eq!(&back, b"marco");
+}
+
+/// Issue #13, the program-shaped caller: a local listener where each
+/// accepted connection claims one fresh leg. Two connections at once are
+/// two legs, each spliced through its own WS to the echo and answered on
+/// its own socket; and a claim the far side refuses -- a 403 at upgrade
+/// time, the wrong-key case, or a relay that is not there -- closes the
+/// local connection at once rather than leaving a client sitting on a
+/// half-open one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_local_listener_claims_one_leg_per_connection_and_refuses_by_closing() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let echo = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let echo_addr = echo.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut c, _)) = echo.accept().await else {
+                continue;
+            };
+            tokio::spawn(async move {
+                let mut b = [0u8; 1024];
+                while let Ok(n) = c.read(&mut b).await {
+                    if n == 0 || c.write_all(&b[..n]).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ws_url = format!("ws://{}", ws_listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _ = drt::tunnel::serve_ws_bridge(ws_listener, &echo_addr).await;
+    });
+
+    // `drt tunnel <url> --local 127.0.0.1:0`, with the port read back.
+    let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let local_addr = local.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = drt::tunnel::serve_local(local, &ws_url).await;
+    });
+
+    // Two callers at once, each on its own leg; each answer lands on the
+    // socket that asked, which is what "nothing multiplexed" means.
+    let mut a = tokio::net::TcpStream::connect(local_addr).await.unwrap();
+    let mut b = tokio::net::TcpStream::connect(local_addr).await.unwrap();
+    b.write_all(b"polo!").await.unwrap();
+    a.write_all(b"marco").await.unwrap();
+    let mut back_a = [0u8; 5];
+    let mut back_b = [0u8; 5];
+    tokio::time::timeout(Duration::from_secs(5), a.read_exact(&mut back_a))
+        .await
+        .expect("a's answer came back")
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), b.read_exact(&mut back_b))
+        .await
+        .expect("b's answer came back")
+        .unwrap();
+    assert_eq!(&back_a, b"marco");
+    assert_eq!(&back_b, b"polo!");
+
+    // A relay that refuses the claim: what a wrong key or an unknown
+    // label gets, spelled as the 403 the relay sends at upgrade time.
+    let refusing = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let refusing_url = format!("ws://{}", refusing.local_addr().unwrap());
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut c, _)) = refusing.accept().await else {
+                continue;
+            };
+            tokio::spawn(async move {
+                let mut b = [0u8; 4096];
+                let _ = c.read(&mut b).await;
+                let _ = c
+                    .write_all(b"HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\n\r\n")
+                    .await;
+            });
+        }
+    });
+    let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let local_addr = local.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = drt::tunnel::serve_local(local, &refusing_url).await;
+    });
+    let mut c = tokio::net::TcpStream::connect(local_addr).await.unwrap();
+    let mut buf = [0u8; 16];
+    let n = tokio::time::timeout(Duration::from_secs(5), c.read(&mut buf))
+        .await
+        .expect("the refused connection was closed within five seconds, not left half-open")
+        .unwrap_or(0);
+    assert_eq!(n, 0, "bytes arrived on a leg the relay refused");
+
+    // And a relay that is not there at all: the same close, for the
+    // connect error instead of the 403.
+    let gone = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let gone_url = format!("ws://{}", gone.local_addr().unwrap());
+    drop(gone);
+    let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let local_addr = local.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = drt::tunnel::serve_local(local, &gone_url).await;
+    });
+    let mut c = tokio::net::TcpStream::connect(local_addr).await.unwrap();
+    let n = tokio::time::timeout(Duration::from_secs(5), c.read(&mut buf))
+        .await
+        .expect("the connection to a missing relay was closed within five seconds")
+        .unwrap_or(0);
+    assert_eq!(n, 0);
 }
