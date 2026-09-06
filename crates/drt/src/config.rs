@@ -128,6 +128,27 @@ pub fn load_host_lua(path: &Path) -> Result<RootConfig, String> {
     map_host_lua(path, value)
 }
 
+/// Read a value that should be a list, resolving Lua's one ambiguity.
+///
+/// Lua has a single table type, so `{}` is both the empty list and the
+/// empty map and an encoder has to pick one. Every list read below must
+/// therefore accept an empty map as an empty list, or the empty case of
+/// every list in a `.host.lua` is refused for having the wrong type.
+///
+/// That case is not exotic. `peers = {}` is exactly what a `wireguard`
+/// block writes when it learns its peers from a rendezvous at runtime,
+/// and it was refused as "must be a list of peers" (issue #15); `caps`,
+/// `headers`, `stun` and `allowed_ips` all had the same edge. Written
+/// once here rather than at each `as_array`, so the next list added does
+/// not have to remember.
+fn list(value: &rmpv::Value) -> Option<&[rmpv::Value]> {
+    match value {
+        rmpv::Value::Array(items) => Some(items),
+        rmpv::Value::Map(fields) if fields.is_empty() => Some(&[]),
+        _ => None,
+    }
+}
+
 /// Map the evaluated table onto [`RootConfig`]: the C host's field names,
 /// including `connectors.listen`'s `port`/`bind`/`deadline_ms` and bare
 /// capability strings.
@@ -152,7 +173,7 @@ fn map_host_lua(path: &Path, value: rmpv::Value) -> Result<RootConfig, String> {
                 config.root.program = Some(drt_config::Program::Path(config_dir.join(name)));
             }
             "caps" => {
-                let rmpv::Value::Array(items) = value else {
+                let Some(items) = list(&value) else {
                     return Err(format!("{}: caps must be a list", path.display()));
                 };
                 for cap in items {
@@ -214,13 +235,17 @@ fn map_host_lua(path: &Path, value: rmpv::Value) -> Result<RootConfig, String> {
             // peers `stun` says cannot punch.
             #[cfg(feature = "turn")]
             "turn" => config.turn = Some(map_turn(path, value)?),
+            // DRT's own once more, and the rung above the other three: what
+            // carries traffic over a path the first three only measured.
+            #[cfg(feature = "wireguard")]
+            "wireguard" => config.wireguard = Some(map_wireguard(path, value)?),
             other => {
                 // The C's loader promise, kept: an unknown key is a typo
                 // about to become a silent default, so it is an error and
                 // names itself.
                 return Err(format!(
                     "{}: unknown key '{other}' (known: supervisor, caps, \
-                     connectors, relay, stun, turn)",
+                     connectors, relay, stun, turn, wireguard)",
                     path.display()
                 ));
             }
@@ -269,6 +294,166 @@ fn map_stun(path: &Path, block: rmpv::Value) -> Result<drt_config::StunConfig, S
         (false, None) => bind,
     };
     Ok(stun)
+}
+
+/// The `wireguard` block: the peer this deployment is. `wg-quick`'s field
+/// names, so a `[Interface]`/`[Peer]` pair transcribes rather than
+/// translates, and the secret's three knobs are every other block's.
+#[cfg(feature = "wireguard")]
+fn map_wireguard(path: &Path, block: rmpv::Value) -> Result<drt_config::WireguardConfig, String> {
+    let rmpv::Value::Map(entries) = block else {
+        return Err(format!("{}: wireguard must be a table", path.display()));
+    };
+    let mut wg = drt_config::WireguardConfig {
+        listen_port: 51820,
+        interface: "drt0".into(),
+        address: None,
+        mtu: 1420,
+        turn_fallback: false,
+        stun: Vec::new(),
+        private_key: None,
+        private_key_file: None,
+        private_key_env: None,
+        peers: Vec::new(),
+        queue: "wg_in".into(),
+        reply_queue: String::new(),
+        report_ms: 10_000,
+    };
+    for (key, value) in entries {
+        let Some(key) = key.as_str() else {
+            return Err(format!("{}: a non-string wireguard key", path.display()));
+        };
+        let bad = |what: &str| format!("{}: wireguard.{key} must be {what}", path.display());
+        match key {
+            "listen_port" => {
+                wg.listen_port = u16::try_from(value.as_u64().ok_or_else(|| bad("a port number"))?)
+                    .map_err(|_| bad("a port number"))?
+            }
+            "interface" => {
+                wg.interface = value
+                    .as_str()
+                    .ok_or_else(|| bad("an interface name"))?
+                    .into()
+            }
+            "address" => {
+                wg.address = Some(value.as_str().ok_or_else(|| bad("a CIDR address"))?.into())
+            }
+            "turn_fallback" => {
+                wg.turn_fallback = value.as_bool().ok_or_else(|| bad("true or false"))?
+            }
+            "mtu" => {
+                wg.mtu = u16::try_from(value.as_u64().ok_or_else(|| bad("an MTU"))?)
+                    .map_err(|_| bad("an MTU"))?
+            }
+            "stun" => {
+                for server in list(&value).ok_or_else(|| bad("a list of host:port"))? {
+                    wg.stun.push(
+                        server
+                            .as_str()
+                            .ok_or_else(|| bad("a list of host:port"))?
+                            .into(),
+                    );
+                }
+            }
+            "private_key" => {
+                wg.private_key = Some(value.as_str().ok_or_else(|| bad("a base64 key"))?.into())
+            }
+            "private_key_file" => {
+                wg.private_key_file = Some(value.as_str().ok_or_else(|| bad("a path"))?.into())
+            }
+            "private_key_env" => {
+                wg.private_key_env =
+                    Some(value.as_str().ok_or_else(|| bad("a variable name"))?.into())
+            }
+            "queue" => wg.queue = value.as_str().ok_or_else(|| bad("a queue name"))?.into(),
+            "reply_queue" => {
+                wg.reply_queue = value.as_str().ok_or_else(|| bad("a queue name"))?.into()
+            }
+            "report_ms" => wg.report_ms = value.as_u64().ok_or_else(|| bad("milliseconds"))?,
+            "peers" => {
+                for entry in list(&value).ok_or_else(|| bad("a list of peers"))? {
+                    wg.peers.push(map_wireguard_peer(path, entry)?);
+                }
+            }
+            other => {
+                return Err(format!(
+                    "{}: unknown wireguard key '{other}' (known: listen_port, interface, address, mtu, \
+                     stun, turn_fallback, private_key, private_key_file, private_key_env, peers, \
+                     queue, reply_queue, report_ms)",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(wg)
+}
+
+/// One entry of `wireguard.peers`.
+#[cfg(feature = "wireguard")]
+fn map_wireguard_peer(
+    path: &Path,
+    entry: &rmpv::Value,
+) -> Result<drt_config::WireguardPeer, String> {
+    let rmpv::Value::Map(fields) = entry else {
+        return Err(format!(
+            "{}: each wireguard.peers entry must be a table",
+            path.display()
+        ));
+    };
+    let mut peer = drt_config::WireguardPeer {
+        public_key: String::new(),
+        allowed_ips: Vec::new(),
+        endpoint: None,
+        keepalive: None,
+        preshared_key_env: None,
+    };
+    for (key, value) in fields {
+        let Some(key) = key.as_str() else {
+            return Err(format!(
+                "{}: a non-string wireguard peer key",
+                path.display()
+            ));
+        };
+        let bad = |what: &str| format!("{}: wireguard peer {key} must be {what}", path.display());
+        match key {
+            "public_key" => {
+                peer.public_key = value.as_str().ok_or_else(|| bad("a base64 key"))?.into()
+            }
+            "endpoint" => {
+                peer.endpoint = Some(value.as_str().ok_or_else(|| bad("a host:port"))?.into())
+            }
+            "keepalive" => {
+                peer.keepalive = Some(
+                    u16::try_from(value.as_u64().ok_or_else(|| bad("seconds"))?)
+                        .map_err(|_| bad("seconds"))?,
+                )
+            }
+            "preshared_key_env" => {
+                peer.preshared_key_env =
+                    Some(value.as_str().ok_or_else(|| bad("a variable name"))?.into())
+            }
+            "allowed_ips" => {
+                for cidr in list(value).ok_or_else(|| bad("a list of CIDRs"))? {
+                    peer.allowed_ips
+                        .push(cidr.as_str().ok_or_else(|| bad("a list of CIDRs"))?.into());
+                }
+            }
+            other => {
+                return Err(format!(
+                    "{}: unknown wireguard peer key '{other}' (known: public_key, \
+                     allowed_ips, endpoint, keepalive, preshared_key_env)",
+                    path.display()
+                ));
+            }
+        }
+    }
+    if peer.public_key.is_empty() {
+        return Err(format!(
+            "{}: a wireguard peer needs a public_key; it is the only name a peer has",
+            path.display()
+        ));
+    }
+    Ok(peer)
 }
 
 /// The `turn` block: the relay for the peers `stun` says cannot punch, as
@@ -483,7 +668,7 @@ fn map_listener(path: &Path, block: rmpv::Value) -> Result<drt_config::Listener,
                 listener.admit_timeout_ms = value.as_u64().ok_or_else(|| bad("milliseconds"))?
             }
             "headers" | "resp_headers" | "response_headers" => {
-                let rmpv::Value::Array(items) = value else {
+                let Some(items) = list(&value) else {
                     return Err(bad("a list of lowercased names"));
                 };
                 let out = if key == "headers" {

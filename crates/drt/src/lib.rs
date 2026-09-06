@@ -28,3 +28,5 @@ pub mod stun;
 pub mod tunnel;
 #[cfg(feature = "turn")]
 pub mod turn;
+#[cfg(feature = "wireguard")]
+pub mod wireguard;

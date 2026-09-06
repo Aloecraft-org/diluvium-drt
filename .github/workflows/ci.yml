@@ -71,6 +71,21 @@ jobs:
             echo "execfn: $exe"
             gdb -batch -ex "thread apply all bt" "$exe" "$c" 2>&1 | head -200
           done
+      # The examples gate, on a NATIVE full build. It ran in `browser` and
+      # `wasip2` and nowhere else, and neither can run an example marked
+      # `needs_build: full` -- so the eleven examples that exercise sql,
+      # ssh, rest, ssmtp, exec, netcheck, stun, tunnel and relay were
+      # gated on no target at all. Three of them were silently stale on
+      # main when this step was added: two from a help-text change and one
+      # from a new verb, both of which change output every full build
+      # prints and neither of which any job could see. The gate is the
+      # conformance oracle on every other target; this is the target it
+      # was written for.
+      - name: The examples gate, natively
+        run: |
+          set -eu
+          cargo build --release --all-features
+          cd examples && DRT="$GITHUB_WORKSPACE/target/release/drt" ./run-all.sh
       - name: Build without default features
         run: cargo build --workspace --no-default-features
 

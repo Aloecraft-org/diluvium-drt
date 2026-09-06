@@ -1,0 +1,19 @@
+-- The program on the far side of the tunnel: an ordinary http listener.
+--
+-- Nothing here knows it is behind a relay. It declares two queues, answers
+-- what arrives, and replies — byte for byte 17-serving-http's shape. That is
+-- the point: reachability is the deployment's problem, not the program's.
+local requests = queue.declare('http_in',  {capacity = 8})
+local replies  = queue.declare('http_out', {capacity = 8, exported = true})
+
+-- example: omits a shutdown path — the deployment is stopped by whatever
+-- supervises it, which is demo.sh here and systemd on a real device
+while true do
+  local _, req = queue.wait({requests})
+  queue.push(replies, {
+    conn = req.conn,
+    status = 200,
+    content_type = 'text/plain',
+    body = 'answered through the tunnel: ' .. req.path .. '\n',
+  })
+end

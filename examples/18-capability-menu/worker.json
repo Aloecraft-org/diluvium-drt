@@ -1,0 +1,33 @@
+{
+  "_comment": "A worker: the same wiring, and two of the three families granted. Only `time` stays out of reach, and the menu says so without the program having to try a call and read the refusal.",
+  "program": {
+    "path": "app.dlua"
+  },
+  "_caps": "The question, plus two of the three families.",
+  "caps": [
+    {
+      "capability": "host:capabilities/list"
+    },
+    {
+      "capability": "host:fs/read"
+    },
+    {
+      "capability": "host:crypto/*"
+    }
+  ],
+  "_connectors": "Three families wired. All three configs wire exactly these, so every difference in the output is `caps` and not the wiring.",
+  "connectors": {
+    "fs": {
+      "scope": {
+        "scope": ".",
+        "access": "read"
+      }
+    },
+    "crypto": {
+      "scope": {
+        "key": "capability-menu-example-key-000000"
+      }
+    },
+    "time": {}
+  }
+}

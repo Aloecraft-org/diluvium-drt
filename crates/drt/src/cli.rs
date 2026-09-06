@@ -70,7 +70,32 @@ const PROFILE_FULL: &[&str] = &[
     "stun",
     "tunnel",
     "turn",
+    "wireguard",
 ];
+
+/// What `drt wg` can do besides serve.
+#[cfg(feature = "wireguard")]
+#[derive(clap::Subcommand)]
+pub enum WgAction {
+    /// Print a fresh key pair: the private key on the first line, its
+    /// public key on the second. `wg genkey | wg pubkey` without
+    /// wireguard-tools, which is the point -- a block that needed those
+    /// installed to produce a key would not have removed the dependency.
+    Keygen,
+    /// Print the public key of a private key read from stdin -- `wg pubkey`,
+    /// and the half `keygen` cannot give you for a key you already have.
+    /// A key kept in a secret store has to be nameable to a peer without
+    /// being pasted into a terminal, and this is how.
+    Pubkey,
+    /// Read the `wireguard` block, say what is wrong with it, and stop.
+    ///
+    /// Creating the interface needs a privilege; being told the config is
+    /// wrong should not. This runs every check `drt wg` runs before it
+    /// touches the interface -- keys, addresses, CIDRs, ports -- and prints
+    /// the warnings a running device would print, so a config can be
+    /// written and checked anywhere and only deployed where it is allowed.
+    Check,
+}
 
 #[derive(Parser)]
 #[command(name = "drt", version, about = "The Diluvium RunTime")]
@@ -151,6 +176,23 @@ pub enum Command {
     /// with its principal, to the root program.
     #[cfg(feature = "turn")]
     Turn,
+    /// The WireGuard peer this deployment is: bring up the tunnel
+    /// interface the `wireguard` block names, hold it up, and print the
+    /// public key a peer needs. Runs foreground.
+    ///
+    /// This is the rung above `netcheck`, `stun` and `turn`: they answer
+    /// whether two hosts can exchange packets, and this is what carries
+    /// traffic once they can. A peer needs no endpoint at startup -- inside
+    /// `drt start` the root program sets one over the reply queue when a
+    /// rendezvous learns it, which is the hole punch, end to end.
+    ///
+    /// Creating the interface needs CAP_NET_ADMIN or root on Linux, root
+    /// on macOS, and wintun.dll on Windows. Nothing else here does.
+    #[cfg(feature = "wireguard")]
+    Wg {
+        #[command(subcommand)]
+        action: Option<WgAction>,
+    },
     /// SSH over WSS, as a dumb pipe. With a URL: bridge this process's
     /// stdio to it — the OpenSSH ProxyCommand contract, so
     /// `ssh -o ProxyCommand="drt tunnel wss://gate/fp" user@fp` (and rsync,
@@ -345,6 +387,9 @@ pub fn buildinfo(json: bool) -> String {
     if cfg!(feature = "turn") {
         verbs.push("turn");
     }
+    if cfg!(feature = "wireguard") {
+        verbs.push("wg");
+    }
     verbs.sort_unstable();
 
     // Named by what the profile actually is, not by what was asked for: a
@@ -442,6 +487,7 @@ fn enabled_features() -> Vec<&'static str> {
     feature!("stun");
     feature!("tunnel");
     feature!("turn");
+    feature!("wireguard");
     on.sort_unstable();
     on
 }
@@ -729,6 +775,122 @@ pub fn main(cli: Cli) -> ExitCode {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("drt turn: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        #[cfg(feature = "wireguard")]
+        Command::Wg {
+            action: Some(WgAction::Keygen),
+        } => {
+            // Two lines, in the order a config wants them, and on stdout
+            // so `drt wg keygen | head -1` is a private key and nothing
+            // else. A key printed among prose is a key someone will paste
+            // with the prose.
+            let (private, public) = crate::wireguard::keygen();
+            println!("{private}");
+            println!("{public}");
+            ExitCode::SUCCESS
+        }
+        #[cfg(feature = "wireguard")]
+        Command::Wg {
+            action: Some(WgAction::Pubkey),
+        } => {
+            let mut key = String::new();
+            if let Err(e) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut key) {
+                eprintln!("drt wg pubkey: cannot read the key from stdin: {e}");
+                return ExitCode::FAILURE;
+            }
+            // The label is the field a reader would go and look at, not the
+            // verb they just typed: `parse_key` prefixes it, and "drt wg
+            // pubkey: drt wg pubkey: ..." helps nobody.
+            match crate::wireguard::parse_key("the key on stdin", &key) {
+                Ok(bytes) => {
+                    println!(
+                        "{}",
+                        crate::wireguard::public_key(&gotatun::x25519::StaticSecret::from(bytes))
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("drt wg pubkey: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        #[cfg(feature = "wireguard")]
+        Command::Wg {
+            action: Some(WgAction::Check),
+        } => {
+            let Some(wg_config) = config.wireguard.clone() else {
+                eprintln!("drt wg check: the config names no `wireguard` block");
+                return ExitCode::FAILURE;
+            };
+            match crate::wireguard::validate(&wg_config) {
+                Ok(warnings) => {
+                    for warning in &warnings {
+                        eprintln!("drt wg check: {warning}");
+                    }
+                    // A warning is not a failure: the config works the
+                    // moment the route exists, and an exit code that said
+                    // otherwise would fail a deploy over a note.
+                    println!(
+                        "ok: {} on port {}, {} peer(s){}",
+                        wg_config.interface,
+                        wg_config.listen_port,
+                        wg_config.peers.len(),
+                        if warnings.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", {} warning(s)", warnings.len())
+                        }
+                    );
+                    // A config with no peers is the one a rendezvous
+                    // writes, so `ok: ... 0 peer(s)` reads like a config
+                    // that forgot something. Say what it will actually do
+                    // instead of leaving the operator to guess.
+                    if wg_config.peers.is_empty() {
+                        println!(
+                            "    no peers named: it will create {}, {} measure its \
+                             mapping, and wait for `add` on {}",
+                            wg_config.interface,
+                            match &wg_config.address {
+                                Some(cidr) => format!("give it {cidr},"),
+                                None => "which needs an address before it carries \
+                                         anything,"
+                                    .into(),
+                            },
+                            if wg_config.reply_queue.is_empty() {
+                                "a reply_queue it does not have"
+                            } else {
+                                &wg_config.reply_queue
+                            }
+                        );
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("drt wg check: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        #[cfg(feature = "wireguard")]
+        Command::Wg { action: None } => {
+            let Some(wg_config) = config.wireguard.clone() else {
+                eprintln!("drt wg: the config names no `wireguard` block");
+                return ExitCode::FAILURE;
+            };
+            let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
+            let outcome = runtime.block_on(crate::wireguard::serve(&wg_config));
+            // Leaked, not dropped: the tokio 1.53.1 teardown use-after-free
+            // every foreground verb here leaks its runtime for. The process
+            // is exiting; the OS reclaims what drop would have.
+            std::mem::forget(runtime);
+            match outcome {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("drt wg: {e}");
                     ExitCode::FAILURE
                 }
             }

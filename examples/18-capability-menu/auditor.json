@@ -1,0 +1,27 @@
+{
+  "_comment": "An auditor: allowed to ask what is here, allowed to reach none of it. This is the shape the menu exists for \u2014 the thing that inventories a fleet should not be the thing with the most access in it.",
+  "program": {
+    "path": "app.dlua"
+  },
+  "_caps": "The ceiling. The question, and nothing else.",
+  "caps": [
+    {
+      "capability": "host:capabilities/list"
+    }
+  ],
+  "_connectors": "Three families wired. All three configs wire exactly these, so every difference in the output is `caps` and not the wiring.",
+  "connectors": {
+    "fs": {
+      "scope": {
+        "scope": ".",
+        "access": "read"
+      }
+    },
+    "crypto": {
+      "scope": {
+        "key": "capability-menu-example-key-000000"
+      }
+    },
+    "time": {}
+  }
+}

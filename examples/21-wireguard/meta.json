@@ -1,0 +1,10 @@
+{
+  "name": "21-wireguard",
+  "teaches": "The wireguard block without a privilege: `drt wg keygen` and `drt wg pubkey` are the key pair, so setting up a peer never needs wireguard-tools; `drt wg check` says whether a config can work without touching the interface, including the two cases that otherwise mislead -- an allowed_ips no route will reach, and a block with no peers at all, which is what a rendezvous writes rather than a mistake. 22-wireguard-interface is the half that creates the interface.",
+  "cmd": "./demo.sh",
+  "needs_network": false,
+  "needs_build": "full",
+  "normalise": [
+    "s|^[A-Za-z0-9+/]\\{43\\}=$|<a key, 32 bytes base64>|"
+  ]
+}

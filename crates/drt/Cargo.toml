@@ -26,6 +26,11 @@ rmpv = { workspace = true }
 # The tunnel: SSH over WSS as a dumb pipe (see src/tunnel.rs). tokio and
 # ego-transport ride the `tunnel` feature, which `full` carries.
 ego_transport = { workspace = true, optional = true }
+gotatun = { workspace = true, optional = true }
+turn = { version = "0.17", optional = true }
+webrtc-util = { version = "0.17", optional = true }
+ipnetwork = { workspace = true, optional = true }
+base64 = { version = "0.22", optional = true }
 # The relay's WebSocket stack. Host-side machinery takes the right Rust
 # primitive: tokio-tungstenite splits for a full-duplex splice, delivers
 # whole messages (ego-transport's recv truncates past the caller's buffer),
@@ -73,10 +78,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "ne
 drt-connector-fs = { workspace = true }
 tokio-tungstenite = "0.24"
 futures-util = { version = "0.3", default-features = false }
-# The independent TURN client the `turn` tests allocate with, so the
-# server is proven against an implementation that is not its own.
-turn-client = { package = "turn", version = "0.17" }
-webrtc-util = "0.17"
 
 [features]
 # One codebase, feature profiles (SPEC.md §3): `slim` runs a script with
@@ -84,15 +85,15 @@ webrtc-util = "0.17"
 # connector is its own gate so a profile is a feature list, not a fork.
 default = ["slim"]
 slim = ["connector-time", "connector-fs", "connector-crypto", "listen", "cli"]
-full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "connector-exec", "tunnel", "relay", "stun", "netcheck", "turn"]
+full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "connector-exec", "tunnel", "relay", "stun", "netcheck", "turn", "wireguard"]
 # The portable build (doc/Wasm.md D2): what `drt` carries on
 # wasm32-wasip2, under wasmtime. Every connector here compiles for that
 # target with no source change and is exercised by the examples gate
 # through `script/drt-wasip2.sh`. `listen` is served there by the polled
 # acceptor (doc/Wasm.md M6): wasip2 has sockets and no threads, and the
 # wrapper grants the sockets. The tokio-backed verbs and connectors --
-# `tunnel`, `relay`, `stun`, `turn`, `netcheck`, `ssh`, `rest`, `ssmtp` --
-# cannot
+# `tunnel`, `relay`, `stun`, `turn`, `wireguard`, `netcheck`, `ssh`,
+# `rest`, `ssmtp` -- cannot
 # cross at all (tokio refuses its `net` feature on wasm), so `full` is not
 # a wasm build and this is.
 wasi = ["connector-time", "connector-fs", "connector-crypto", "connector-sql", "listen"]
@@ -166,6 +167,21 @@ tunnel = ["dep:ego_transport", "dep:tokio", "dep:tokio-tungstenite", "dep:future
 # with a bug in either is an open one, so it is the maintained
 # implementation and not a second copy.
 turn = ["dep:ego_transport", "dep:tokio"]
+# `drt wg`, and the `wireguard` block inside `drt start`: a WireGuard peer
+# in the process (src/wireguard.rs), on Mullvad's gotatun. In `full` beside
+# `stun` and `turn`, because it is the rung above both -- `netcheck` says
+# whether a hole can be punched, `stun` measures the mapping, and this is
+# what carries traffic through the hole once it is open.
+#
+# The protocol is not reimplemented here for the reason the ssh connector
+# is not: a WireGuard implementation with a bug in its handshake or its
+# nonce handling is not a slow tunnel, it is an open one.
+# `dep:turn`/`dep:webrtc-util` are the TURN client the device falls back
+# through when `stun` says this NAT cannot be punched (src/wireguard.rs,
+# "the UDP transport"). webrtc-rs's, and the same crate the `turn` tests
+# allocate through, so the server DRT serves and the client it dials are
+# one implementation's two halves.
+wireguard = ["dep:gotatun", "dep:ipnetwork", "dep:base64", "dep:tokio", "dep:turn", "dep:webrtc-util"]
 # `drt relay`: the rendezvous relay — parked WSS legs paired by label and
 # spliced. In `full` beside tunnel; a relay is server machinery.
 # Depends on `listen` because the relay's control plane rides the same

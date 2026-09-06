@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use drt_config::TurnConfig;
 use ego_transport::turn::ephemeral_credentials_for;
-use turn_client::client::{Client, ClientConfig};
+use turn::client::{Client, ClientConfig};
 use webrtc_util::Conn;
 
 /// One runtime for the whole binary, deliberately never dropped: the
@@ -465,4 +465,45 @@ fn field<'a>(v: &'a rmpv::Value, name: &str) -> &'a rmpv::Value {
         .find(|(k, _)| k.as_str() == Some(name))
         .map(|(_, v)| v)
         .unwrap_or(&rmpv::Value::Nil)
+}
+
+/// The wrong error code for a bad credential, pinned until upstream fixes it.
+///
+/// RFC 8489 §9.2.4 says a request whose MESSAGE-INTEGRITY does not verify,
+/// or whose username is unknown, is answered **401 Unauthorized** with a
+/// fresh NONCE — the code that tells a client to authenticate again. The
+/// `turn` crate answers **400 Bad Request** to both, because
+/// `authenticate_request` builds one `bad_request_msg` and sends it down
+/// every auth-failure path (`turn-0.17.2/src/server/request.rs`).
+///
+/// It matters for the client DRT's TURN server exists to serve: a
+/// browser's ICE agent retries on 401 and gives up on 400, so a credential
+/// that expired mid-session takes the allocation with it instead of being
+/// renewed. `doc/TURN-401-Upstream.md` is the brief.
+///
+/// This asserts the behaviour DRT has today, not the behaviour it should
+/// have. **When this test fails, upstream has fixed it**: change the 400
+/// to 401 here and delete the brief.
+#[test]
+fn a_forged_credential_is_refused_with_the_wrong_code_for_now() {
+    rt().block_on(async {
+        let server = drt::turn::bind(&config("127.0.0.1:0"), None).await.unwrap();
+        let addr = server.local_addr();
+        let (username, password) = ephemeral_credentials_for(
+            "a-different-secret-entirely-0123",
+            Duration::from_secs(300),
+            "fp",
+        )
+        .expect("a credential");
+        let forged = client(addr, &username, &password).await;
+        let answer = match tokio::time::timeout(Duration::from_secs(5), forged.allocate()).await {
+            Ok(Ok(_)) => panic!("a credential minted under another secret allocated"),
+            Ok(Err(e)) => format!("{e}"),
+            Err(_) => panic!("the server never answered a forged credential"),
+        };
+        assert!(
+            answer.contains("400"),
+            "expected today's 400 (see doc/TURN-401-Upstream.md); got: {answer}"
+        );
+    });
 }

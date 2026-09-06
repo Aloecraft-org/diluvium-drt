@@ -111,6 +111,11 @@ drt --config rv.host.lua relay       # the rendezvous relay, standalone
 drt tunnel --park wss://…/park/xps?k=… --to 127.0.0.1:22   # the device half
 ssh -o ProxyCommand="drt tunnel wss://…/s/xps?k=…" user@xps # the caller half
 drt tunnel wss://…/s/xps?k=… --local 127.0.0.1:2222       # the caller half, for a program
+drt --config nc.host.lua netcheck    # what can this network do, with the evidence
+drt --config st.host.lua stun        # a STUN server: what address did that come from
+drt --config tn.host.lua turn        # a TURN relay, for what cannot be punched
+drt --config wg.host.lua wg          # a WireGuard peer, in the process
+drt wg keygen                        # a key pair, so wireguard-tools is not needed
 ```
 
 `drt start` reads a diluvium-host `.host.lua` unchanged — a deployment moves
@@ -118,6 +123,15 @@ to DRT by swapping the binary and editing no files.
 [`doc/Relay.md`](doc/Relay.md) is the SSH-to-anything-from-anywhere recipe,
 including the control plane a supervisor uses for presence, metering and
 arbitration.
+
+**Reaching a machine that has no address** is a ladder, and every rung is a
+verb above: `netcheck` says what the network can do, `stun` measures the NAT
+mapping that decides it, the relay carries what cannot be reached directly,
+`turn` carries what a browser needs — and `wg` is what runs *over* a path
+once there is one, so `ssh/exec` and `rest` reach a fetchpoint with no new
+plumbing, because it is just an IP address.
+[`doc/WireGuard.md`](doc/WireGuard.md) sizes that last rung honestly,
+including what is and is not proven about hole punching.
 
 `drt ps` and REPL *attach* are still ahead: both reach a deployment running
 in another process, which is the control endpoint's job and lands with sshd.

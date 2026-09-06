@@ -1,0 +1,20 @@
+-- Minting a credential for the relay next door.
+--
+-- The guest never holds the shared secret. It asks for a credential naming
+-- a principal, and the host does the arithmetic under a key the program
+-- cannot read — the same reason `crypto/jwt_sign` exists.
+local cred = host.call("crypto/turn_credential", { user = "fp-7", ttl = 3600 })
+
+-- coturn's `use-auth-secret` scheme, byte for byte: the username carries the
+-- expiry in cleartext, and the password is its HMAC-SHA1 under the secret.
+-- Any TURN server holding that secret verifies it; nothing has to be
+-- registered anywhere first.
+print("username " .. cred.username)
+print("password " .. cred.password)
+print("expires  " .. tostring(cred.expires))
+
+-- Echoed from the config, so a program hands a peer a complete ICE server
+-- entry without hard-coding where the relay lives.
+for _, uri in ipairs(cred.uris) do
+    print("uri      " .. uri)
+end

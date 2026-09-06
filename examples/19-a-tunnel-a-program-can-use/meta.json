@@ -1,0 +1,9 @@
+{
+  "name": "19-a-tunnel-a-program-can-use",
+  "teaches": "The relay end to end on one machine: a device with no inbound address parks an outbound leg, and `drt tunnel <url> --local` turns the caller half into a local port, so anything that speaks TCP — a connector, a client, a script — reaches the device. One fresh leg per connection, nothing multiplexed.",
+  "cmd": "./demo.sh",
+  "needs_network": false,
+  "needs_build": "full",
+  "needs_listener": true,
+  "normalise": []
+}

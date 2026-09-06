@@ -1,0 +1,11 @@
+{
+  "name": "22-wireguard-interface",
+  "teaches": "The half of the wireguard block that needs a privilege: the tunnel interface is really created, with the address and MTU the config names and the link up, and it goes away with the process. Asked of the kernel through /sys rather than taken on DRT's word.",
+  "cmd": "./demo.sh",
+  "needs_network": false,
+  "needs_build": "full",
+  "needs_privilege": "CAP_NET_ADMIN",
+  "normalise": [
+    "s|public key .*|public key <this run's>|"
+  ]
+}

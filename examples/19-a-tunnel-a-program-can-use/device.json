@@ -1,0 +1,14 @@
+{
+  "_comment": "The device: a program with an http listener, on a machine with no inbound address. `drt tunnel --park` beside it is what makes it reachable, and this config says nothing about that — the program and the listener are exactly 17-serving-http's.",
+
+  "program": { "path": "app.dlua" },
+
+  "listeners": [
+    {
+      "scheme": "http",
+      "address": "127.0.0.1:18491",
+      "queue": "http_in",
+      "reply_queue": "http_out"
+    }
+  ]
+}

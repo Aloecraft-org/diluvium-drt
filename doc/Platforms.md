@@ -50,6 +50,16 @@ spawns, serves and reads files, and wasmtime is not needed there. `full`
 stays blocked: `exec` is unix-only by `compile_error!`, and `aws-lc-sys`
 through russh is the linux aarch64 problem again.
 
+**WireGuard is a privilege question, not a platform one.** `drt wg` and
+the `wireguard` block build and run wherever `full` does, and the
+`slim,wireguard` cross-build for `x86_64-pc-windows-gnu` is clean too --
+what they need is not a platform feature but permission to create a
+tunnel interface: CAP_NET_ADMIN or root on Linux, root on macOS,
+`wintun.dll` beside the binary on Windows. The wasm targets are the real
+no: neither has an interface to create, nor threads to drive one.
+`doc/WireGuard.md` has the measurements, including the userspace mode
+that would remove the privilege.
+
 **wasip2 is a sandbox question.** The module cannot spawn or load
 anything at run time, which is the property that makes it a
 strong-isolation tier: an untrusted program runs inside wasmtime, and
