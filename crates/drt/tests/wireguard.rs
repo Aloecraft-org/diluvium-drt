@@ -191,6 +191,30 @@ async fn expect_payload(tun: &mut Tun, wanted: &[u8]) {
     }
 }
 
+/// The next report that is not an empty snapshot.
+///
+/// `report_ms` ticks whether or not anything changed (issue #15), and a
+/// device with no peers yet has an empty snapshot to send on every tick.
+/// That is the clock, not an event, so a test watching for a particular
+/// event looks past it. Anything else -- including a snapshot that has a
+/// peer in it -- is returned for the caller to judge.
+async fn expect_report(
+    reports: &mut mpsc::UnboundedReceiver<drt::wireguard::Report>,
+    within: Duration,
+) -> drt::wireguard::Report {
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        assert!(!left.is_zero(), "no report arrived within {within:?}");
+        match tokio::time::timeout(left, reports.recv()).await {
+            Ok(Some(drt::wireguard::Report::Peers(peers))) if peers.is_empty() => continue,
+            Ok(Some(report)) => return report,
+            Ok(None) => panic!("the report channel closed"),
+            Err(_) => panic!("no report arrived within {within:?}"),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The one that matters
 // ---------------------------------------------------------------------------
@@ -860,9 +884,13 @@ fn a_peer_the_config_never_named_can_be_added_and_then_reached() {
 
         let (reports, mut report_rx) = mpsc::unbounded_channel();
         let (commands, command_rx) = mpsc::unbounded_channel();
+        // Five seconds, not fifty milliseconds, and that is the point: the
+        // deadlines below are all far shorter, so nothing here can be
+        // delivered BY the clock. What arrives, arrives because the
+        // command pass sent it.
         let driver = tokio::spawn(drt::wireguard::drive(
             a,
-            Duration::from_millis(50),
+            Duration::from_secs(5),
             reports,
             command_rx,
             None,
@@ -879,10 +907,7 @@ fn a_peer_the_config_never_named_can_be_added_and_then_reached() {
                 keepalive: None,
             })
             .unwrap();
-        let refusal = tokio::time::timeout(Duration::from_secs(5), report_rx.recv())
-            .await
-            .expect("the refusal came back")
-            .expect("the report channel stayed open");
+        let refusal = expect_report(&mut report_rx, Duration::from_secs(2)).await;
         match refusal {
             drt::wireguard::Report::Refused { command, reason } => {
                 assert_eq!(command, "endpoint");
@@ -906,10 +931,7 @@ fn a_peer_the_config_never_named_can_be_added_and_then_reached() {
         // The supervisor is told the add worked, on the same pass -- not
         // at the next snapshot, and not never. (It was "never" until this
         // test was written: see the comment in `drive`.)
-        let seen = tokio::time::timeout(Duration::from_secs(5), report_rx.recv())
-            .await
-            .expect("a report came back on the pass that carried out the add")
-            .expect("the report channel stayed open");
+        let seen = expect_report(&mut report_rx, Duration::from_secs(2)).await;
         match seen {
             drt::wireguard::Report::Peers(peers) => {
                 let added = peers
@@ -1202,4 +1224,198 @@ fn wireguard_traffic_can_fall_back_through_a_turn_allocation() {
         sender.abort();
         driver.abort();
     });
+}
+
+// ---------------------------------------------------------------------------
+// Issue #15: the reports a program cannot afford to miss
+// ---------------------------------------------------------------------------
+
+/// A report that is said once survives a queue that is not there yet.
+///
+/// This is the bug that made the whole block unusable for the thing it was
+/// built for. `Mapping` is queued before the device binds, so it reaches
+/// `report` on the bridge's very first pass -- which is before a root
+/// program has run the line that declares its queue. The push is refused,
+/// and under the old code the mapping was dropped, so a rendezvous whose
+/// first act is to wait for `wireguard_mapping` waited forever.
+///
+/// The snapshot has the opposite policy on purpose, and this test holds
+/// both halves: hold what is said once, drop what will be said again.
+#[test]
+fn a_report_said_once_outlives_a_queue_that_is_not_declared_yet() {
+    let (reports, mut report_rx) = mpsc::unbounded_channel();
+    let mut held = Vec::new();
+    let mut refusals = Vec::new();
+
+    // The bridge's first pass: the mapping, and a snapshot behind it,
+    // into a program that has not declared `wg_in` yet.
+    reports
+        .send(drt::wireguard::Report::Refused {
+            command: "measure".into(),
+            reason: "no answer from either server".into(),
+        })
+        .unwrap();
+    reports
+        .send(drt::wireguard::Report::Peers(Vec::new()))
+        .unwrap();
+
+    let mut refused = |_: &str, _: &[u8]| false;
+    drt::wireguard::push_reports(
+        "wg_in",
+        &mut held,
+        &mut refusals,
+        &mut report_rx,
+        &mut refused,
+    );
+    assert_eq!(
+        held.len(),
+        1,
+        "the one-shot report should be held and the snapshot dropped"
+    );
+
+    // The program declares its queue. The held report goes out on the very
+    // next pass, without the device having said anything since.
+    let mut taken: Vec<Vec<u8>> = Vec::new();
+    let mut accept = |queue: &str, msg: &[u8]| {
+        assert_eq!(queue, "wg_in");
+        taken.push(msg.to_vec());
+        true
+    };
+    drt::wireguard::push_reports(
+        "wg_in",
+        &mut held,
+        &mut refusals,
+        &mut report_rx,
+        &mut accept,
+    );
+    assert!(held.is_empty(), "nothing should still be held");
+    assert_eq!(taken.len(), 1, "exactly the held report, not the snapshot");
+
+    let got = rmpv::decode::read_value(&mut taken[0].as_slice()).expect("a report decoded");
+    assert_eq!(field(&got, "event").as_str(), Some("wireguard_error"));
+    assert_eq!(field(&got, "command").as_str(), Some("measure"));
+}
+
+/// A queue nobody drains does not become this process's problem.
+///
+/// Holding is for the program that has not declared its queue yet, which
+/// takes a pass or two. A queue that stays full is the deployment's own
+/// sizing to see, and holding for it without a bound would move the
+/// overflow out of the queue and into the device.
+#[test]
+fn holding_a_report_forever_is_bounded() {
+    let (reports, mut report_rx) = mpsc::unbounded_channel();
+    let mut held = Vec::new();
+    let mut refusals = Vec::new();
+    let mut refused = |_: &str, _: &[u8]| false;
+
+    for i in 0..(drt::wireguard::HELD_MAX * 2) {
+        reports
+            .send(drt::wireguard::Report::Refused {
+                command: "relay".into(),
+                reason: format!("refusal {i}"),
+            })
+            .unwrap();
+        drt::wireguard::push_reports(
+            "wg_in",
+            &mut held,
+            &mut refusals,
+            &mut report_rx,
+            &mut refused,
+        );
+    }
+    assert_eq!(held.len(), drt::wireguard::HELD_MAX);
+
+    // The OLDEST are the ones kept: the report a program is blocked on is
+    // the one that arrived first.
+    let first = rmpv::decode::read_value(&mut held[0].as_slice()).expect("a report decoded");
+    assert_eq!(field(&first, "reason").as_str(), Some("refusal 0"));
+}
+
+/// `report_ms` is a clock, so it ticks for a device with no peers at all.
+///
+/// The no-peer device is not a corner case: it is exactly what a config
+/// looks like before a rendezvous has run, and a program that waits on the
+/// queue for its interval needs the interval to arrive. The snapshot of an
+/// empty peer set never differs from the last one, so while the timer was
+/// gated on a change this device reported nothing, ever.
+#[test]
+fn a_device_with_no_peers_still_reports_on_its_interval() {
+    rt().block_on(async {
+        let (tun, tx, rx) = channel_tun();
+        drop(tun);
+        let device = DeviceBuilder::new()
+            .with_default_udp()
+            .with_ip_pair(tx, rx)
+            .with_listen_port(free_port())
+            .with_private_key(StaticSecret::from([0x55u8; KEY_LEN]))
+            .build()
+            .await
+            .expect("a device with no peers comes up");
+
+        let (reports, mut report_rx) = mpsc::unbounded_channel();
+        let (_commands, command_rx) = mpsc::unbounded_channel();
+        let driver = tokio::spawn(drt::wireguard::drive(
+            device,
+            Duration::from_millis(50),
+            reports,
+            command_rx,
+            None,
+        ));
+
+        let report = tokio::time::timeout(Duration::from_secs(5), report_rx.recv())
+            .await
+            .expect("the interval arrived without a peer to report")
+            .expect("the report channel stayed open");
+        match report {
+            drt::wireguard::Report::Peers(peers) => assert!(peers.is_empty()),
+            other => panic!("expected an empty snapshot, got {other:?}"),
+        }
+        driver.abort();
+    });
+}
+
+/// `peers = {}` is a config, not a mistake.
+///
+/// Lua has one table type, so `{}` is both the empty list and the empty
+/// map; the loader read lists with `as_array` and refused the empty case.
+/// The no-peer block is the one a rendezvous writes.
+#[test]
+fn a_wireguard_block_may_name_no_peers_at_all() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("rendezvous.host.lua"),
+        r#"return {
+  supervisor = "sup.lua",
+  caps = {},
+  wireguard = {
+    listen_port = 51820,
+    interface = "drt-fp",
+    private_key_env = "WG_KEY",
+    address = "10.9.0.1/24",
+    queue = "wg_in",
+    reply_queue = "wg_out",
+    stun = {},
+    peers = {},
+  },
+}"#,
+    )
+    .unwrap();
+    let config = drt::config::load(Some(&dir.path().join("rendezvous.host.lua")))
+        .expect("a block that learns its peers later still loads");
+    let wg = config.wireguard.expect("the wireguard block loaded");
+    assert!(wg.peers.is_empty());
+    assert!(wg.stun.is_empty());
+    assert!(config.root.caps.is_empty());
+
+    // An empty allowed_ips is still refused: a peer that owns no addresses
+    // is a peer nothing will ever be routed to, which `validate` catches.
+    std::fs::write(
+        dir.path().join("empty-ips.host.lua"),
+        r#"return { supervisor = "s.lua", wireguard = { peers = { { public_key = "x", allowed_ips = {} } } } }"#,
+    )
+    .unwrap();
+    let config = drt::config::load(Some(&dir.path().join("empty-ips.host.lua")))
+        .expect("the loader takes it; validate is what refuses it");
+    assert!(config.wireguard.unwrap().peers[0].allowed_ips.is_empty());
 }

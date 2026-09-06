@@ -128,6 +128,27 @@ pub fn load_host_lua(path: &Path) -> Result<RootConfig, String> {
     map_host_lua(path, value)
 }
 
+/// Read a value that should be a list, resolving Lua's one ambiguity.
+///
+/// Lua has a single table type, so `{}` is both the empty list and the
+/// empty map and an encoder has to pick one. Every list read below must
+/// therefore accept an empty map as an empty list, or the empty case of
+/// every list in a `.host.lua` is refused for having the wrong type.
+///
+/// That case is not exotic. `peers = {}` is exactly what a `wireguard`
+/// block writes when it learns its peers from a rendezvous at runtime,
+/// and it was refused as "must be a list of peers" (issue #15); `caps`,
+/// `headers`, `stun` and `allowed_ips` all had the same edge. Written
+/// once here rather than at each `as_array`, so the next list added does
+/// not have to remember.
+fn list(value: &rmpv::Value) -> Option<&[rmpv::Value]> {
+    match value {
+        rmpv::Value::Array(items) => Some(items),
+        rmpv::Value::Map(fields) if fields.is_empty() => Some(&[]),
+        _ => None,
+    }
+}
+
 /// Map the evaluated table onto [`RootConfig`]: the C host's field names,
 /// including `connectors.listen`'s `port`/`bind`/`deadline_ms` and bare
 /// capability strings.
@@ -152,7 +173,7 @@ fn map_host_lua(path: &Path, value: rmpv::Value) -> Result<RootConfig, String> {
                 config.root.program = Some(drt_config::Program::Path(config_dir.join(name)));
             }
             "caps" => {
-                let rmpv::Value::Array(items) = value else {
+                let Some(items) = list(&value) else {
                     return Err(format!("{}: caps must be a list", path.display()));
                 };
                 for cap in items {
@@ -325,7 +346,7 @@ fn map_wireguard(path: &Path, block: rmpv::Value) -> Result<drt_config::Wireguar
                     .map_err(|_| bad("an MTU"))?
             }
             "stun" => {
-                for server in value.as_array().ok_or_else(|| bad("a list of host:port"))? {
+                for server in list(&value).ok_or_else(|| bad("a list of host:port"))? {
                     wg.stun.push(
                         server
                             .as_str()
@@ -350,8 +371,7 @@ fn map_wireguard(path: &Path, block: rmpv::Value) -> Result<drt_config::Wireguar
             }
             "report_ms" => wg.report_ms = value.as_u64().ok_or_else(|| bad("milliseconds"))?,
             "peers" => {
-                let list = value.as_array().ok_or_else(|| bad("a list of peers"))?;
-                for entry in list {
+                for entry in list(&value).ok_or_else(|| bad("a list of peers"))? {
                     wg.peers.push(map_wireguard_peer(path, entry)?);
                 }
             }
@@ -413,7 +433,7 @@ fn map_wireguard_peer(
                     Some(value.as_str().ok_or_else(|| bad("a variable name"))?.into())
             }
             "allowed_ips" => {
-                for cidr in value.as_array().ok_or_else(|| bad("a list of CIDRs"))? {
+                for cidr in list(value).ok_or_else(|| bad("a list of CIDRs"))? {
                     peer.allowed_ips
                         .push(cidr.as_str().ok_or_else(|| bad("a list of CIDRs"))?.into());
                 }
@@ -648,7 +668,7 @@ fn map_listener(path: &Path, block: rmpv::Value) -> Result<drt_config::Listener,
                 listener.admit_timeout_ms = value.as_u64().ok_or_else(|| bad("milliseconds"))?
             }
             "headers" | "resp_headers" | "response_headers" => {
-                let rmpv::Value::Array(items) = value else {
+                let Some(items) = list(&value) else {
                     return Err(bad("a list of lowercased names"));
                 };
                 let out = if key == "headers" {

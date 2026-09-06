@@ -125,6 +125,16 @@ pub const EVENT: [&str; 5] = [
 /// tell "it worked" from "it worked eventually".
 pub const WATCH_MS: u64 = 250;
 
+/// How many one-shot reports to hold for a queue that has not taken them.
+///
+/// A root program that has not yet run the line declaring its queue takes
+/// a pass or two, so the case this exists for never approaches the cap. A
+/// queue that stays full is the deployment's own sizing to see, and
+/// holding for it without a bound would move the overflow out of the
+/// queue and into this process. Past the cap the NEWEST are dropped: the
+/// report a program is blocked on is the mapping, which is sent first.
+pub const HELD_MAX: usize = 64;
+
 // ---------------------------------------------------------------------------
 // Keys and peers: the config, translated
 // ---------------------------------------------------------------------------
@@ -822,15 +832,26 @@ pub async fn drive<T: DeviceTransports>(
         // Three reasons to send the peers: the timer, something notable
         // changed, or a command was just carried out.
         //
-        // That last one is not a nicety. Without it, a command that added
-        // a peer or set an endpoint would update this loop's idea of the
-        // state and emit nothing -- and the next tick, finding nothing
-        // changed since, would emit nothing either. The change would stay
-        // invisible until something ELSE moved. That is exactly the bug
+        // The timer is unconditional, and that is the whole point of it:
+        // `report_ms` is a clock a program can wait on, so it has to tick
+        // even when there is nothing to say. A device with no peers at
+        // all -- which is exactly the config a rendezvous writes, since
+        // it learns its peers later -- has an empty snapshot that never
+        // differs from the last one, and gating the timer on a change
+        // meant such a device never reported anything at all and a
+        // program using `report_ms` as its clock waited forever (issue
+        // #15).
+        //
+        // The other two send EARLY, before the timer is due. `asked` is
+        // not a nicety: without it a command that added a peer or set an
+        // endpoint would update this loop's idea of the state and emit
+        // nothing -- and the next tick, finding nothing changed since,
+        // would emit nothing either. The change would stay invisible
+        // until something ELSE moved. That is exactly the bug
         // `a_peer_the_config_never_named_can_be_added_and_then_reached`
         // caught: a rendezvous told the device about a peer and the
         // supervisor was never told it had worked.
-        if now != last && (due || moved || asked) {
+        if due || (now != last && (moved || asked)) {
             let _ = reports.send(Report::Peers(now.clone()));
         }
         if due {
@@ -1095,6 +1116,10 @@ pub struct WireguardBridge {
     /// drive loop rather than on the device's runtime, so they cannot
     /// travel back through `reports`. Held for the same pass's `report`.
     refusals: Vec<Report>,
+    /// One-shot reports the queue would not take, retried on the next
+    /// pass ahead of anything newer. See [`WireguardBridge::report`] for
+    /// which reports are one-shot and why dropping them was wrong.
+    held: Vec<Vec<u8>>,
     queue: String,
     reply_queue: String,
     interface: String,
@@ -1161,6 +1186,7 @@ impl WireguardBridge {
             reports,
             commands,
             refusals: Vec::new(),
+            held: Vec::new(),
             queue: config.queue.clone(),
             reply_queue: config.reply_queue.clone(),
             interface: config.interface.clone(),
@@ -1190,18 +1216,35 @@ impl WireguardBridge {
 
     /// Push whatever the device has said onto the root's queue.
     /// Non-blocking: anything not ready now is picked up next pass.
+    ///
+    /// A refused push means an undeclared or a full queue, and the two
+    /// kinds of report want opposite things from it:
+    ///
+    /// - A **snapshot** (`Peers`) is dropped. The next one carries the
+    ///   running totals, so a panel loses an interval and nothing else,
+    ///   and holding a stream of them for a queue nobody drains would
+    ///   move the deployment's sizing problem into this process.
+    /// - Everything else is said **once** -- the mapping, a roam, a relay
+    ///   taken or lost, a refusal -- so a drop is that fact gone for
+    ///   good. These are held and retried on the next pass, oldest
+    ///   first, ahead of anything newer.
+    ///
+    /// The mapping is what makes this more than tidiness: it is sent on
+    /// the bridge's first pass, which is *before* a root program has
+    /// reached the line that declares its queue. Under the old blanket
+    /// drop, the one report a rendezvous cannot start without was the one
+    /// report guaranteed to be lost -- found by running the rendezvous
+    /// behind two NATs (issue #15). Same shape as the listener's fix in
+    /// issue #11: a fact delivered before the program can hear it is
+    /// held, not dropped.
     pub fn report(&mut self, push: &mut dyn FnMut(&str, &[u8]) -> bool) {
-        for refusal in std::mem::take(&mut self.refusals) {
-            let _ = push(&self.queue, &encode(&report_value(&refusal)));
-        }
-        while let Ok(report) = self.reports.try_recv() {
-            let msg = encode(&report_value(&report));
-            // A full or undeclared queue is the deployment's own sizing to
-            // see. A dropped snapshot costs a panel one interval and the
-            // next carries the running totals; failing the device over it
-            // would cost the tunnel.
-            let _ = push(&self.queue, &msg);
-        }
+        push_reports(
+            &self.queue,
+            &mut self.held,
+            &mut self.refusals,
+            &mut self.reports,
+            push,
+        );
     }
 
     /// Drain the deployment's commands and apply them.
@@ -1233,6 +1276,40 @@ impl WireguardBridge {
                     });
                 }
             }
+        }
+    }
+}
+
+/// The push-or-hold decision behind [`WireguardBridge::report`], as a free
+/// function so a test can drive it with a channel it owns rather than a
+/// bound device and a kernel interface.
+///
+/// `held` carries the one-shot reports a previous pass could not deliver;
+/// they go out first, ahead of anything newer, and go back on the end if
+/// they are refused again.
+pub fn push_reports(
+    queue: &str,
+    held: &mut Vec<Vec<u8>>,
+    refusals: &mut Vec<Report>,
+    reports: &mut mpsc::UnboundedReceiver<Report>,
+    push: &mut dyn FnMut(&str, &[u8]) -> bool,
+) {
+    let mut waiting = std::mem::take(held);
+    waiting.extend(
+        std::mem::take(refusals)
+            .iter()
+            .map(|refusal| encode(&report_value(refusal))),
+    );
+    for msg in waiting {
+        if !push(queue, &msg) && held.len() < HELD_MAX {
+            held.push(msg);
+        }
+    }
+    while let Ok(report) = reports.try_recv() {
+        let msg = encode(&report_value(&report));
+        let once = !matches!(report, Report::Peers(_));
+        if !push(queue, &msg) && once && held.len() < HELD_MAX {
+            held.push(msg);
         }
     }
 }
