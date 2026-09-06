@@ -59,8 +59,8 @@ schema: 1
 repo: Aloecraft-org/diluvium-drt
 
 releases:
-  - version: 0.5.0rc5
-    tag: v0.5.0rc5
+  - version: 0.5.0rc6
+    tag: v0.5.0rc6
     date: 2026-09-06
     status: released
     stable: false
@@ -73,7 +73,7 @@ releases:
       wasi: [time, fs, crypto, sql, listen]
       web: [time, fs, crypto]
     summary: |
-      The fifth candidate, and it is one feature: the last rung of the
+      The sixth candidate, and it is one feature: the last rung of the
       traversal ladder.
       `netcheck` says what a network can do, `stun` measures the mapping
       that decides it, the relay carries what cannot be reached directly,
@@ -120,6 +120,15 @@ releases:
 
       Not mirrored, and not `latest`: `install.sh` keeps resolving to the
       newest stable release, which is v0.4.2.
+
+      **There is no rc5, and nothing is missing.** Its tag was pushed at
+      `main`, which did not yet carry any of this, so the release
+      workflow's preflight refused it in two seconds -- `no entry in
+      CHANGELOG.yaml for tag 'v0.5.0rc5'` -- and published nothing. The
+      gate worked exactly as `doc/Release.md` says it should. Rather than
+      move a tag that had already been pushed, the same tree is cut as
+      rc6. rc5 is a tag with no release behind it and no content that is
+      not here.
     added:
       - |
         **WireGuard in the process: a `wireguard` block and `drt wg`.**

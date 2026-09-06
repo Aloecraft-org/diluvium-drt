@@ -12,11 +12,11 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
-## [0.5.0rc5] - 2026-09-06 (prerelease)
+## [0.5.0rc6] - 2026-09-06 (prerelease)
 
-`v0.5.0rc5` &middot; dv ABI 1 &middot; diluvium `850e00d73220`
+`v0.5.0rc6` &middot; dv ABI 1 &middot; diluvium `850e00d73220`
 
-The fifth candidate, and it is one feature: the last rung of the
+The sixth candidate, and it is one feature: the last rung of the
 traversal ladder.
 `netcheck` says what a network can do, `stun` measures the mapping
 that decides it, the relay carries what cannot be reached directly,
@@ -63,6 +63,15 @@ this, and a deployment reaching one of them by address.
 
 Not mirrored, and not `latest`: `install.sh` keeps resolving to the
 newest stable release, which is v0.4.2.
+
+**There is no rc5, and nothing is missing.** Its tag was pushed at
+`main`, which did not yet carry any of this, so the release
+workflow's preflight refused it in two seconds -- `no entry in
+CHANGELOG.yaml for tag 'v0.5.0rc5'` -- and published nothing. The
+gate worked exactly as `doc/Release.md` says it should. Rather than
+move a tag that had already been pushed, the same tree is cut as
+rc6. rc5 is a tag with no release behind it and no content that is
+not here.
 
 ### Connectors
 
