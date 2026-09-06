@@ -2,8 +2,9 @@
 //!
 //! ## surface block
 //!
-//! - `main`: the only entry point. Emits `DRT_DILUVIUM_REV` and the rerun
-//!   directives.
+//! - `main`: the only entry point. Emits `DRT_DILUVIUM_REV`, re-exports
+//!   `DRT_RELEASE_TAG` when the environment sets one, and the rerun
+//!   directives for both.
 //! - [`LOCK_DEPTH`]: how far up to look for the workspace `Cargo.lock`.
 //! - [`UNKNOWN`]: what is emitted when the lock cannot be read or does not
 //!   pin diluvium by revision. A path-dependency build is the normal case
@@ -34,6 +35,16 @@ fn main() {
         .and_then(|text| revision_of(&text))
         .unwrap_or_else(|| UNKNOWN.to_string());
     println!("cargo:rustc-env=DRT_DILUVIUM_REV={rev}");
+    // The release tag is the workflow's fact, handed in as an environment
+    // variable at build time. Re-exported only when non-empty, so a
+    // rehearsal's blank input reads as "no tag" rather than as a tag named
+    // "", and declared so a change of tag rebuilds `buildinfo`.
+    println!("cargo:rerun-if-env-changed=DRT_RELEASE_TAG");
+    if let Ok(tag) = std::env::var("DRT_RELEASE_TAG") {
+        if !tag.is_empty() {
+            println!("cargo:rustc-env=DRT_RELEASE_TAG={tag}");
+        }
+    }
 }
 
 fn lock_path() -> Option<PathBuf> {

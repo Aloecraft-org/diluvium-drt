@@ -180,6 +180,8 @@ jobs:
           # linux aarch64 and windows are next, not promised: the full
           # profile carries aws-lc-sys through russh, and cross-compiling
           # that is a job to rehearse, not to assume.
+    env:
+      DRT_RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -206,6 +208,12 @@ jobs:
           echo 'local x = 1' > smoke.lua
           ./drt_${{ matrix.name }} run smoke.lua
           ./drt_slim_${{ matrix.name }} run smoke.lua
+          # A tagged build names its tag; a rehearsal has none and prints none.
+          if [ -n "${DRT_RELEASE_TAG:-}" ]; then
+            ./drt_${{ matrix.name }} buildinfo | grep -qx "tag: $DRT_RELEASE_TAG"
+          else
+            ! ./drt_${{ matrix.name }} buildinfo | grep -q '^tag:'
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: drt-${{ matrix.name }}
@@ -227,6 +235,7 @@ jobs:
     env:
       WASI_SDK_VERSION: "27.0"
       WASMTIME_VERSION: v48.0.1
+      DRT_RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -307,6 +316,7 @@ jobs:
     timeout-minutes: 30
     env:
       WASI_SDK_VERSION: "27.0"
+      DRT_RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:

@@ -267,6 +267,43 @@ fn buildinfo_reports_the_embedded_diluvium_revision() {
     );
 }
 
+/// `drt buildinfo` names the release tag it was built as, when it was one.
+///
+/// Every candidate under a version prints that version, so `version:
+/// 0.5.0` could not tell rc1 from rc3 and a box's operator recorded the
+/// installed tag in a sidecar file because the binary would not say
+/// (discofetch `DRT_ASKS.md` §3). The tag is a build-time fact from the
+/// release workflow's environment; this test reads the same environment it
+/// was compiled under, so it holds for a tagged build and an untagged one.
+#[test]
+fn buildinfo_names_the_release_tag_when_built_as_one() {
+    let expected = option_env!("DRT_RELEASE_TAG").filter(|t| !t.is_empty());
+    let text =
+        String::from_utf8_lossy(&drt().arg("buildinfo").output().unwrap().stdout).to_string();
+    let json = String::from_utf8_lossy(
+        &drt()
+            .arg("buildinfo")
+            .arg("--json")
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .to_string();
+    match expected {
+        Some(tag) => {
+            assert!(text.lines().any(|l| l == format!("tag: {tag}")), "{text}");
+            assert!(json.contains(&format!("\"tag\":\"{tag}\"")), "{json}");
+        }
+        None => {
+            assert!(
+                !text.lines().any(|l| l.starts_with("tag:")),
+                "an untagged build names no tag: {text}"
+            );
+            assert!(json.contains("\"tag\":null"), "{json}");
+        }
+    }
+}
+
 /// `drt buildinfo` names its profile by exact feature set, and the sets
 /// it knows are the ones `Cargo.toml` declares.
 ///

@@ -569,6 +569,71 @@ pub fn render_text(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
     out
 }
 
+/// The machine-readable form: the same evidence the text carries, as
+/// structured pairs, under a `schema` a script can refuse.
+///
+/// `--json` used to emit `verdict`, `why` and `advice` and nothing else --
+/// less than the person got. discofetch's punch tool re-implemented STUN
+/// in eighty lines to recover the mapped port the text output already
+/// printed, and its ask (`DRT_ASKS.md` §1) quotes the spec's own sentence
+/// back: *"Evidence is part of the output."* Every line of [`render_text`]
+/// has a field here; a value the text calls "not measured" is `null`, and
+/// the `why` beside it is the same sentence the text shows in parentheses.
+pub fn render_json(m: &Measurements, verdict: Verdict, why: &'static str) -> String {
+    use serde_json::json;
+    let mapping = m.udp_mapping.map(|u| match u {
+        UdpMapping::Open => "open",
+        UdpMapping::Independent => "independent",
+        UdpMapping::Symmetric => "symmetric",
+    });
+    let inbound = |r: Inbound| match r {
+        Inbound::Connected => "connected",
+        Inbound::Refused => "refused",
+        Inbound::Timeout => "timeout",
+    };
+    let doc = json!({
+        "schema": 1,
+        "verdict": verdict.to_string(),
+        "why": why,
+        "advice": verdict.advice(),
+        "evidence": {
+            "address": {
+                "ip": m.observed_address.map(|a| a.to_string()),
+                "cgnat": m.is_cgnat(),
+                "why": m.address_why,
+            },
+            "v6": m.routable_v6.map(|a| a.to_string()),
+            "udp": {
+                "mapping": mapping,
+                "ports": m.udp_ports.iter()
+                    .map(|(server, port)| json!({"server": server, "port": port}))
+                    .collect::<Vec<_>>(),
+                "why": m.udp_why,
+            },
+            "tcp": {
+                "views": m.tcp_views.iter()
+                    .map(|v| json!({"edge": v.edge, "port": v.port, "dest": v.dest}))
+                    .collect::<Vec<_>>(),
+                "same_source_port": m.tcp_same_source_port,
+                "agrees": m.tcp_agrees(),
+                "stable": m.tcp_mapping_stable(),
+                "why": m.reflect_why,
+            },
+            "inbound": {
+                "results": m.inbound_all.iter()
+                    .map(|(port, r)| json!({"port": port, "result": inbound(*r)}))
+                    .collect::<Vec<_>>(),
+                "why": m.inbound_why,
+            },
+        },
+    });
+    // Compact, one line, trailing newline: what a script reads with one
+    // `read()`, and what the three-field form was.
+    let mut out = doc.to_string();
+    out.push('\n');
+    out
+}
+
 /// Taking the measurements. The only part of this module that touches a
 /// network or the machine, which is what keeps [`decide`] testable.
 ///
@@ -579,7 +644,7 @@ pub fn render_text(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
 pub mod gather {
     use super::{EdgeView, Inbound, Measurements, UdpMapping, MAX_PROBE_PORTS};
     use ego_transport::stun::{detect_mapping, NatMapping, ProbeConfig};
-    use std::net::IpAddr;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     /// Ask two or more STUN servers what they see of **one** socket, and
     /// classify the mapping.
@@ -612,8 +677,17 @@ pub mod gather {
         seen.all(|a| a == first).then_some(first)
     }
 
+    /// `udp_port` binds the probe socket to a chosen local port. A mapping
+    /// is a fact about one flow: measured from an ephemeral port, the
+    /// mapped port reported is not the one `udp/51820` will get, and on any
+    /// NAT that is not port-preserving the verdict is right about the
+    /// network and wrong about the flow that matters (discofetch
+    /// `DRT_ASKS.md` §2). A port that cannot be bound is a refusal naming
+    /// it, never a silent fall back to ephemeral -- that would be the same
+    /// wrong answer with a confident face.
     pub async fn udp_mapping(
         servers: &[&str],
+        udp_port: Option<u16>,
     ) -> Result<(UdpMapping, Vec<(String, u16)>, Option<IpAddr>), String> {
         if servers.len() < 2 {
             return Err(format!(
@@ -621,9 +695,16 @@ pub mod gather {
                 servers.len()
             ));
         }
-        let report = detect_mapping(servers, &ProbeConfig::default())
+        let config = ProbeConfig {
+            bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), udp_port.unwrap_or(0)),
+            ..ProbeConfig::default()
+        };
+        let report = detect_mapping(servers, &config)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| match udp_port {
+                Some(port) => format!("--udp-port {port}: {e}"),
+                None => e.to_string(),
+            })?;
         let mapping = match report.mapping {
             NatMapping::Open => UdpMapping::Open,
             NatMapping::EndpointIndependent => UdpMapping::Independent,
@@ -974,9 +1055,9 @@ pub mod gather {
         ))
     }
 
-    pub async fn local_and_udp(m: &mut Measurements, stun_servers: &[&str]) {
+    pub async fn local_and_udp(m: &mut Measurements, stun_servers: &[&str], udp_port: Option<u16>) {
         m.routable_v6 = routable_v6();
-        match udp_mapping(stun_servers).await {
+        match udp_mapping(stun_servers, udp_port).await {
             Ok((mapping, ports, address)) => {
                 m.udp_mapping = Some(mapping);
                 m.udp_ports = ports;
@@ -1064,6 +1145,50 @@ mod tests {
         };
         assert_eq!(m.tcp_agrees(), Some(true));
         assert_eq!(decide(&m).0, Verdict::Relay);
+    }
+
+    /// `--json` carries the evidence the text carries, as pairs a script
+    /// can read without re-measuring (discofetch `DRT_ASKS.md` §1).
+    #[test]
+    fn the_json_form_carries_the_evidence_as_structured_pairs() {
+        let m = Measurements {
+            observed_address: public_v4(),
+            udp_mapping: Some(UdpMapping::Symmetric),
+            udp_ports: vec![("stun1".into(), 51823), ("stun2".into(), 40119)],
+            tcp_same_source_port: true,
+            tcp_views: vec![
+                EdgeView {
+                    edge: "gate1".into(),
+                    port: Some(51823),
+                    dest: "203.0.113.1:443".into(),
+                },
+                EdgeView {
+                    edge: "gate2".into(),
+                    port: None,
+                    dest: "203.0.113.2:443".into(),
+                },
+            ],
+            inbound_why: Some("no --port given".into()),
+            ..Default::default()
+        };
+        let (verdict, why) = decide(&m);
+        let doc: serde_json::Value = serde_json::from_str(&render_json(&m, verdict, why)).unwrap();
+        assert_eq!(doc["schema"], 1);
+        assert_eq!(doc["verdict"], "relay");
+        let ev = &doc["evidence"];
+        assert_eq!(ev["udp"]["mapping"], "symmetric");
+        assert_eq!(ev["udp"]["ports"][0]["server"], "stun1");
+        assert_eq!(ev["udp"]["ports"][0]["port"], 51823);
+        assert_eq!(ev["udp"]["ports"][1]["port"], 40119);
+        assert_eq!(ev["tcp"]["views"][0]["edge"], "gate1");
+        // Absent is null, never zero: the spec's rule, kept on the wire.
+        assert!(ev["tcp"]["views"][1]["port"].is_null());
+        assert_eq!(ev["tcp"]["same_source_port"], true);
+        // The v6 line's "none routable" and inbound's "not measured".
+        assert!(ev["v6"].is_null());
+        assert!(ev["inbound"]["results"].as_array().unwrap().is_empty());
+        assert_eq!(ev["inbound"]["why"], "no --port given");
+        assert_eq!(ev["address"]["cgnat"], false);
     }
 
     #[test]

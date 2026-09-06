@@ -133,7 +133,7 @@ pub enum Command {
     /// block of the config; runs foreground. Inside `drt start` the same
     /// server also reports its counters to the root program.
     ///
-    /// Run two on separate addresses (the `stun1`/`stun2` pair): one
+    /// Run two on separate addresses (the `stun1`/`stun2.discofetch.link` pair): one
     /// server reports an address, two report whether it *changed* between
     /// vantage points, which is the fact that decides whether hole
     /// punching can work at all.
@@ -192,15 +192,15 @@ pub enum Command {
         /// resolves to. Repeatable: each is one vantage, and the `Host`
         /// stays the name, so one fetchpoint answers from several edges.
         ///
-        /// The design is one name discriminated by `observed.edge`, so
-        /// this becomes unnecessary the moment the second A record lands —
-        /// which discofetch is deliberately holding until the measurement
-        /// is trusted. Until then this is how the second vantage is
-        /// reached, and it is `curl --resolve` by another name.
+        /// One `--reflect` is one vantage whatever its name resolves to,
+        /// so a name with two A records still yields one view per run;
+        /// naming each address here is what gets a comparison. It is
+        /// `curl --resolve` by another name, and it stays necessary for
+        /// that reason rather than until some record lands.
         #[arg(long = "reflect-at", value_name = "ADDRESS")]
         reflect_at: Vec<String>,
-        /// **Experimental.** Ask a probe edge to connect back to the
-        /// address it observes, and report whether it reached this port.
+        /// Ask a probe edge to connect back to the address it observes,
+        /// and report whether it reached this port.
         /// Repeatable, asked sequentially and bounded, because the prober
         /// rate-limits per address.
         ///
@@ -209,7 +209,9 @@ pub enum Command {
         /// and more surprising thing, and would want a differently named
         /// flag saying so.
         ///
-        /// Needs `--probe-at`. The server half is not deployed yet.
+        /// Needs `--probe-at`. Where a prober is deployed is the edge's
+        /// fact, not this text's: an earlier version of this sentence said
+        /// "not deployed yet" long after one was.
         #[arg(long = "port", value_name = "N")]
         port: Vec<u16>,
         /// The edge the probe's SYN should come from — one this run has not
@@ -232,6 +234,15 @@ pub enum Command {
         /// edges it measures nothing.
         #[arg(long = "pin-source-port")]
         pin_source_port: bool,
+        /// Take the UDP mapping from **this local port** rather than an
+        /// ephemeral one. A mapping is a fact about one flow: on a NAT that
+        /// is not port-preserving, the port an ephemeral probe is mapped to
+        /// says nothing about what `udp/51820` will get, so a tool that
+        /// wants the answer for WireGuard's socket asks from WireGuard's
+        /// port. A port that cannot be bound is reported by name under
+        /// `udp map`, never quietly replaced.
+        #[arg(long = "udp-port", value_name = "N")]
+        udp_port: Option<u16>,
         /// Machine-readable output. The default is human text, because the
         /// primary consumer is a person deciding what to do next.
         #[arg(long)]
@@ -331,13 +342,21 @@ pub fn buildinfo(json: bool) -> String {
     // range could not express even if one existed. `unknown` on a build
     // that does not pin it by revision.
     let diluvium_rev = env!("DRT_DILUVIUM_REV");
+    // The release tag, when the build was one. `version` is the crate's and
+    // every candidate under it prints the same `0.5.0`, so a box running
+    // rc3 could not be asked which candidate it ran; discofetch pinned the
+    // installed tag in a file beside the binary because the binary would
+    // not say (`DRT_ASKS.md` §3). Stamped by build.rs from the workflow's
+    // `DRT_RELEASE_TAG`; a local build has none and prints no line.
+    let tag = option_env!("DRT_RELEASE_TAG").filter(|t| !t.is_empty());
 
     if json {
         format!(
-            "{{\"version\":\"{}\",\"profile\":\"{}\",\"dv_abi\":{},\
+            "{{\"version\":\"{}\",\"tag\":{},\"profile\":\"{}\",\"dv_abi\":{},\
              \"dv_abi_expected\":{},\"diluvium\":\"{}\",\
              \"connectors\":[{}],\"verbs\":[{}]}}\n",
             env!("CARGO_PKG_VERSION"),
+            tag.map_or("null".to_string(), |t| format!("\"{t}\"")),
             profile,
             abi.map_or("null".into(), |(l, _)| l.to_string()),
             abi.map_or("null".into(), |(_, e)| e.to_string()),
@@ -355,9 +374,10 @@ pub fn buildinfo(json: bool) -> String {
         )
     } else {
         format!(
-            "version: {}\nprofile: {}\ndv_abi: {}\ndv_abi_expected: {}\n\
+            "version: {}\n{}profile: {}\ndv_abi: {}\ndv_abi_expected: {}\n\
              diluvium: {}\nconnectors: {}\nverbs: {}\n",
             env!("CARGO_PKG_VERSION"),
+            tag.map_or(String::new(), |t| format!("tag: {t}\n")),
             profile,
             abi.map_or("unknown".into(), |(l, _)| l.to_string()),
             abi.map_or("unknown".into(), |(_, e)| e.to_string()),
@@ -725,6 +745,7 @@ pub fn main(cli: Cli) -> ExitCode {
             port,
             probe_at,
             pin_source_port,
+            udp_port,
             json,
         } => {
             let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
@@ -733,7 +754,7 @@ pub fn main(cli: Cli) -> ExitCode {
             let edges: Vec<&str> = reflect.iter().map(String::as_str).collect();
             let at: Vec<&str> = reflect_at.iter().map(String::as_str).collect();
             runtime.block_on(async {
-                crate::netcheck::gather::local_and_udp(&mut m, &servers).await;
+                crate::netcheck::gather::local_and_udp(&mut m, &servers, udp_port).await;
                 // After the UDP half on purpose: STUN's address is the one
                 // the decisive measurement saw, and an edge that disagrees
                 // with it is recorded as a disagreement rather than
@@ -756,12 +777,7 @@ pub fn main(cli: Cli) -> ExitCode {
 
             let (verdict, why) = crate::netcheck::decide(&m);
             if json {
-                println!(
-                    "{{\"verdict\":\"{}\",\"why\":\"{}\",\"advice\":\"{}\"}}",
-                    verdict,
-                    why.replace('"', "'"),
-                    verdict.advice()
-                );
+                print!("{}", crate::netcheck::render_json(&m, verdict, why));
             } else {
                 print!("{}", crate::netcheck::render_text(&m, verdict, why));
             }
