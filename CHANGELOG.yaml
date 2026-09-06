@@ -59,6 +59,202 @@ schema: 1
 repo: Aloecraft-org/diluvium-drt
 
 releases:
+  - version: 0.5.0rc5
+    tag: v0.5.0rc5
+    date: null
+    status: unreleased
+    stable: false
+    mirror: false
+    dv_abi: 1
+    diluvium: 850e00d73220427be68ae8f909f83b06cb2095bd
+    connectors:
+      full: [time, fs, crypto, sql, ssh, rest, ssmtp, exec, listen]
+      slim: [time, fs, crypto, listen]
+      wasi: [time, fs, crypto, sql, listen]
+      web: [time, fs, crypto]
+    summary: |
+      **Not cut.** No tag, no artifacts, no release page: this entry is
+      the accumulating description of what sits on
+      `claude/wireguard-gotatun` and has not been merged to `main`.
+      Anyone picking this up should read it as "what rc5 would carry if
+      it were tagged today", not as something a box can install.
+
+      One feature, and it is the last rung of the traversal ladder.
+      `netcheck` says what a network can do, `stun` measures the mapping
+      that decides it, the relay carries what cannot be reached directly,
+      and `turn` carries what a browser needs -- every rung answering
+      *can these two hosts exchange packets*, and none of them answering
+      *and then what*. **WireGuard is the answer to that**, in the
+      process, on Mullvad's gotatun: once two hosts can exchange UDP
+      datagrams, carrying arbitrary traffic between them is a solved
+      problem, and a fetchpoint becomes an IP address that `ssh/exec`,
+      `rest` and `listen` reach with no new plumbing.
+
+      **The punch is measured now, and not by this repository.** Every
+      test here runs on loopback, where there is no NAT to punch. What
+      settles it is a lab run outside DRT: discofetch drove its own
+      rendezvous program against this block with two hosts in network
+      namespaces behind two netfilter NATs, and got direct handshakes
+      through both of them with no relay in the path (247 ms and
+      1747 ms), then a relayed one past a symmetric NAT through
+      `drt turn` (739 ms), packets across in every case. Recorded in
+      issue #15, scoped in issue #17. It does not settle NAT hardware DRT
+      has not seen -- netfilter on one machine is not a consumer router
+      and not a carrier-grade NAT -- and `doc/WireGuard.md` §2 keeps that
+      line where a reader will find it.
+
+      **It raises the toolchain floor to Rust 1.95**, which gotatun
+      requires. That is the one thing in here that can break a build
+      unrelated to WireGuard, so it is said in the summary rather than a
+      bullet.
+
+      **What it does not have**, all sized in issue #17 and none of it
+      started: no re-authentication of a TURN allocation whose credential
+      expires (§3), no Windows profile carrying the verbs a workflow uses
+      (§4), no signed darwin binaries (§5), no no-root userspace mode
+      (§7), and no rate limiting on either the relay or `drt turn` (§8).
+      The last two are the ones that need a design decision rather than
+      an afternoon.
+    added:
+      - |
+        **WireGuard in the process: a `wireguard` block and `drt wg`.**
+        gotatun 0.9.2 -- Mullvad's maintained fork of Cloudflare's
+        boringtun, MPL-2.0, audited, and a library first. Its `Device` is
+        generic over **both** of its transports, which is what makes it
+        embeddable here rather than merely linkable: `drt start` gives the
+        IP side a kernel interface, and the tests give it a pair of
+        channels, so the same device that carries a deployment's traffic
+        is proven in CI with no privilege at all -- two devices, two
+        loopback sockets, a real handshake, a real packet in one end and
+        the same bytes out the other. `+382 KB` on `full`, no new C
+        toolchain (`ring`, not aws-lc-rs). Needs Rust 1.95.
+
+        The block brings the interface up itself -- name, address, MTU --
+        so the common case needs no `ip` commands, and it measures its own
+        NAT mapping on `listen_port` microseconds before binding it,
+        because `netcheck --udp-port` cannot do that job once the device
+        holds the port. The measurement is the probe's socket on that
+        port and not the device's own; `doc/WireGuard.md` §2 says so
+        rather than implying otherwise.
+      - |
+        **A peer's endpoint is settable at run time**, which is the half
+        of a punch that has to come from a program. A rendezvous
+        *discovers* peers, so a device that could only talk to peers
+        already in its config could not serve one. `endpoint`, `add`,
+        `remove`, `keepalive`, `relay` and `remap` are read off
+        `reply_queue`, and everything the device knows -- peers, roams,
+        the mapping, refusals -- goes out on `queue`. A command the device
+        refuses comes back as `wireguard_error` to the program that wrote
+        it rather than to a log nobody is reading, and clearing an
+        endpoint is said out loud (`clear = true`), because reading an
+        absent field as "forget this peer" made one mistyped field name
+        tear down a working tunnel in silence.
+      - |
+        **The fallback for a NAT that cannot be punched: WireGuard over a
+        TURN allocation.** `punchable: false` is a fork in the road rather
+        than the end of it. A device with `turn_fallback = true` can be
+        handed a credential and take an allocation, and what comes back is
+        the address to publish to the rendezvous *instead of* the measured
+        one; the far side never learns the difference. Both paths stay
+        live, which is ICE's own shape -- a peer that later becomes
+        reachable directly is still heard. Off by default, because a
+        device that may relay gives up gotatun's batched `recvmmsg` read,
+        and one that never will should not pay for the option.
+
+        A relay that fails does not take the tunnel with it. gotatun's
+        buffered receive loop ends its task for good on one error, so a
+        transport that propagated a lapsed allocation would kill a device
+        whose direct socket was fine all along. It drops the allocation,
+        keeps reading the socket, and the drive loop tells the deployment
+        it is sending direct again.
+      - |
+        **`remap`, for the machine that moves.** The mapping was measured
+        once, before the bind, and nothing measured it again -- so a
+        laptop that went from home Wi-Fi to a phone hotspot had an
+        endpoint published to its rendezvous that was wrong and no event
+        saying so. `wireguard_endpoint` reports a *peer* roaming; this is
+        the half that reports us. It costs a rehandshake and cannot not: a
+        mapping belongs to a port, measuring one means binding the port
+        the running device holds, so the sequence is suspend, measure,
+        resume. Free in the case it exists for, since a device whose
+        network just changed has dead sessions already (issue #17 §2).
+
+        One measured detail, pinned by a test rather than left as
+        folklore: gotatun's `suspend` returns **before** its I/O tasks
+        drop their sockets -- about 6 ms -- so the first version measured
+        into "address already in use" every time.
+      - |
+        **`drt wg keygen`, `drt wg pubkey` and `drt wg check`.** Creating
+        a tunnel interface needs a privilege; none of these do. `keygen`
+        and `pubkey` are the key pair, so setting a peer up never needs
+        wireguard-tools installed, and `check` says whether a config can
+        work without touching an interface -- including the two cases
+        that otherwise mislead. A peer whose `allowed_ips` no route will
+        reach is **named at startup**, with the `ip route add` that fixes
+        it, because that one comes up, reports a handshake, and silently
+        carries nothing. And a block naming no peers at all is read as
+        the config a rendezvous writes rather than an oversight: `check`
+        says what startup will do, and warns when such a block has no
+        `reply_queue`, since then nothing can ever tell it about a peer
+        (issue #17 §6).
+      - |
+        **Two examples, and a way for the gate to skip what it cannot
+        run.** `21-wireguard` is the block without a privilege -- the key
+        pair, the refusals a config earns before anything binds, and the
+        no-peer rendezvous config -- and `22-wireguard-interface` is the
+        half that creates the interface and asks the *kernel* what it
+        made, through `/sys`, rather than taking DRT's word for it. The
+        examples gate grew `needs_privilege` for the second, alongside
+        `needs_network`: a skip is still never a pass, and it says which
+        it was.
+    fixed:
+      - |
+        **The block dropped the one report a rendezvous cannot start
+        without, and a device with no peers never spoke at all.** Three
+        fixes from issue #15, all found by running the block against the
+        program it was built for -- which is the same run that measured
+        the punch, and the argument for doing that before shipping rather
+        than after.
+
+        The bridge pushed every report and ignored a refusal. Right for
+        the peer snapshot, whose next one carries the running totals;
+        wrong for everything said once, and worst for the mapping, which
+        is queued before the device binds and so goes out before a root
+        program has reached the line declaring its queue. The one report a
+        rendezvous waits for was the one guaranteed to be lost. One-shot
+        reports are held and retried oldest first now, bounded, because a
+        queue that stays full is a sizing problem the deployment should
+        see rather than one the device should absorb.
+
+        `report_ms` did not tick for a device with no peers: the loop sent
+        a snapshot only when the peer list differed, and an empty list
+        never differs from an empty list. A program using the interval as
+        its clock never got one until a peer existed -- and no peers is
+        exactly where a rendezvous starts. The timer is unconditional now.
+
+        `peers = {}` was refused as "must be a list of peers". Lua has one
+        table type, so `{}` is both the empty list and the empty map;
+        the loader read lists with `as_array` and refused the empty case,
+        having resolved that ambiguity for connector scopes and nowhere
+        else. Fixed once for `peers`, `stun`, `allowed_ips`, `caps` and
+        `headers`.
+      - |
+        **Not fixed, and not ours: `drt turn` answers 400 to a wrong or
+        expired credential where RFC 8489 §9.2.4 says 401 with a fresh
+        NONCE.** Confirmed twice -- against the `turn` crate's own client,
+        which reports `error 400`, and in its `authenticate_request`,
+        which builds one `bad_request_msg` and sends it down both the
+        unknown-user and the failed-integrity path. 0.17.2 is the newest
+        release and carries it. It matters because 401 means
+        *authenticate again* and 400 means *your request is malformed*: a
+        browser's ICE agent retries the first and gives up on the second,
+        so a credential that lapses mid-session takes the allocation with
+        it. DRT cannot reach it from outside the crate.
+        `doc/TURN-401-Upstream.md` is the brief for filing it, and
+        `a_forged_credential_is_refused_with_the_wrong_code_for_now`
+        asserts today's 400 on purpose -- that test failing is the signal
+        it was fixed upstream.
+
   - version: 0.5.0rc4
     tag: v0.5.0rc4
     date: 2026-09-06
