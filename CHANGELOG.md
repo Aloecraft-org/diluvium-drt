@@ -12,17 +12,12 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
-## [0.5.0rc5] - unreleased (prerelease)
+## [0.5.0rc5] - 2026-09-06 (prerelease)
 
 `v0.5.0rc5` &middot; dv ABI 1 &middot; diluvium `850e00d73220`
 
-**Not cut.** No tag, no artifacts, no release page: this entry is
-the accumulating description of what sits on
-`claude/wireguard-gotatun` and has not been merged to `main`.
-Anyone picking this up should read it as "what rc5 would carry if
-it were tagged today", not as something a box can install.
-
-One feature, and it is the last rung of the traversal ladder.
+The fifth candidate, and it is one feature: the last rung of the
+traversal ladder.
 `netcheck` says what a network can do, `stun` measures the mapping
 that decides it, the relay carries what cannot be reached directly,
 and `turn` carries what a browser needs -- every rung answering
@@ -41,7 +36,10 @@ namespaces behind two netfilter NATs, and got direct handshakes
 through both of them with no relay in the path (247 ms and
 1747 ms), then a relayed one past a symmetric NAT through
 `drt turn` (739 ms), packets across in every case. Recorded in
-issue #15, scoped in issue #17. It does not settle NAT hardware DRT
+issue #15, scoped in issue #17. A second run against this candidate
+drove the whole feature unattended -- direct through two NATs,
+a `remap` after one end moved, and the symmetric-NAT fallback --
+and is in issue #17's comments. It does not settle NAT hardware DRT
 has not seen -- netfilter on one machine is not a consumer router
 and not a carrier-grade NAT -- and `doc/WireGuard.md` §2 keeps that
 line where a reader will find it.
@@ -58,6 +56,13 @@ expires (§3), no Windows profile carrying the verbs a workflow uses
 (§7), and no rate limiting on either the relay or `drt turn` (§8).
 The last two are the ones that need a design decision rather than
 an afternoon.
+
+**Still a candidate**, and the thing to test is a tunnel rather
+than a surface: two boxes that could not reach each other before
+this, and a deployment reaching one of them by address.
+
+Not mirrored, and not `latest`: `install.sh` keeps resolving to the
+newest stable release, which is v0.4.2.
 
 ### Connectors
 
