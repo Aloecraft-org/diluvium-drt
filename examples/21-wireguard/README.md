@@ -12,6 +12,7 @@ needs `CAP_NET_ADMIN`.
 cd examples/21-wireguard
 drt wg keygen
 drt wg --config wrong.host.lua
+drt wg check --config hub-unroutable.host.lua
 ```
 
 ## What you should see
@@ -24,6 +25,13 @@ $ drt wg keygen
 $ drt wg --config wrong.host.lua
 drt wg: wireguard.address: '10.9.0.0/24' is the network address, not a host
 address on it. Give the address this device holds, like 10.9.0.1/24.
+
+$ drt wg check --config hub-unroutable.host.lua
+drt wg check: peer p6Vqzz…= is allowed 192.168.1.0/24, and nothing will reach
+it: outside 10.9.0.1/24, the only prefix the interface routes. It will
+handshake and carry nothing. Add the route yourself (`ip route add
+192.168.1.0/24 dev drt0`), or narrow allowed_ips.
+ok: drt0 on port 51820, 1 peer(s), 1 warning(s)
 ```
 
 ## What it teaches
@@ -58,6 +66,32 @@ others one at a time:
 - one `stun` server — one server can report an address; it takes two to say
   whether it *changed*, which is what decides whether a hole punch is
   possible at all.
+
+**`drt wg check` is how you find out without root.** Creating the interface
+needs `CAP_NET_ADMIN`; being told the config is wrong should not. `check`
+runs everything `drt wg` runs before it touches the interface and stops, so
+a config can be written and checked on a laptop and only deployed where it
+is allowed.
+
+**The failure it exists for is the silent one.**
+`hub-unroutable.host.lua` has nothing wrong with it and will not work: DRT
+gives the interface its `address` and the kernel derives exactly one route
+from that, the on-link `10.9.0.0/24`. The peer is also allowed
+`192.168.1.0/24` — everything behind the hub — and no route points there, so
+WireGuard encrypts for it happily and nothing ever hands it a packet. The
+tunnel comes up, reports a handshake, and carries nothing.
+
+Both numbers are in the config, so `check` says which peer, which network,
+and the `ip route add` that fixes it. It is a **warning and exit 0**, not a
+refusal: the config is correct and works the moment the route exists, and a
+non-zero exit would fail a deploy over a note. Route management is not DRT's
+(`doc/WireGuard.md` §4).
+
+**`drt wg pubkey` is the half `keygen` cannot give you.** A key that already
+exists — in a secret store, in a `[Interface]` stanza — still has to be
+nameable to a peer, and `drt wg keygen` only makes new ones. `pubkey` reads
+a private key on stdin and prints its public half, which is `wg pubkey`
+exactly.
 
 **MTU 1420, not 1500.** WireGuard's own overhead is 60 bytes over IPv4 and 80
 over IPv6, so an interface left at the ethernet default fragments every

@@ -82,6 +82,19 @@ pub enum WgAction {
     /// wireguard-tools, which is the point -- a block that needed those
     /// installed to produce a key would not have removed the dependency.
     Keygen,
+    /// Print the public key of a private key read from stdin -- `wg pubkey`,
+    /// and the half `keygen` cannot give you for a key you already have.
+    /// A key kept in a secret store has to be nameable to a peer without
+    /// being pasted into a terminal, and this is how.
+    Pubkey,
+    /// Read the `wireguard` block, say what is wrong with it, and stop.
+    ///
+    /// Creating the interface needs a privilege; being told the config is
+    /// wrong should not. This runs every check `drt wg` runs before it
+    /// touches the interface -- keys, addresses, CIDRs, ports -- and prints
+    /// the warnings a running device would print, so a config can be
+    /// written and checked anywhere and only deployed where it is allowed.
+    Check,
 }
 
 #[derive(Parser)]
@@ -778,6 +791,67 @@ pub fn main(cli: Cli) -> ExitCode {
             println!("{private}");
             println!("{public}");
             ExitCode::SUCCESS
+        }
+        #[cfg(feature = "wireguard")]
+        Command::Wg {
+            action: Some(WgAction::Pubkey),
+        } => {
+            let mut key = String::new();
+            if let Err(e) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut key) {
+                eprintln!("drt wg pubkey: cannot read the key from stdin: {e}");
+                return ExitCode::FAILURE;
+            }
+            // The label is the field a reader would go and look at, not the
+            // verb they just typed: `parse_key` prefixes it, and "drt wg
+            // pubkey: drt wg pubkey: ..." helps nobody.
+            match crate::wireguard::parse_key("the key on stdin", &key) {
+                Ok(bytes) => {
+                    println!(
+                        "{}",
+                        crate::wireguard::public_key(&gotatun::x25519::StaticSecret::from(bytes))
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("drt wg pubkey: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        #[cfg(feature = "wireguard")]
+        Command::Wg {
+            action: Some(WgAction::Check),
+        } => {
+            let Some(wg_config) = config.wireguard.clone() else {
+                eprintln!("drt wg check: the config names no `wireguard` block");
+                return ExitCode::FAILURE;
+            };
+            match crate::wireguard::validate(&wg_config) {
+                Ok(warnings) => {
+                    for warning in &warnings {
+                        eprintln!("drt wg check: {warning}");
+                    }
+                    // A warning is not a failure: the config works the
+                    // moment the route exists, and an exit code that said
+                    // otherwise would fail a deploy over a note.
+                    println!(
+                        "ok: {} on port {}, {} peer(s){}",
+                        wg_config.interface,
+                        wg_config.listen_port,
+                        wg_config.peers.len(),
+                        if warnings.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", {} warning(s)", warnings.len())
+                        }
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("drt wg check: {e}");
+                    ExitCode::FAILURE
+                }
+            }
         }
         #[cfg(feature = "wireguard")]
         Command::Wg { action: None } => {

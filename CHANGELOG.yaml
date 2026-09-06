@@ -1231,7 +1231,11 @@ releases:
         directly is still heard. `turn_fallback = true` is what makes a
         device able to do this, and it is off by default because a device
         that may relay gives up the batched socket read: one that never will
-        should not pay for the option. Proven end to end against DRT's own
+        should not pay for the option. A relay that fails never takes the
+        tunnel with it -- gotatun ends its receive task for good on any
+        error from it, so the transport drops the allocation and keeps
+        reading the socket instead of propagating, and the deployment is
+        told it is sending direct again. Proven end to end against DRT's own
         `drt turn` server, on loopback and unprivileged
         (`wireguard_traffic_can_fall_back_through_a_turn_allocation`).
       - |
@@ -1246,6 +1250,18 @@ releases:
         prefix is a legitimate config, and it works the moment the route
         exists. Route management itself is still not DRT's, and
         `doc/WireGuard.md` §4 says what it would take.
+      - |
+        **`drt wg check` and `drt wg pubkey`.** Creating a tunnel interface
+        needs a privilege; being told the config is wrong should not, so
+        `check` runs every test `drt wg` runs before it touches the
+        interface -- keys, addresses, CIDRs, ports -- prints the warnings a
+        running device would print, and stops. A config can be written and
+        checked on a laptop and only deployed where it is allowed. It exits
+        0 on a warning, because an `allowed_ips` with no route is a correct
+        config missing a route, and failing a deploy over a note would be
+        the wrong trade. `pubkey` is the half `keygen` cannot give you: a
+        key that already exists, in a secret store or a `[Interface]`
+        stanza, still has to be nameable to a peer.
     changed:
       - |
         **`ssmtp/send` answers `message_id`**, minted by the host under

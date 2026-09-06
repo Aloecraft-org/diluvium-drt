@@ -15,3 +15,8 @@ echo
 echo '$ drt wg --config wrong.host.lua'
 "$DRT" wg --config wrong.host.lua
 echo "exit $?"
+
+echo
+echo '$ drt wg check --config hub-unroutable.host.lua'
+"$DRT" wg check --config hub-unroutable.host.lua
+echo "exit $?"

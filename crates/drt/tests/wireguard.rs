@@ -1069,6 +1069,21 @@ fn wireguard_traffic_can_fall_back_through_a_turn_allocation() {
             .await
             .expect("the relaying device came up");
 
+        // B is built HERE, before the allocation is taken, so it owns
+        // port_b first: the TURN server's relay socket takes an ephemeral
+        // port, and `free_port` released port_b before either bound it. It
+        // starts with no endpoint and is told where A is once the
+        // allocation exists, which is the rendezvous's shape anyway.
+        let b = device(
+            secret_b,
+            port_b,
+            Peer::new(pub_a)
+                .with_allowed_ip(ipnetwork::IpNetwork::from(std::net::IpAddr::V4(ip_a))),
+            tx_b,
+            rx_b,
+        )
+        .await;
+
         let (reports, mut report_rx) = mpsc::unbounded_channel();
         let (commands, command_rx) = mpsc::unbounded_channel();
         let driver = tokio::spawn(drt::wireguard::drive(
@@ -1118,17 +1133,14 @@ fn wireguard_traffic_can_fall_back_through_a_turn_allocation() {
         );
 
         // B is told where A turned out to be: its RELAYED address, which is
-        // the only address that reaches A.
-        let _b = device(
-            secret_b,
-            port_b,
-            Peer::new(pub_a)
-                .with_endpoint(relayed)
-                .with_allowed_ip(ipnetwork::IpNetwork::from(std::net::IpAddr::V4(ip_a))),
-            tx_b,
-            rx_b,
-        )
-        .await;
+        // the only address that reaches A. In a deployment this is the
+        // rendezvous answering; here it is one call.
+        b.write(async |d| {
+            d.modify_peer(&pub_a, |p| p.set_endpoint(Some(relayed)))
+                .await
+        })
+        .await
+        .expect("B took the endpoint");
 
         // A sends. Its packets leave through the allocation, so they reach B
         // from the relayed address B was told about, and B accepts them.
@@ -1144,8 +1156,16 @@ fn wireguard_traffic_can_fall_back_through_a_turn_allocation() {
         });
         expect_payload(&mut tun_b, b"through the turn relay").await;
 
-        // And giving the allocation up is answered too, so a program that
-        // gets a direct path later can stop paying for the relay.
+        sender.abort();
+
+        // **Losing the relay must not lose the tunnel.** gotatun's buffered
+        // receive loop ends its task for good on any error from
+        // `recv_many_from`, so a transport that propagated a failed
+        // allocation would take the DIRECT path down with it -- a dead
+        // tunnel over a socket that was fine all along. The transport drops
+        // the allocation instead and keeps reading; this is that, driven by
+        // the command rather than by a failure, because both go through the
+        // same `send_replace(None)` and the same wake.
         commands.send(drt::wireguard::Command::ClearRelay).unwrap();
         loop {
             match tokio::time::timeout(Duration::from_secs(10), report_rx.recv())
@@ -1157,6 +1177,27 @@ fn wireguard_traffic_can_fall_back_through_a_turn_allocation() {
                 _ => continue,
             }
         }
+
+        // The device still works, on the socket it had underneath all along.
+        b.write(async |d| {
+            d.modify_peer(&pub_a, |p| {
+                p.set_endpoint(Some(SocketAddr::from(([127, 0, 0, 1], port_a))))
+            })
+            .await
+        })
+        .await
+        .expect("B took the direct endpoint");
+        let direct = ipv4_udp(ip_a, ip_b, b"and directly once the relay is gone");
+        let inject = tun_a.inject.clone();
+        let sender = tokio::spawn(async move {
+            for _ in 0..100 {
+                if inject.send(direct.clone()).is_err() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        });
+        expect_payload(&mut tun_b, b"and directly once the relay is gone").await;
 
         sender.abort();
         driver.abort();

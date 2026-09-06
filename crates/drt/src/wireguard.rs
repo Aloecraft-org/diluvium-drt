@@ -154,7 +154,7 @@ pub fn parse_key(label: &str, text: &str) -> Result<[u8; KEY_LEN], String> {
 /// Everything about the block that can be judged without touching the
 /// network or the machine. Called before anything is bound, so a bad
 /// config fails `drt start` at the line that names it.
-pub fn validate(config: &WireguardConfig) -> Result<(), String> {
+pub fn validate(config: &WireguardConfig) -> Result<Vec<String>, String> {
     // Zero is refused rather than defaulted, because it cannot be
     // reported honestly and cannot be punched to. gotatun answers
     // `listen_port()` with the port it was CONFIGURED with, not the one
@@ -208,10 +208,9 @@ pub fn validate(config: &WireguardConfig) -> Result<(), String> {
     }
     private_key(config)?;
     peers(config)?;
-    for line in unroutable(config) {
-        eprintln!("drt wg: {line}");
-    }
-    Ok(())
+    // Returned rather than printed: `bind` validates too, so printing here
+    // said everything twice on every start.
+    Ok(unroutable(config))
 }
 
 /// Which `allowed_ips` no packet will ever reach, and what to do about it.
@@ -760,6 +759,11 @@ pub async fn drive<T: DeviceTransports>(
     allocation: Option<Allocation>,
 ) {
     let mut last: Vec<PeerReport> = Vec::new();
+    // Whether an allocation is installed, as of the last look. The
+    // transport drops one that fails rather than propagating the error
+    // (which would end gotatun's receive task for good), so this loop is
+    // what notices and tells the deployment it is sending direct again.
+    let mut relaying = false;
     let mut watch = tokio::time::interval(Duration::from_millis(WATCH_MS).min(every));
     watch.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut next_snapshot = tokio::time::Instant::now();
@@ -791,6 +795,23 @@ pub async fn drive<T: DeviceTransports>(
             }
             _ = watch.tick() => false,
         };
+
+        // Before anything else: did the relay go away without being asked?
+        // A program waiting on a rendezvous it published a relayed address
+        // to should hear that the address is dead, not keep waiting.
+        if let Some(handle) = &allocation {
+            let installed = handle.borrow().is_some();
+            if relaying && !installed && !asked {
+                let _ = reports.send(Report::Refused {
+                    command: "relay".into(),
+                    reason: "the turn allocation failed and was dropped; this device \
+                             is sending direct again. Allocate again if the mapping \
+                             still cannot be punched."
+                        .into(),
+                });
+            }
+            relaying = installed;
+        }
 
         let now = snapshot(&device).await;
         // Roaming carries `previous`, which a snapshot cannot, so it is
@@ -1328,11 +1349,15 @@ impl UdpSend for Sender {
             if let Some(relayed) = relayed {
                 // The TURN client installs the permission for `destination`
                 // on the way past, so the peer's reply is allowed back.
-                relayed
-                    .conn
-                    .send_to(&packet, destination)
-                    .await
-                    .map_err(|e| std::io::Error::other(format!("turn relay: {e}")))?;
+                if let Err(e) = relayed.conn.send_to(&packet, destination).await {
+                    // Drop the allocation, and drop this packet rather than
+                    // report it: WireGuard retransmits, and by the time it
+                    // does the sends are direct again. Returning an error
+                    // would be worse than useless -- gotatun ignores most
+                    // send errors and breaks a loop on the rest.
+                    eprintln!("drt wg: the turn allocation failed ({e}); sending direct again");
+                    handle.send_replace(None);
+                }
                 return Ok(());
             }
         }

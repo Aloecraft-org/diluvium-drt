@@ -75,7 +75,13 @@ return {
 
 `drt wg keygen` prints a fresh pair — private key on the first line, its
 public key on the second — so setting up a peer never needs
-`wireguard-tools` installed, which was the point. `drt wg` runs the
+`wireguard-tools` installed, which was the point. `drt wg pubkey` is the
+half it cannot give you: a key that already exists, in a secret store or a
+`[Interface]` stanza, still has to be nameable to a peer, and this reads one
+on stdin and prints its public half. `drt wg check` reads a config, says
+what is wrong with it, and stops — everything `drt wg` does before it
+touches the interface, so a config can be written and checked on a laptop
+and only deployed where the privilege is. `drt wg` runs the
 device in the foreground and prints the public key, because a peer cannot
 be configured without it. Inside `drt start` the same device reports peer
 stats on the timer, and endpoint changes and first handshakes as they
@@ -274,6 +280,17 @@ what makes a device able to do this at all, and it is off by default because
 it is not free: a device that may relay gives up gotatun's batched
 `recvmmsg` read, since a batch parked on the direct socket would starve the
 relayed path. A device that will never relay should not pay for the option.
+
+**A relay that fails must not take the tunnel with it.** gotatun's buffered
+receive loop is `let Ok(()) = recv_many_from(..) else { return }` — one
+error ends that task, silently and for good. A transport that propagated a
+failed allocation would therefore kill a device whose direct socket was fine
+all along, over a TURN server that restarted. So the transport never
+propagates one: it drops the allocation, says so on stderr, keeps reading
+the socket, and the drive loop tells the deployment (`wireguard_error`) so
+the program can allocate again. The test drives the same path through
+`clear` and then sends a packet directly, because both go through the same
+drop and the same wake.
 
 **Both paths stay live.** With an allocation installed, sends go through it
 and receives listen on the direct socket *and* the relay. That is ICE's own
