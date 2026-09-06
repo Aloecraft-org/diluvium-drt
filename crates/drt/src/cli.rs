@@ -70,6 +70,7 @@ const PROFILE_FULL: &[&str] = &[
     "stun",
     "tunnel",
     "turn",
+    "wireguard",
 ];
 
 #[derive(Parser)]
@@ -151,6 +152,20 @@ pub enum Command {
     /// with its principal, to the root program.
     #[cfg(feature = "turn")]
     Turn,
+    /// The WireGuard peer this deployment is: bring up the tunnel
+    /// interface the `wireguard` block names, hold it up, and print the
+    /// public key a peer needs. Runs foreground.
+    ///
+    /// This is the rung above `netcheck`, `stun` and `turn`: they answer
+    /// whether two hosts can exchange packets, and this is what carries
+    /// traffic once they can. A peer needs no endpoint at startup -- inside
+    /// `drt start` the root program sets one over the reply queue when a
+    /// rendezvous learns it, which is the hole punch, end to end.
+    ///
+    /// Creating the interface needs CAP_NET_ADMIN or root on Linux, root
+    /// on macOS, and wintun.dll on Windows. Nothing else here does.
+    #[cfg(feature = "wireguard")]
+    Wg,
     /// SSH over WSS, as a dumb pipe. With a URL: bridge this process's
     /// stdio to it — the OpenSSH ProxyCommand contract, so
     /// `ssh -o ProxyCommand="drt tunnel wss://gate/fp" user@fp` (and rsync,
@@ -345,6 +360,9 @@ pub fn buildinfo(json: bool) -> String {
     if cfg!(feature = "turn") {
         verbs.push("turn");
     }
+    if cfg!(feature = "wireguard") {
+        verbs.push("wg");
+    }
     verbs.sort_unstable();
 
     // Named by what the profile actually is, not by what was asked for: a
@@ -442,6 +460,7 @@ fn enabled_features() -> Vec<&'static str> {
     feature!("stun");
     feature!("tunnel");
     feature!("turn");
+    feature!("wireguard");
     on.sort_unstable();
     on
 }
@@ -729,6 +748,26 @@ pub fn main(cli: Cli) -> ExitCode {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("drt turn: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        #[cfg(feature = "wireguard")]
+        Command::Wg => {
+            let Some(wg_config) = config.wireguard.clone() else {
+                eprintln!("drt wg: the config names no `wireguard` block");
+                return ExitCode::FAILURE;
+            };
+            let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
+            let outcome = runtime.block_on(crate::wireguard::serve(&wg_config));
+            // Leaked, not dropped: the tokio 1.53.1 teardown use-after-free
+            // every foreground verb here leaks its runtime for. The process
+            // is exiting; the OS reclaims what drop would have.
+            std::mem::forget(runtime);
+            match outcome {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("drt wg: {e}");
                     ExitCode::FAILURE
                 }
             }

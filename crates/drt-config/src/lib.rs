@@ -408,6 +408,117 @@ fn default_turn_report_ms() -> u64 {
     10_000
 }
 
+/// A WireGuard peer, as the `wireguard` block names it.
+///
+/// The fields are `wg-quick`'s, deliberately: an operator who has written a
+/// `[Peer]` stanza should be able to write this without learning anything,
+/// and a key pasted from one should work in the other. Keys are base64, the
+/// tool's own encoding, not hex.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireguardPeer {
+    /// The peer's public key, base64. Its identity: there is no other name
+    /// for a peer in this protocol.
+    pub public_key: String,
+    /// What may be routed to and accepted from this peer, as CIDR. Both
+    /// directions at once, which is WireGuard's cryptokey routing: a packet
+    /// arriving from this peer with a source outside these networks is
+    /// dropped, not merely unroutable.
+    #[serde(default)]
+    pub allowed_ips: Vec<String>,
+    /// Where to send to, before the peer has been heard from. Optional
+    /// because a punched peer has no endpoint until the rendezvous supplies
+    /// one, which is what the `endpoint` command on the reply queue is for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// Seconds between keepalives, or none. This is the field a punched
+    /// hole depends on: a NAT mapping with no traffic through it closes in
+    /// tens of seconds, and 25 is the interval the tooling settled on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keepalive: Option<u16>,
+    /// An optional symmetric key mixed into the handshake, base64, from an
+    /// environment variable. Post-quantum belt and braces, and per peer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preshared_key_env: Option<String>,
+}
+
+/// The WireGuard peer this deployment is, as `drt start` and `drt wg` run
+/// it.
+///
+/// DRT's own, like `relay`, `stun` and `turn`, and the rung above all
+/// three: `netcheck` says whether a direct path can exist, `stun` measures
+/// the mapping that decides it, `turn` carries what cannot be punched --
+/// and this is what runs *over* the path once there is one. In the process,
+/// on gotatun, so a deployment that has a fetchpoint's address gets an
+/// encrypted link to it without a kernel module, `wg-quick`, or root on
+/// anything but the interface.
+///
+/// The connection to hole punching is the whole point of the block's shape:
+/// `listen_port` is the port `netcheck --udp-port` measures, peers may
+/// start with no endpoint at all, and the endpoint is settable at runtime
+/// over `reply_queue`. So the rendezvous a program already runs over the
+/// relay -- trade the two measured endpoints, tell both sides -- completes
+/// here without a second daemon holding the socket.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireguardConfig {
+    /// The UDP port to listen on. Zero picks one, which is fine for a
+    /// dialing peer and useless for a punched one -- a mapping is measured
+    /// per port, so a punch names its port here and passes the same number
+    /// to `netcheck --udp-port`.
+    #[serde(default)]
+    pub listen_port: u16,
+    /// The tunnel interface to create: `drt0`, `wg0`, `utun` on macOS.
+    /// Creating one needs privilege (CAP_NET_ADMIN on Linux, root on macOS,
+    /// wintun.dll on Windows), and that is the whole privilege this needs:
+    /// no module, no `wg` tools, no `wg-quick`.
+    #[serde(default = "default_wireguard_interface")]
+    pub interface: String,
+    /// This peer's private key, base64, inline. The same three knobs as
+    /// every other secret in this config, resolved file, then env, then
+    /// inline; one is required, since a device without a key has no
+    /// identity and can complete no handshake.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_key: Option<String>,
+    /// This peer's private key, base64, from a file -- `wg genkey`'s own
+    /// output, one trailing newline trimmed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_key_file: Option<PathBuf>,
+    /// This peer's private key, base64, from the named environment
+    /// variable, read once at startup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_key_env: Option<String>,
+    /// The peers. May be empty: a deployment that learns its peers at
+    /// runtime adds them over `reply_queue`.
+    #[serde(default)]
+    pub peers: Vec<WireguardPeer>,
+    /// Where the device's reports land on the root program inside
+    /// `drt start`: a peer snapshot on the timer below, and an endpoint
+    /// change as it happens.
+    #[serde(default = "default_wireguard_queue")]
+    pub queue: String,
+    /// Where the device reads commands, which is what makes a punch
+    /// possible from inside a program: `endpoint` to point a peer at an
+    /// address the rendezvous just learned, `keepalive` to hold the hole
+    /// open. **Empty means the device takes no commands**, and that is the
+    /// default: a config that does not ask to be steered is not steerable.
+    #[serde(default)]
+    pub reply_queue: String,
+    /// How often the peer snapshot is reported. An endpoint change is
+    /// reported as it happens whatever this says: a peer that roamed
+    /// between two snapshots is the event a punch is waiting for.
+    #[serde(default = "default_wireguard_report_ms")]
+    pub report_ms: u64,
+}
+
+fn default_wireguard_interface() -> String {
+    "drt0".into()
+}
+fn default_wireguard_queue() -> String {
+    "wg_in".into()
+}
+fn default_wireguard_report_ms() -> u64 {
+    10_000
+}
+
 fn default_relay_queue() -> String {
     "relay_in".into()
 }
@@ -465,6 +576,8 @@ pub struct RootConfig {
     pub stun: Option<StunConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn: Option<TurnConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wireguard: Option<WireguardConfig>,
     #[serde(default, skip_serializing_if = "Identity::is_default")]
     pub identity: Identity,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

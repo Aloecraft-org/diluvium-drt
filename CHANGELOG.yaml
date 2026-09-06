@@ -1131,6 +1131,42 @@ releases:
         at startup. `full` is not built for Windows: `exec` is unix-only
         and `full` carries aws-lc-sys through russh, the linux aarch64
         problem again.
+      - |
+        **WireGuard, in the process: a `wireguard` block and `drt wg`.**
+        The rung above `netcheck`, `stun` and `turn`, which all answer
+        *can these two hosts exchange packets* and none of which answered
+        *and then what*. Once they can -- which is what a `punchable`
+        verdict means -- WireGuard carries arbitrary traffic between them
+        with no relay in the path, no per-stream setup and roaming for
+        free, and `ssh/exec`, `rest` and `listen` reach a fetchpoint with
+        no new plumbing, because it is just an IP address. `wg-quick`'s
+        field names, so a `[Interface]`/`[Peer]` pair transcribes rather
+        than translates; every refusal at startup, naming what was wrong.
+        On Mullvad's gotatun rather than our own, for the reason the ssh
+        connector is ego-transport's: a WireGuard implementation with a
+        bug in its handshake is not a slow tunnel, it is an open one.
+        `+382 KB` on `full`, no new C toolchain (`ring`, not aws-lc-rs),
+        and it cross-compiles to Windows. Two devices carry a real packet
+        between them in an unprivileged test, because gotatun's device is
+        generic over its IP side -- `drt start` gives it a kernel
+        interface and the tests give it channels. Needs Rust 1.95 and
+        CAP_NET_ADMIN; `doc/WireGuard.md` has the measurements.
+      - |
+        **A peer's endpoint is settable at run time, which is the hole
+        punch.** A punched peer has no endpoint until a rendezvous
+        supplies one, and the rendezvous is a program's business: both
+        sides measure themselves with `netcheck --udp-port` on the port
+        the `wireguard` block listens on, trade the answers over the
+        relay, and each pushes one `endpoint` command onto the block's
+        `reply_queue`. `keepalive` is the other command and the other
+        half of the job, since a punched mapping with no traffic through
+        it closes again in seconds. The program learns it worked rather
+        than assuming: reports carry `last_handshake_ms` per peer, and an
+        endpoint with no handshake is an address nobody answered at.
+        Roaming arrives as it happens, separately, because a peer that
+        moved between two snapshots would otherwise look like it never
+        moved. `reply_queue` is empty by default: a config that did not
+        ask to be steered is not steerable.
     changed:
       - |
         **`ssmtp/send` answers `message_id`**, minted by the host under

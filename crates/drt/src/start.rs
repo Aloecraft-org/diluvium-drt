@@ -402,6 +402,25 @@ pub fn serve_with_observer<B: Acceptor>(
         None => None,
     };
 
+    // The WireGuard device, and the one subsystem here that both reports
+    // and takes orders. Its reports are peer stats and roaming; its orders
+    // are where a peer turned out to be, which is the half of a hole punch
+    // a config cannot know and a program can.
+    #[cfg(feature = "wireguard")]
+    let mut wireguard = match &config.wireguard {
+        Some(cfg) => {
+            let bridge = crate::wireguard::WireguardBridge::start(cfg)?;
+            eprintln!(
+                "drt wg: {} up on port {}, public key {}",
+                bridge.interface(),
+                bridge.listen_port(),
+                bridge.public_key()
+            );
+            Some(bridge)
+        }
+        None => None,
+    };
+
     // Requests whose queue the program has not declared yet, oldest
     // first. Stepping before delivering (below) covers a program that
     // declares before its first park, and nothing more: a program that
@@ -447,6 +466,18 @@ pub fn serve_with_observer<B: Acceptor>(
             // dropped snapshot is the next one's running totals, a
             // dropped close is a bill that never arrives.
             turn.report(&mut |queue, msg| sw.push(root, queue, msg).is_ok());
+        }
+        #[cfg(feature = "wireguard")]
+        if let Some(wg) = wireguard.as_mut() {
+            // Orders first, then reports: an endpoint the program set this
+            // pass should be applied before the snapshot that will be read
+            // as evidence it was.
+            wg.collect(&mut |queue| {
+                let inst = sw.instance_mut(root)?;
+                let q = inst.queue(queue)?;
+                inst.pop(q).ok().flatten()
+            });
+            wg.report(&mut |queue, msg| sw.push(root, queue, msg).is_ok());
         }
         observe(sw, root);
         if alive == 0 {

@@ -72,6 +72,23 @@ diluvium = { git = "https://github.com/Aloecraft-org/diluvium" }
 # russh-backed, pubkey-only, modern suite only).
 ego_transport = { git = "https://github.com/Aloecraft-org/ego-transport" }
 
+# WireGuard, as a library rather than a kernel module (doc/WireGuard.md).
+# Mullvad's maintained fork of Cloudflare's boringtun: the protocol as a
+# state machine, and a `Device` generic over BOTH its transports -- the UDP
+# socket and the IP side -- which is the property that lets DRT hand it the
+# socket `netcheck --udp-port` measured and, in tests, channels instead of a
+# kernel interface. MPL-2.0, audited (`audits/` upstream), and released
+# monthly.
+#
+# `default-features = false` drops aws-lc-rs for `ring`, which rustls
+# already links here: aws-lc-sys needs cmake and a C toolchain per target,
+# which is precisely what keeps `full` off Windows and linux aarch64, and
+# taking it on for WireGuard would spread that instead of containing it.
+gotatun = { version = "0.9", default-features = false, features = ["ring", "device", "tun"] }
+# The allowed-ips type on `gotatun::device::Peer`. Named here rather than
+# re-exported upstream, so the version must track gotatun's.
+ipnetwork = "0.21"
+
 # Consumed as the remaining parallel work lands (SPEC.md §3): ego-proc
 # (ForeignActor — merged upstream; the adapter is the next milestone) and
 # ego-platform. Declared the day the first crate here depends on them.
