@@ -66,6 +66,7 @@ const PROFILE_FULL: &[&str] = &[
     "listen",
     "netcheck",
     "relay",
+    "runtime",
     "stun",
     "tunnel",
 ];
@@ -391,6 +392,7 @@ fn enabled_features() -> Vec<&'static str> {
     feature!("listen");
     feature!("netcheck");
     feature!("relay");
+    feature!("runtime");
     feature!("stun");
     feature!("tunnel");
     on.sort_unstable();

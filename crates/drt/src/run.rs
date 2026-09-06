@@ -94,6 +94,11 @@ pub fn run(
     caps: Vec<Grant>,
     budget: drt_config::Budget,
 ) -> Result<(), String> {
+    // The same reactor `start` enters, for the same reason (src/runtime.rs):
+    // `drt run`'s one instance is stalled by its own slow call either way,
+    // but the call parks rather than blocks, so a deadline it carries is
+    // the pump's to keep rather than the connector's fallback runtime's.
+    let _runtime = crate::runtime::enter();
     let mut solo = prepare(program, dispatcher.clone(), caps, budget)?;
     loop {
         let next = solo.tick(None);

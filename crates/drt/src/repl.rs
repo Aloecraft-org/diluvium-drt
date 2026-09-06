@@ -275,6 +275,7 @@ pub fn repl(
     budget: drt_config::Budget,
     unsafe_stdlib: bool,
 ) -> Result<(), String> {
+    let _runtime = crate::runtime::enter();
     let repl = if unsafe_stdlib {
         Repl::unsealed(dispatcher, caps, budget)?
     } else {

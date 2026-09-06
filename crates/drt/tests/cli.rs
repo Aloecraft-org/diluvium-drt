@@ -281,7 +281,7 @@ fn buildinfo_reports_the_embedded_diluvium_revision() {
 #[test]
 fn profile_matches_its_manifest() {
     const PROFILES: [&str; 4] = ["full", "slim", "wasi", "web"];
-    const LEAVES: [&str; 14] = [
+    const LEAVES: [&str; 15] = [
         "cli",
         "connector-crypto",
         "connector-exec",
@@ -294,6 +294,7 @@ fn profile_matches_its_manifest() {
         "listen",
         "netcheck",
         "relay",
+        "runtime",
         "stun",
         "tunnel",
     ];
@@ -379,6 +380,7 @@ fn profile_matches_its_manifest() {
     feature!("listen");
     feature!("netcheck");
     feature!("relay");
+    feature!("runtime");
     feature!("stun");
     feature!("tunnel");
     enabled.sort();

@@ -20,6 +20,7 @@ pub mod reflect;
 pub mod relay;
 pub mod repl;
 pub mod run;
+pub mod runtime;
 pub mod start;
 #[cfg(feature = "stun")]
 pub mod stun;

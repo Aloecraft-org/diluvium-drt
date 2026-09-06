@@ -253,8 +253,13 @@ which point `conn_deadline_ms` starts answering 504. So: **keep
 Python job is genuinely long, it wants a queue and a worker rather than a
 hostcall.
 
-`ssh/exec` is the same shape with a network in the middle, which is worse:
-`timeout_ms` defaults to 30 s.
+`ssh/exec` is *not* the same shape, from v0.5.0rc4: its call awaits, and
+the drive loops now enter a runtime for it to await on
+(`crates/drt/src/runtime.rs`), so a slow remote command parks in the pump
+and stalls only the instance that made it. Before rc4 it blocked exactly
+as `exec` does — measured, in the same file — and the first draft of this
+section said so of both. Its `timeout_ms` still defaults to 30 s, which is
+now a bound on one instance's wait rather than on the deployment's.
 
 ---
 
@@ -370,6 +375,7 @@ that costs an afternoon, so they are written down rather than rediscovered.
 | the `ssh` scope validates at startup: trust anchor, key file | **measured**, §3 |
 | a valid `ssh` scope passes startup and fails at the network | **measured**, §3 |
 | `exec` blocks the drive loop for the child's lifetime | **read**, not timed under load: `connectors/exec/src/lib.rs` runs its work synchronously and `crates/drt-swarm/src/pump.rs` polls inline with `Waker::noop()` |
+| `ssh/exec` (and `rest`) park rather than block, from rc4 | **measured** for `rest` by `crates/drt/tests/start.rs::parking`: a 600 ms call, and the loop's longest pause under it is milliseconds; `ssh` takes the identical `try_current` path |
 | `ssh/exec` against a real sshd | **not verified here** — no sshd in this container. The transport, auth, host-key verification, timeout and output cap are covered by `connectors/ssh/tests/exec.rs` against a real russh server; remote *execution* of Python is untested anywhere and wants your box |
 | everything in §7 | **expected** |
 

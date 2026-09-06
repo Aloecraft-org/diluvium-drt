@@ -516,6 +516,115 @@ fn a_deployment_with_no_listeners_sleeps_instead_of_spinning() {
     );
 }
 
+/// The deferred pump parks a connector's call only if the drive thread has
+/// a runtime to await on. rc1 through rc3 entered none, so every
+/// tokio-backed connector took its `block_on` fallback and a slow call
+/// stalled every instance -- while 0.5.0's own notes said the opposite.
+/// This is the measurement that found it, kept as the gate that keeps it
+/// found: `crates/drt/src/runtime.rs` has the numbers.
+#[cfg(all(
+    feature = "listen",
+    feature = "connector-rest",
+    feature = "connector-time"
+))]
+mod parking {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+
+    /// How long the server sits on the request before answering: the length
+    /// of the stall this test refuses.
+    const SERVER_SLEEP: Duration = Duration::from_millis(600);
+
+    /// One HTTP server that answers one request, slowly and then correctly.
+    fn slow_server() -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 1024];
+            while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                match sock.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                }
+            }
+            std::thread::sleep(SERVER_SLEEP);
+            sock.write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok",
+            )
+            .unwrap();
+        });
+        port
+    }
+
+    /// The root spawns a child whose one act is a slow `rest/get`, then
+    /// parks itself for longer than that call. The child parks forever if
+    /// the call fails, so a deployment that drains is a deployment whose
+    /// parked call came back.
+    fn program(port: u16) -> String {
+        format!(
+            "local child = host.spawn{{\n\
+               code = [[\n\
+                 local v, st = host.try('rest/get', {{url = 'http://127.0.0.1:{port}/x'}})\n\
+                 if st ~= 'ok' then queue.wait({{queue.declare('never', {{capacity = 1}})}}) end\n\
+               ]],\n\
+               caps = {{'host:rest/*'}},\n\
+               budget = {{instructions = 5000000}},\n\
+             }}\n\
+             local idle = queue.declare('idle', {{capacity = 1}})\n\
+             queue.wait({{idle}}, 900)\n"
+        )
+    }
+
+    #[test]
+    fn a_parked_rest_call_does_not_stall_the_deployment() {
+        let port = slow_server();
+        let cfg = config_with_source(
+            &program(port),
+            &format!(
+                r#", "caps": [{{"capability": "lifecycle"}}, {{"capability": "host:time"}}, {{"capability": "host:rest/*"}}],
+                    "connectors": {{"time": {{}}, "rest": {{"scope": {{"allow": ["http://127.0.0.1:{port}"], "allow_private": true}}}}}},
+                    "budget": {{"instructions": 50000000}}"#
+            ),
+        );
+        let registry = drt::cli::wire_connectors(&cfg).unwrap();
+        let bound = drt::listen::bind(&[]).unwrap();
+
+        // The observer runs once per drive-loop pass on the drive thread:
+        // a gap between two of its calls is exactly the time the loop
+        // stood still.
+        let passes: Arc<Mutex<Vec<Instant>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen = passes.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let outcome =
+                start::serve_with_observer(&cfg, Dispatcher::new(registry), bound, move |_, _| {
+                    seen.lock().unwrap().push(Instant::now())
+                });
+            let _ = tx.send(outcome);
+        });
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("the deployment did not drain: the child's parked call never came back")
+            .unwrap();
+
+        let passes = passes.lock().unwrap();
+        let longest = passes
+            .windows(2)
+            .map(|w| w[1].duration_since(w[0]))
+            .max()
+            .unwrap_or_default();
+        assert!(
+            longest < SERVER_SLEEP / 2,
+            "the drive loop stood still for {longest:?} during a {SERVER_SLEEP:?} rest call: \
+             the connector blocked the thread instead of parking in the pump"
+        );
+    }
+}
+
 /// The polled acceptor (doc/Wasm.md M6) is what wasip2 serves with: no
 /// threads, non-blocking sockets stepped from the drive loop. It is
 /// compiled natively so the same bridge can be proven here, through the

@@ -353,6 +353,10 @@ pub fn serve_with_observer<B: Acceptor>(
     mut bound: B,
     mut observe: impl FnMut(&mut Deployment, InstanceId),
 ) -> Result<(), String> {
+    // Before the first step, and held for the whole run: a connector that
+    // awaits parks in the pump only if this thread has a runtime to ask
+    // (src/runtime.rs). Without it every tokio-backed call blocks here.
+    let _runtime = crate::runtime::enter();
     let mut driver = DeployDriver::new(config, dispatcher)?;
     let root = driver.root();
 
@@ -465,6 +469,7 @@ pub fn serve_with_observer<B: Acceptor>(
 
 #[cfg(not(feature = "listen"))]
 fn serve_swarm_only(config: &RootConfig, dispatcher: Dispatcher) -> Result<(), String> {
+    let _runtime = crate::runtime::enter();
     let mut driver = prepare(config, dispatcher)?;
     loop {
         match driver.tick() {

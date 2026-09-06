@@ -39,8 +39,11 @@
 //! **Honesty note, in the config's face rather than buried:** this connector
 //! answers synchronously, so a running child stalls every guest in the
 //! deployment until it exits or hits its deadline. Bound it tight. The
-//! deferred pump (`doc/Wasm.md` M3) is what lifts that, for every connector
-//! at once.
+//! deferred pump (`doc/Wasm.md` M3) lifts that for a connector whose call
+//! can *await* -- `rest`, `ssh` and `ssmtp` park since 0.5.0rc4, when the
+//! drive loops began entering a runtime (`drt/src/runtime.rs`) -- but this
+//! body is `std::process`, which has no future to park, so it still holds
+//! the loop until it is moved onto `spawn_blocking`. A separate change.
 //!
 //! What the child inherits: the environment, and nothing above the three
 //! standard descriptors. Rust opens everything close-on-exec -- files,

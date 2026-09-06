@@ -117,7 +117,7 @@ web = ["connector-time", "connector-fs", "connector-crypto", "cli"]
 # plain reader, whose prompts go to stderr so that redirect stays clean.
 cli = ["dep:ego_cli", "dep:futures-executor"]
 connector-time = ["dep:drt-connector-time"]
-connector-ssh = ["dep:drt-connector-ssh"]
+connector-ssh = ["dep:drt-connector-ssh", "runtime"]
 connector-fs = ["dep:drt-connector-fs"]
 connector-sql = ["dep:drt-connector-sql"]
 connector-crypto = ["dep:drt-connector-crypto"]
@@ -125,13 +125,13 @@ connector-crypto = ["dep:drt-connector-crypto"]
 # calls diluvium's rest plugin answers. `full` only -- it links a TLS stack,
 # and a notebook profile that cannot reach the network is a smaller
 # artifact and a smaller thing to trust.
-connector-rest = ["dep:drt-connector-rest"]
+connector-rest = ["dep:drt-connector-rest", "runtime"]
 # Outbound mail: `host:ssmtp/send`. `full` only, on rest's argument and for
 # rest's reason -- it links the same TLS stack. The scope holds the relay
 # credential and the envelope sender, so a program sends mail without ever
 # holding the password and cannot forge its From line; that is the whole
 # reason this is a connector and not something a guest reaches via `rest`.
-connector-ssmtp = ["dep:drt-connector-ssmtp"]
+connector-ssmtp = ["dep:drt-connector-ssmtp", "runtime"]
 # Local exec: `host:exec/run`, the honest escape hatch, the contract
 # `dhost_exec.c` fixes. `full` only, and not for a dependency -- it links
 # nothing -- but because SPEC.md §3's slim profile is "run a script,
@@ -140,6 +140,12 @@ connector-ssmtp = ["dep:drt-connector-ssmtp"]
 # on stderr when one does: granting it is leaving the sandbox
 # (GUARANTEES.md), and that is the loud flag the guarantee promises.
 connector-exec = ["dep:drt-connector-exec"]
+# The ambient tokio runtime the native drive loops enter (src/runtime.rs),
+# so a connector that awaits parks in the pump instead of `block_on`-ing
+# the drive thread. Implied by every tokio-backed connector rather than
+# named in a profile: a build that carries one wants it, and a build that
+# carries none has nothing for it to do.
+runtime = ["dep:tokio"]
 # The http listener (dhost_http.c's contract). In slim because the C host
 # always carries its listener, and a runtime that cannot serve a fetchpoint
 # is not the runtime discofetch is waiting for.

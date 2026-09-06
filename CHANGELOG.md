@@ -199,6 +199,14 @@ keeps resolving to the newest stable release, which is v0.4.2.
   `wasm32-unknown-unknown` -- an absolute path was refused
   natively and by a different rule in a page.
 
+### Known issues
+
+- **`rest`, `ssh` and `ssmtp` block the drive loop for the length
+  of a call**, stalling every instance in the deployment, exactly
+  as in v0.4.2 -- the notes' claim that a slow connector is parked
+  was not yet true, because nothing entered a runtime for the call
+  to await on. Fixed in v0.5.0rc4.
+
 
 ## [0.5.0rc2] - 2026-09-04 (prerelease)
 
@@ -362,6 +370,11 @@ keeps resolving to the newest stable release, which is v0.4.2.
 
 ### Known issues
 
+- **`rest`, `ssh` and `ssmtp` block the drive loop for the length
+  of a call**, stalling every instance in the deployment, exactly
+  as in v0.4.2 -- the notes' claim that a slow connector is parked
+  was not yet true, because nothing entered a runtime for the call
+  to await on. Fixed in v0.5.0rc4.
 - **A request arriving before the program declares its queue is
   answered 503 rather than held.** The window is the gap between
   the bind and the program's `queue.declare` — tens of milliseconds
@@ -486,6 +499,11 @@ to the newest stable release, which is v0.4.2.
 
 ### Known issues
 
+- **`rest`, `ssh` and `ssmtp` block the drive loop for the length
+  of a call**, stalling every instance in the deployment, exactly
+  as in v0.4.2 -- the notes' claim that a slow connector is parked
+  was not yet true, because nothing entered a runtime for the call
+  to await on. Fixed in v0.5.0rc4.
 - **`rest` fails against a server that closes without a TLS
   `close_notify`.** Every `rest/get` and `rest/post` to such a
   server -- Amazon Bedrock among them -- comes back as `read: peer
@@ -605,8 +623,11 @@ contract is `doc/Browser.md`; `doc/Platforms.md` is the matrix.
   the host should do next, and the host owns the sleeping. A
   connector that cannot answer at once is parked in an in-flight
   table and polled on the loop's cadence instead of stalling every
-  instance -- which also removes the failure mode
-  `doc/Failure-Modes.md` records for `rest`.
+  instance. **From rc4**, and not before it: the pump parks a call
+  that can await, and until the drive loops entered a runtime
+  (under Fixed, below) no tokio-backed connector could, so the
+  three candidates carried this sentence while `rest` went on
+  stalling every instance exactly as in v0.4.2.
 - The command surface moved from `main.rs` into `drt::cli`, so a
   page parses the same command line the binary parses, with the
   same `--help` and the same exit statuses.
@@ -621,6 +642,33 @@ contract is `doc/Browser.md`; `doc/Platforms.md` is the matrix.
 
 ### Fixed
 
+- **`rest`, `ssh` and `ssmtp` stalled every instance for the length
+  of a call, in every 0.5.0 candidate, while the notes said they
+  parked.** Each begins its call with `Handle::try_current()` and
+  takes `own_runtime().block_on(..)` when there is no runtime to
+  await on -- and `run`, `repl` and `start` entered none, so there
+  never was one, and every call took the blocking arm on the drive
+  thread. The deferred pump was right; the reactor was missing.
+
+  Measured before it was believed: a child's three-second
+  `rest/get` held its parent's next hostcall for 3004 ms in rc3,
+  1 ms in a control with no call, and 1 ms with a runtime entered
+  -- with the child's call still completing. The native drive
+  loops now enter one before their first tick
+  (`crates/drt/src/runtime.rs`): leaked rather than dropped, for
+  FM-1's reason, and a no-op in a build carrying no tokio-backed
+  connector, which is what the `runtime` feature the three imply
+  is for. `crates/drt/tests/start.rs::parking` is the measurement
+  kept as a gate, and it fails at 604 ms with the entry removed.
+
+  What this does and does not change. A slow `rest`, `ssh` or
+  `ssmtp` call now stalls only the instance that made it. `exec`
+  still stalls the loop, because its body is `std::process` and
+  has no future to park; that is the next change, not this one.
+  And a deployment whose deadlines were sized on the assumption
+  that `rest` blocks the process -- vera's are, by its own
+  account -- is measuring a different system from rc4 on, which
+  is the reason to say so here rather than let it be found.
 - **A request arriving before the program declared its queue was
   refused rather than held.** A listener accepts from the moment
   the process binds it, which is before the program has run a line,

@@ -220,6 +220,16 @@ match tokio::runtime::Handle::try_current() {
 `own_runtime` is a `OnceLock`, built on first use and never dropped — leaked
 for FM-1's reason.
 
+**Since v0.5.0rc4 the first arm is the one `drt` takes.** `run`, `repl`
+and `start` enter an ambient runtime before their first tick
+(`crates/drt/src/runtime.rs`), so under the binary `try_current` succeeds
+and the call parks in the pump instead of blocking the drive thread —
+which rc1 through rc3 did not do, and which is why "parked instead of
+stalling every instance" was written in 0.5.0's notes before it was true
+(`CHANGELOG.yaml`, 0.5.0, Fixed). The fallback arm stays for an embedder
+driving the connector with no runtime of its own, and the plain-`#[test]`
+half of the pair above is still what proves it.
+
 **The rule for the next connector.** Any connector that can reach a socket
 or a timer needs both halves, and the plain-`#[test]` half is the one that
 matters:
