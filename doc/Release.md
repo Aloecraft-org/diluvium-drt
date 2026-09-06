@@ -474,13 +474,18 @@ drt_linux_static_x86_64        # full: engine, connectors, listen, tunnel
 drt_slim_linux_static_x86_64   # slim: the distribution-size profile
 drt_darwin_arm64               drt_slim_darwin_arm64
 drt_darwin_x86_64              drt_slim_darwin_x86_64
+drt_slim_windows_x86_64.exe    # slim only: doc/Platforms.md says why
 BUILDINFO.txt                  SHA256SUMS.txt
 ```
 
-Linux aarch64 and Windows are next, not promised: `full` carries
-`aws-lc-sys` through russh, and cross-compiling that is a thing to
-rehearse (the workflow's dispatch mode exists for exactly this), not to
-assume. The changelog-as-gate machinery diluvium's release carries is
+Windows ships `slim` only: `exec` is unix-only, and `full` carries
+`aws-lc-sys` through russh. It is cross-built from a Linux runner with
+mingw-w64 and then run on a Windows runner -- `--version`, a smoke
+program, `buildinfo`, and the examples gate -- before it is uploaded,
+because a cross-built binary nothing ran is what the smoke steps exist to
+prevent. Linux aarch64 is next, not promised: cross-compiling
+`aws-lc-sys` is a thing to rehearse (the workflow's dispatch mode exists
+for exactly this), not to assume. The changelog-as-gate machinery diluvium's release carries is
 worth adopting once DRT has releases worth gating; it is deliberately not
 cargo-culted in on day one.
 

@@ -12,13 +12,13 @@ not: spawning, plugins, connectors and verbs.
 
 | | native linux, macOS | native Windows | wasip2, under wasmtime | browser, `drt-web` |
 |---|---|---|---|---|
-| **status** | released: linux static x86_64, darwin arm64 and x86_64 (`doc/Release.md`) | not built; `full` blocked on cross-compiling `aws-lc-sys` through russh, `slim` unrehearsed | released: `drt_wasip2.wasm`, gated through the examples in CI (M1, M6) | released: `drt_web.tar.gz`, gated in Chromium (M4) |
-| **threads** | yes | yes, expected | **no**, measured: `thread::spawn` is `Unsupported` | no |
-| **blocking sleep** | `thread::sleep` | expected | `thread::sleep` works, measured | **impossible** on the thread; the driver returns what it waits for and the page sleeps (D6) |
-| **wall clock, monotonic** | `std::time` | expected | `std::time` over wasi clocks, measured | `Date.now`, `performance.now` via `web-time` |
+| **status** | released: linux static x86_64, darwin arm64 and x86_64 (`doc/Release.md`) | `slim`, built and gated: cross-built from Linux with mingw-w64, run on a Windows runner through the examples gate (`drt_slim_windows_x86_64.exe`, from the candidate after rc4); `full` blocked on `exec` (unix-only) and on cross-compiling `aws-lc-sys` through russh | released: `drt_wasip2.wasm`, gated through the examples in CI (M1, M6) | released: `drt_web.tar.gz`, gated in Chromium (M4) |
+| **threads** | yes | yes, measured (`listen`'s thread per connection, example 17) | **no**, measured: `thread::spawn` is `Unsupported` | no |
+| **blocking sleep** | `thread::sleep` | `thread::sleep`, measured | `thread::sleep` works, measured | **impossible** on the thread; the driver returns what it waits for and the page sleeps (D6) |
+| **wall clock, monotonic** | `std::time` | `std::time`, measured | `std::time` over wasi clocks, measured | `Date.now`, `performance.now` via `web-time` |
 | **entropy** | `getrandom` | `getrandom`, expected | wasi random, measured | `crypto.getRandomValues` via the `wasm_js` cfg |
-| **files** | `std::fs` | `std::fs`, expected | `std::fs` over preopens (`--dir`), measured; the fs jail composes with wasmtime's own | a `MemFs` the page seeds and drains |
-| **sockets, listen** | `std::net` plus a thread per connection (`listen`) | expected, same code | `std::net` non-blocking, one state machine per connection polled from the drive loop (M6); needs `-S tcp=y -S inherit-network=y` | none |
+| **files** | `std::fs` | `std::fs`, measured (example 04, the jail included) | `std::fs` over preopens (`--dir`), measured; the fs jail composes with wasmtime's own | a `MemFs` the page seeds and drains |
+| **sockets, listen** | `std::net` plus a thread per connection (`listen`) | same code, measured (example 17) | `std::net` non-blocking, one state machine per connection polled from the drive loop (M6); needs `-S tcp=y -S inherit-network=y` | none |
 | **sockets, dial** | `std::net`, tokio | expected | `std::net` non-blocking, same flags; name lookup needs its own flag | `fetch` and `WebSocket` only, async |
 | **instance spawn** (`host.spawn`, the swarm) | yes | yes, expected | **yes**, measured: `08-spawn-and-hibernation` passes under wasmtime | **yes**, measured: `08` passes in Chromium |
 | **process spawn** (`exec/run`, `socketpair` plugins) | yes | yes, expected, with no fd 3: spawn and dial back over loopback (`doc/Plugins.md` §4) | **no**: WASI has no process API and none is on the standardization track; a native launcher plugin restores it (`doc/Plugins.md` §4.5) | no |
@@ -33,13 +33,22 @@ not: spawning, plugins, connectors and verbs.
 
 ## Reading the columns
 
-**Native Windows is a build question, not a platform question.** Every
-row it needs exists in Rust's std on Windows; the two unknowns are the C
-core's compiler and `aws-lc-sys`. `slim` avoids the second, and a
-`x86_64-pc-windows-gnu` cross-build from a Linux runner with mingw as
-`$CC` is a day to rehearse, in `release.yml`'s dispatch mode, which
-exists for exactly this. If it works, Windows gets a native `drt` that
-spawns, and wasmtime is not needed there.
+**Native Windows was a build question, and it is answered for `slim`.**
+Every row it needs exists in Rust's std on Windows; the two unknowns were
+the C core's compiler and `aws-lc-sys`. The first is mingw-w64, which
+diluvium-sys derives from the target triple on a Linux host and refuses
+MSVC for by name, and the `x86_64-pc-windows-gnu` cross-build rehearsed
+in `release.yml`'s dispatch mode the day it was tried. The rehearsal found
+one platform fact the table has no row for: the C runtime opens its
+streams in text mode and rewrote the C core's `\n` as `\r\n` while
+Rust's `println!` did not, so a program's output was half one line
+ending and half the other. `stdio::bytes_as_written` puts fds 1 and 2 in
+binary mode once at startup, and the examples gate passes byte for byte
+on a Windows runner -- which is the gate that proves the artifact before
+it is uploaded (`smoke-windows`). So Windows gets a native `drt` that
+spawns, serves and reads files, and wasmtime is not needed there. `full`
+stays blocked: `exec` is unix-only by `compile_error!`, and `aws-lc-sys`
+through russh is the linux aarch64 problem again.
 
 **wasip2 is a sandbox question.** The module cannot spawn or load
 anything at run time, which is the property that makes it a
