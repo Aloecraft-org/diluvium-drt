@@ -13,6 +13,62 @@
   ],
   "releases": [
     {
+      "version": "0.5.0rc8",
+      "tag": "v0.5.0rc8",
+      "date": null,
+      "status": "unreleased",
+      "stable": false,
+      "mirror": false,
+      "dv_abi": 1,
+      "diluvium": "850e00d73220427be68ae8f909f83b06cb2095bd",
+      "connectors": {
+        "full": [
+          "time",
+          "fs",
+          "crypto",
+          "sql",
+          "ssh",
+          "rest",
+          "ssmtp",
+          "exec",
+          "listen"
+        ],
+        "slim": [
+          "time",
+          "fs",
+          "crypto",
+          "listen"
+        ],
+        "wasi": [
+          "time",
+          "fs",
+          "crypto",
+          "sql",
+          "listen"
+        ],
+        "web": [
+          "time",
+          "fs",
+          "crypto"
+        ]
+      },
+      "summary": "**Not cut.** The gate rc7 should have had, and the client change\nthat makes such a gate testable at all.\n\nrc7 fixed `wss://` and admitted the reason nobody caught it: every\ntest and example reaches its relay on loopback over plain `ws://`.\nA fix with no test is the same bug with a shorter fuse, so this is\nthe test -- a real SSH session, modern kex and pinned host key and\npubkey auth, through a TLS terminator standing in for the nginx a\ndeployment puts in front of the relay. Every byte through rustls.\n\nTesting it needed something real rather than a mock: no public CA\nwill sign a loopback gate, and the client trusted only Mozilla's\nroots. So `drt tunnel` grows `--extra-root`, which is the same\nthing an operator behind an internal CA has needed all along and\ncould not have.\n\nOne unplanned result, better than the test: with `--extra-root` in\nplace, a build with the TLS feature removed **no longer compiles**.\n`connect_async_tls_with_config` and `Connector::Rustls` are gated\nbehind it, so rc7's bug is now a build error rather than a runtime\nsurprise, caught before any test runs.\n",
+      "upgrading": null,
+      "latest": false,
+      "sections": {
+        "added": [
+          "**`drt tunnel --extra-root <PEM>`**, repeatable, on both halves of\nthe bridge. Certificates named there are trusted **in addition\nto** the public roots and never instead of them -- the rule\n`connectors.rest`'s `extra_roots` already states, kept word for\nword because a client that could narrow its trust to a single\ncertificate is a footgun and the case that exists in the field is\na CA that must be trusted beside the public ones. Read and parsed\nbefore anything is dialed, so a wrong path or a key file handed\nover by mistake is a refusal by name rather than a TLS error on\nthe first connection.\n"
+        ],
+        "changed": [
+          "**One WebSocket client, not two.** The caller half went through\nego-transport's `WebSocketNative` while the device half used\ntokio-tungstenite directly: two error vocabularies, two sets of\nframe handling, and -- the reason this changed --\n`WebSocketNative::connect` calls `connect_async` with no\nconnector hook, so only one of the two could ever be handed a\ntrust store. Both are tokio-tungstenite now, which `tunnel.rs`\nhad already named as the migration it was waiting for.\n\nIt is a smaller file for it, and two things that were broken are\nnot. The splice is a real split rather than a `select!` over a\n`&mut self` transport, which the old code's own comment called\nout as the constraint it wanted removed. And the caller half\n**answers pings**: a gate pinging an idle `ProxyCommand` session\n-- an hour into an ssh session with nothing typed -- used to be\nanswered with silence.\n"
+        ],
+        "fixed": [
+          "**`doc/Release.md` said the thing that works cannot work.** It\nrecorded, in the strongest terms on the page, that a publishing\n`workflow_dispatch` could not create a tag, and called it the one\noperational rule. Both rc6 and rc7 were published exactly that\nway: run 37 created `v0.5.0rc6` at `105d895`, run 38 created\n`v0.5.0rc7` at `780071d`, artifacts and rendered body attached.\nThe restriction was lifted upstream sometime between 2026-09-01\nand 2026-09-06 and nothing here noticed.\n\nIt cost a version number the night it was found -- `v0.5.0rc5`\nwas tagged at `main` before the branch merged, preflight\ncorrectly refused it, and the recovery chosen was a fresh rc6\nrather than a dispatch, because the page said a dispatch could\nnot work. The correction is at the top with today's evidence and\nthe old diagnosis kept underneath, the way that page already\nkeeps v0.3.1's: a rule nobody can reproduce is worse than a rule\nwith its history attached.\n"
+        ]
+      },
+      "notes_md": "## [0.5.0rc8] - unreleased (prerelease)\n\n`v0.5.0rc8` &middot; dv ABI 1 &middot; diluvium `850e00d73220`\n\n**Not cut.** The gate rc7 should have had, and the client change\nthat makes such a gate testable at all.\n\nrc7 fixed `wss://` and admitted the reason nobody caught it: every\ntest and example reaches its relay on loopback over plain `ws://`.\nA fix with no test is the same bug with a shorter fuse, so this is\nthe test -- a real SSH session, modern kex and pinned host key and\npubkey auth, through a TLS terminator standing in for the nginx a\ndeployment puts in front of the relay. Every byte through rustls.\n\nTesting it needed something real rather than a mock: no public CA\nwill sign a loopback gate, and the client trusted only Mozilla's\nroots. So `drt tunnel` grows `--extra-root`, which is the same\nthing an operator behind an internal CA has needed all along and\ncould not have.\n\nOne unplanned result, better than the test: with `--extra-root` in\nplace, a build with the TLS feature removed **no longer compiles**.\n`connect_async_tls_with_config` and `Connector::Rustls` are gated\nbehind it, so rc7's bug is now a build error rather than a runtime\nsurprise, caught before any test runs.\n\n### Connectors\n\n- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `listen`\n- `slim`: `time`, `fs`, `crypto`, `listen`\n- `wasi`: `time`, `fs`, `crypto`, `sql`, `listen`\n- `web`: `time`, `fs`, `crypto`\n\n### Added\n\n- **`drt tunnel --extra-root <PEM>`**, repeatable, on both halves of\n  the bridge. Certificates named there are trusted **in addition\n  to** the public roots and never instead of them -- the rule\n  `connectors.rest`'s `extra_roots` already states, kept word for\n  word because a client that could narrow its trust to a single\n  certificate is a footgun and the case that exists in the field is\n  a CA that must be trusted beside the public ones. Read and parsed\n  before anything is dialed, so a wrong path or a key file handed\n  over by mistake is a refusal by name rather than a TLS error on\n  the first connection.\n\n### Changed\n\n- **One WebSocket client, not two.** The caller half went through\n  ego-transport's `WebSocketNative` while the device half used\n  tokio-tungstenite directly: two error vocabularies, two sets of\n  frame handling, and -- the reason this changed --\n  `WebSocketNative::connect` calls `connect_async` with no\n  connector hook, so only one of the two could ever be handed a\n  trust store. Both are tokio-tungstenite now, which `tunnel.rs`\n  had already named as the migration it was waiting for.\n\n  It is a smaller file for it, and two things that were broken are\n  not. The splice is a real split rather than a `select!` over a\n  `&mut self` transport, which the old code's own comment called\n  out as the constraint it wanted removed. And the caller half\n  **answers pings**: a gate pinging an idle `ProxyCommand` session\n  -- an hour into an ssh session with nothing typed -- used to be\n  answered with silence.\n\n### Fixed\n\n- **`doc/Release.md` said the thing that works cannot work.** It\n  recorded, in the strongest terms on the page, that a publishing\n  `workflow_dispatch` could not create a tag, and called it the one\n  operational rule. Both rc6 and rc7 were published exactly that\n  way: run 37 created `v0.5.0rc6` at `105d895`, run 38 created\n  `v0.5.0rc7` at `780071d`, artifacts and rendered body attached.\n  The restriction was lifted upstream sometime between 2026-09-01\n  and 2026-09-06 and nothing here noticed.\n\n  It cost a version number the night it was found -- `v0.5.0rc5`\n  was tagged at `main` before the branch merged, preflight\n  correctly refused it, and the recovery chosen was a fresh rc6\n  rather than a dispatch, because the page said a dispatch could\n  not work. The correction is at the top with today's evidence and\n  the old diagnosis kept underneath, the way that page already\n  keeps v0.3.1's: a rule nobody can reproduce is worse than a rule\n  with its history attached.\n"
+    },
+    {
       "version": "0.5.0rc7",
       "tag": "v0.5.0rc7",
       "date": "2026-09-07",
