@@ -59,6 +59,53 @@ schema: 1
 repo: Aloecraft-org/diluvium-drt
 
 releases:
+  - version: 0.5.0rc7
+    tag: v0.5.0rc7
+    date: 2026-09-07
+    status: released
+    stable: false
+    mirror: false
+    dv_abi: 1
+    diluvium: 850e00d73220427be68ae8f909f83b06cb2095bd
+    connectors:
+      full: [time, fs, crypto, sql, ssh, rest, ssmtp, exec, listen]
+      slim: [time, fs, crypto, listen]
+      wasi: [time, fs, crypto, sql, listen]
+      web: [time, fs, crypto]
+    summary: |
+      One fix, and it is the one that matters most: **`drt tunnel` could
+      not reach a `wss://` URL, in any release there has ever been.** The
+      WebSocket client was compiled with no TLS backend, so every secure
+      relay -- which is every relay outside a lab -- was answered with
+      `TLS support not compiled in`. Found in the field, the evening rc6
+      shipped, by the first person to point `ssh -o ProxyCommand` at a
+      real gate.
+
+      Nobody noticed for six candidates because nothing gated it: every
+      test and every example reaches its relay on loopback over plain
+      `ws://`, which is the one shape that does not need TLS. The same
+      lesson `doc/Release.md` already records about release-only build
+      paths, one layer down: a documented use case with no test is a use
+      case that does not work.
+
+      Otherwise rc6, unchanged: the WireGuard block, its measurements and
+      its caveats are all as that entry describes them. Not mirrored, not
+      `latest`; `install.sh` keeps resolving to v0.4.2.
+    fixed:
+      - |
+        **`drt tunnel wss://…` failed with `TLS support not compiled
+        in`.** `tokio-tungstenite` was a bare dependency, and tungstenite
+        with no TLS feature compiles a client that can only speak `ws://`.
+        It now carries `rustls-tls-webpki-roots`: rustls with Mozilla's
+        bundled roots rather than native-tls, because the linux artifact
+        is a static musl binary with no OpenSSL to link and no system
+        trust store to find, and because it is the stack `netcheck`
+        already ships. The relay and tunnel tests pass unchanged, since
+        they never left loopback -- which is exactly why they never caught
+        this -- and a handshake against a real gate now fails on the
+        certificate rather than before it, which is the difference between
+        "cannot" and "will not trust that", and is the whole fix.
+
   - version: 0.5.0rc6
     tag: v0.5.0rc6
     date: 2026-09-06
@@ -1761,6 +1808,18 @@ releases:
         than `is_absolute`, which `std` answers differently on
         `wasm32-unknown-unknown` -- an absolute path was refused
         natively and by a different rule in a page.
+      - |
+        **`drt tunnel wss://…` failed with `TLS support not compiled in`,
+        in every release there has ever been.** `tokio-tungstenite` was a
+        bare dependency, and tungstenite with no TLS feature compiles a
+        client that can only speak `ws://` -- so every secure relay, which
+        is every relay outside a lab, was refused before the handshake.
+        Nobody noticed for six candidates because every test and example
+        reaches its relay on loopback over plain `ws://`. It now carries
+        `rustls-tls-webpki-roots`: rustls with bundled roots rather than
+        native-tls, for a static musl binary with no OpenSSL and no system
+        trust store, and the stack `netcheck` already ships. Found in the
+        field the evening rc6 shipped; fixed in rc7.
       - |
         **Giving up a TURN allocation on purpose was reported as the relay
         having failed.** `{command = "relay", clear = true}` was answered
