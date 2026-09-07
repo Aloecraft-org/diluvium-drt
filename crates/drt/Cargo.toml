@@ -36,7 +36,15 @@ base64 = { version = "0.22", optional = true }
 # whole messages (ego-transport's recv truncates past the caller's buffer),
 # and exposes the handshake request the relay routes on. Pinned to the
 # version already in the tree behind ego-transport, so one stack is built.
-tokio-tungstenite = { version = "0.24", optional = true }
+#
+# `rustls-tls-webpki-roots` is what makes `wss://` work at all. Without a
+# TLS feature tungstenite compiles the client with no backend and answers
+# every `wss://` with "TLS support not compiled in" -- which is what every
+# release through v0.5.0rc6 did, unnoticed, because every test and example
+# reaches a relay on loopback over plain `ws://`. rustls with bundled roots
+# rather than native-tls, for the static musl binary: no OpenSSL, no system
+# trust store to find, the same stack `netcheck` already carries.
+tokio-tungstenite = { version = "0.24", optional = true, features = ["rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", default-features = false, optional = true }
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "io-std", "io-util", "net", "sync", "time", "macros"], optional = true }
 serde_json = "1"
@@ -76,7 +84,7 @@ async-trait = { workspace = true }
 ego_transport = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net", "sync", "time"] }
 drt-connector-fs = { workspace = true }
-tokio-tungstenite = "0.24"
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", default-features = false }
 
 [features]
