@@ -780,6 +780,7 @@ pub fn main(cli: Cli) -> ExitCode {
                 std::sync::Arc::new(dispatcher),
                 config::ceiling(&config),
                 config.root.budget,
+                config.root.numeric,
             ) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {

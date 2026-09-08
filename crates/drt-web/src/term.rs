@@ -125,6 +125,7 @@ impl Term {
                     dispatcher.clone(),
                     config::ceiling(&config),
                     config.root.budget,
+                    config.root.numeric,
                 ) {
                     Ok(solo) => Session {
                         kind: Kind::Run { solo, dispatcher },

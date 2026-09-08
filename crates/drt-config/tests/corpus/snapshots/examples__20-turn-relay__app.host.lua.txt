@@ -17,6 +17,10 @@ RootConfig {
             instructions: None,
             memory_kb: None,
         },
+        numeric: Numeric {
+            max_elements: None,
+            max_tier: None,
+        },
     },
     connectors: {
         "crypto": ConnectorWiring {

@@ -553,10 +553,14 @@ fn deployment(
     let engine = Arc::new(DiluviumEngine::new().map_err(|e| e.to_string())?);
     let mut sw = Swarm::new(engine, PumpHost::new(DeployHost::new(), dispatcher));
     let root = sw
-        .root(
+        // The root's numeric bounds are the deployment's ceiling, and
+        // every child attenuates from them -- the same shape as the budget
+        // beside it, and the same shape as the capability set above it.
+        .root_with_numeric(
             source.as_bytes(),
             crate::config::ceiling(config),
             config.root.budget,
+            config.root.numeric,
         )
         .map_err(|e| format!("the root program would not start: {e}"))?;
     Ok((sw, root))

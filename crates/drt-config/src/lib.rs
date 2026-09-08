@@ -31,6 +31,101 @@ pub struct Budget {
     pub memory_kb: Option<u64>,
 }
 
+/// How much numeric work an instance may do, and how exactly it must be
+/// done (`doc/Plan-2026-09.md` §3.4, the numeric spec §4).
+///
+/// Bounded per instance and attenuated at spawn for the same reason
+/// [`Budget`] is: a kernel's cost is not the guest's instruction count, and
+/// a child that could raise its own ceiling has no ceiling. `None` on
+/// either field means "no bound stated", which under attenuation means
+/// "inherit the parent's".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Numeric {
+    /// The most elements one kernel call may process. `None` is no bound;
+    /// `Some(0)` is a bound of zero, which is a real configuration -- an
+    /// instance that may hold arrays and may not compute over them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_elements: Option<u64>,
+    /// The loosest determinism tier a kernel may run at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tier: Option<Tier>,
+}
+
+/// What a kernel implementation promises about its results, from the
+/// numeric spec §4. The order is looseness, and it is what attenuation
+/// compares: `exact` promises most, `fast` promises nothing across targets.
+///
+/// - `exact`: integer, NTT, decQuad. Bit-identical by construction on every
+///   target.
+/// - `reproducible`: bit-identical to the portable kernel on every target.
+/// - `fast`: no cross-target guarantee.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Tier {
+    Exact,
+    Reproducible,
+    Fast,
+}
+
+impl Tier {
+    /// How loose this tier is. Higher permits more, so a child's rank may
+    /// not exceed its parent's -- the same shape as a budget, where a
+    /// child's number may not exceed its parent's.
+    pub fn rank(self) -> u8 {
+        match self {
+            Tier::Exact => 0,
+            Tier::Reproducible => 1,
+            Tier::Fast => 2,
+        }
+    }
+
+    /// The name this tier carries in a config and in a report.
+    pub fn name(self) -> &'static str {
+        match self {
+            Tier::Exact => "exact",
+            Tier::Reproducible => "reproducible",
+            Tier::Fast => "fast",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Tier> {
+        match name {
+            "exact" => Some(Tier::Exact),
+            "reproducible" => Some(Tier::Reproducible),
+            "fast" => Some(Tier::Fast),
+            _ => None,
+        }
+    }
+}
+
+impl Numeric {
+    pub fn is_unbounded(&self) -> bool {
+        *self == Numeric::default()
+    }
+
+    /// A child's numeric bounds fit when neither is looser than its
+    /// parent's. Unstated inherits, and inheriting fits by being equal.
+    pub fn fits_within(&self, parent: &Numeric) -> bool {
+        let elements = match (self.max_elements, parent.max_elements) {
+            (_, None) | (None, _) => true,
+            (Some(c), Some(p)) => c <= p,
+        };
+        let tier = match (self.max_tier, parent.max_tier) {
+            (_, None) | (None, _) => true,
+            (Some(c), Some(p)) => c.rank() <= p.rank(),
+        };
+        elements && tier
+    }
+
+    /// Resolve unstated bounds to the parent's -- what enforcement runs on.
+    pub fn resolved_against(&self, parent: &Numeric) -> Numeric {
+        Numeric {
+            max_elements: self.max_elements.or(parent.max_elements),
+            max_tier: self.max_tier.or(parent.max_tier),
+        }
+    }
+}
+
 /// Where a program's source comes from. Config never carries the
 /// application's own filenames as *scopes* — this is the program itself.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +151,12 @@ pub struct InstanceConfig {
     pub caps: Vec<Grant>,
     #[serde(default, skip_serializing_if = "Budget::is_unlimited")]
     pub budget: Budget,
+    /// How much numeric work this instance may do. Beside `budget` rather
+    /// than inside it: the two bound different things -- instructions the
+    /// guest executes, and elements a kernel processes on its behalf -- and
+    /// a kernel charges the instruction budget too (§3.4).
+    #[serde(default, skip_serializing_if = "Numeric::is_unbounded")]
+    pub numeric: Numeric,
 }
 
 impl Budget {
@@ -91,6 +192,11 @@ pub enum ConfigError {
     Caps(AttenuationError),
     /// The child states a budget looser than the parent's ceiling.
     BudgetExceedsParent,
+    /// The child states a larger `max_elements` than the parent's.
+    NumericElementsExceedParent,
+    /// The child states a looser `max_tier` than the parent's -- asking to
+    /// be allowed results its parent would not accept.
+    NumericTierExceedsParent,
 }
 
 impl std::fmt::Display for ConfigError {
@@ -100,6 +206,14 @@ impl std::fmt::Display for ConfigError {
             ConfigError::BudgetExceedsParent => {
                 f.write_str("the budget exceeds the parent's; a budget may only narrow")
             }
+            ConfigError::NumericElementsExceedParent => f.write_str(
+                "numeric.max_elements exceeds the parent's; a child may state a smaller \
+                 element bound than its parent's, never a larger",
+            ),
+            ConfigError::NumericTierExceedsParent => f.write_str(
+                "numeric.max_tier is looser than the parent's; a child may state a stricter \
+                 tier than its parent's, never a looser one",
+            ),
         }
     }
 }
@@ -121,6 +235,18 @@ impl InstanceConfig {
             .map_err(ConfigError::Caps)?;
         if !self.budget.fits_within(&parent.budget) {
             return Err(ConfigError::BudgetExceedsParent);
+        }
+        // Checked one bound at a time so the refusal names which one moved:
+        // "your numeric block is wrong" is not an answer anyone can act on.
+        let elements_only = Numeric {
+            max_elements: self.numeric.max_elements,
+            max_tier: None,
+        };
+        if !elements_only.fits_within(&parent.numeric) {
+            return Err(ConfigError::NumericElementsExceedParent);
+        }
+        if !self.numeric.fits_within(&parent.numeric) {
+            return Err(ConfigError::NumericTierExceedsParent);
         }
         Ok(())
     }
@@ -653,6 +779,7 @@ mod tests {
             program: None,
             caps,
             budget,
+            numeric: Numeric::default(),
         }
     }
 
@@ -722,6 +849,136 @@ mod tests {
                 .instructions,
             Some(1000)
         );
+    }
+
+    /// Numeric bounds attenuate like a budget: a child may narrow either,
+    /// and may raise neither. Unstated inherits.
+    #[test]
+    fn numeric_bounds_attenuate_and_the_refusal_names_which_one() {
+        let parent = InstanceConfig {
+            numeric: Numeric {
+                max_elements: Some(1_000_000),
+                max_tier: Some(Tier::Reproducible),
+            },
+            ..cfg(vec![], Budget::default())
+        };
+        let child = |numeric: Numeric| InstanceConfig {
+            numeric,
+            ..cfg(vec![], Budget::default())
+        };
+
+        // Narrower on both: fine.
+        assert_eq!(
+            child(Numeric {
+                max_elements: Some(1000),
+                max_tier: Some(Tier::Exact),
+            })
+            .check_attenuation(&parent),
+            Ok(())
+        );
+
+        // More elements than the parent allows.
+        assert_eq!(
+            child(Numeric {
+                max_elements: Some(2_000_000),
+                max_tier: None,
+            })
+            .check_attenuation(&parent),
+            Err(ConfigError::NumericElementsExceedParent)
+        );
+
+        // A looser tier: `fast` promises less than `reproducible`, so
+        // asking for it is asking to be allowed results the parent would
+        // not accept. Named separately from the element bound, because
+        // "your numeric block is wrong" is not actionable.
+        assert_eq!(
+            child(Numeric {
+                max_elements: None,
+                max_tier: Some(Tier::Fast),
+            })
+            .check_attenuation(&parent),
+            Err(ConfigError::NumericTierExceedsParent)
+        );
+
+        // Unstated inherits, and resolution pins what enforcement runs on
+        // -- the half that is easier to miss, because saying nothing needs
+        // no intent at all.
+        let unstated = child(Numeric::default());
+        assert_eq!(unstated.check_attenuation(&parent), Ok(()));
+        let resolved = unstated.numeric.resolved_against(&parent.numeric);
+        assert_eq!(resolved.max_elements, Some(1_000_000));
+        assert_eq!(resolved.max_tier, Some(Tier::Reproducible));
+
+        // A parent that states nothing bounds nothing, so any child fits.
+        let open = cfg(vec![], Budget::default());
+        assert_eq!(
+            child(Numeric {
+                max_elements: Some(u64::MAX),
+                max_tier: Some(Tier::Fast),
+            })
+            .check_attenuation(&open),
+            Ok(())
+        );
+    }
+
+    /// `max_elements: Some(0)` is a real configuration, not an absent one:
+    /// an instance that may hold arrays and may not compute over them.
+    #[test]
+    fn a_zero_element_bound_is_a_bound_and_not_an_absence() {
+        let parent = InstanceConfig {
+            numeric: Numeric {
+                max_elements: Some(0),
+                max_tier: None,
+            },
+            ..cfg(vec![], Budget::default())
+        };
+        let child = InstanceConfig {
+            numeric: Numeric {
+                max_elements: Some(1),
+                max_tier: None,
+            },
+            ..cfg(vec![], Budget::default())
+        };
+        assert_eq!(
+            child.check_attenuation(&parent),
+            Err(ConfigError::NumericElementsExceedParent)
+        );
+        assert!(!parent.numeric.is_unbounded());
+    }
+
+    /// The tier names are the ones the spec and the config use, and they
+    /// round-trip through serde and through `parse`.
+    #[test]
+    fn tier_names_are_the_specs_three() {
+        for (tier, name, rank) in [
+            (Tier::Exact, "exact", 0u8),
+            (Tier::Reproducible, "reproducible", 1),
+            (Tier::Fast, "fast", 2),
+        ] {
+            assert_eq!(tier.name(), name);
+            assert_eq!(tier.rank(), rank);
+            assert_eq!(Tier::parse(name), Some(tier));
+            let bytes = rmp_serde::to_vec_named(&tier).unwrap();
+            assert_eq!(rmp_serde::from_slice::<Tier>(&bytes).unwrap(), tier);
+        }
+        assert_eq!(Tier::parse("quick"), None);
+    }
+
+    /// An instance stating no numeric block serializes without one, so a
+    /// spawn request from a deployment that does no numeric work is the
+    /// same bytes it was before this field existed.
+    #[test]
+    fn an_unstated_numeric_block_is_absent_from_the_wire() {
+        let plain = cfg(vec![], Budget::default());
+        let raw: rmpv::Value =
+            rmp_serde::from_slice(&rmp_serde::to_vec_named(&plain).unwrap()).unwrap();
+        let keys: Vec<&str> = raw
+            .as_map()
+            .unwrap()
+            .iter()
+            .filter_map(|(k, _)| k.as_str())
+            .collect();
+        assert!(!keys.contains(&"numeric"), "got {keys:?}");
     }
 
     #[test]

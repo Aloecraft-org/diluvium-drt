@@ -31,7 +31,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use drt_caps::{CapSet, Effect, Grant, Principal};
-use drt_config::Budget;
+use drt_config::{Budget, Numeric, Tier};
 
 use crate::engine::{
     Engine, Instance, LoadSpec, ProgramBytes, PushOutcome, QueueHandle, RestoreSpec, WaitSet,
@@ -211,6 +211,7 @@ struct Slot {
     inst: Option<Box<dyn Instance>>,
     caps: Arc<CapSet>,
     budget: Budget,
+    numeric: Numeric,
     unsafe_stdlib: bool,
     wake_on_message: bool,
     alive: bool,
@@ -238,6 +239,7 @@ impl Slot {
             inst: None,
             caps: CapSet::root(Vec::new()),
             budget: Budget::default(),
+            numeric: Numeric::default(),
             unsafe_stdlib: false,
             wake_on_message: false,
             alive: false,
@@ -380,6 +382,7 @@ impl<H: SwarmHost> Swarm<H> {
     fn build(&mut self, index: usize, code: &[u8]) -> Result<(), String> {
         let slot = &self.slots[index];
         let spec_budget = slot.budget;
+        let spec_numeric = slot.numeric;
         let unsafe_stdlib = slot.unsafe_stdlib;
         let program = match std::str::from_utf8(code) {
             Ok(text) => ProgramBytes::Source(text),
@@ -398,6 +401,7 @@ impl<H: SwarmHost> Swarm<H> {
                 program,
                 name: "=agent",
                 budget: spec_budget,
+                numeric: spec_numeric,
                 unsafe_stdlib,
             })
             .map_err(|e| format!("the program would not load: {e}"))?;
@@ -420,6 +424,20 @@ impl<H: SwarmHost> Swarm<H> {
         caps: Vec<Grant>,
         budget: Budget,
     ) -> Result<InstanceId, SwarmError> {
+        self.root_with_numeric(code, caps, budget, Numeric::default())
+    }
+
+    /// The root, with numeric bounds. `root` is this with none stated,
+    /// which is the ceiling every child then attenuates from -- a root
+    /// stating nothing is a deployment that has not bounded numeric work,
+    /// exactly as a root stating no budget has not bounded instructions.
+    pub fn root_with_numeric(
+        &mut self,
+        code: &[u8],
+        caps: Vec<Grant>,
+        budget: Budget,
+        numeric: Numeric,
+    ) -> Result<InstanceId, SwarmError> {
         check_grant_names(&caps).map_err(SwarmError::Error)?;
         let index = self.claim().ok_or_else(|| {
             SwarmError::Limit(format!(
@@ -432,6 +450,7 @@ impl<H: SwarmHost> Swarm<H> {
             slot.parent = 0;
             slot.caps = CapSet::root(caps);
             slot.budget = budget;
+            slot.numeric = numeric;
             slot.unsafe_stdlib = self.unsafe_stdlib;
         }
         match self.build(index, code) {
@@ -514,6 +533,31 @@ impl<H: SwarmHost> Swarm<H> {
         self.find(id).map(|i| self.slots[i].budget)
     }
 
+    /// One instance's numeric bounds, as enforcement runs on them -- the
+    /// resolved pair, not the requested one. The roster question beside
+    /// [`Swarm::budget`].
+    pub fn numeric(&self, id: InstanceId) -> Option<Numeric> {
+        self.find(id).map(|i| self.slots[i].numeric)
+    }
+
+    /// Whether a fast-tier numeric kernel has actually run in one instance.
+    ///
+    /// The roster's half of `dv_numeric_touched_fast`: `drt ps` walks
+    /// [`Swarm::ids`] and asks this of each, the way it asks
+    /// [`Swarm::budget`]. `None` for an id that is not in the roster;
+    /// `Some(false)` for one that is resident and has run no fast kernel,
+    /// and for a hibernated one, whose flag went with its instance.
+    pub fn numeric_touched_fast(&self, id: InstanceId) -> Option<bool> {
+        let index = self.find(id)?;
+        Some(
+            self.slots[index]
+                .inst
+                .as_deref()
+                .map(|inst| inst.numeric_touched_fast())
+                .unwrap_or(false),
+        )
+    }
+
     /// The capability set, with its provenance — for a host that logs or
     /// audits. Enforcement asks [`Swarm::holds`]; auditability needs the set
     /// readable out.
@@ -539,7 +583,40 @@ impl<H: SwarmHost> Swarm<H> {
     /// child; a child hears nothing about a parent. A full events queue is
     /// not an error and not a retry — a supervisor that does not drain its
     /// events has chosen to miss them.
+    /// A stop event, with the audit trail's flag on it.
+    ///
+    /// `touched_fast` rides beside the fate rather than in it because they
+    /// answer different questions: `exceeded`/`faulted`/`exited` is how the
+    /// instance ended, and this is whether anything it computed carries a
+    /// cross-target guarantee. A supervisor deciding whether to trust a
+    /// result needs both, and needs them in the one message that says the
+    /// instance is gone.
+    ///
+    /// Omitted when false, so the event a deployment without numeric work
+    /// sees is byte-identical to the one it saw before this existed.
+    fn emit_stop(
+        &mut self,
+        to: u32,
+        what: &str,
+        about: u32,
+        detail: Option<&str>,
+        touched_fast: bool,
+    ) {
+        self.emit_with(to, what, about, detail, touched_fast);
+    }
+
     fn emit(&mut self, to: u32, what: &str, about: u32, detail: Option<&str>) {
+        self.emit_with(to, what, about, detail, false);
+    }
+
+    fn emit_with(
+        &mut self,
+        to: u32,
+        what: &str,
+        about: u32,
+        detail: Option<&str>,
+        touched_fast: bool,
+    ) {
         let Some(index) = self.find(InstanceId(to)) else {
             return;
         };
@@ -556,6 +633,9 @@ impl<H: SwarmHost> Swarm<H> {
         if let Some(detail) = detail {
             let clamped = clamp_utf8(detail, MAX_EVENT_DETAIL);
             map.push(("detail".into(), rmpv::Value::from(clamped)));
+        }
+        if touched_fast {
+            map.push(("numeric_touched_fast".into(), rmpv::Value::Boolean(true)));
         }
         let mut buf = Vec::new();
         if rmpv::encode::write_value(&mut buf, &rmpv::Value::Map(map)).is_ok() {
@@ -673,11 +753,13 @@ impl<H: SwarmHost> Swarm<H> {
         };
         let identity = self.host_identity.clone();
         let budget = self.slots[index].budget;
+        let numeric = self.slots[index].numeric;
         let unsafe_stdlib = self.slots[index].unsafe_stdlib;
         let mut inst = match self.engine.restore(RestoreSpec {
             snapshot: &snap,
             host_stamp: identity.as_deref(),
             budget,
+            numeric,
             unsafe_stdlib,
         }) {
             Ok(inst) => inst,
@@ -830,10 +912,13 @@ impl<H: SwarmHost> Swarm<H> {
                 Driven::Alive => {}
                 outcome => {
                     let parent = self.slots[index].parent;
-                    let over = self.slots[index]
-                        .inst
-                        .as_deref()
-                        .map(|inst| inst.exceeded())
+                    let inst = self.slots[index].inst.as_deref();
+                    let over = inst.map(|inst| inst.exceeded()).unwrap_or(false);
+                    // Read here, with the instance still alive: the flag is
+                    // the instance's and goes with it, and a supervisor
+                    // asking afterwards would be asking about nothing.
+                    let touched_fast = inst
+                        .map(|inst| inst.numeric_touched_fast())
                         .unwrap_or(false);
                     let (what, why) = match (&outcome, over) {
                         (_, true) => ("exceeded", None),
@@ -842,7 +927,7 @@ impl<H: SwarmHost> Swarm<H> {
                     };
                     self.kill_subtree(InstanceId(id), false);
                     if parent != 0 {
-                        self.emit(parent, what, id, why.as_deref());
+                        self.emit_stop(parent, what, id, why.as_deref(), touched_fast);
                     }
                 }
             }
@@ -989,6 +1074,30 @@ impl<H: SwarmHost> Swarm<H> {
             return;
         }
         let budget = requested.resolved_against(&parent_budget);
+        // The same two halves once more, for the bound a budget does not
+        // cover: a kernel's cost is elements processed, not instructions
+        // the guest executed, so an instance that may spawn a child with a
+        // looser element bound or a looser tier has no bound at all
+        // (`doc/Plan-2026-09.md` §3.4). Refused the same way and through
+        // the same channel, with the field named.
+        let parent_numeric = self.slots[parent_index].numeric;
+        let requested_numeric = field_numeric(request);
+        if !requested_numeric.fits_within(&parent_numeric) {
+            let which = if requested_numeric
+                .max_elements
+                .zip(parent_numeric.max_elements)
+                .is_some_and(|(c, p)| c > p)
+            {
+                "numeric.max_elements: a child may state a smaller element bound than its \
+                 parent's, never a larger"
+            } else {
+                "numeric.max_tier: a child may state a stricter tier than its parent's, never \
+                 a looser one"
+            };
+            self.emit(parent_id, "denied", 0, Some(which));
+            return;
+        }
+        let numeric = requested_numeric.resolved_against(&parent_numeric);
         let Some(child_index) = self.claim() else {
             self.emit(parent_id, "denied", 0, Some("the instance table is full"));
             return;
@@ -1001,6 +1110,7 @@ impl<H: SwarmHost> Swarm<H> {
             slot.parent = parent_id;
             slot.caps = child_caps;
             slot.budget = budget;
+            slot.numeric = numeric;
             slot.wake_on_message = field_bool(request, "wake_on_message");
             slot.unsafe_stdlib = child_stdlib;
         }
@@ -1201,6 +1311,29 @@ fn field_budget(request: &rmpv::Value) -> Budget {
     Budget {
         instructions,
         memory_kb,
+    }
+}
+
+/// The `numeric` block of a spawn request: `numeric = {max_elements=…,
+/// max_tier=…}`.
+///
+/// Nested only, unlike `field_budget`, which also accepts a flat form for
+/// history's sake. There is no history here, and one spelling is better
+/// than two. An unreadable value is read as unstated rather than refused:
+/// unstated inherits the parent's bound, which is the strict reading, so a
+/// malformed request is bounded by its parent rather than unbounded.
+fn field_numeric(request: &rmpv::Value) -> Numeric {
+    let Some(block) = field(request, "numeric") else {
+        return Numeric::default();
+    };
+    if !block.is_map() {
+        return Numeric::default();
+    }
+    Numeric {
+        max_elements: field_int(block, "max_elements"),
+        max_tier: field(block, "max_tier")
+            .and_then(|v| v.as_str())
+            .and_then(Tier::parse),
     }
 }
 

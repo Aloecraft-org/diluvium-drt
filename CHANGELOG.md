@@ -82,6 +82,23 @@ entry has not moved the pin yet.
   `full` only. Four codecs -- snappy, gzip, lz4, zstd -- and not
   brotli, which this build does not carry, so a file using it is
   refused by name at read rather than mis-decoded.
+- **A `numeric` block in the config**: `max_elements` and `max_tier`,
+  per instance, attenuating at spawn under the same rule as budgets.
+  A child may narrow either and raise neither, an unstated bound
+  inherits the parent's rather than becoming unlimited, and the
+  refusal names which of the two moved.
+
+  Beside `budget`, not inside it, because they bound different
+  things: instructions the guest executed, and elements a kernel
+  processed on its behalf. Added beside the existing config fields,
+  never through them -- the loader corpus is the proof, and it shows
+  52 added lines and no changed ones across all thirteen shapes.
+
+  `numeric_touched_fast` rides beside the fate on a stop event and is
+  a roster question next to `budget`. It is `false` everywhere today,
+  and that is a fact rather than a stub: no fast-tier backend exists
+  in this workspace or in the pinned core, so no fast kernel can have
+  run.
 - **`needs_features` in an example's `meta.json`**, beside
   `needs_build`. A profile name says which connectors a binary has;
   it does not say which core is inside it, and an example that needs
