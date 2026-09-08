@@ -53,6 +53,42 @@ reply as the sender's own diagnostic rather than silence. A host that drops
 requests on the floor has made backpressure invisible, which is the failure mode
 the bounded request queue exists to surface.
 
+## The blob lane: a column is not a msgpack value
+
+One kind of answer deliberately does not travel as a value. A million-row
+`f64` column is eight megabytes the encoder would walk, copy and re-tag for
+no purpose; base64 would be worse again, and is ruled out by name. So the
+reply carries a **side channel**, and the payload references a column by
+index:
+
+| field | type | |
+|---|---|---|
+| `dtype` | integer | `0` = `f64`, `1` = `i64`, `2` = `u8` — the codes `dv.h` fixes. |
+| `len` | integer | The element count. **Not** a byte count: it is what a guest allocates against. |
+| `blob` | integer | Which blob in the lane, from zero, in the order the answer was walked. |
+
+A map with exactly those three fields, anywhere in `value`, is a column
+descriptor; a map carrying a `blob` key and anything else is an ordinary
+answer and is left alone.
+
+The lane itself never appears on the wire under any name — it is not a
+field of the reply map. That is the point rather than an optimisation:
+these bytes must not pass through the encoding.
+
+**Two deliveries, and today there is one.** A guest whose build carries the
+`numeric` feature reads each blob with `dv_reply_blob(inst, index, &ptr,
+&len)` and hands it to `dv_array_adopt`, and the bytes never enter the
+encoding at all. A guest without it receives the bytes in the descriptor's
+place, as a msgpack `bin`, which is a Lua string — which is exactly what
+`dv_array_adopt` is specified to do in a build without the feature. Until
+the core carries `dv_reply_blob`, every guest is the second case, so the
+behaviour a guest sees does not change when it arrives; what changes is
+that a guest with arrays gets the first path, and one copy stops happening.
+
+Connectors do not see any of this. A connector answers one value and wraps
+a column with `drt_hostcall::column`; the dispatcher assigns the indices,
+because only the thing walking the whole answer can number them.
+
 ## Queues and capabilities, the conventions a host implements
 
 These are host-protocol conventions (`doc/Host.md`) rather than parts of the

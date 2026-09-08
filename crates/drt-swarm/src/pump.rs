@@ -21,6 +21,12 @@
 //! blocks, which is the one thing a browser thread cannot do, and it is the
 //! Lab's `_inflight`/`_settled` shape in Rust.
 //!
+//! Encoding goes through [`drt_hostcall::to_wire`] rather than `to_bytes`,
+//! here and in [`Pump::poll`], because those are the two places a reply
+//! becomes bytes and the blob lane is resolved at exactly that step
+//! (`doc/Plan-2026-09.md` §3.2). A reply carrying no column encodes
+//! identically either way.
+//!
 //! Three rules, all load-bearing. A request is not drained until its reply
 //! has room to land: answering, failing to deliver and retrying would apply
 //! a stateful connector's write twice. A reply whose queue is full when it
@@ -135,7 +141,7 @@ impl Pump {
             match polled {
                 Poll::Ready(reply) => {
                     let InFlight { id, .. } = self.inflight.remove(i);
-                    if let Ok(bytes) = drt_hostcall::to_bytes(&reply) {
+                    if let Ok(bytes) = drt_hostcall::to_wire(&reply) {
                         self.settled.push(Settled { id, bytes });
                     }
                 }
@@ -192,7 +198,7 @@ impl Pump {
         inst: &mut dyn Instance,
         reply: &Reply,
     ) -> usize {
-        let Ok(bytes) = drt_hostcall::to_bytes(reply) else {
+        let Ok(bytes) = drt_hostcall::to_wire(reply) else {
             return 0;
         };
         match inst.push(replies, &bytes) {

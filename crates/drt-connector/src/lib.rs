@@ -299,13 +299,27 @@ impl PendingCall {
     /// Run the connector and shape its answer into the reply: `ok` with
     /// the value, or `error` with the connector's own sentence. `denied`
     /// was decided at routing and never comes from here.
+    ///
+    /// The blob lane is closed here and nowhere else: a connector answering
+    /// a column wraps it with `drt_hostcall::column`, and this is what
+    /// moves those bytes into the reply's side channel and leaves the
+    /// `{dtype, len, blob}` descriptor behind (`doc/Plan-2026-09.md` §3.2).
+    /// Doing it here rather than in each connector is what lets the trait
+    /// keep one method: a connector answers one value, and whether that
+    /// value holds a column is a property of the value.
     pub async fn answer(self) -> Reply {
         match self
             .connector
             .call(&self.call, self.args, self.scope.as_ref())
             .await
         {
-            Ok(value) => Reply::ok(self.tok, value),
+            Ok(value) => {
+                let mut blobs = Vec::new();
+                let value = drt_hostcall::lift_columns(value, &mut blobs);
+                let mut reply = Reply::ok(self.tok, value);
+                reply.blobs = blobs;
+                reply
+            }
             Err(CallError(detail)) => Reply::error(self.tok, detail),
         }
     }

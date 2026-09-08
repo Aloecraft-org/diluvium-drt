@@ -731,6 +731,86 @@ mod pump {
         assert!(parent_caps.holds("host:time"));
     }
 
+    /// A connector answers a column, and the guest reads the bytes.
+    ///
+    /// The blob lane end to end (`doc/Plan-2026-09.md` §3.2): the connector
+    /// wraps eight-byte doubles with `drt_hostcall::column`, the dispatcher
+    /// moves them into the reply's side channel and leaves `{dtype, len,
+    /// blob}` behind, and the pump's encode puts them where the descriptor
+    /// was. The guest is an ordinary program with no `numeric` and no
+    /// `array`, so what arrives is a Lua string -- which is exactly what
+    /// §3.1 says `dv_array_adopt` does in a build without the feature, so
+    /// this behaviour does not change when A0 lands.
+    ///
+    /// Asserted on the **bits**, per §3.3, not on a formatted double: the
+    /// question is whether the exact bytes crossed, and `%g` on four
+    /// platforms is four answers to a question nobody asked.
+    #[test]
+    fn a_connector_answers_a_column_and_the_guest_reads_its_bytes() {
+        let bytes: Vec<u8> = [1.0f64, 2.0, 3.0]
+            .iter()
+            .flat_map(|d| d.to_le_bytes())
+            .collect();
+        let mut registry = Registry::new();
+        registry
+            .wire(
+                "data",
+                Arc::new(MockConnector::new().answer(
+                    "data/read",
+                    rmpv::Value::Map(vec![
+                        ("rows".into(), rmpv::Value::from(3u64)),
+                        (
+                            "price".into(),
+                            drt_hostcall::column(drt_hostcall::Dtype::F64, bytes.clone()),
+                        ),
+                    ]),
+                )),
+                None,
+            )
+            .unwrap();
+        let engine = Arc::new(DiluviumEngine::new().unwrap());
+        let mut sw = Swarm::new(
+            engine,
+            PumpHost::new(StepHost::new(), Dispatcher::new(registry)),
+        );
+
+        let caller = r#"
+            local calls = queue.declare("host/calls", { capacity = 4, exported = true, on_full = "reject" })
+            local replies = queue.declare("host/replies", { capacity = 4 })
+            local verdict = queue.declare("verdict", { capacity = 4, exported = true })
+            local hold = queue.declare("hold", { capacity = 1 })
+            queue.push(calls, { tok = 5, call = "data/read" })
+            local _, reply = queue.wait({replies})
+            local column = reply.value.price
+            queue.push(verdict, table.concat({
+                reply.status,
+                type(column),
+                #column,
+                ("%016x"):format(string.unpack("<I8", column)),
+                ("%016x"):format(string.unpack("<I8", column, 17)),
+                tostring(reply.value.rows),
+            }, "|"))
+            queue.wait({hold})
+        "#;
+        let root = sw
+            .root(
+                caller.as_bytes(),
+                vec![Grant::grant("host:data/*")],
+                Budget::default(),
+            )
+            .unwrap();
+        settle(&mut sw, 10);
+
+        let verdict = drain_out(&mut sw, root, "verdict");
+        assert_eq!(
+            verdict[0].as_str(),
+            // 24 bytes, the first element's bits and the third's, and the
+            // ordinary field beside the column still an ordinary field.
+            Some("ok|string|24|3ff0000000000000|4008000000000000|3"),
+            "the column did not cross intact"
+        );
+    }
+
     #[test]
     fn a_denied_child_reads_denied_not_silence() {
         let mut registry = Registry::new();
