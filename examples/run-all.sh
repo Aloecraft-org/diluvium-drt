@@ -451,6 +451,7 @@ n_fail=0
 failed=()
 skipped=()
 wrong_build=()
+wrong_features=()
 unprivileged=()
 
 for name in ${examples[@]+"${examples[@]}"}; do
@@ -518,7 +519,13 @@ for name in ${examples[@]+"${examples[@]}"}; do
         if [ -n "$missing" ]; then
             printf 'skipped  %-24s (needs the %s feature; this drt has %s)\n' \
                 "$name" "$missing" "${drt_features:-none}"
-            wrong_build[${#wrong_build[@]}]=$name
+            # Its own bucket, not `wrong_build`'s.  A cargo feature is added
+            # by rebuilding drt with it; a CORE feature is inside the pinned
+            # diluvium, and no cargo flag reaches it -- so the advice that
+            # fits a missing connector is wrong here, and being told to
+            # rebuild with --all-features when that cannot possibly help is
+            # worse than being told nothing.
+            wrong_features[${#wrong_features[@]}]=$name
             continue
         fi
     fi
@@ -584,7 +591,7 @@ done
 # Summary
 # ---------------------------------------------------------------------------
 
-n_skip=$((${#skipped[@]} + ${#wrong_build[@]} + ${#unprivileged[@]}))
+n_skip=$((${#skipped[@]} + ${#wrong_build[@]} + ${#wrong_features[@]} + ${#unprivileged[@]}))
 n_bare=${#uncovered[@]}
 
 for n in ${uncovered[@]+"${uncovered[@]}"}; do
@@ -606,6 +613,11 @@ fi
 if [ ${#wrong_build[@]} -gt 0 ]; then
     printf 'skipped for needing a full build (NOT a pass): %s\n' "${wrong_build[*]}"
     printf 'rebuild with --all-features to include them.\n'
+fi
+if [ ${#wrong_features[@]} -gt 0 ]; then
+    printf 'skipped for needing a core feature (NOT a pass): %s\n' "${wrong_features[*]}"
+    printf 'the feature is in the embedded diluvium, not in drt: move the pin\n'
+    printf 'to a core built with it.  `drt buildinfo` says what this one has.\n'
 fi
 if [ ${#unprivileged[@]} -gt 0 ]; then
     printf 'skipped for needing a privilege (NOT a pass): %s\n' "${unprivileged[*]}"
