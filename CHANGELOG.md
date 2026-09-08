@@ -104,7 +104,47 @@ entry has not moved the pin yet.
   it does not say which core is inside it, and an example that needs
   `numeric` is skipped by name on a build without it rather than
   producing a diff whose real content is "this build does not carry
-  that".
+  that". A core feature gets its own skip bucket and its own advice:
+  no cargo flag adds one, so "rebuild with `--all-features`" would be
+  a command that cannot help.
+- **`doc/Numeric.md`**, which states what the three determinism tiers
+  promise, the three different bounds on numeric work and which
+  failure each has, and how a column crosses the hostcall boundary.
+  Written for someone operating DRT rather than building the core.
+- `examples/23-reading-parquet`, and the size ledger the plan asks for: `full` at `release-small` grows 1,349,408 bytes (+20.1%) for the `data` connector.
+
+### Changed
+
+- **`drt-connector-fs` publishes its path jail.** `FsScope` and
+  `FsScopeType` are public so the `data` connector can grant a
+  directory through the same code rather than a second copy of it. A
+  path jail that exists twice is a path jail that is wrong once. No
+  behaviour of the `fs` connector changes.
+- **The hostcall reply's encode goes through `to_wire`**, by value,
+  rather than `to_bytes` by reference. A reply carrying no column
+  encodes identically; one carrying a column has its bytes moved
+  rather than copied.
+
+### Known issues
+
+- **A connector decode is work the instruction budget does not
+  bound** -- it is host work, not the guest's instructions, and not a
+  kernel either. The only bound is `max_bytes` on the `data` scope,
+  which is therefore the memory bound as well as the file bound.
+  Measured at roughly 4 ms per megabyte of parquet; the decode parks
+  on `spawn_blocking` so the deployment keeps running, and there is
+  no per-call timeout and no cancellation. `doc/Failure-Modes.md`
+  FM-5 has the numbers and how to size a scope.
+- **The numeric half of this entry is plumbed, not live.** The pin
+  does not carry a core with `numeric`, so: `features` and
+  `diluvium_build` in `buildinfo` are hard-coded from the profile
+  rather than read from the core, the blob lane delivers bytes inline
+  as a Lua string rather than through `dv_reply_blob`, the instance's
+  numeric bounds reach the instance but the core has nowhere to put
+  them, and `numeric_touched_fast` is `false` because no fast-tier
+  backend exists anywhere to set it. Each is marked `TODO(A0)` or
+  `TODO(A2)` at the one place it changes, and each has a test that
+  fails if the pin moves and the code does not.
 
 
 ## [0.5.0rc8] - unreleased (prerelease)
