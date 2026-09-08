@@ -165,13 +165,38 @@ stands between this and a laptop that is not Linux"). Blocking work belongs
 on the critical path, not the gap list. Named here so their absence is not
 read as a deprioritisation.
 
-### 3.4 Still open, unsized
+### 3.4 #10 and #11 — **both already fixed; the issues are stale**
 
-**#10** (`rest`: an HTTPS response AWS closes without `close_notify` fails
-as `unexpected_eof`) and **#11** (`listen`: 503 immediately when the target
-queue does not exist, ignoring `admit_timeout_ms`). Both would pass the test
-if they size small. Neither code path has been read, so neither is sized —
-saying so rather than guessing is this document's own rule.
+Triaged rather than sized, and the sizing turned out to be the wrong
+question: both shipped in **v0.5.0rc3**, both with tests, and both issues
+are still open. Nothing to do here except close them.
+
+**#10** — `rest` read to the connection's end rather than to the body's
+framing, so a server that closes without a TLS `close_notify` (Bedrock, and
+plenty besides) failed a response whose every byte had arrived. Fixed by
+`e8daa8c`, "`rest` reads to the body's framing, not to the connection's
+end": the loop now stops where `content-length` or the terminating chunk
+says the body ends, so **there is no such read** — the error is not
+swallowed, it is never raised. A body genuinely cut short still fails, and
+`connectors/rest/src/lib.rs:1068` (`short_body`) names what was expected and
+what arrived, which is the message improvement the issue asked for in its
+last paragraph. Four tests, including a `close`-framed body (where the close
+*is* the framing) and a truncation that must still fail.
+
+**#11** — landed as the issue's own first-preference fix: `admit_timeout_ms`
+now applies to this case too, so a request naming a queue the program has
+not declared yet waits for it. The wait is `start::retry_held`
+(`crates/drt/src/start.rs:658`) and not the acceptor's, because whether a
+queue exists is a question only the deployment can answer; `listen.rs`'s
+module doc carries the reasoning. Three tests, and the third is the one
+worth noting: `a_grace_of_zero_refuses_before_the_program_can_declare` keeps
+the old behaviour reachable as a setting rather than deleting it, since
+`admit_timeout_ms = 0` is exactly what the bug was.
+
+**Worth a note for whoever files next.** Both issues were fixed within a day
+or two of being filed and neither was closed, so both sat on this list as
+open work through two candidates. The changelog knew — `fixed:` under rc3 —
+and the issue tracker did not.
 
 ---
 
