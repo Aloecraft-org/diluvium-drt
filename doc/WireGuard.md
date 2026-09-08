@@ -81,7 +81,27 @@ half it cannot give you: a key that already exists, in a secret store or a
 on stdin and prints its public half. `drt wg check` reads a config, says
 what is wrong with it, and stops — everything `drt wg` does before it
 touches the interface, so a config can be written and checked on a laptop
-and only deployed where the privilege is. `drt wg` runs the
+and only deployed where the privilege is. It also answers a second
+question, in different words, because printing `ok` and then failing to
+create the interface is what issue #21 watched happen twice in one
+evening:
+
+```
+ok:   drt0 on port 51821, 0 peer(s)          -- the config
+here: /dev/net/tun: No such file or directory (os error 2). …
+here: this process does not hold CAP_NET_ADMIN, …
+```
+
+`ok` is the config; `here` is this machine, and **the exit code follows
+the config**, because a config is checked where it is written and deployed
+where the privilege is, and a laptop with no tun node is not a bad config.
+`here` covers the two of the four errnos above that can be established
+without creating anything: whether the node opens (which is what returns
+`ENOENT` and `EACCES`), and whether `CapEff` carries `CAP_NET_ADMIN`. The
+`TUNSETIFF` that returns `EPERM` is also the call that would create an
+interface, which is the one thing `check` promises not to do — so the
+capability is read from the mask instead of tried. Silence from `here` is
+two facts established, not a promise. `drt wg` runs the
 device in the foreground and prints the public key, because a peer cannot
 be configured without it. Inside `drt start` the same device reports peer
 stats on the timer, and endpoint changes and first handshakes as they
@@ -106,6 +126,28 @@ block exists to replace.
 root) on Linux, root on macOS, and `wintun.dll` beside the binary on
 Windows. That is the *whole* privilege: no kernel module, no `wg` tools,
 no `wg-quick`, no second daemon.
+
+**And it is not the only way that fails.** For a year that paragraph was
+attached to *every* error the interface could return, which made two
+failures it is false for read as privilege problems (issue #21): a
+container started without `--device /dev/net/tun`, already running as
+root and told to go and get a capability it held; and `/dev/net/tun` at
+mode `0600`, where the process held `cap_net_admin=ep` and a file mode
+does not care. The second cost an operator an hour and produced the
+conclusion "the capability isn't taking effect", which nearly got a
+working design abandoned. Four errnos, four answers, each measured by
+making it happen:
+
+| errno | what actually failed | what fixes it |
+|---|---|---|
+| `ENOENT` (2) | no `/dev/net/tun` | `--device /dev/net/tun`, or `modprobe tun` |
+| `EACCES` (13) | the node is there and will not open | its mode — a capability does not override one |
+| `EPERM` (1) | the node opened, the kernel refused | this one is `CAP_NET_ADMIN` |
+| `EBUSY` (16) | the interface name is taken | `ip link del` the leftover |
+
+An errno outside that table gets **no** sentence rather than a guess. The
+asymmetry is the whole point: an errno printed bare is a thing to look up,
+and an errno printed under a confident wrong cause is an hour lost.
 
 **Every refusal is at startup**, with the thing that was wrong named: a
 key that is not 32 base64 bytes, a CIDR that is not a network, a *network*

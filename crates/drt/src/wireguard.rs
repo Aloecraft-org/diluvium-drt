@@ -81,6 +81,9 @@
 //! - The UDP side: [`Transport`], which is gotatun's own socket plus the
 //!   option of a TURN allocation beside it, and [`unroutable`], which names
 //!   an `allowed_ips` no route will reach.
+//! - Fan-out: [`INTERFACE_ERRNO`], what each way of failing to create the
+//!   interface means, and [`interface_here`], the same facts asked of this
+//!   machine before anything is created.
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -146,6 +149,88 @@ pub const HELD_MAX: usize = 64;
 /// Bounded, because a port that never comes back is a fact to report
 /// rather than a loop to spin in.
 pub const PORT_RELEASE_MS: u64 = 500;
+
+/// The device node a Linux tunnel interface is created through.
+///
+/// Named here because three of the four ways [`interface`] can fail are
+/// facts about this path rather than about the config, and [`interface_here`]
+/// reports them from the same constant the failure quotes.
+#[cfg(target_os = "linux")]
+pub const TUN_NODE: &str = "/dev/net/tun";
+
+/// CAP_NET_ADMIN's number, which is its bit in `/proc/self/status`'s
+/// `CapEff`. Fixed by `linux/capability.h` and here because
+/// [`interface_here`] reads that mask.
+#[cfg(target_os = "linux")]
+pub const CAP_NET_ADMIN: u32 = 12;
+
+/// What each way of failing to create the interface actually means.
+///
+/// A dispatch table and not a paragraph, because the paragraph was wrong.
+/// Every failure used to carry the CAP_NET_ADMIN sentence, which is true
+/// of exactly one of these four: a container with no device node and a
+/// process that already held the capability were both told to go and get
+/// the capability, and the second cost an operator an hour and nearly a
+/// design (issue #21).
+///
+/// All four measured on 2026-09-08 by making each one happen: the node
+/// moved aside, the node at 0600 as a non-root user, the node at 0666 as a
+/// non-root user, and two devices asking for one interface name.
+///
+/// Per platform, and not merely per `errno`, for the reason the table
+/// exists: two of these entries are facts about a device node, and macOS
+/// allocates a `utun` through a kernel control socket that has none. An
+/// `ENOENT` there would be something else, so it is answered with silence
+/// rather than with Linux's answer.
+#[cfg(target_os = "linux")]
+pub const INTERFACE_ERRNO: [(i32, &str); 4] = [
+    (
+        2, // ENOENT
+        "There is no /dev/net/tun. In a container, pass --device /dev/net/tun; \
+         on a host, `modprobe tun`. This is not a privilege: a process running \
+         as root fails here identically.",
+    ),
+    (
+        13, // EACCES
+        "/dev/net/tun is there and this process cannot open it. That is a file \
+         mode, not a capability, and CAP_NET_ADMIN does not override one -- \
+         `ls -l /dev/net/tun`, which most distributions ship 0666.",
+    ),
+    (
+        1, // EPERM
+        "The device node opened and the kernel refused the interface. This one \
+         IS the privilege, and it is the only one this needs: CAP_NET_ADMIN (or \
+         root) on Linux, root on macOS, wintun.dll beside the binary on Windows.",
+    ),
+    (
+        16, // EBUSY
+        "The interface name is already taken -- something else, or a previous \
+         run, is holding it. `ip link show` names it; `ip link del` frees it if \
+         it is left over.",
+    ),
+];
+
+/// The subset that is true off Linux: no device node, so no entry about
+/// one. Same numbers — the BSDs and Linux agree on these two.
+#[cfg(all(unix, not(target_os = "linux")))]
+pub const INTERFACE_ERRNO: [(i32, &str); 2] = [
+    (
+        1, // EPERM
+        "This one IS the privilege, and it is the only one this needs: root on \
+         macOS, CAP_NET_ADMIN (or root) on Linux, wintun.dll beside the binary \
+         on Windows.",
+    ),
+    (
+        16, // EBUSY
+        "The interface name is already taken -- something else, or a previous \
+         run, is holding it.",
+    ),
+];
+
+/// Windows fails through wintun rather than through an errno, so there is
+/// no table to key on and nothing here to look up.
+#[cfg(not(unix))]
+pub const INTERFACE_ERRNO: [(i32, &str); 0] = [];
 
 // ---------------------------------------------------------------------------
 // Keys and peers: the config, translated
@@ -454,12 +539,11 @@ fn interface(
         tun.address(net.ip()).netmask(net.mask());
     }
     let device = gotatun::tun::tun::create_as_async(&tun).map_err(|e| {
+        let advice = interface_advice(errno(&e));
         format!(
-            "wireguard: cannot create the interface '{}': {e}\n\
-             Creating a tunnel interface needs a privilege, and it is the only \
-             one this needs: CAP_NET_ADMIN (or root) on Linux, root on macOS, \
-             wintun.dll beside the binary on Windows.",
-            config.interface
+            "wireguard: cannot create the interface '{}': {e}{}{advice}",
+            config.interface,
+            if advice.is_empty() { "" } else { "\n" },
         )
     })?;
     gotatun::tun::tun_async_device::TunDevice::from_tun_device(device).map_err(|e| {
@@ -468,6 +552,139 @@ fn interface(
             config.interface
         )
     })
+}
+
+/// The OS error behind a `tun` failure, when the failure has one.
+///
+/// Every way the platform layer can fail arrives as `Error::Io`; the rest
+/// of that enum is the crate refusing a configuration before it syscalls,
+/// and those say what is wrong on their own.
+fn errno(error: &gotatun::tun::tun::Error) -> Option<i32> {
+    match error {
+        gotatun::tun::tun::Error::Io(io) => io.raw_os_error(),
+        _ => None,
+    }
+}
+
+/// The sentence that follows a failed `create_as_async`, looked up in
+/// [`INTERFACE_ERRNO`] by what actually failed.
+///
+/// Nothing when the errno is one this has not measured: an errno printed
+/// bare is a thing to look up, and an errno printed under a confident
+/// wrong cause is an hour lost. That asymmetry is the whole of issue #21.
+///
+/// Takes the number rather than the error so the mapping can be tested
+/// without a kernel that will produce each one on demand.
+pub fn interface_advice(errno: Option<i32>) -> &'static str {
+    #[cfg(not(unix))]
+    {
+        // No errno to key on: wintun's failures are its own. A hedge, not
+        // a diagnosis, and hedged on purpose.
+        let _ = errno;
+        return "On Windows this is most often wintun.dll not being beside the \
+                binary.";
+    }
+    #[cfg(unix)]
+    {
+        let Some(errno) = errno else { return "" };
+        INTERFACE_ERRNO
+            .iter()
+            .find(|(number, _)| *number == errno)
+            .map(|(_, advice)| *advice)
+            .unwrap_or("")
+    }
+}
+
+/// What this machine can be told about creating a tunnel interface,
+/// **without creating one**.
+///
+/// [`validate`] reads the config and nothing else, so a block can be
+/// entirely right and `drt start` still fail on the machine it ran on —
+/// which is what happened in issue #21, twice, after `drt wg check` said
+/// `ok`. These are the cheap environment facts behind three of
+/// [`INTERFACE_ERRNO`]'s four entries, asked before anything is created.
+///
+/// They are kept apart from `validate`'s warnings, and the caller keeps
+/// them apart in its output and its exit code, because they are facts
+/// about *here*: `check` exists so a config can be written and checked on
+/// a laptop and deployed where the privilege is, and a laptop with no tun
+/// node is not a bad config.
+///
+/// Empty on platforms where the equivalent question cannot be asked
+/// without doing the thing — macOS allocates a `utun` through a kernel
+/// control socket with no node to stat, and Windows would mean loading
+/// wintun.dll. Silence here never means "this will work".
+pub fn interface_here() -> Vec<String> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        Vec::new()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let mut findings = Vec::new();
+        findings.extend(tun_node_here(std::path::Path::new(TUN_NODE)));
+        // Asked second, and separately, because it is the failure the
+        // other two get mistaken for. A process can hold the capability
+        // and still not open the node, which is exactly the hour issue
+        // #21 lost.
+        if let Some(false) = net_admin_here() {
+            findings.push(
+                "this process does not hold CAP_NET_ADMIN, so the kernel will \
+                 refuse the interface. Run it as root, or `setcap \
+                 cap_net_admin=ep` the binary."
+                    .into(),
+            );
+        }
+        findings
+    }
+}
+
+/// Whether the tunnel device node is there and this process can open it,
+/// as a sentence or nothing.
+///
+/// Takes the path rather than reading [`TUN_NODE`] so a test can point it
+/// at one that is not there. The case worth holding is the container
+/// started without `--device /dev/net/tun`, and a test that moved the real
+/// node would be a test that broke the machine it ran on.
+///
+/// Opening is the whole probe: `open` is what returns ENOENT and EACCES,
+/// and the `TUNSETIFF` that would return EPERM is also what would create
+/// an interface — which is the one thing `check` promises not to do. So a
+/// node that opens is two facts established and the third still open, and
+/// [`interface_here`] reads that third from the capability mask instead.
+#[cfg(target_os = "linux")]
+pub fn tun_node_here(path: &std::path::Path) -> Option<String> {
+    match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+    {
+        Ok(_) => None,
+        Err(e) => Some(format!(
+            "{}: {e}. {}",
+            path.display(),
+            interface_advice(e.raw_os_error())
+        )),
+    }
+}
+
+/// Whether this process holds CAP_NET_ADMIN, or `None` if the answer could
+/// not be read.
+///
+/// `CapEff` in `/proc/self/status` is the effective set as a hex mask, and
+/// it covers root without a separate uid check: root's effective set is
+/// full. `None` rather than a guess where `/proc` is not mounted — a
+/// deployment that cannot read the mask should be told nothing about it
+/// rather than told it is fine.
+#[cfg(target_os = "linux")]
+pub fn net_admin_here() -> Option<bool> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let mask = status
+        .lines()
+        .find_map(|line| line.strip_prefix("CapEff:"))?
+        .trim();
+    let bits = u64::from_str_radix(mask, 16).ok()?;
+    Some(bits & (1 << CAP_NET_ADMIN) != 0)
 }
 
 /// What STUN saw of the socket this device is about to bind.
