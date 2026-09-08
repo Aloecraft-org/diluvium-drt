@@ -873,6 +873,28 @@ pub fn main(cli: Cli) -> ExitCode {
                             }
                         );
                     }
+                    // The config is one question and this machine is
+                    // another, so they get different words and the exit
+                    // code follows only the first. `check` exists so a
+                    // config can be written on a laptop and deployed where
+                    // the privilege is; a laptop with no tun node is not a
+                    // bad config, and failing over one would break the
+                    // workflow the verb is for. Saying nothing was the old
+                    // behaviour, and it let `ok:` be read as "this will
+                    // work here" twice in one evening (issue #21).
+                    // On stderr, beside the config's own warnings, for the
+                    // same reason they are: stdout is the verdict and
+                    // stderr is what qualifies it.
+                    let here = crate::wireguard::interface_here();
+                    for finding in &here {
+                        eprintln!("here: {finding}");
+                    }
+                    if !here.is_empty() {
+                        eprintln!(
+                            "      `ok` is the config; `here` is this machine, and the \
+                             exit code follows the config."
+                        );
+                    }
                     ExitCode::SUCCESS
                 }
                 Err(e) => {

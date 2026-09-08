@@ -16,6 +16,11 @@ echo '$ drt wg --config wrong.host.lua'
 "$DRT" wg --config wrong.host.lua
 echo "exit $?"
 
+
+# example: omits the `here:` lines `check` also prints -- whether this machine
+# has /dev/net/tun and CAP_NET_ADMIN. They are true and they are useful, and
+# they say something different on every machine, so meta.json normalises them
+# away; crates/drt/tests/wireguard.rs is where they are held.
 echo
 echo '$ drt wg check --config hub-unroutable.host.lua'
 "$DRT" wg check --config hub-unroutable.host.lua

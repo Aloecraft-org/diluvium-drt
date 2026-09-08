@@ -1756,3 +1756,96 @@ fn remap_without_stun_servers_says_which_field_is_missing() {
         driver.abort();
     });
 }
+
+// ---------------------------------------------------------------------------
+// Why the interface would not come up (issue #21)
+// ---------------------------------------------------------------------------
+
+/// Every failure used to carry the CAP_NET_ADMIN paragraph, including the
+/// two it was false for: a container with no `/dev/net/tun` and a process
+/// that already held the capability were both told to go and get it. The
+/// second cost an operator an hour and the wrong conclusion — "the
+/// capability isn't taking effect" — nearly cost a working design.
+///
+/// The four errnos are the ones measured by making each one happen
+/// (issue #21, and again on 2026-09-08 before this was written), so this
+/// pins the mapping rather than the wording: what each arm must *not* say
+/// is as much the point as what it says.
+///
+/// Linux, because two of the four entries are facts about a device node
+/// and the table is per-platform for exactly that reason.
+#[cfg(target_os = "linux")]
+#[test]
+fn every_way_the_interface_can_fail_says_which_one_it_was() {
+    let privilege = drt::wireguard::interface_advice(Some(1)); // EPERM
+    assert!(
+        privilege.contains("CAP_NET_ADMIN"),
+        "EPERM is the one failure the privilege paragraph is true for: {privilege}"
+    );
+
+    let no_node = drt::wireguard::interface_advice(Some(2)); // ENOENT
+    assert!(
+        no_node.contains("/dev/net/tun") && no_node.contains("--device"),
+        "{no_node}"
+    );
+    assert!(
+        !no_node.contains("CAP_NET_ADMIN"),
+        "a missing device node is not a missing capability, and saying so sends \
+         an already-root process to grant itself what it holds: {no_node}"
+    );
+
+    let unopenable = drt::wireguard::interface_advice(Some(13)); // EACCES
+    assert!(
+        unopenable.contains("file mode") && unopenable.contains("does not override"),
+        "{unopenable}"
+    );
+
+    let taken = drt::wireguard::interface_advice(Some(16)); // EBUSY
+    assert!(taken.contains("already taken"), "{taken}");
+    assert!(!taken.contains("CAP_NET_ADMIN"), "{taken}");
+
+    // Four distinct answers, not one paragraph wearing four hats.
+    let all = [privilege, no_node, unopenable, taken];
+    for (i, one) in all.iter().enumerate() {
+        for other in &all[i + 1..] {
+            assert_ne!(one, other);
+        }
+    }
+}
+
+/// An errno nobody has made happen gets no sentence at all.
+///
+/// The asymmetry issue #21 is about: an errno printed bare is a thing to
+/// look up, and an errno printed under a confident wrong cause is an hour
+/// lost. So the table is a lookup and never a fallback.
+#[cfg(unix)]
+#[test]
+fn an_errno_nobody_measured_says_nothing_rather_than_guessing() {
+    assert_eq!(drt::wireguard::interface_advice(Some(28)), ""); // ENOSPC
+    assert_eq!(drt::wireguard::interface_advice(None), "");
+}
+
+/// `drt wg check` read the config and nothing else, so it printed `ok` on
+/// two machines where `drt start` then could not create the interface.
+/// The cheapest of those facts is whether the device node opens at all.
+///
+/// Pointed at a path that is not there rather than at the real node,
+/// because a test that moved `/dev/net/tun` would be a test that broke the
+/// machine it ran on.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_machine_with_no_tun_node_is_named_before_anything_is_created() {
+    let missing = std::path::Path::new("/dev/net/tun-that-is-not-there");
+    let finding =
+        drt::wireguard::tun_node_here(missing).expect("a node that is not there is a finding");
+    assert!(finding.contains("tun-that-is-not-there"), "{finding}");
+    assert!(finding.contains("--device"), "{finding}");
+
+    // And the capability is asked separately, because a process can hold
+    // it and still not open the node — which is exactly the case that got
+    // read as "the capability isn't taking effect".
+    assert!(
+        drt::wireguard::net_admin_here().is_some(),
+        "CapEff is readable wherever /proc is mounted; None is for where it is not"
+    );
+}

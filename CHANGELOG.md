@@ -38,6 +38,15 @@ place, a build with the TLS feature removed **no longer compiles**.
 behind it, so rc7's bug is now a build error rather than a runtime
 surprise, caught before any test runs.
 
+Beside that, the same lesson from the other end of the stack. Every
+way of failing to create a WireGuard interface was reported as a
+missing privilege, so a container with no `/dev/net/tun` and a
+process that already held `CAP_NET_ADMIN` were both sent to go and
+get the capability. `drt wg check` said `ok` on both. Four errnos
+now get four answers and an unmeasured one gets none, and `check`
+names what it can establish about the machine it is on without
+creating anything.
+
 ### Connectors
 
 - `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `listen`
@@ -79,6 +88,50 @@ surprise, caught before any test runs.
 
 ### Fixed
 
+- **Every way of failing to create the tunnel interface was
+  reported as a missing privilege.** The `CAP_NET_ADMIN` paragraph
+  was attached to every error `create_as_async` can return, not to
+  the one it describes, and the errno it followed could not be read
+  past it. Two failures it is false for arrived dressed as
+  privilege problems while integrating rc7 into discofetch (issue
+  #21): a container with no `/dev/net/tun`, **already uid 0**, told
+  to go and get a capability it held; and `/dev/net/tun` at mode
+  `0600` with `cap_net_admin=ep` on the binary, where a file mode
+  does not care what capabilities you hold. The second cost about
+  an hour and produced the conclusion "the capability isn't taking
+  effect", which nearly got a working design abandoned.
+
+  It is a lookup table now, and an errno outside it gets **no**
+  sentence rather than a guess -- an errno printed bare is a thing
+  to look up, an errno printed under a confident wrong cause is an
+  hour lost. Four entries, each measured by making it happen:
+  `ENOENT` (no device node -- and it says so, including that root
+  fails here identically), `EACCES` (the node will not open, which
+  is a file mode and not a capability), `EPERM` (the node opened
+  and the kernel refused -- the one case the old paragraph was
+  right about), and `EBUSY` (the interface name is taken, which
+  nothing named before).
+- **`drt wg check` said `ok` where the tunnel could not come up.**
+  It called `validate`, which reads the config and nothing else, so
+  on both machines above it printed `ok: drt0 on port 51821` and
+  `drt start` then failed on the interface. `check` is the verb
+  whose job is "will this work", and the two cheapest environment
+  facts were exactly the ones it did not look at.
+
+  It now prints them, as `here:` lines beside the config's `ok:`,
+  covering the two errnos that can be established without creating
+  anything: whether `/dev/net/tun` opens, and whether `CapEff`
+  carries `CAP_NET_ADMIN`. The `TUNSETIFF` that returns `EPERM` is
+  also the call that would create an interface, which is the one
+  thing `check` promises not to do, so the capability is read from
+  the mask rather than tried.
+
+  **The exit code still follows the config alone**, deliberately:
+  `check` exists so a config can be written on a laptop and
+  deployed where the privilege is, and a laptop with no tun node is
+  not a bad config. Failing over one would break the workflow the
+  verb is for; the finding is printed loudly instead, and the line
+  under it says which half the exit code answers.
 - **`doc/Release.md` said the thing that works cannot work.** It
   recorded, in the strongest terms on the page, that a publishing
   `workflow_dispatch` could not create a tag, and called it the one
