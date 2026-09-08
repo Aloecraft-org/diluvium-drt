@@ -39,10 +39,12 @@
 //! the ssh session's whole life, so this is invisible. It shows up only
 //! when a script pipes a fixed input (`printf ... | drt tunnel <url>`),
 //! where the answer can be lost to the teardown stdin's EOF triggers. A
-//! real half-close needs a Close frame the peer can see, and
-//! ego-transport's `Transport` exposes only `send`/`recv` — so this is
-//! fixed by the same migration to tokio-tungstenite the relay already
-//! made, not by a timeout guessing when the far side is finished.
+//! real half-close needs a Close frame the peer can see. The migration to
+//! tokio-tungstenite that this was waiting on has since landed — both
+//! halves speak it now — so the blocker is gone and only the change
+//! itself is outstanding: send Close on local EOF and keep reading until
+//! the peer's Close comes back, rather than a timeout guessing when the
+//! far side is finished.
 //!
 //! What this deliberately is not: an in-process SSH-over-WSS *client* for
 //! the `host:ssh/exec` connector. That composition wants
@@ -55,63 +57,145 @@
 //! local port, and each connection there is its own leg through the
 //! relay.
 
+use std::sync::Arc;
 use std::time::Duration;
 
-use ego_transport::transport::{Transport, TransportError};
-use ego_transport::WebSocketNative;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio_rustls::rustls::pki_types::CertificateDer;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 
-/// How much is moved per read. Formerly load-bearing for correctness:
-/// ego-transport's `recv` used to copy a message into the caller's buffer
-/// and silently drop the tail, so this had to be at least as large as any
-/// message a peer sent, and the bridge was safe only because both halves
-/// used the same size. That is fixed upstream as of ego-transport 0.1.3 —
-/// a `MessageBuffer` retains the tail and returns it on the next `recv` —
-/// so this is now a throughput knob and nothing more, and a peer sending
-/// larger frames is no longer a corruption hazard.
+/// The WebSocket this module speaks, on both halves.
+///
+/// One client, not two. The caller half used to go through
+/// ego-transport's `WebSocketNative` while the device half used
+/// tokio-tungstenite directly, which meant two error vocabularies, two
+/// sets of frame handling, and — the reason this changed — only one of
+/// them could be handed a trust store. `WebSocketNative::connect` calls
+/// `connect_async` with no connector hook, so an operator behind an
+/// internal CA had no way in.
+pub type Ws<S> = WebSocketStream<S>;
+
+/// A WSS connection as the caller half makes one.
+pub type WsClient = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// How much is moved per read. A throughput knob and nothing more.
 const CHUNK: usize = 64 * 1024;
 
-/// Pump bytes both ways between a byte stream and a WS transport until
-/// either side closes.
+/// Dial a `ws://` or `wss://` URL, trusting `extra_roots` beside the
+/// public ones.
 ///
-/// One task, one `select!` loop — deliberately. ego-transport's `Transport`
-/// takes `&mut self` for both directions, so a two-task split needs a lock,
-/// and a lock held across a parked `recv().await` deadlocks the send
-/// direction on the first exchange (SSH's handshake is exactly such an
-/// exchange; this bridge's first draft proved it the hard way). The select
-/// loop polls both directions and acts on whichever fires; while one
-/// side's write is in flight the other side buffers in its socket, which
-/// is ordinary backpressure, not a stall. The upstream ask that removes
-/// the constraint is a split-capable WS — tungstenite underneath splits
-/// fine, the trait hides it.
-async fn pump<S>(stream: S, mut ws: WebSocketNative) -> Result<(), String>
+/// With no extra roots this is plain `connect_async`, which is exactly
+/// what it was before — webpki's bundled roots, by way of
+/// tokio-tungstenite's `rustls-tls-webpki-roots`. Supplying roots swaps
+/// in a connector built from the same public set *plus* what was named:
+/// **added, never substituted**, which is the rule the `rest` connector's
+/// `extra_roots` already states and for its reason — a client that could
+/// narrow its trust to one certificate is a footgun, and the case that
+/// exists in the field is a CA that must be trusted beside the public
+/// ones rather than instead of them.
+pub async fn connect(
+    url: &str,
+    extra_roots: &[CertificateDer<'static>],
+) -> Result<WsClient, String> {
+    if extra_roots.is_empty() {
+        let (ws, _) = tokio_tungstenite::connect_async(url)
+            .await
+            .map_err(|e| format!("cannot reach {url}: {e}"))?;
+        return Ok(ws);
+    }
+    let mut store = tokio_rustls::rustls::RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
+    for cert in extra_roots {
+        store
+            .add(cert.clone())
+            .map_err(|e| format!("extra root rejected: {e}"))?;
+    }
+    let config = tokio_rustls::rustls::ClientConfig::builder()
+        .with_root_certificates(store)
+        .with_no_client_auth();
+    let (ws, _) = tokio_tungstenite::connect_async_tls_with_config(
+        url,
+        None,
+        false,
+        Some(Connector::Rustls(Arc::new(config))),
+    )
+    .await
+    .map_err(|e| format!("cannot reach {url}: {e}"))?;
+    Ok(ws)
+}
+
+/// The PEM files `--extra-root` names, read and parsed before anything is
+/// dialed, so a wrong path or a key file handed over by mistake is a
+/// refusal by name rather than a TLS error on the first connection.
+/// Deliberately the same semantics as the `rest` scope's `extra_roots`.
+pub fn load_roots(paths: &[std::path::PathBuf]) -> Result<Vec<CertificateDer<'static>>, String> {
+    use tokio_rustls::rustls::pki_types::pem::PemObject;
+    let mut out = Vec::new();
+    for path in paths {
+        let name = path.display();
+        let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(path)
+            .map_err(|e| format!("--extra-root '{name}': {e}"))?
+            .collect::<Result<_, _>>()
+            .map_err(|e| format!("--extra-root '{name}': {e}"))?;
+        if certs.is_empty() {
+            return Err(format!("--extra-root '{name}': no certificate in it"));
+        }
+        out.extend(certs);
+    }
+    Ok(out)
+}
+
+/// Pump bytes both ways between a byte stream and a WebSocket until either
+/// side closes.
+///
+/// Split, not a `select!` over a `&mut self` transport. The previous
+/// version could not split — ego-transport's `Transport` takes `&mut self`
+/// for both directions, so a two-task split needed a lock, and a lock held
+/// across a parked `recv().await` deadlocked the send direction on the
+/// first exchange (SSH's handshake is exactly such an exchange). Its own
+/// comment named the fix: "tungstenite underneath splits fine, the trait
+/// hides it." This is that fix.
+///
+/// It also answers pings, which the caller half did not. A gate that
+/// pings an idle `ProxyCommand` session — an hour into an ssh session
+/// with nothing typed — was previously answered with silence.
+async fn pump<S, T>(stream: S, ws: Ws<T>) -> Result<(), String>
 where
     S: AsyncRead + AsyncWrite + Send + 'static,
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    use futures_util::{SinkExt, StreamExt};
+
     let (mut read_half, mut write_half) = tokio::io::split(stream);
-    let mut sbuf = vec![0u8; CHUNK];
-    let mut wbuf = vec![0u8; CHUNK];
+    let (mut ws_out, mut ws_in) = ws.split();
+    let mut buf = vec![0u8; CHUNK];
     loop {
         tokio::select! {
-            read = read_half.read(&mut sbuf) => {
+            read = read_half.read(&mut buf) => {
                 match read {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
-                        if ws.send(&sbuf[..n]).await.is_err() {
+                        if ws_out.send(Message::Binary(buf[..n].to_vec())).await.is_err() {
                             break;
                         }
                     }
                 }
             }
-            received = ws.recv(&mut wbuf) => {
-                match received {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        if write_half.write_all(&wbuf[..n]).await.is_err() {
+            msg = ws_in.next() => {
+                match msg {
+                    Some(Ok(Message::Binary(b))) => {
+                        if write_half.write_all(&b).await.is_err() {
                             break;
                         }
                         let _ = write_half.flush().await;
                     }
+                    Some(Ok(Message::Ping(p))) => {
+                        let _ = ws_out.send(Message::Pong(p)).await;
+                    }
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                    Some(Ok(_)) => {}
                 }
             }
         }
@@ -122,10 +206,8 @@ where
 
 /// The client half: dial the WSS url and pump this process's stdio through
 /// it — the OpenSSH `ProxyCommand` contract. Runs until either side closes.
-pub async fn stdio_to_ws(url: &str) -> Result<(), String> {
-    let ws = WebSocketNative::connect(url)
-        .await
-        .map_err(|e| describe(url, e))?;
+pub async fn stdio_to_ws(url: &str, extra_roots: &[CertificateDer<'static>]) -> Result<(), String> {
+    let ws = connect(url, extra_roots).await?;
     let stdio = tokio::io::join(tokio::io::stdin(), tokio::io::stdout());
     pump(stdio, ws).await
 }
@@ -157,7 +239,7 @@ pub async fn serve_ws_bridge(
         };
         let target = target.to_string();
         tokio::spawn(async move {
-            let Ok(ws) = WebSocketNative::accept(conn).await else {
+            let Ok(ws) = tokio_tungstenite::accept_async(conn).await else {
                 return;
             };
             let Ok(tcp) = tokio::net::TcpStream::connect(&target).await else {
@@ -183,7 +265,11 @@ pub async fn serve_ws_bridge(
 /// relay that is down is a connect error — closes the accepted socket at
 /// once, so a client sees a refused connection and never a half-open one
 /// it sits on.
-pub async fn local_to_ws(local: &str, url: &str) -> Result<(), String> {
+pub async fn local_to_ws(
+    local: &str,
+    url: &str,
+    extra_roots: &[CertificateDer<'static>],
+) -> Result<(), String> {
     let listener = tokio::net::TcpListener::bind(local)
         .await
         .map_err(|e| format!("cannot bind {local}: {e}"))?;
@@ -191,23 +277,28 @@ pub async fn local_to_ws(local: &str, url: &str) -> Result<(), String> {
         "drt tunnel: local {} claiming a leg per connection at {url}",
         listener.local_addr().map_err(|e| e.to_string())?
     );
-    serve_local(listener, url).await
+    serve_local(listener, url, extra_roots).await
 }
 
 /// The accept loop behind [`local_to_ws`], over a listener the caller
 /// bound — which is also how a test gets the port back.
-pub async fn serve_local(listener: tokio::net::TcpListener, url: &str) -> Result<(), String> {
+pub async fn serve_local(
+    listener: tokio::net::TcpListener,
+    url: &str,
+    extra_roots: &[CertificateDer<'static>],
+) -> Result<(), String> {
     loop {
         let Ok((conn, peer)) = listener.accept().await else {
             continue;
         };
         let url = url.to_string();
+        let roots = extra_roots.to_vec();
         tokio::spawn(async move {
             // Claim first, splice second. `stream_to_ws` dials before it
             // pumps, so a refused claim returns here with `conn` unread
             // and drops it -- that drop is the local close the caller
             // sees, at once, in place of a leg that never came.
-            if let Err(e) = stream_to_ws(conn, &url).await {
+            if let Err(e) = stream_to_ws(conn, &url, &roots).await {
                 eprintln!("drt tunnel: {peer}: {e}");
             }
         });
@@ -217,18 +308,16 @@ pub async fn serve_local(listener: tokio::net::TcpListener, url: &str) -> Result
 /// Bridge one already-open byte stream to the WSS url — `stdio_to_ws` with
 /// the stream supplied, which is what a test (or a later in-process caller)
 /// uses in place of a terminal.
-pub async fn stream_to_ws<S>(stream: S, url: &str) -> Result<(), String>
+pub async fn stream_to_ws<S>(
+    stream: S,
+    url: &str,
+    extra_roots: &[CertificateDer<'static>],
+) -> Result<(), String>
 where
     S: AsyncRead + AsyncWrite + Send + 'static,
 {
-    let ws = WebSocketNative::connect(url)
-        .await
-        .map_err(|e| describe(url, e))?;
+    let ws = connect(url, extra_roots).await?;
     pump(stream, ws).await
-}
-
-fn describe(url: &str, e: TransportError) -> String {
-    format!("cannot reach {url}: {e:?}")
 }
 
 // ---------------------------------------------------------------------------
@@ -255,10 +344,14 @@ fn describe(url: &str, e: TransportError) -> String {
 /// tokio-tungstenite directly, like the relay and for the relay's reasons
 /// (split, whole messages, headers); the ego-transport modes above migrate
 /// in their own change.
-pub async fn park(url: &str, target: &str) -> Result<(), String> {
+pub async fn park(
+    url: &str,
+    target: &str,
+    extra_roots: &[CertificateDer<'static>],
+) -> Result<(), String> {
     let mut backoff = Duration::from_secs(1);
     loop {
-        match park_once(url, target).await {
+        match park_once(url, target, extra_roots).await {
             // A claim happened: the session runs detached; park again now.
             Ok(Parked::Claimed) => {
                 backoff = Duration::from_secs(1);
@@ -283,11 +376,15 @@ enum Parked {
     Dropped,
 }
 
-async fn park_once(url: &str, target: &str) -> Result<Parked, String> {
+async fn park_once(
+    url: &str,
+    target: &str,
+    extra_roots: &[CertificateDer<'static>],
+) -> Result<Parked, String> {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message;
 
-    let (mut ws, _) = tokio_tungstenite::connect_async(url)
+    let mut ws = connect(url, extra_roots)
         .await
         .map_err(|e| format!("cannot park at {url}: {e}"))?;
 

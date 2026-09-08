@@ -1111,6 +1111,7 @@ dependencies = [
  "gotatun",
  "httparse",
  "ipnetwork",
+ "rcgen",
  "rmpv",
  "serde_json",
  "tempfile",

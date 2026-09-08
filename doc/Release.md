@@ -77,25 +77,64 @@ does the same dispatch with `tag` set and `publish=true` touch the
 Releases page. The publish job depends on tests and builds, so a failure
 anywhere means no release rather than a partial one.
 
-### Push the tag yourself. Do not publish from a dispatch.
+### Push the tag yourself, or publish from a dispatch — both work now
 
-**This is the one operational rule on this page, and getting it wrong has
-cost two releases.** To publish:
+**Corrected 2026-09-07.** Everything below this box was written when a
+publishing `workflow_dispatch` could not create a tag, and it said so in
+the strongest terms this page has. That is no longer true, and the old
+text is kept underneath because a rule nobody can reproduce is worse than
+a rule with its history attached.
+
+What changed is not in this repository: the Actions token creates tag refs
+now, so `action-gh-release` no longer needs the tag to exist first. Both
+**v0.5.0rc6** and **v0.5.0rc7** were published by dispatch with `tag:` set
+to a tag that did not exist and `publish=true` — run 37 created
+`v0.5.0rc6` at `105d895`, run 38 created `v0.5.0rc7` at `780071d`, each
+with every artifact attached and the rendered body. The restriction the
+next section diagnoses appears to have been lifted between 2026-09-01 and
+2026-09-06.
+
+So there are two ways to publish, and the choice is about who is at a
+keyboard rather than about what works:
+
+```sh
+git tag v0.5.0rc8 && git push origin v0.5.0rc8     # from a laptop
+```
+
+or **Actions → Release → Run workflow** with `tag` set and `publish=true`,
+which needs no git client at all and is what an agent session — whose
+credentials are commonly scoped to refuse tag pushes — has to use.
+
+**The rehearsal is still the gate.** Neither route removes it: run the
+dispatch with `publish` off first, and only publish once it is green.
+
+The stale rule cost a version number on 2026-09-06: `v0.5.0rc5` was tagged
+at `main` before the release branch had merged, preflight refused it
+correctly, and the workaround chosen was a fresh rc6 rather than a
+dispatch — because this page said a dispatch could not work. Read the
+history below for the shape of the original failure, not for what to do
+today.
+
+---
+
+### The old rule, and why it existed
+
+To publish:
 
 ```sh
 git tag v0.4.0rc1 && git push origin v0.4.0rc1
 ```
 
 The tag push triggers the workflow with `publish=true` and everything
-downstream works. What does *not* work is a `workflow_dispatch` with
-`tag:` set to a tag that does not exist yet, because then
-`action-gh-release` has to create the ref as well as the release, and the
-Actions token is not permitted to create it — 403, `Resource not
-accessible by integration`. A human account is not subject to that, which
-is why pushing the tag by hand is the whole fix rather than a workaround.
+downstream works. What *used to* fail was a `workflow_dispatch` with
+`tag:` set to a tag that did not exist yet, because then
+`action-gh-release` had to create the ref as well as the release, and the
+Actions token was not permitted to create it — 403, `Resource not
+accessible by integration`. A human account was not subject to that, which
+is why pushing the tag by hand was the whole fix rather than a workaround.
 
 Use a dispatch for a *rehearsal* (`publish` off, no tag), which is what
-it is for. Only push the tag once that is green.
+it is for. Only publish, by either route, once that is green.
 
 ## v0.5.0rc1's rehearsal — two failures CI could not have caught
 

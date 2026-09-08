@@ -89,6 +89,22 @@ sftp -o ProxyCommand="drt tunnel wss://rendezvous.example/s/xps?k=$CALLER_KEY" u
 Because the bridge only moves bytes, `-L 8080:localhost:8080`, `-R`, `-A`,
 `ssh -J` and everything else are the real ssh client's and work unchanged.
 
+**A gate behind an internal CA:** `--extra-root <PEM>`, repeatable, on
+either half. The named certificates are trusted *in addition to* the
+public roots, never instead of them — the same rule and the same wording
+as `connectors.rest`'s `extra_roots`, because a client that could narrow
+its trust to one certificate is a footgun. The files are read and parsed
+before anything is dialed, so a wrong path is a refusal by name rather
+than a TLS error on the first connection.
+
+```sh
+drt tunnel --extra-root /etc/pki/corp-ca.pem \
+  wss://rendezvous.example/s/xps?k=$CALLER_KEY
+```
+
+Without it, `wss://` uses webpki's bundled roots, which is what a gate
+with a public certificate needs and wants.
+
 ## The URLs are the public surface
 
 Both legs are dumb pipes — `websocat` on either end works identically, and

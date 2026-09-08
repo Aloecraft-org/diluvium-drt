@@ -216,7 +216,7 @@ async fn the_full_triangle_and_replenish_on_claim() {
     // The device: parks, re-parks on claim, forever.
     let park_url = format!("ws://{addr}/park/xps?k=park-secret-0123456789");
     tokio::spawn(async move {
-        let _ = drt::tunnel::park(&park_url, &echo_addr).await;
+        let _ = drt::tunnel::park(&park_url, &echo_addr, &[]).await;
     });
     parked(&relay, "xps", 1).await;
 

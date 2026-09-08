@@ -67,7 +67,7 @@ async fn a_real_ssh_session_crosses_the_wss_bridge() {
             };
             let url = ws_url.clone();
             tokio::spawn(async move {
-                let _ = drt::tunnel::stream_to_ws(conn, &url).await;
+                let _ = drt::tunnel::stream_to_ws(conn, &url, &[]).await;
             });
         }
     });
@@ -132,7 +132,7 @@ async fn bytes_cross_the_bridge_alone() {
     let entry_addr = entry.local_addr().unwrap();
     tokio::spawn(async move {
         let (conn, _) = entry.accept().await.unwrap();
-        let _ = drt::tunnel::stream_to_ws(conn, &ws_url).await;
+        let _ = drt::tunnel::stream_to_ws(conn, &ws_url, &[]).await;
     });
     let mut client = tokio::net::TcpStream::connect(entry_addr).await.unwrap();
     client.write_all(b"marco").await.unwrap();
@@ -178,7 +178,7 @@ async fn a_local_listener_claims_one_leg_per_connection_and_refuses_by_closing()
     let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let local_addr = local.local_addr().unwrap();
     tokio::spawn(async move {
-        let _ = drt::tunnel::serve_local(local, &ws_url).await;
+        let _ = drt::tunnel::serve_local(local, &ws_url, &[]).await;
     });
 
     // Two callers at once, each on its own leg; each answer lands on the
@@ -221,7 +221,7 @@ async fn a_local_listener_claims_one_leg_per_connection_and_refuses_by_closing()
     let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let local_addr = local.local_addr().unwrap();
     tokio::spawn(async move {
-        let _ = drt::tunnel::serve_local(local, &refusing_url).await;
+        let _ = drt::tunnel::serve_local(local, &refusing_url, &[]).await;
     });
     let mut c = tokio::net::TcpStream::connect(local_addr).await.unwrap();
     let mut buf = [0u8; 16];
@@ -239,7 +239,7 @@ async fn a_local_listener_claims_one_leg_per_connection_and_refuses_by_closing()
     let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let local_addr = local.local_addr().unwrap();
     tokio::spawn(async move {
-        let _ = drt::tunnel::serve_local(local, &gone_url).await;
+        let _ = drt::tunnel::serve_local(local, &gone_url, &[]).await;
     });
     let mut c = tokio::net::TcpStream::connect(local_addr).await.unwrap();
     let n = tokio::time::timeout(Duration::from_secs(5), c.read(&mut buf))
@@ -247,4 +247,177 @@ async fn a_local_listener_claims_one_leg_per_connection_and_refuses_by_closing()
         .expect("the connection to a missing relay was closed within five seconds")
         .unwrap_or(0);
     assert_eq!(n, 0);
+}
+
+// ---------------------------------------------------------------------------
+// The wss:// gate: the shape every real deployment uses
+// ---------------------------------------------------------------------------
+
+/// A TLS terminator on loopback, forwarding to a plain-ws upstream.
+///
+/// This is nginx's job in a real deployment, in twenty lines: DRT's relay
+/// speaks plain `ws://` on purpose and TLS belongs to the gate in front of
+/// it. Returns the port to dial and the self-signed certificate a client
+/// has to be told to trust, since no public CA will vouch for it.
+async fn tls_gate(
+    upstream: String,
+) -> (
+    u16,
+    tokio_rustls::rustls::pki_types::CertificateDer<'static>,
+) {
+    use std::sync::Arc;
+    use tokio_rustls::rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
+    use tokio_rustls::rustls::ServerConfig;
+
+    let issued = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+        .expect("a self-signed certificate for the gate");
+    let cert = CertificateDer::from(issued.cert.der().to_vec());
+    let key = PrivatePkcs8KeyDer::from(issued.key_pair.serialize_der());
+
+    let config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert.clone()], key.into())
+        .expect("the gate's certificate and key agree");
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((sock, _)) = listener.accept().await {
+            let acceptor = acceptor.clone();
+            let upstream = upstream.clone();
+            tokio::spawn(async move {
+                let Ok(mut tls) = acceptor.accept(sock).await else {
+                    return;
+                };
+                let Ok(mut up) = tokio::net::TcpStream::connect(&upstream).await else {
+                    return;
+                };
+                let _ = tokio::io::copy_bidirectional(&mut tls, &mut up).await;
+            });
+        }
+    });
+    (port, cert)
+}
+
+/// A real SSH session over a real `wss://` gate — the test that did not
+/// exist, and whose absence shipped six candidates that could not reach
+/// any relay outside a lab.
+///
+/// `tokio-tungstenite` compiled with no TLS backend answers every `wss://`
+/// with `TLS support not compiled in`, and nothing here would have
+/// noticed: every other test and example reaches its relay on loopback
+/// over plain `ws://`, the one shape that needs no TLS. The bug was found
+/// by a person pointing `ssh -o ProxyCommand` at a real gate, which is not
+/// a gate.
+///
+/// So this is the SSH session the first test in this file runs, with the
+/// bridge behind a TLS terminator: modern kex, a pinned host key, pubkey
+/// auth and an exec channel, every byte through rustls. It also exercises
+/// `--extra-root`, because a self-signed gate is the only kind a test can
+/// stand up, and an internal CA is the case that wants it in the field.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_real_ssh_session_crosses_a_wss_gate() {
+    let host_key = generate_ed25519();
+    let host_pub = host_key.public_key().clone();
+    let client_key = generate_ed25519();
+    let mut config = SshServerConfig::new(host_key);
+    config.authorization = ClientAuthorization::Keys(vec![client_key.public_key().clone()]);
+    let sshd = SshListener::bind("127.0.0.1:0", config).await.unwrap();
+    let sshd_addr = sshd.local_addr().to_string();
+    tokio::spawn(async move {
+        while let Ok(mut conn) = sshd.accept().await {
+            tokio::spawn(async move {
+                while let Ok(mut channel) = conn.next_channel().await {
+                    let SshChannelKind::Exec(command) = channel.kind().clone() else {
+                        continue;
+                    };
+                    let mut out = b"through tls: ".to_vec();
+                    out.extend_from_slice(&command);
+                    use ego_transport::transport::Transport;
+                    channel.send(&out).await.unwrap();
+                    channel.exit_status(0).await.unwrap();
+                    channel.send_eof().await.ok();
+                    channel.close().await.ok();
+                }
+            });
+        }
+    });
+
+    // The server half on plain ws, exactly as a deployment runs it behind
+    // its gate, and the gate in front of it.
+    let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ws_addr = ws_listener.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        let _ = drt::tunnel::serve_ws_bridge(ws_listener, &sshd_addr).await;
+    });
+    let (gate_port, gate_cert) = tls_gate(ws_addr).await;
+
+    // `localhost`, not 127.0.0.1: the certificate names it and rustls
+    // checks that, which is part of what is under test.
+    let wss_url = format!("wss://localhost:{gate_port}");
+    let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let local_addr = local.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        let _ = drt::tunnel::serve_local(local, &wss_url, &[gate_cert]).await;
+    });
+
+    let conn = SshClientConnection::connect(
+        &local_addr,
+        SshClientConfig {
+            user: "tester".into(),
+            key: client_key,
+            host_verification: HostKeyVerification::Keys(vec![host_pub]),
+            inactivity_timeout: None,
+        },
+    )
+    .await
+    .expect("the SSH handshake did not survive the wss gate");
+
+    let mut channel = conn.open_exec(b"uname").await.unwrap();
+    let mut stdout = Vec::new();
+    let mut exit = None;
+    loop {
+        match channel.next_event().await {
+            SshChannelEvent::Data(bytes) => stdout.extend_from_slice(&bytes),
+            SshChannelEvent::ExitStatus(code) => exit = Some(code),
+            SshChannelEvent::Eof | SshChannelEvent::Closed => break,
+            _ => {}
+        }
+    }
+    assert_eq!(String::from_utf8_lossy(&stdout), "through tls: uname");
+    assert_eq!(exit, Some(0));
+}
+
+/// An unknown gate certificate is refused, and the refusal is a trust
+/// failure rather than a missing feature.
+///
+/// The other half of the guard: without `--extra-root` the same gate must
+/// NOT be trusted, or the test above would pass just as well with
+/// verification disabled. A build with no TLS compiled in fails here too,
+/// but with the wrong words -- so this pins the distinction that the
+/// original bug erased.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_gate_signed_by_nobody_is_refused_on_trust() {
+    let echo = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let echo_addr = echo.local_addr().unwrap().to_string();
+    let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ws_addr = ws_listener.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        let _ = drt::tunnel::serve_ws_bridge(ws_listener, &echo_addr).await;
+    });
+    let (gate_port, _cert) = tls_gate(ws_addr).await;
+
+    let err = drt::tunnel::connect(&format!("wss://localhost:{gate_port}"), &[])
+        .await
+        .expect_err("a self-signed gate must not be trusted by the public roots");
+    let lower = err.to_lowercase();
+    assert!(
+        lower.contains("certificate") || lower.contains("unknown issuer") || lower.contains("tls"),
+        "expected a trust failure, got: {err}"
+    );
+    assert!(
+        !lower.contains("not compiled"),
+        "TLS is not compiled into the WebSocket client: {err}"
+    );
 }

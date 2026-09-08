@@ -86,6 +86,10 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "ne
 drt-connector-fs = { workspace = true }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", default-features = false }
+# The wss gate the tunnel tests put in front of the bridge: a self-signed
+# cert and a TLS terminator, so `wss://` is exercised without a public CA.
+rcgen = "0.13"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 
 [features]
 # One codebase, feature profiles (SPEC.md §3): `slim` runs a script with
@@ -167,7 +171,7 @@ listen = ["dep:httparse"]
 # `drt tunnel`: the stdio<->WSS bridge (ProxyCommand shape) and the
 # WS->TCP listener half. In `full` beside `ssh` — the NAT-traversal story
 # is a server-and-CLI concern, not a notebook's.
-tunnel = ["dep:ego_transport", "dep:tokio", "dep:tokio-tungstenite", "dep:futures-util"]
+tunnel = ["dep:tokio", "dep:tokio-tungstenite", "dep:futures-util", "dep:tokio-rustls", "dep:webpki-roots"]
 # `drt turn`, and the `turn` block inside `drt start`: the TURN relay for
 # the peers `stun` says cannot punch (src/turn.rs). Beside `stun` in
 # `full`, on ego-transport's server, for `stun`'s reasons and the ssh

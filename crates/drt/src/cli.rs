@@ -227,6 +227,12 @@ pub enum Command {
         /// splice, re-parking a fresh leg immediately. Reconnects forever.
         #[arg(long, requires = "to", conflicts_with = "url")]
         park: Option<String>,
+        /// Trust this PEM certificate in addition to the public roots --
+        /// an internal CA in front of the gate, typically. Repeatable.
+        /// Added, never substituted: the public roots stay trusted, for
+        /// the same reason `connectors.rest`'s `extra_roots` says so.
+        #[arg(long = "extra-root", value_name = "PEM")]
+        extra_root: Vec<std::path::PathBuf>,
     },
     /// What can this network do, and what should you do about it.
     ///
@@ -902,18 +908,31 @@ pub fn main(cli: Cli) -> ExitCode {
             listen,
             to,
             park,
+            extra_root,
         } => {
+            // Read and parse before anything is dialed, so a wrong path is
+            // a refusal by name rather than a TLS error on the first
+            // connection.
+            let roots = match crate::tunnel::load_roots(&extra_root) {
+                Ok(roots) => roots,
+                Err(e) => {
+                    eprintln!("drt tunnel: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
             let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
             let outcome = match (url, local, listen, park, to) {
                 (Some(url), Some(local), _, _, _) => {
-                    runtime.block_on(crate::tunnel::local_to_ws(&local, &url))
+                    runtime.block_on(crate::tunnel::local_to_ws(&local, &url, &roots))
                 }
-                (Some(url), None, _, _, _) => runtime.block_on(crate::tunnel::stdio_to_ws(&url)),
+                (Some(url), None, _, _, _) => {
+                    runtime.block_on(crate::tunnel::stdio_to_ws(&url, &roots))
+                }
                 (None, None, Some(listen), None, Some(to)) => {
                     runtime.block_on(crate::tunnel::ws_to_tcp(&listen, &to))
                 }
                 (None, None, None, Some(park), Some(to)) => {
-                    runtime.block_on(crate::tunnel::park(&park, &to))
+                    runtime.block_on(crate::tunnel::park(&park, &to, &roots))
                 }
                 _ => Err(
                     "name a URL to bridge stdio to (with --local to serve a local port \
