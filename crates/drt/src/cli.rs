@@ -356,6 +356,18 @@ pub enum Command {
         /// `udp map`, never quietly replaced.
         #[arg(long = "udp-port", value_name = "N")]
         udp_port: Option<u16>,
+        /// Trust this PEM certificate in addition to the public roots --
+        /// an intercepting proxy's CA, typically. Repeatable. Added, never
+        /// substituted, the same rule and wording `drt tunnel` uses.
+        ///
+        /// This is the flag that makes `netcheck` usable on a corporate
+        /// network, which is the network whose behaviour is hardest to
+        /// guess and where "run netcheck" is most often the advice.
+        /// Without it an intercepted `--reflect` fetch fails
+        /// `UnknownIssuer` and the TCP half reads "not measured" -- an
+        /// honest answer, but not the one the operator can act on.
+        #[arg(long = "extra-root", value_name = "PEM")]
+        extra_root: Vec<std::path::PathBuf>,
         /// Machine-readable output. The default is human text, because the
         /// primary consumer is a person deciding what to do next.
         #[arg(long)]
@@ -1024,7 +1036,7 @@ pub fn main(cli: Cli) -> ExitCode {
             // Read and parse before anything is dialed, so a wrong path is
             // a refusal by name rather than a TLS error on the first
             // connection.
-            let roots = match crate::tunnel::load_roots(&extra_root) {
+            let roots = match crate::roots::load_roots(&extra_root) {
                 Ok(roots) => roots,
                 Err(e) => {
                     eprintln!("drt tunnel: {e}");
@@ -1096,8 +1108,19 @@ pub fn main(cli: Cli) -> ExitCode {
             probe_at,
             pin_source_port,
             udp_port,
+            extra_root,
             json,
         } => {
+            // Before the runtime and before any measurement: a wrong path
+            // should cost nothing and be named, not surface as a TLS error
+            // partway through a diagnostic.
+            let roots = match crate::roots::load_roots(&extra_root) {
+                Ok(roots) => roots,
+                Err(e) => {
+                    eprintln!("drt netcheck: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
             let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
             let mut m = crate::netcheck::Measurements::default();
             let servers: Vec<&str> = stun.iter().map(String::as_str).collect();
@@ -1109,11 +1132,19 @@ pub fn main(cli: Cli) -> ExitCode {
                 // the decisive measurement saw, and an edge that disagrees
                 // with it is recorded as a disagreement rather than
                 // overwriting it.
-                crate::netcheck::gather::reflect(&mut m, &edges, &at, pin_source_port).await;
+                crate::netcheck::gather::reflect(&mut m, &edges, &at, pin_source_port, &roots)
+                    .await;
                 // Last: it needs the reflect views to know which vantages
                 // this run has already contacted.
                 if let Some(first) = edges.first() {
-                    crate::netcheck::gather::probe(&mut m, first, probe_at.as_deref(), &port).await;
+                    crate::netcheck::gather::probe(
+                        &mut m,
+                        first,
+                        probe_at.as_deref(),
+                        &port,
+                        &roots,
+                    )
+                    .await;
                 } else if !port.is_empty() {
                     m.inbound_why =
                         Some("--port needs a --reflect edge to derive the probe host from".into());

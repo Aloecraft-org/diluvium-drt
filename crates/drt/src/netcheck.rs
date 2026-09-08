@@ -788,6 +788,7 @@ pub mod gather {
         reflect_url: &str,
         probe_at: Option<&str>,
         ports: &[u16],
+        extra_roots: &[tokio_rustls::rustls::pki_types::CertificateDer<'static>],
     ) {
         if ports.is_empty() {
             return;
@@ -838,7 +839,7 @@ pub mod gather {
                 Some(token) => format!("{url}?port={port}&token={token}"),
                 None => format!("{url}?port={port}"),
             };
-            match crate::reflect::get(&query, dest, None).await {
+            match crate::reflect::get(&query, dest, None, extra_roots).await {
                 Ok((body, _)) => match parse_probe(&body) {
                     Ok(result) => m.inbound_all.push((*port, result)),
                     Err(why) => {
@@ -912,7 +913,13 @@ pub mod gather {
     /// rendering it as a closed port would be a confidently wrong answer
     /// about the user's network, which is the one thing this module exists
     /// not to do.
-    pub async fn reflect(m: &mut Measurements, edges: &[&str], at: &[&str], pin: bool) {
+    pub async fn reflect(
+        m: &mut Measurements,
+        edges: &[&str],
+        at: &[&str],
+        pin: bool,
+        extra_roots: &[tokio_rustls::rustls::pki_types::CertificateDer<'static>],
+    ) {
         // The first fetch takes an ephemeral port and reports it; every
         // fetch after it leaves from that same port. Sequential on purpose
         // -- see `reflect::connect_from`.
@@ -949,7 +956,7 @@ pub mod gather {
             }
         }
         for (url, dest) in targets {
-            match one_edge(url, dest, if pin { pinned } else { None }).await {
+            match one_edge(url, dest, if pin { pinned } else { None }, extra_roots).await {
                 Ok((view, used_port)) => {
                     if pin {
                         match pinned {
@@ -1013,8 +1020,9 @@ pub mod gather {
         url: &str,
         dest: std::net::SocketAddr,
         from_port: Option<u16>,
+        extra_roots: &[tokio_rustls::rustls::pki_types::CertificateDer<'static>],
     ) -> Result<(EdgeAnswer, u16), String> {
-        let (body, used_port) = crate::reflect::get(url, dest, from_port).await?;
+        let (body, used_port) = crate::reflect::get(url, dest, from_port, extra_roots).await?;
         let json: serde_json::Value =
             serde_json::from_str(&body).map_err(|_| "the edge did not answer JSON".to_string())?;
         let observed = json

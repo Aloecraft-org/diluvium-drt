@@ -19,6 +19,11 @@ pub mod reflect;
 #[cfg(feature = "relay")]
 pub mod relay;
 pub mod repl;
+/// PEM trust anchors named with `--extra-root`, shared by every verb that
+/// dials TLS from a flag. Behind either feature that has one, because both
+/// carry the TLS stack it needs.
+#[cfg(any(feature = "tunnel", feature = "netcheck"))]
+pub mod roots;
 pub mod run;
 pub mod runtime;
 pub mod start;

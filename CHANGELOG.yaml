@@ -264,7 +264,35 @@ releases:
         before anything is dialed, so a wrong path or a key file handed
         over by mistake is a refusal by name rather than a TLS error on
         the first connection.
+      - |
+        **`drt netcheck --extra-root <PEM>`**, the same flag, the same
+        rule, on the verb that needs it most. `netcheck` is what a person
+        is told to run when they do not know their own network, and a
+        corporate network -- where an egress proxy re-signs every TLS
+        connection with a CA no public root vouches for -- is exactly
+        where that question is hardest to answer and where the answer was
+        `address    not measured`. Honest, and useless.
+
+        It needed none of the scope machinery `doc/Ask-Discofetch-Reply.md`
+        expected it to wait for: the reflect fetch builds its own trust
+        store, so a flag was enough. `crates/drt/tests/reflect.rs` stands
+        a TLS terminator in front of the test edge and asserts both halves
+        in one run -- unreachable without the flag, measured with it --
+        because only the pair proves the flag did the work.
     changed:
+      - |
+        **One loader and one trust store for every verb that dials TLS.**
+        `--extra-root`'s loader moved out of `tunnel` into `roots`, which
+        `tunnel` and `netcheck` now share, so "added, never substituted"
+        is a property of one function rather than of every caller
+        remembering it. Moved rather than duplicated while it is still
+        unreleased, which is the only cheap moment to move a `pub` item.
+
+        The shared loader also took `rest`'s stricter check, which the
+        tunnel's own copy did not have: a certificate that parses but
+        cannot serve as a trust anchor is refused at load, by name,
+        instead of being accepted there and rejected at dial. That is the
+        promise the flag's first sentence already made.
       - |
         **One WebSocket client, not two.** The caller half went through
         ego-transport's `WebSocketNative` while the device half used

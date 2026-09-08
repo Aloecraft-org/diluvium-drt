@@ -514,3 +514,147 @@ fn a_rate_limited_probe_is_not_measured_never_refused() {
     );
     assert!(!text.contains("refused"), "never a finding: {text}");
 }
+
+// ---------------------------------------------------------------------------
+// `--extra-root`: the flag that makes netcheck usable behind an intercepting
+// proxy. depth: a TLS terminator in front of the plain edge above.
+// ---------------------------------------------------------------------------
+
+/// A TLS terminator in front of an [`echoing_edge`], plus the self-signed
+/// certificate a client has to be told to trust.
+///
+/// The same twenty lines as the tunnel suite's `tls_gate`, and for the same
+/// reason: no public CA will vouch for a loopback edge, so the only way to
+/// exercise the trust path at all is to stand up a CA nobody trusts and
+/// name it. That is also exactly the shape of the case in the field — an
+/// egress proxy re-signing with a CA that is private to one company.
+///
+/// Returns the `https://` URL, the PEM to trust, and the directory holding
+/// it, which the caller must keep alive.
+fn tls_edge(edge_name: &str) -> (String, std::path::PathBuf, tempfile::TempDir) {
+    use std::sync::Arc;
+    use tokio_rustls::rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
+
+    // The upstream this terminates onto: the plain edge the rest of this
+    // file already drives, unchanged.
+    let upstream = echoing_edge(edge_name)
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .to_string();
+
+    // `localhost` rather than the address, so the name in the URL is the
+    // name in the certificate; `--reflect-at` is what actually points the
+    // connection at loopback.
+    let issued = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+        .expect("a self-signed certificate for the edge");
+    let cert = CertificateDer::from(issued.cert.der().to_vec());
+    let key = PrivatePkcs8KeyDer::from(issued.key_pair.serialize_der());
+
+    let dir = tempfile::tempdir().unwrap();
+    let pem = dir.path().join("edge-ca.pem");
+    std::fs::write(&pem, issued.cert.pem()).unwrap();
+
+    let config = tokio_rustls::rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert], key.into())
+        .expect("the edge's certificate and key agree");
+
+    // Bound on this thread so the port is known before the test proceeds;
+    // served on another, which owns the runtime.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    listener.set_nonblocking(true).unwrap();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            while let Ok((sock, _)) = listener.accept().await {
+                let acceptor = acceptor.clone();
+                let upstream = upstream.clone();
+                tokio::spawn(async move {
+                    let Ok(mut tls) = acceptor.accept(sock).await else {
+                        return;
+                    };
+                    let Ok(mut up) = tokio::net::TcpStream::connect(&upstream).await else {
+                        return;
+                    };
+                    let _ = tokio::io::copy_bidirectional(&mut tls, &mut up).await;
+                });
+            }
+        });
+    });
+
+    (format!("https://localhost:{port}/"), pem, dir)
+}
+
+/// An edge behind a CA the public roots do not know is unreachable, and
+/// `--extra-root` is what reaches it.
+///
+/// This is the whole of discofetch's ask: `netcheck` is what we tell people
+/// to run when they do not know their own network, and a corporate network
+/// — the one case where that question is hardest to answer — is exactly
+/// where an intercepting proxy re-signs the fetch with a CA no public root
+/// vouches for. Before the flag the answer was `not measured`, which is
+/// honest and useless.
+///
+/// Both halves are asserted, because only the pair proves the flag did the
+/// work: the same edge, the same run, unreachable without it and measured
+/// with it.
+#[test]
+fn an_intercepted_edge_is_unreachable_until_extra_root_names_its_ca() {
+    let (url, pem, _dir) = tls_edge("gate1");
+
+    let without = netcheck(&["--reflect", &url, "--reflect-at", "127.0.0.1"]);
+    assert!(
+        without.contains("address    not measured"),
+        "an untrusted CA is a silence, not an address: {without}"
+    );
+    assert!(
+        without.contains("tls:"),
+        "and it names TLS as the reason rather than a bare failure: {without}"
+    );
+
+    let with = netcheck(&[
+        "--reflect",
+        &url,
+        "--reflect-at",
+        "127.0.0.1",
+        "--extra-root",
+        pem.to_str().unwrap(),
+    ]);
+    assert!(
+        with.contains("address    127.0.0.1"),
+        "named, the CA verifies and the edge answers: {with}"
+    );
+    assert!(
+        with.contains("(gate1)"),
+        "and it is the edge we stood up: {with}"
+    );
+}
+
+/// A path that is not a certificate is refused by name, before anything is
+/// measured.
+///
+/// The promise `load_roots` makes in its first sentence. A file accepted at
+/// load and refused at dial is the late, obscure failure the flag exists to
+/// prevent, so the refusal has to come first and has to say which file.
+#[test]
+fn a_file_that_is_not_a_certificate_is_refused_by_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let junk = dir.path().join("not-a-cert.pem");
+    std::fs::write(&junk, b"this is not a certificate\n").unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_drt"))
+        .arg("netcheck")
+        .args(["--extra-root", junk.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "a bad root is a refusal: {err}");
+    assert!(err.contains("--extra-root"), "named by flag: {err}");
+    assert!(err.contains("not-a-cert.pem"), "and by file: {err}");
+}

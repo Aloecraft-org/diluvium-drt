@@ -104,16 +104,8 @@ pub async fn connect(
             .map_err(|e| format!("cannot reach {url}: {e}"))?;
         return Ok(ws);
     }
-    let mut store = tokio_rustls::rustls::RootCertStore {
-        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-    };
-    for cert in extra_roots {
-        store
-            .add(cert.clone())
-            .map_err(|e| format!("extra root rejected: {e}"))?;
-    }
     let config = tokio_rustls::rustls::ClientConfig::builder()
-        .with_root_certificates(store)
+        .with_root_certificates(crate::roots::store(extra_roots))
         .with_no_client_auth();
     let (ws, _) = tokio_tungstenite::connect_async_tls_with_config(
         url,
@@ -124,27 +116,6 @@ pub async fn connect(
     .await
     .map_err(|e| format!("cannot reach {url}: {e}"))?;
     Ok(ws)
-}
-
-/// The PEM files `--extra-root` names, read and parsed before anything is
-/// dialed, so a wrong path or a key file handed over by mistake is a
-/// refusal by name rather than a TLS error on the first connection.
-/// Deliberately the same semantics as the `rest` scope's `extra_roots`.
-pub fn load_roots(paths: &[std::path::PathBuf]) -> Result<Vec<CertificateDer<'static>>, String> {
-    use tokio_rustls::rustls::pki_types::pem::PemObject;
-    let mut out = Vec::new();
-    for path in paths {
-        let name = path.display();
-        let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(path)
-            .map_err(|e| format!("--extra-root '{name}': {e}"))?
-            .collect::<Result<_, _>>()
-            .map_err(|e| format!("--extra-root '{name}': {e}"))?;
-        if certs.is_empty() {
-            return Err(format!("--extra-root '{name}': no certificate in it"));
-        }
-        out.extend(certs);
-    }
-    Ok(out)
 }
 
 /// Pump bytes both ways between a byte stream and a WebSocket until either

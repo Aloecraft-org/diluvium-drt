@@ -289,6 +289,21 @@ if msg.event == "wireguard" and msg.peers[1].last_handshake_ms then ... end
 if msg.event == "wireguard_error" then log(msg.command, msg.reason) end
 ```
 
+**`last_handshake_ms` is an age, and an age is a fact about the moment the
+snapshot was sent — do not assume one keeps arriving.** A program that
+watches link health by comparing each snapshot's `last_handshake_ms`
+against a threshold goes quiet exactly when the link is deadest: with the
+peer gone the device eventually stops reporting an age at all, and a check
+that reads only the field has nothing left to compare. Convert the age to a
+wall-clock time when it arrives, and decide staleness with no snapshot in
+hand. discofetch lost an afternoon to this (issue #17), and the shape of
+the bug is general: every field here that reports an age has it.
+
+**And pick the threshold above WireGuard's rekey interval.** A live link
+re-handshakes about every 120 s and not sooner, so a threshold under that
+detects an outage every time WireGuard is merely behaving, and remaps in a
+loop. Their floor is 150 s.
+
 `reply_queue` is empty by default: a config that did not ask to be steered
 is not steerable, and a queue read by mistake would be a program's own
 messages consumed by a subsystem.
