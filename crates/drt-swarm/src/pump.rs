@@ -109,14 +109,14 @@ impl Pump {
                 break;
             };
             match dispatcher.route(caps, &raw) {
-                Routed::Answered(reply) => landed += self.land(id, replies, inst, &reply),
+                Routed::Answered(reply) => landed += self.land(id, replies, inst, reply),
                 Routed::Call(call) => {
                     let mut future: ReplyFuture = Box::pin(call.answer());
                     match future
                         .as_mut()
                         .poll(&mut Context::from_waker(Waker::noop()))
                     {
-                        Poll::Ready(reply) => landed += self.land(id, replies, inst, &reply),
+                        Poll::Ready(reply) => landed += self.land(id, replies, inst, reply),
                         Poll::Pending => self.inflight.push(InFlight { id, future }),
                     }
                 }
@@ -141,7 +141,7 @@ impl Pump {
             match polled {
                 Poll::Ready(reply) => {
                     let InFlight { id, .. } = self.inflight.remove(i);
-                    if let Ok(bytes) = drt_hostcall::to_wire(&reply) {
+                    if let Ok(bytes) = drt_hostcall::to_wire(reply) {
                         self.settled.push(Settled { id, bytes });
                     }
                 }
@@ -196,7 +196,7 @@ impl Pump {
         id: InstanceId,
         replies: QueueHandle,
         inst: &mut dyn Instance,
-        reply: &Reply,
+        reply: Reply,
     ) -> usize {
         let Ok(bytes) = drt_hostcall::to_wire(reply) else {
             return 0;

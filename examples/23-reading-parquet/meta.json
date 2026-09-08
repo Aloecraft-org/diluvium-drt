@@ -1,0 +1,8 @@
+{
+  "name": "23-reading-parquet",
+  "teaches": "The data connector: parquet columns cross as raw bytes rather than as Lua tables, and text crosses dictionary-encoded, so a million-row column is a million bytes and not a million values. Also why a numeric example prints bits and never %g -- one expected.txt has to be right on glibc, musl, wasmtime and Windows.",
+  "cmd": "drt run --config app.json",
+  "needs_network": false,
+  "needs_build": "full",
+  "normalise": []
+}

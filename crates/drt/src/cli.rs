@@ -56,6 +56,7 @@ const PROFILE_WEB: &[&str] = &["cli", "connector-crypto", "connector-fs", "conne
 const PROFILE_FULL: &[&str] = &[
     "cli",
     "connector-crypto",
+    "connector-data",
     "connector-exec",
     "connector-fs",
     "connector-rest",
@@ -374,6 +375,7 @@ pub enum Command {
         feature = "connector-rest",
         feature = "connector-ssmtp",
         feature = "connector-exec",
+        feature = "connector-data",
         feature = "netcheck"
     )),
     allow(unused_mut, unused_variables)
@@ -413,6 +415,9 @@ pub fn buildinfo(json: bool) -> String {
     }
     if cfg!(feature = "connector-exec") {
         connectors.push("exec");
+    }
+    if cfg!(feature = "connector-data") {
+        connectors.push("data");
     }
     if cfg!(feature = "listen") {
         connectors.push("listen");
@@ -541,6 +546,7 @@ fn enabled_features() -> Vec<&'static str> {
     feature!("connector-sql");
     feature!("connector-ssh");
     feature!("connector-ssmtp");
+    feature!("connector-data");
     feature!("connector-exec");
     feature!("connector-time");
     feature!("listen");
@@ -625,6 +631,18 @@ pub fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
                 .wire(
                     "crypto",
                     std::sync::Arc::new(drt_connector_crypto::CryptoConnector::new()),
+                    wiring.scope.clone(),
+                )
+                .map_err(|e| e.to_string())?,
+            // The same scope discipline as `fs`, and literally the same
+            // jail: the config grants a directory, the program names its
+            // parquet and CSV files inside it, and a path resolving out of
+            // it is refused with symlinks followed.
+            #[cfg(feature = "connector-data")]
+            "data" => registry
+                .wire(
+                    "data",
+                    std::sync::Arc::new(drt_connector_data::DataConnector::new()),
                     wiring.scope.clone(),
                 )
                 .map_err(|e| e.to_string())?,

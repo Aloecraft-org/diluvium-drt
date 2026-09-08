@@ -32,7 +32,7 @@ entry has not moved the pin yet.
 
 ### Connectors
 
-- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `listen`
+- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `data`, `listen`
 - `slim`: `time`, `fs`, `crypto`, `listen`
 - `wasi`: `time`, `fs`, `crypto`, `sql`, `listen`
 - `web`: `time`, `fs`, `crypto`
@@ -65,6 +65,23 @@ entry has not moved the pin yet.
   states exactly). Both travel in `BUILDINFO.txt` and in this file,
   which is `doc/Release.md`'s rule: the compatibility fact travels
   with the bytes.
+- **A `data` connector**: `read_parquet`, `write_parquet`, `read_csv`
+  and `write_csv`, scoped to a granted directory exactly as `fs` is,
+  and using `fs`'s own path jail rather than a second one.
+
+  What it does not build is the point. A column crosses as raw bytes
+  on the reply's blob lane, so a million rows is a million bytes and
+  not a million Lua values; text crosses dictionary-encoded, `i64`
+  codes plus each distinct string once. Nulls follow the numeric
+  spec's Stage 4: an `f64` column says null with NaN, everything else
+  carries a `u8` validity mask, and a column with no null carries
+  nothing. Decoding runs on `spawn_blocking`, so the call parks the
+  way `rest` parks -- a synchronous decode is `exec`'s shape, and it
+  would stop every other instance in the deployment.
+
+  `full` only. Four codecs -- snappy, gzip, lz4, zstd -- and not
+  brotli, which this build does not carry, so a file using it is
+  refused by name at read rather than mis-decoded.
 - **`needs_features` in an example's `meta.json`**, beside
   `needs_build`. A profile name says which connectors a binary has;
   it does not say which core is inside it, and an example that needs

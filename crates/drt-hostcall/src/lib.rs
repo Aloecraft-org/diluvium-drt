@@ -316,14 +316,28 @@ pub fn lift_columns(value: rmpv::Value, blobs: &mut Vec<Vec<u8>>) -> rmpv::Value
 /// away the one copy this makes.
 ///
 /// Never base64, on either path (§3.2).
-pub fn to_wire(reply: &Reply) -> Result<Vec<u8>, rmp_serde::encode::Error> {
+///
+/// Takes the reply **by value** so the inlining below moves each blob
+/// rather than copying it: the numeric spec's Stage 4 acceptance is that a
+/// ten-million-row column loads with one buffer copy, and a `&Reply` here
+/// would have made that two.
+pub fn to_wire(reply: Reply) -> Result<Vec<u8>, rmp_serde::encode::Error> {
     if reply.blobs.is_empty() {
-        return to_bytes(reply);
+        return to_bytes(&reply);
     }
+    let Reply {
+        tok,
+        status,
+        value,
+        detail,
+        blobs,
+    } = reply;
     let inlined = Reply {
-        value: reply.value.clone().map(|v| inline_blobs(v, &reply.blobs)),
+        tok,
+        status,
+        value: value.map(|v| inline_blobs(v, blobs)),
+        detail,
         blobs: Vec::new(),
-        ..reply.clone()
     };
     to_bytes(&inlined)
 }
@@ -333,26 +347,34 @@ pub fn to_wire(reply: &Reply) -> Result<Vec<u8>, rmp_serde::encode::Error> {
 // A descriptor whose `blob` names no blob is left as it is rather than
 // dropped or faked. It cannot happen through `lift_columns`, and if it ever
 // does the guest should receive the descriptor and be able to say so.
-fn inline_blobs(value: rmpv::Value, blobs: &[Vec<u8>]) -> rmpv::Value {
-    match value {
-        rmpv::Value::Map(fields) => {
-            if let Some(index) = blob_index(&fields) {
-                if let Some(bytes) = blobs.get(index) {
-                    return rmpv::Value::Binary(bytes.clone());
+//
+// Each blob is moved out of the lane rather than cloned, so a column that
+// arrived here without being copied leaves the same way. An index named
+// twice yields an empty second buffer -- a bug made visible, rather than
+// one column silently aliased onto two names.
+fn inline_blobs(value: rmpv::Value, mut blobs: Vec<Vec<u8>>) -> rmpv::Value {
+    fn walk(value: rmpv::Value, blobs: &mut [Vec<u8>]) -> rmpv::Value {
+        match value {
+            rmpv::Value::Map(fields) => {
+                if let Some(index) = blob_index(&fields) {
+                    if let Some(bytes) = blobs.get_mut(index) {
+                        return rmpv::Value::Binary(std::mem::take(bytes));
+                    }
                 }
+                rmpv::Value::Map(
+                    fields
+                        .into_iter()
+                        .map(|(k, v)| (k, walk(v, blobs)))
+                        .collect(),
+                )
             }
-            rmpv::Value::Map(
-                fields
-                    .into_iter()
-                    .map(|(k, v)| (k, inline_blobs(v, blobs)))
-                    .collect(),
-            )
+            rmpv::Value::Array(items) => {
+                rmpv::Value::Array(items.into_iter().map(|v| walk(v, blobs)).collect())
+            }
+            other => other,
         }
-        rmpv::Value::Array(items) => {
-            rmpv::Value::Array(items.into_iter().map(|v| inline_blobs(v, blobs)).collect())
-        }
-        other => other,
     }
+    walk(value, &mut blobs)
 }
 
 /// The `blob` index of a map that is a column descriptor, or `None` for a
@@ -549,7 +571,7 @@ mod tests {
     #[test]
     fn a_reply_with_no_column_encodes_exactly_as_it_always_did() {
         let reply = Reply::ok(1, rmpv::Value::from("plain"));
-        assert_eq!(to_wire(&reply).unwrap(), to_bytes(&reply).unwrap());
+        assert_eq!(to_wire(reply.clone()).unwrap(), to_bytes(&reply).unwrap());
     }
 
     /// The pre-A0 delivery: the descriptor is replaced by the bytes, as a
@@ -565,7 +587,7 @@ mod tests {
         let mut reply = Reply::ok(4, value);
         reply.blobs = blobs;
 
-        let decoded: rmpv::Value = rmp_serde::from_slice(&to_wire(&reply).unwrap()).unwrap();
+        let decoded: rmpv::Value = rmp_serde::from_slice(&to_wire(reply).unwrap()).unwrap();
         let fields = decoded.as_map().unwrap();
         let value = &fields
             .iter()
@@ -599,7 +621,7 @@ mod tests {
         ]);
         let mut reply = Reply::ok(1, value.clone());
         reply.blobs = vec![vec![1, 2, 3]];
-        let decoded: rmpv::Value = rmp_serde::from_slice(&to_wire(&reply).unwrap()).unwrap();
+        let decoded: rmpv::Value = rmp_serde::from_slice(&to_wire(reply).unwrap()).unwrap();
         let fields = decoded.as_map().unwrap();
         let out = &fields
             .iter()

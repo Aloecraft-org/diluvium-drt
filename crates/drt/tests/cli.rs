@@ -318,9 +318,10 @@ fn buildinfo_names_the_release_tag_when_built_as_one() {
 #[test]
 fn profile_matches_its_manifest() {
     const PROFILES: [&str; 4] = ["full", "slim", "wasi", "web"];
-    const LEAVES: [&str; 17] = [
+    const LEAVES: [&str; 18] = [
         "cli",
         "connector-crypto",
+        "connector-data",
         "connector-exec",
         "connector-fs",
         "connector-rest",
@@ -409,6 +410,7 @@ fn profile_matches_its_manifest() {
     }
     feature!("cli");
     feature!("connector-crypto");
+    feature!("connector-data");
     feature!("connector-exec");
     feature!("connector-fs");
     feature!("connector-rest");

@@ -17,6 +17,7 @@ members = [
     "connectors/crypto",
     "connectors/ssmtp",
     "connectors/exec",
+    "connectors/data",
     "crates/drt-bench",
     "crates/drt-web",
 ]
@@ -43,6 +44,7 @@ drt-connector-crypto = { path = "connectors/crypto", version = "0.6.0" }
 drt-connector-rest = { path = "connectors/rest", version = "0.6.0" }
 drt-connector-ssmtp = { path = "connectors/ssmtp", version = "0.6.0" }
 drt-connector-exec = { path = "connectors/exec", version = "0.6.0" }
+drt-connector-data = { path = "connectors/data", version = "0.6.0" }
 # The line editor, one for every target (doc/Wasm.md D8, M8). From git
 # because that is where it lives; the browser half pins wasm-bindgen
 # `=0.2.127`, which is this workspace's pin already.
