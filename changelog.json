@@ -13,14 +13,15 @@
   ],
   "releases": [
     {
-      "version": "0.5.0rc8",
-      "tag": "v0.5.0rc8",
+      "version": "0.6.0",
+      "tag": "v0.6.0",
       "date": null,
       "status": "unreleased",
       "stable": false,
       "mirror": false,
       "dv_abi": 1,
       "diluvium": "850e00d73220427be68ae8f909f83b06cb2095bd",
+      "diluvium_build": 13,
       "connectors": {
         "full": [
           "time",
@@ -52,6 +53,74 @@
           "crypto"
         ]
       },
+      "features": {
+        "full": [
+          "regex"
+        ],
+        "slim": [
+          "regex"
+        ],
+        "wasi": [
+          "regex"
+        ],
+        "web": [
+          "regex"
+        ]
+      },
+      "summary": "**In progress, not cut.** The numeric round (`doc/Plan-2026-09.md`):\nDRT's half is a `features` compatibility fact, a raw-buffer lane in\nthe hostcall reply, a `data` connector for parquet and CSV, and the\nconfig surface that bounds numeric work per instance.\n\nMinor rather than patch, by the rule this file's header states: the\nfeature set is a new compatibility fact and `full`'s connector list\nchanges. Both are checked by name, so neither can move under a\nversion number that says nothing moved.\n\n`dv_abi` stays 1 until the pin that raises it lands. `diluvium` and\n`diluvium_build` name the same core v0.5.0rc8 carries, because this\nentry has not moved the pin yet.\n",
+      "upgrading": null,
+      "latest": false,
+      "sections": {
+        "added": [
+          "**A corpus of every config shape that is deployed or shipped**, in\n`crates/drt-config/tests/corpus/`, loaded through the real loader\nand diffed against what it parsed to before.\n\n`drt-config` is shared by everything, and this round adds fields to\nit. Every shipped install runs a config this loader wrote, and a\nregression there is caught by no other gate -- so the rule is that\nany loader change failing a corpus file is wrong regardless of what\nit enables. A refusal is snapshotted like any other outcome: three\nof the shapes in there are refused on purpose, and \"it still\nrefuses, for the same reason\" is as much a fact about the loader as\n\"it still parses to this\".\n",
+          "**`drt buildinfo` says which core is inside, not just which\nrevision**: `features` (what the embedded diluvium carries --\n`regex` today, `numeric` when it lands) and `diluvium_build` (the N\nin `5.5.1_buildN`, which is the ordered half of a fact the revision\nstates exactly). Both travel in `BUILDINFO.txt` and in this file,\nwhich is `doc/Release.md`'s rule: the compatibility fact travels\nwith the bytes.\n",
+          "**`needs_features` in an example's `meta.json`**, beside\n`needs_build`. A profile name says which connectors a binary has;\nit does not say which core is inside it, and an example that needs\n`numeric` is skipped by name on a build without it rather than\nproducing a diff whose real content is \"this build does not carry\nthat\".\n"
+        ]
+      },
+      "notes_md": "## [0.6.0] - unreleased (prerelease)\n\n`v0.6.0` &middot; dv ABI 1 &middot; diluvium `850e00d73220` (build13)\n\n**In progress, not cut.** The numeric round (`doc/Plan-2026-09.md`):\nDRT's half is a `features` compatibility fact, a raw-buffer lane in\nthe hostcall reply, a `data` connector for parquet and CSV, and the\nconfig surface that bounds numeric work per instance.\n\nMinor rather than patch, by the rule this file's header states: the\nfeature set is a new compatibility fact and `full`'s connector list\nchanges. Both are checked by name, so neither can move under a\nversion number that says nothing moved.\n\n`dv_abi` stays 1 until the pin that raises it lands. `diluvium` and\n`diluvium_build` name the same core v0.5.0rc8 carries, because this\nentry has not moved the pin yet.\n\n### Connectors\n\n- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `listen`\n- `slim`: `time`, `fs`, `crypto`, `listen`\n- `wasi`: `time`, `fs`, `crypto`, `sql`, `listen`\n- `web`: `time`, `fs`, `crypto`\n\n### Core features\n\n- `full`: `regex`\n- `slim`: `regex`\n- `wasi`: `regex`\n- `web`: `regex`\n\n### Added\n\n- **A corpus of every config shape that is deployed or shipped**, in\n  `crates/drt-config/tests/corpus/`, loaded through the real loader\n  and diffed against what it parsed to before.\n\n  `drt-config` is shared by everything, and this round adds fields to\n  it. Every shipped install runs a config this loader wrote, and a\n  regression there is caught by no other gate -- so the rule is that\n  any loader change failing a corpus file is wrong regardless of what\n  it enables. A refusal is snapshotted like any other outcome: three\n  of the shapes in there are refused on purpose, and \"it still\n  refuses, for the same reason\" is as much a fact about the loader as\n  \"it still parses to this\".\n- **`drt buildinfo` says which core is inside, not just which\n  revision**: `features` (what the embedded diluvium carries --\n  `regex` today, `numeric` when it lands) and `diluvium_build` (the N\n  in `5.5.1_buildN`, which is the ordered half of a fact the revision\n  states exactly). Both travel in `BUILDINFO.txt` and in this file,\n  which is `doc/Release.md`'s rule: the compatibility fact travels\n  with the bytes.\n- **`needs_features` in an example's `meta.json`**, beside\n  `needs_build`. A profile name says which connectors a binary has;\n  it does not say which core is inside it, and an example that needs\n  `numeric` is skipped by name on a build without it rather than\n  producing a diff whose real content is \"this build does not carry\n  that\".\n"
+    },
+    {
+      "version": "0.5.0rc8",
+      "tag": "v0.5.0rc8",
+      "date": null,
+      "status": "unreleased",
+      "stable": false,
+      "mirror": false,
+      "dv_abi": 1,
+      "diluvium": "850e00d73220427be68ae8f909f83b06cb2095bd",
+      "diluvium_build": null,
+      "connectors": {
+        "full": [
+          "time",
+          "fs",
+          "crypto",
+          "sql",
+          "ssh",
+          "rest",
+          "ssmtp",
+          "exec",
+          "listen"
+        ],
+        "slim": [
+          "time",
+          "fs",
+          "crypto",
+          "listen"
+        ],
+        "wasi": [
+          "time",
+          "fs",
+          "crypto",
+          "sql",
+          "listen"
+        ],
+        "web": [
+          "time",
+          "fs",
+          "crypto"
+        ]
+      },
+      "features": null,
       "summary": "**Not cut.** The gate rc7 should have had, and the client change\nthat makes such a gate testable at all.\n\nrc7 fixed `wss://` and admitted the reason nobody caught it: every\ntest and example reaches its relay on loopback over plain `ws://`.\nA fix with no test is the same bug with a shorter fuse, so this is\nthe test -- a real SSH session, modern kex and pinned host key and\npubkey auth, through a TLS terminator standing in for the nginx a\ndeployment puts in front of the relay. Every byte through rustls.\n\nTesting it needed something real rather than a mock: no public CA\nwill sign a loopback gate, and the client trusted only Mozilla's\nroots. So `drt tunnel` grows `--extra-root`, which is the same\nthing an operator behind an internal CA has needed all along and\ncould not have.\n\nOne unplanned result, better than the test: with `--extra-root` in\nplace, a build with the TLS feature removed **no longer compiles**.\n`connect_async_tls_with_config` and `Connector::Rustls` are gated\nbehind it, so rc7's bug is now a build error rather than a runtime\nsurprise, caught before any test runs.\n\nBeside that, the same lesson from the other end of the stack. Every\nway of failing to create a WireGuard interface was reported as a\nmissing privilege, so a container with no `/dev/net/tun` and a\nprocess that already held `CAP_NET_ADMIN` were both sent to go and\nget the capability. `drt wg check` said `ok` on both. Four errnos\nnow get four answers and an unmeasured one gets none, and `check`\nnames what it can establish about the machine it is on without\ncreating anything.\n",
       "upgrading": null,
       "latest": false,
@@ -79,6 +148,7 @@
       "mirror": false,
       "dv_abi": 1,
       "diluvium": "850e00d73220427be68ae8f909f83b06cb2095bd",
+      "diluvium_build": null,
       "connectors": {
         "full": [
           "time",
@@ -110,6 +180,7 @@
           "crypto"
         ]
       },
+      "features": null,
       "summary": "One fix, and it is the one that matters most: **`drt tunnel` could\nnot reach a `wss://` URL, in any release there has ever been.** The\nWebSocket client was compiled with no TLS backend, so every secure\nrelay -- which is every relay outside a lab -- was answered with\n`TLS support not compiled in`. Found in the field, the evening rc6\nshipped, by the first person to point `ssh -o ProxyCommand` at a\nreal gate.\n\nNobody noticed for six candidates because nothing gated it: every\ntest and every example reaches its relay on loopback over plain\n`ws://`, which is the one shape that does not need TLS. The same\nlesson `doc/Release.md` already records about release-only build\npaths, one layer down: a documented use case with no test is a use\ncase that does not work.\n\nOtherwise rc6, unchanged: the WireGuard block, its measurements and\nits caveats are all as that entry describes them. Not mirrored, not\n`latest`; `install.sh` keeps resolving to v0.4.2.\n",
       "upgrading": null,
       "latest": false,
@@ -129,6 +200,7 @@
       "mirror": false,
       "dv_abi": 1,
       "diluvium": "850e00d73220427be68ae8f909f83b06cb2095bd",
+      "diluvium_build": null,
       "connectors": {
         "full": [
           "time",
@@ -160,6 +232,7 @@
           "crypto"
         ]
       },
+      "features": null,
       "summary": "The sixth candidate, and it is one feature: the last rung of the\ntraversal ladder.\n`netcheck` says what a network can do, `stun` measures the mapping\nthat decides it, the relay carries what cannot be reached directly,\nand `turn` carries what a browser needs -- every rung answering\n*can these two hosts exchange packets*, and none of them answering\n*and then what*. **WireGuard is the answer to that**, in the\nprocess, on Mullvad's gotatun: once two hosts can exchange UDP\ndatagrams, carrying arbitrary traffic between them is a solved\nproblem, and a fetchpoint becomes an IP address that `ssh/exec`,\n`rest` and `listen` reach with no new plumbing.\n\n**The punch is measured now, and not by this repository.** Every\ntest here runs on loopback, where there is no NAT to punch. What\nsettles it is a lab run outside DRT: discofetch drove its own\nrendezvous program against this block with two hosts in network\nnamespaces behind two netfilter NATs, and got direct handshakes\nthrough both of them with no relay in the path (247 ms and\n1747 ms), then a relayed one past a symmetric NAT through\n`drt turn` (739 ms), packets across in every case. Recorded in\nissue #15, scoped in issue #17. A second run against this candidate\ndrove the whole feature unattended -- direct through two NATs,\na `remap` after one end moved, and the symmetric-NAT fallback --\nand is in issue #17's comments. It does not settle NAT hardware DRT\nhas not seen -- netfilter on one machine is not a consumer router\nand not a carrier-grade NAT -- and `doc/WireGuard.md` \u00a72 keeps that\nline where a reader will find it.\n\n**It raises the toolchain floor to Rust 1.95**, which gotatun\nrequires. That is the one thing in here that can break a build\nunrelated to WireGuard, so it is said in the summary rather than a\nbullet.\n\n**What it does not have**, all sized in issue #17 and none of it\nstarted: no re-authentication of a TURN allocation whose credential\nexpires (\u00a73), no Windows profile carrying the verbs a workflow uses\n(\u00a74), no signed darwin binaries (\u00a75), no no-root userspace mode\n(\u00a77), and no rate limiting on either the relay or `drt turn` (\u00a78).\nThe last two are the ones that need a design decision rather than\nan afternoon.\n\n**Still a candidate**, and the thing to test is a tunnel rather\nthan a surface: two boxes that could not reach each other before\nthis, and a deployment reaching one of them by address.\n\nNot mirrored, and not `latest`: `install.sh` keeps resolving to the\nnewest stable release, which is v0.4.2.\n\n**There is no rc5, and nothing is missing.** Its tag was pushed at\n`main`, which did not yet carry any of this, so the release\nworkflow's preflight refused it in two seconds -- `no entry in\nCHANGELOG.yaml for tag 'v0.5.0rc5'` -- and published nothing. The\ngate worked exactly as `doc/Release.md` says it should. Rather than\nmove a tag that had already been pushed, the same tree is cut as\nrc6. rc5 is a tag with no release behind it and no content that is\nnot here.\n",
       "upgrading": null,
       "latest": false,
@@ -189,6 +262,7 @@
       "mirror": false,
       "dv_abi": 1,
       "diluvium": "850e00d73220427be68ae8f909f83b06cb2095bd",
+      "diluvium_build": null,
       "connectors": {
         "full": [
           "time",
@@ -220,6 +294,7 @@
           "crypto"
         ]
       },
+      "features": null,
       "summary": "The fourth candidate, and the first whose notes about the pump are\ntrue: `rest`, `ssh` and `ssmtp` park a slow call instead of\nstalling every instance, which rc1 through rc3 claimed and did\nnot do. Measured, and kept as a gate. Beside it, diluvium build13\n-- regular expressions, a backtick literal and a linear-time\nengine, the ask vera filed as \u00a722 -- the asks from discofetch\nthat a hole punch needs first: `netcheck --json` carrying its\nevidence, `--udp-port` measuring the flow that matters, and\n`buildinfo` naming the tag a box actually runs -- and five of\nvera's: `capabilities/list`, `journal_mode`, credentials by\nreference, `Date` and `Message-ID`, and `extra_roots`. Each is\nanswered by number in `doc/Ask-Discofetch-Reply.md` and\n`doc/Ask-Vera-Reply.md`, open ones included.\n\nTagged at the merge of the branch rather than at the rehearsed cut,\nso it also carries what landed in the hours between: the first\nWindows artifact (`drt_slim_windows_x86_64.exe`, slim, run through\nthe examples gate on a Windows runner before upload), a `turn`\nblock beside `stun` (issue #12), and `drt tunnel --local`, the\nprogram-shaped caller half (issue #13). Each is under Added below.\n\n**Still a candidate**, and now with something to test that is\nnot the wasm surface: a deployment whose deadlines assumed `rest`\nblocks the process is measuring a different system from here on.\n\nNot mirrored, and not `latest`: `install.sh` keeps resolving to\nthe newest stable release, which is v0.4.2.\n",
       "upgrading": null,
       "latest": false,
@@ -273,6 +348,7 @@
       "mirror": false,
       "dv_abi": 1,
       "diluvium": "f4d52516380c9be1e868da9d23764a9aa2a7dd2c",
+      "diluvium_build": null,
       "connectors": {
         "full": [
           "time",
@@ -304,6 +380,7 @@
           "crypto"
         ]
       },
+      "features": null,
       "summary": "v0.5.0rc2 with the listener's startup window closed. **One change\nfrom rc2**, under Fixed below: a request arriving before the\nprogram declared its queue was refused rather than held, which is\na race a deployment can win and not one it can remove.\n\nCut as a candidate rather than folded into v0.5.0 because the two\ncandidates before it both carried a bug a consumer found in a day,\nand the shape of both was the same -- a refusal that reads as an\nanswer. This one is worth a consumer's morning before it is worth\na release.\n\n**Still a candidate**, and for rc1's reason, unchanged by either\nfix: the wasm surface is what v0.5.0 is for, and no consumer has\nbuilt against it yet. Not mirrored, and not `latest`: `install.sh`\nkeeps resolving to the newest stable release, which is v0.4.2.\n",
       "upgrading": null,
       "latest": false,
@@ -345,6 +422,7 @@
       "mirror": false,
       "dv_abi": 1,
       "diluvium": "f4d52516380c9be1e868da9d23764a9aa2a7dd2c",
+      "diluvium_build": null,
       "connectors": {
         "full": [
           "time",
@@ -376,6 +454,7 @@
           "crypto"
         ]
       },
+      "features": null,
       "summary": "v0.5.0rc1 with `rest` fixed, cut the day the fix landed because\nthe bug it carries has no workaround: `rest` is how a guest\nreaches a model, and a deployment that cannot complete one call\ncannot classify, draft, summarize or repair anything. Vera is\ndeployed, ingesting mail, and was blocked entirely behind it.\n\n**One change from rc1**, under Fixed below. `rest` read a response\nbody to EOF rather than to the framing its head declares, so every\nserver that closes without a TLS `close_notify` -- Amazon Bedrock\namong them -- failed a call it had already answered in full. The\nnotes are otherwise rc1's, because the rest of the code is.\n\n**Still a candidate.** The wasm surface is what v0.5.0 is for and\nit is still what no consumer has built against; that test is the\none it has not had. Not mirrored, and not `latest`: `install.sh`\nkeeps resolving to the newest stable release, which is v0.4.2.\n",
       "upgrading": null,
       "latest": false,
@@ -417,6 +496,7 @@
       "mirror": false,
       "dv_abi": 1,
       "diluvium": "f4d52516380c9be1e868da9d23764a9aa2a7dd2c",
+      "diluvium_build": null,
       "connectors": {
         "full": [
           "time",
@@ -448,6 +528,7 @@
           "crypto"
         ]
       },
+      "features": null,
       "summary": "The wasm port, as a candidate: the same code v0.5.0 will carry,\ntagged so the work waiting on it can start against a tag rather\nthan a branch name. The Lab's Terminal and Instances panels and\nthe diluvium homepage's REPL are the three consumers, and what\nthey need is `drt_web.tar.gz` and the exports below.\n\n**A candidate, not the release.** Nothing here is known to be\nwrong -- the examples gate passes on all three targets and the\nbrowser suite is ten checks -- but no consumer has yet built\nagainst the surface, and the first one to try is the test the\nsurface has not had. v0.5.0 follows when it has.\n\nNot mirrored, and not `latest`: an `install.sh` still resolves\nto the newest stable release, which is v0.4.2.\n",
       "upgrading": null,
       "latest": false,
@@ -486,6 +567,7 @@
       "mirror": false,
       "dv_abi": 1,
       "diluvium": "850e00d73220427be68ae8f909f83b06cb2095bd",
+      "diluvium_build": null,
       "connectors": {
         "full": [
           "time",
@@ -517,6 +599,7 @@
           "crypto"
         ]
       },
+      "features": null,
       "summary": "Two wasm artifacts, and one runtime behind all three of them.\n`drt_wasip2.wasm` is `drt` itself under wasmtime; `drt_web.tar.gz`\nis the same `drt` in a page, with the C core linked into the module\nand a terminal contract to attach xterm.js to. Neither is a second\nimplementation: the examples gate is the conformance oracle on\nevery target, diffing one `expected.txt` natively, under wasmtime,\nand in Chromium.\n\nA minor digit rather than a patch, by the rule the connector list\nmakes: two profiles are new (`wasi`, `web`) and `wasi` carries\n`listen`, so BUILDINFO's list is not v0.4.2's and a package\ndeclaring `requires.connectors` resolves differently against them.\n`full` and `slim` carry the same connectors. One thing that existed\ndoes behave differently on a native build, from rc4: a slow `rest`,\n`ssh` or `ssmtp` call parks instead of stalling every instance,\nwhich the candidates before it claimed and did not do (Fixed).\nBeside the port: diluvium build13, which is regular expressions in\nthe language; and the asks two consumers filed with evidence\nagainst the candidates (Added, Changed, Fixed name each by number).\n\nThe plan and its measurements are `doc/Wasm.md`; the embedding\ncontract is `doc/Browser.md`; `doc/Platforms.md` is the matrix.\n",
       "upgrading": null,
       "latest": false,
@@ -582,6 +665,7 @@
       "mirror": true,
       "dv_abi": 1,
       "diluvium": "515160f645874fc82de001fea7f68803f47bbc58",
+      "diluvium_build": null,
       "connectors": {
         "full": [
           "time",
@@ -601,6 +685,7 @@
           "listen"
         ]
       },
+      "features": null,
       "summary": "Local `exec`: the one hostcall family the C host answered and DRT\ndid not, and the one the instruction budget cannot reach. The\ncontract is `dhost_exec.c`'s to the sentence, a `.host.lua` saying\n`exec = true` loads unchanged, and the scope gains the thing the C\nhost had nowhere to put: the programs a call may start.\n\nA patch digit for a new connector, by the owner's decision\n(`doc/Release.md`): nothing that existed changed, and the check a\npackage makes is by name against BUILDINFO's connector list, never\nagainst the version. That list is not v0.4.1's -- `full` gains\n`exec`, `slim` is unchanged -- so a package declaring\n`requires.connectors` with `exec` in it is admissible against the\n`full` artifact and refused by name against `slim`.\n",
       "upgrading": null,
       "latest": true,
@@ -623,6 +708,7 @@
       "mirror": true,
       "dv_abi": 1,
       "diluvium": "515160f645874fc82de001fea7f68803f47bbc58",
+      "diluvium_build": null,
       "connectors": {
         "full": [
           "time",
@@ -641,6 +727,7 @@
           "listen"
         ]
       },
+      "features": null,
       "summary": "`ssmtp/send` threads. A reply can name the message it answers, so a\nclient files it under that conversation rather than beside it. And\nthe examples gate passes under its own documented command, which\nit did not.\n\nA patch, honestly: the connector set is v0.4.0's, so a package\ndeclaring `requires.connectors` sees nothing new. The call surface\ngrew by two optional fields and nothing was removed.\n",
       "upgrading": null,
       "latest": false,
@@ -663,6 +750,7 @@
       "mirror": true,
       "dv_abi": 1,
       "diluvium": "515160f645874fc82de001fea7f68803f47bbc58",
+      "diluvium_build": null,
       "connectors": {
         "full": [
           "time",
@@ -681,6 +769,7 @@
           "listen"
         ]
       },
+      "features": null,
       "summary": "The capability model made true where it was not, a NAT diagnostic\nthat finishes, outbound mail, and four ways of being confidently\nwrong that this release stopped being.\n\n**The guarantees first.** Budgets did not attenuate at spawn, `sql`\ndiscarded an open transaction in silence, and the no-reactor panic\nthat shipped an uncallable connector in v0.3.1 had no test that\ncould fail. Those are promises DRT already made and did not keep,\nand two of the three were found twice independently -- once by this\nrepository's own examples pass, once by discofetch reading the code.\nThat is the argument for doing them before any feature, and it is\nwhy they are at the top of this list.\n\n**`netcheck` grew the half it was missing and lost four wrong\nanswers.** It can now ask a reflect edge what it saw, pin a source\nport so two vantages are a measurement rather than two numbers, and\nprobe a port from an edge it has not contacted -- which makes\n`direct` reachable for the first time. Along the way it stopped\ngiving `v6-direct` to networks it had measured nothing about,\nstopped calling two ephemeral ports a comparison, stopped calling\ntwo views of one destination an endpoint comparison, and started\nsaying *why* a measurement is missing. Every one of those was found\nby running it on a real network rather than by reading it.\n\n**`ssmtp`**, `rest`'s sibling: a recipient allowlist, and the relay\ncredential and envelope sender held by the deployment so a program\nsends mail without the password and cannot forge its From line.\n\n**The diluvium pin moves to 5.5.1_build12p1**, which v0.4.0rc1\ndeliberately deferred. It closes FM-2 and the instruction budget\nswitching itself off; the pcall *loop* remains, and FM-4 says so.\n",
       "upgrading": "Two behaviour changes can turn a previously-zero exit non-zero, both\ndeliberately:\n\nA spawn naming a budget larger than its parent's is now `denied`\nrather than granted. If a supervisor relied on that, it was relying\non the bug -- but it will see a refusal it did not see before.\n\nA program that leaves a SQL transaction open at exit now fails. It\nwas already losing the writes; it just was not told.\n",
       "latest": false,
@@ -729,6 +818,7 @@
       "mirror": false,
       "dv_abi": 1,
       "diluvium": "f137b308c4dce917b24c71ab41add61606945e58",
+      "diluvium_build": null,
       "connectors": {
         "full": [
           "time",
@@ -746,6 +836,7 @@
           "listen"
         ]
       },
+      "features": null,
       "summary": "Outbound HTTP from a guest, a NAT diagnostic, and a set of examples\nthat found a bug in the first of those before anyone shipped it.\n\n**A candidate, not the release.** It is cut so downstream work can\nstart against something with a tag rather than a branch name, and\nit is cut *on the diluvium pin the examples were verified against*\n-- `f137b30`, which is pre-build12. Taking the bump and shipping in\none move would mean publishing a set of examples nobody had run the\ngate against on those bytes. 0.4.0 proper takes build12 and re-runs\nthe gate; that is the only difference planned between this and it.\n\nNumbered 0.4.0 rather than 0.3.2 because the connector set changed:\n`rest` is new, so `profile.full.connectors` in BUILDINFO is not what\nv0.3.1's was, and a package declaring `requires.connectors` is checked\nagainst that list by name. `netcheck` is a new verb on the same\nargument.\n",
       "upgrading": "Nothing here removes or renames a surface. `rest` and `netcheck` are\nadditive and reach nothing unless a config wires them: `rest` answers\nno call at all without a scope granting origins, and an empty\nallowlist is a startup refusal rather than a runtime surprise.\n",
       "latest": false,
@@ -791,6 +882,7 @@
       "mirror": true,
       "dv_abi": 1,
       "diluvium": "f137b308c4dce917b24c71ab41add61606945e58",
+      "diluvium_build": null,
       "connectors": {
         "full": [
           "time",
@@ -807,6 +899,7 @@
           "listen"
         ]
       },
+      "features": null,
       "summary": "STUN, the C host's `access` spelling, and two named crashes.\n\nTagged the same day v0.3.0 shipped and published three days later,\nafter a repository ruleset on `v*` refused the workflow's App token\nwith a 403 and the release had to be created by hand.\n",
       "upgrading": "**If you run configs written for the C host, this is the release that\nparses them.** v0.3.0 refused `access: \"read\"` and accepted\n`\"readonly\"`, which is backwards. A config edited to say `\"readonly\"`\nas a workaround must be changed back.\n",
       "latest": false,
@@ -848,6 +941,7 @@
       "mirror": true,
       "dv_abi": 1,
       "diluvium": "f137b308c4dce917b24c71ab41add61606945e58",
+      "diluvium_build": null,
       "connectors": {
         "full": [
           "time",
@@ -864,6 +958,7 @@
           "listen"
         ]
       },
+      "features": null,
       "summary": "The rendezvous relay, end to end: a real `ssh` session over WSS\nthrough `drt tunnel`, 37 bytes metered, rehearsed against the release\nartifact.\n",
       "upgrading": null,
       "latest": false,
@@ -889,6 +984,7 @@
       "mirror": true,
       "dv_abi": 1,
       "diluvium": "f137b308c4dce917b24c71ab41add61606945e58",
+      "diluvium_build": null,
       "connectors": {
         "full": [
           "time",
@@ -905,6 +1001,7 @@
           "listen"
         ]
       },
+      "features": null,
       "summary": "Park mode: the device corner of the triangle.\n",
       "upgrading": null,
       "latest": false,
@@ -920,6 +1017,7 @@
       "mirror": true,
       "dv_abi": 1,
       "diluvium": "f137b308c4dce917b24c71ab41add61606945e58",
+      "diluvium_build": null,
       "connectors": {
         "full": [
           "time",
@@ -936,6 +1034,7 @@
           "listen"
         ]
       },
+      "features": null,
       "summary": "The first release: DRT as a static binary that runs sandboxed Lua\nunder a capability model and serves fetchpoints.\n",
       "upgrading": null,
       "latest": false,

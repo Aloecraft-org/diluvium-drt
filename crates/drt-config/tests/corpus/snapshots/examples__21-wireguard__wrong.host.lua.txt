@@ -1,0 +1,42 @@
+parsed to:
+RootConfig {
+    root: InstanceConfig {
+        program: None,
+        caps: [],
+        budget: Budget {
+            instructions: None,
+            memory_kb: None,
+        },
+    },
+    connectors: {},
+    listeners: [],
+    residency: None,
+    relay: None,
+    stun: None,
+    turn: None,
+    wireguard: Some(
+        WireguardConfig {
+            listen_port: 51820,
+            address: Some(
+                "10.9.0.0/24",
+            ),
+            mtu: 1420,
+            turn_fallback: false,
+            stun: [],
+            interface: "drt-fp",
+            private_key: Some(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaA=",
+            ),
+            private_key_file: None,
+            private_key_env: None,
+            peers: [],
+            queue: "wg_in",
+            reply_queue: "",
+            report_ms: 10000,
+        },
+    ),
+    identity: Identity {
+        host_key_path: None,
+    },
+    principals: [],
+}

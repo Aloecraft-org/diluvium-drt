@@ -12,6 +12,67 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
+## [0.6.0] - unreleased (prerelease)
+
+`v0.6.0` &middot; dv ABI 1 &middot; diluvium `850e00d73220` (build13)
+
+**In progress, not cut.** The numeric round (`doc/Plan-2026-09.md`):
+DRT's half is a `features` compatibility fact, a raw-buffer lane in
+the hostcall reply, a `data` connector for parquet and CSV, and the
+config surface that bounds numeric work per instance.
+
+Minor rather than patch, by the rule this file's header states: the
+feature set is a new compatibility fact and `full`'s connector list
+changes. Both are checked by name, so neither can move under a
+version number that says nothing moved.
+
+`dv_abi` stays 1 until the pin that raises it lands. `diluvium` and
+`diluvium_build` name the same core v0.5.0rc8 carries, because this
+entry has not moved the pin yet.
+
+### Connectors
+
+- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `listen`
+- `slim`: `time`, `fs`, `crypto`, `listen`
+- `wasi`: `time`, `fs`, `crypto`, `sql`, `listen`
+- `web`: `time`, `fs`, `crypto`
+
+### Core features
+
+- `full`: `regex`
+- `slim`: `regex`
+- `wasi`: `regex`
+- `web`: `regex`
+
+### Added
+
+- **A corpus of every config shape that is deployed or shipped**, in
+  `crates/drt-config/tests/corpus/`, loaded through the real loader
+  and diffed against what it parsed to before.
+
+  `drt-config` is shared by everything, and this round adds fields to
+  it. Every shipped install runs a config this loader wrote, and a
+  regression there is caught by no other gate -- so the rule is that
+  any loader change failing a corpus file is wrong regardless of what
+  it enables. A refusal is snapshotted like any other outcome: three
+  of the shapes in there are refused on purpose, and "it still
+  refuses, for the same reason" is as much a fact about the loader as
+  "it still parses to this".
+- **`drt buildinfo` says which core is inside, not just which
+  revision**: `features` (what the embedded diluvium carries --
+  `regex` today, `numeric` when it lands) and `diluvium_build` (the N
+  in `5.5.1_buildN`, which is the ordered half of a fact the revision
+  states exactly). Both travel in `BUILDINFO.txt` and in this file,
+  which is `doc/Release.md`'s rule: the compatibility fact travels
+  with the bytes.
+- **`needs_features` in an example's `meta.json`**, beside
+  `needs_build`. A profile name says which connectors a binary has;
+  it does not say which core is inside it, and an example that needs
+  `numeric` is skipped by name on a build without it rather than
+  producing a diff whose real content is "this build does not carry
+  that".
+
+
 ## [0.5.0rc8] - unreleased (prerelease)
 
 `v0.5.0rc8` &middot; dv ABI 1 &middot; diluvium `850e00d73220`

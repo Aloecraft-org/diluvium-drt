@@ -82,6 +82,11 @@ meta.json:
     "needs_build":   "full",              # skipped unless `drt buildinfo`
                                           # reports that profile.  `cargo
                                           # build` with no flags is SLIM.
+    "needs_features": ["numeric"],        # skipped unless `drt buildinfo`
+                                          # lists every one of them under
+                                          # `features` -- what the CORE
+                                          # inside carries, which a profile
+                                          # name does not say
     "needs_privilege": "CAP_NET_ADMIN",   # skipped unless DRT_PRIVILEGED=1;
                                           # the string names what is needed
     "needs_listener": true,               # binds a port: run here and under
@@ -190,13 +195,13 @@ j_skip() {
 }
 
 # ---------------------------------------------------------------------------
-# meta.json -> meta_cmd, meta_net, meta_name, meta_norm[]
+# meta.json -> meta_cmd, meta_net, meta_name, meta_norm[], meta_feat[]
 # ---------------------------------------------------------------------------
 
 parse_meta() {
     local file=$1 key
     meta_cmd=""; meta_net="false"; meta_name=""; meta_norm=(); j_err=""
-    meta_build=""; meta_priv=""
+    meta_build=""; meta_priv=""; meta_feat=()
 
     _j_s=$(cat -- "$file") || { j_err="cannot read it"; return 1; }
     _j_n=${#_j_s}; _j_i=0
@@ -221,6 +226,25 @@ parse_meta() {
             needs_network) j_literal || return 1; meta_net=$REPLY ;;
             needs_build)   j_string  || return 1; meta_build=$REPLY ;;
             needs_privilege) j_string || return 1; meta_priv=$REPLY ;;
+            needs_features)
+                [ "${_j_s:$_j_i:1}" = '[' ] || { j_err="\"$key\" is not an array"; return 1; }
+                _j_i=$((_j_i + 1))
+                j_ws
+                if [ "${_j_s:$_j_i:1}" = ']' ]; then
+                    _j_i=$((_j_i + 1))
+                else
+                    while :; do
+                        j_ws
+                        j_string || return 1
+                        meta_feat[${#meta_feat[@]}]=$REPLY
+                        j_ws
+                        case ${_j_s:$_j_i:1} in
+                            ',') _j_i=$((_j_i + 1)) ;;
+                            ']') _j_i=$((_j_i + 1)); break ;;
+                            *) j_err="expected ',' or ']' in \"$key\""; return 1 ;;
+                        esac
+                    done
+                fi ;;
             normalise|normalize)
                 [ "${_j_s:$_j_i:1}" = '[' ] || { j_err="\"$key\" is not an array"; return 1; }
                 _j_i=$((_j_i + 1))
@@ -401,6 +425,14 @@ printf 'drt: %s\n' "$drt_abs"
 # checking is worse than one that reports a diff.
 drt_profile=$("$drt_abs" buildinfo 2>/dev/null | sed -n 's/^profile: //p')
 drt_profile=${drt_profile:-unknown}
+# What the CORE inside carries, which the profile name does not say: a full
+# build with `numeric` and one without are the same profile and the same
+# connectors, and an example that reduces an array can only run on the
+# first.  Comma-separated, as `buildinfo` prints it.  Empty when this drt
+# predates the field, which -- like an unknown profile -- runs everything
+# rather than skipping everything: a gate that silently stops checking is
+# worse than one that reports a diff.
+drt_features=$("$drt_abs" buildinfo 2>/dev/null | sed -n 's/^features: //p')
 if [ "$drt_profile" != full ] && [ "$drt_profile" != unknown ]; then
     printf '\n%s: this is a %s build, so examples needing the full connector\n' "$SELF" "$drt_profile"
     printf '%s  set are skipped.  For the whole set:\n\n' "${SELF//?/ }"
@@ -467,6 +499,28 @@ for name in ${examples[@]+"${examples[@]}"}; do
             "$name" "$meta_build" "$drt_profile"
         wrong_build[${#wrong_build[@]}]=$name
         continue
+    fi
+
+    # And the same for a feature of the core rather than a connector of the
+    # binary.  `needs_build` gates on which connectors were compiled in;
+    # this gates on what the embedded diluvium carries, which no profile
+    # name distinguishes.  Skipped, named, and never a pass, like the three
+    # above.  An empty `features` line means the binary does not answer the
+    # question, and an unanswered question does not skip anything.
+    if [ ${#meta_feat[@]} -gt 0 ] && [ -n "$drt_features" ]; then
+        missing=""
+        for want in "${meta_feat[@]}"; do
+            case ",$drt_features," in
+                *",$want,"*) ;;
+                *) missing="${missing:+$missing,}$want" ;;
+            esac
+        done
+        if [ -n "$missing" ]; then
+            printf 'skipped  %-24s (needs the %s feature; this drt has %s)\n' \
+                "$name" "$missing" "${drt_features:-none}"
+            wrong_build[${#wrong_build[@]}]=$name
+            continue
+        fi
     fi
 
     if [ ! -f "$dir/expected.txt" ]; then

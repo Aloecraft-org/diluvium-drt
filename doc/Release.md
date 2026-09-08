@@ -16,9 +16,10 @@ stops that committed copy going stale.
 Ported from diluvium's tool, shape and CLI intact, so the two repositories'
 release machinery reads the same. What differs is which compatibility facts
 each entry records: diluvium has `lua_base` and `bytecode_format`, DRT has
-`dv_abi`, the embedded `diluvium` revision, and the per-profile
-`connectors` set — the same facts `BUILDINFO.txt` carries, because the rule
-below is that the compatibility fact travels with the bytes.
+`dv_abi`, the embedded `diluvium` revision and build number, and the
+per-profile `connectors` and `features` sets — the same facts
+`BUILDINFO.txt` carries, because the rule below is that the compatibility
+fact travels with the bytes.
 
 ```sh
 script/changelog.py validate      # schema and consistency
@@ -53,6 +54,37 @@ patch. The rule above still holds for a set that *loses* or *changes* a
 connector, which is the case that would make a version number lie. Either
 way the digit is not the check -- the connector list is, by name, which
 is why the changelog entry still has to say what moved.
+
+### The dv ABI rule: highest spoken, anything less admitted
+
+**A DRT reports the highest dv ABI it speaks and admits any package
+requiring less or equal.** `buildinfo`'s `dv_abi` is that number, and a
+package's `requires.dv_abi` is satisfied by any binary whose number is at
+least as large.
+
+One number, not a range, because the ABI only ever grows: `dv.h` adds
+declarations, and the entry points a package compiled against ABI 1 calls
+are still there in a binary speaking ABI 2. A package asking for more than
+the binary speaks is refused by name, at admission, with both numbers in
+the message — never by a missing symbol at first call.
+
+`dv_abi` moves to `2` when the pin carrying the numeric round's `dv.h`
+additions lands (`doc/Plan-2026-09.md` §3.1). Nothing about the rule
+changes then; the number does.
+
+### `features` is the same question one level down
+
+`dv_abi` says which ABI the embedded core speaks. `features` says what is
+*reachable* through it — `regex` today, `numeric` when it lands — per
+profile, because a profile is what decides which core was compiled. A
+package declaring `requires.features` is admitted or refused against that
+list by name, exactly as `requires.connectors` is against the connector
+list, and for the same reason: resemblance is not a check.
+
+`diluvium_build` sits beside the revision for the half the revision cannot
+answer. A revision is exact but unordered — two of them cannot be asked
+which is newer — so a `requires.diluvium_build` range needs the number
+that `5.5.1_buildN` names. Both, because neither alone is the whole fact.
 
 ## Versioning: independent, with the coupling recorded
 

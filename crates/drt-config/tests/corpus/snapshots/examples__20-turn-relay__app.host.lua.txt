@@ -1,0 +1,123 @@
+parsed to:
+RootConfig {
+    root: InstanceConfig {
+        program: Some(
+            Path(
+                "<corpus>/app.dlua",
+            ),
+        ),
+        caps: [
+            Grant {
+                effect: Grant,
+                capability: "host:crypto/turn_credential",
+                scope: None,
+            },
+        ],
+        budget: Budget {
+            instructions: None,
+            memory_kb: None,
+        },
+    },
+    connectors: {
+        "crypto": ConnectorWiring {
+            backing: None,
+            scope: Some(
+                Scope(
+                    Map(
+                        [
+                            (
+                                String(
+                                    Utf8String {
+                                        s: Ok(
+                                            "key",
+                                        ),
+                                    },
+                                ),
+                                String(
+                                    Utf8String {
+                                        s: Ok(
+                                            "a-master-key-for-this-example-000",
+                                        ),
+                                    },
+                                ),
+                            ),
+                            (
+                                String(
+                                    Utf8String {
+                                        s: Ok(
+                                            "turn",
+                                        ),
+                                    },
+                                ),
+                                Map(
+                                    [
+                                        (
+                                            String(
+                                                Utf8String {
+                                                    s: Ok(
+                                                        "ttl",
+                                                    ),
+                                                },
+                                            ),
+                                            Integer(
+                                                PosInt(
+                                                    3600,
+                                                ),
+                                            ),
+                                        ),
+                                        (
+                                            String(
+                                                Utf8String {
+                                                    s: Ok(
+                                                        "key",
+                                                    ),
+                                                },
+                                            ),
+                                            String(
+                                                Utf8String {
+                                                    s: Ok(
+                                                        "the-coturn-static-auth-secret-1",
+                                                    ),
+                                                },
+                                            ),
+                                        ),
+                                        (
+                                            String(
+                                                Utf8String {
+                                                    s: Ok(
+                                                        "uris",
+                                                    ),
+                                                },
+                                            ),
+                                            Array(
+                                                [
+                                                    String(
+                                                        Utf8String {
+                                                            s: Ok(
+                                                                "turn:127.0.0.1:18493?transport=udp",
+                                                            ),
+                                                        },
+                                                    ),
+                                                ],
+                                            ),
+                                        ),
+                                    ],
+                                ),
+                            ),
+                        ],
+                    ),
+                ),
+            ),
+        },
+    },
+    listeners: [],
+    residency: None,
+    relay: None,
+    stun: None,
+    turn: None,
+    wireguard: None,
+    identity: Identity {
+        host_key_path: None,
+    },
+    principals: [],
+}

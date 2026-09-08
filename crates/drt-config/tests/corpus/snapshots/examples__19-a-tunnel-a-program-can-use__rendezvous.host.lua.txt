@@ -1,0 +1,35 @@
+parsed to:
+RootConfig {
+    root: InstanceConfig {
+        program: None,
+        caps: [],
+        budget: Budget {
+            instructions: None,
+            memory_kb: None,
+        },
+    },
+    connectors: {},
+    listeners: [],
+    residency: None,
+    relay: Some(
+        RelayConfig {
+            bind: "127.0.0.1:18490",
+            labels: {
+                "fp": RelayLabel {
+                    park_key: "park-key-for-the-example-only",
+                    caller_key: "caller-key-for-the-example-only",
+                },
+            },
+            queue: "relay_in",
+            reply_queue: "",
+            admit_timeout_ms: 2000,
+        },
+    ),
+    stun: None,
+    turn: None,
+    wireguard: None,
+    identity: Identity {
+        host_key_path: None,
+    },
+    principals: [],
+}

@@ -73,6 +73,47 @@ const PROFILE_FULL: &[&str] = &[
     "wireguard",
 ];
 
+/// What the embedded diluvium core carries, per profile: the other half of
+/// the compatibility fact `dv_abi` starts. A package that needs regular
+/// expressions, or later the `numeric` array library, can only be admitted
+/// or refused by name if the binary will say which of them are inside.
+///
+/// TODO(A0): hard-coded, because the core does not yet say. Session A's A0
+/// milestone adds `dv_features()` -- a newline-separated list, stable for
+/// the life of the process -- and when that pin lands these four tables go
+/// away and the list is read off the linked core instead. That is
+/// `doc/Release.md`'s rule: the compatibility fact travels with the bytes,
+/// and a fact this file states about bytes it did not compile is a fact
+/// that can be wrong. It is per profile already so that the day a profile
+/// carries a different core -- the web profile without `numeric`, say, if
+/// C1's size ledger says it costs too much -- nothing has to be reshaped
+/// to say so.
+///
+/// Sorted, like the profile tables above, and gated the same way by
+/// `core_features_agree_with_the_changelog` in `tests/cli.rs`.
+const CORE_FEATURES_FULL: &[&str] = &["regex"];
+const CORE_FEATURES_SLIM: &[&str] = &["regex"];
+const CORE_FEATURES_WASI: &[&str] = &["regex"];
+const CORE_FEATURES_WEB: &[&str] = &["regex"];
+/// A build whose feature set matches no named profile still embeds a core,
+/// and `unknown` is the honest answer about which features it carries --
+/// the same answer `diluvium: unknown` gives for an unpinned revision. An
+/// empty list would read as "carries none", which is a different claim.
+const CORE_FEATURES_CUSTOM: &[&str] = &[];
+
+/// The N in `5.5.1_buildN`: which diluvium build is inside, as a number a
+/// `requires.diluvium_build` range can be compared against. The revision
+/// beside it is exact but unordered -- two revisions cannot be asked which
+/// is newer -- and that is what this field adds.
+///
+/// TODO(A0): hard-coded for the same reason and with the same fix as
+/// [`CORE_FEATURES_FULL`]; A0 adds `dv_build()`. Until then the number is
+/// written down once, here, and `diluvium_build_agrees_with_the_changelog`
+/// in `tests/cli.rs` is what stops it going stale when the pin moves: the
+/// changelog records the pin, the pin is checked against `Cargo.lock` by
+/// `script/changelog.py check`, and this is checked against the changelog.
+const DILUVIUM_BUILD: u32 = 13;
+
 /// What `drt wg` can do besides serve.
 #[cfg(feature = "wireguard")]
 #[derive(clap::Subcommand)]
@@ -406,6 +447,12 @@ pub fn buildinfo(json: bool) -> String {
     // which the examples gate then read as "skip what needs sql".
     let profile = profile_name(&enabled_features());
 
+    // What the core inside carries, the other half of the `dv_abi` fact.
+    // Keyed off the profile because that is what decides which core was
+    // compiled -- see the note on `CORE_FEATURES_FULL`, and the TODO(A0)
+    // that ends this indirection.
+    let features = core_features(profile);
+
     // Asked of drt-swarm, which owns the engine feature — see the note on
     // `abi_versions` there. `null`/`unknown` is reported honestly rather
     // than as a zero a consumer would read as a real ABI number.
@@ -430,7 +477,8 @@ pub fn buildinfo(json: bool) -> String {
     if json {
         format!(
             "{{\"version\":\"{}\",\"tag\":{},\"profile\":\"{}\",\"dv_abi\":{},\
-             \"dv_abi_expected\":{},\"diluvium\":\"{}\",\
+             \"dv_abi_expected\":{},\"diluvium\":\"{}\",\"diluvium_build\":{},\
+             \"features\":[{}],\
              \"connectors\":[{}],\"verbs\":[{}]}}\n",
             env!("CARGO_PKG_VERSION"),
             tag.map_or("null".to_string(), |t| format!("\"{t}\"")),
@@ -438,6 +486,12 @@ pub fn buildinfo(json: bool) -> String {
             abi.map_or("null".into(), |(l, _)| l.to_string()),
             abi.map_or("null".into(), |(_, e)| e.to_string()),
             diluvium_rev,
+            DILUVIUM_BUILD,
+            features
+                .iter()
+                .map(|f| format!("\"{f}\""))
+                .collect::<Vec<_>>()
+                .join(","),
             connectors
                 .iter()
                 .map(|c| format!("\"{c}\""))
@@ -452,13 +506,16 @@ pub fn buildinfo(json: bool) -> String {
     } else {
         format!(
             "version: {}\n{}profile: {}\ndv_abi: {}\ndv_abi_expected: {}\n\
-             diluvium: {}\nconnectors: {}\nverbs: {}\n",
+             diluvium: {}\ndiluvium_build: {}\nfeatures: {}\n\
+             connectors: {}\nverbs: {}\n",
             env!("CARGO_PKG_VERSION"),
             tag.map_or(String::new(), |t| format!("tag: {t}\n")),
             profile,
             abi.map_or("unknown".into(), |(l, _)| l.to_string()),
             abi.map_or("unknown".into(), |(_, e)| e.to_string()),
             diluvium_rev,
+            DILUVIUM_BUILD,
+            features.join(","),
             connectors.join(","),
             verbs.join(","),
         )
@@ -510,6 +567,19 @@ fn profile_name(features: &[&str]) -> &'static str {
         "web"
     } else {
         "custom"
+    }
+}
+
+/// The core features a named profile carries.
+///
+/// TODO(A0): replaced by one call to `dv_features()` once that pin lands.
+fn core_features(profile: &str) -> &'static [&'static str] {
+    match profile {
+        "full" => CORE_FEATURES_FULL,
+        "slim" => CORE_FEATURES_SLIM,
+        "wasi" => CORE_FEATURES_WASI,
+        "web" => CORE_FEATURES_WEB,
+        _ => CORE_FEATURES_CUSTOM,
     }
 }
 
