@@ -468,7 +468,7 @@ releases:
     stable: false
     mirror: false
     dv_abi: 2
-    diluvium: a9de62f108646a4f12e27692359480dfd7550100
+    diluvium: 8b54b5a6dd881618488a28ae669d1ed9ed527805
     diluvium_build: 13
     connectors:
       full: [time, fs, crypto, sql, ssh, rest, ssmtp, exec, data, listen]
@@ -491,10 +491,10 @@ releases:
       changes. Both are checked by name, so neither can move under a
       version number that says nothing moved.
 
-      **The pin has moved** to `a9de62f`, session A's numeric round --
+      **The pin has moved** to `8b54b5a`, session A's numeric round --
       typed arrays, the embedded libm, FFT and NTT, both syntax tiers,
-      classes. `dv_abi` is 2 with it, which is why this entry is minor
-      twice over.
+      classes -- plus the two interface fixes DRT asked for. `dv_abi` is 2
+      with it, which is why this entry is minor twice over.
 
       `diluvium_build` is still 13, and that is A's core rather than the
       released build13: A left `VERSION` alone because cutting a release is
@@ -503,12 +503,11 @@ releases:
       owner opens diluvium's entry.
 
       **`numeric` is on in every profile**, which is what puts `array` in
-      a guest. The safe `diluvium` crate still exposes no feature to
-      forward to `diluvium-sys`'s `numeric`, so the workspace names
-      `diluvium-sys` directly and lets cargo's feature unification set it
-      on the copy the safe crate links. That is a workaround with a `TODO`
-      on it, not a design; it goes the moment A's crate can forward the
-      feature.
+      a guest. It is asked for the ordinary way --
+      `diluvium = { features = ["numeric"] }` -- now that the safe crate
+      forwards it. An earlier commit in this cycle reached around that
+      crate to set the feature on `diluvium-sys` directly; that workaround
+      is gone, and no manifest here names `diluvium-sys` any more.
     added:
       - |
         **A corpus of every config shape that is deployed or shipped**, in
@@ -595,6 +594,21 @@ releases:
         with the reason and the alternative. Omitting the field is how a
         config means unlimited, and it is the only thing that reaches the
         core as `0`. A bound must not fail in the loose direction.
+      - |
+        **The blob lane still has one delivery, and the second one is
+        blocked upstream.** §3.2 designs a zero-copy path: descriptors on
+        the queue, bytes staged beside them, the guest fetching each by
+        index. That was a guest-side pull needing `dv_reply_blob`, which is
+        correctly not being added -- DRT compiles no C, so it would have a
+        caller on neither side. What the pin carries instead is a host-side
+        push, `Instance::adopt`, and it cannot close the lane: nothing in
+        `dv.h` makes the value it pushes reachable by a guest. Every
+        guest-visible path is a queue carrying msgpack, and an adopted
+        value is on none of them -- measured both with the feature and
+        without it, and reported to session A. So a column still crosses as
+        a msgpack `bin` and a guest still reads it as a Lua string, which
+        is what §3.1 specifies for a build without `numeric` and remains
+        correct rather than degraded.
       - |
         **Three cross-target numeric examples**, `24-arrays`,
         `25-reductions-and-grouping` and `26-fft`. Each prints IEEE bit

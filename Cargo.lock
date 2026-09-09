@@ -1091,7 +1091,7 @@ dependencies = [
 [[package]]
 name = "diluvium"
 version = "0.1.0"
-source = "git+https://github.com/Aloecraft-org/diluvium?rev=a9de62f108646a4f12e27692359480dfd7550100#a9de62f108646a4f12e27692359480dfd7550100"
+source = "git+https://github.com/Aloecraft-org/diluvium?rev=8b54b5a#8b54b5a6dd881618488a28ae669d1ed9ed527805"
 dependencies = [
  "diluvium-sys",
  "rmp-serde",
@@ -1101,7 +1101,7 @@ dependencies = [
 [[package]]
 name = "diluvium-sys"
 version = "0.1.0"
-source = "git+https://github.com/Aloecraft-org/diluvium?rev=a9de62f108646a4f12e27692359480dfd7550100#a9de62f108646a4f12e27692359480dfd7550100"
+source = "git+https://github.com/Aloecraft-org/diluvium?rev=8b54b5a#8b54b5a6dd881618488a28ae669d1ed9ed527805"
 
 [[package]]
 name = "displaydoc"
@@ -1381,7 +1381,6 @@ name = "drt-swarm"
 version = "0.5.0"
 dependencies = [
  "diluvium",
- "diluvium-sys",
  "drt-caps",
  "drt-config",
  "drt-connector",

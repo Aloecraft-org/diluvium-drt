@@ -69,40 +69,18 @@ clap = { version = "4", features = ["derive"] }
 # amalgamated C core from the checkout, so a C toolchain is required.
 #
 # Pinned by revision rather than tracking a branch, because the numeric
-# round's core is not on diluvium's `main`: `a9de62f` is session A's
-# `numeric-syntax` at A6 plus one fix to the numeric corpus (which pinned
-# the FPU's NaN rather than the program's; the kernels are unchanged).
+# round's core is not on diluvium's `main`: `8b54b5a` is session A's
+# `numeric-syntax` at A6 plus the two interface fixes B asked for -- the
+# `numeric` feature passthrough this line uses, and a safe wrapper for
+# `dv_array_adopt`.
 # `doc/Plan-2026-09.md` §3.7 is the protocol -- B moves the pin to the hash
 # A records -- and A's `## Status` says "pin this commit or later".
 #
 # An exact rev, not `branch = "numeric-syntax"`: a branch pin re-resolves
 # on every `cargo update` and the compatibility facts BUILDINFO publishes
 # would then describe whatever the branch happened to be that day.
-diluvium = { git = "https://github.com/Aloecraft-org/diluvium", rev = "a9de62f108646a4f12e27692359480dfd7550100" }
+diluvium = { git = "https://github.com/Aloecraft-org/diluvium", rev = "8b54b5a", features = ["numeric"] }
 
-# TEMPORARY, and the only reason this crate is named here: turning on the
-# core's `numeric` build.
-#
-# `numeric` is a feature of `diluvium-sys` (off by default, matching the
-# Makefile's NUMERIC), and DRT depends on the safe `diluvium` crate, which
-# has no `[features]` section to forward it through. So there is no way to
-# ask for it from where DRT sits. Naming `diluvium-sys` directly is how the
-# feature gets set: cargo unions features per package, and both paths
-# resolve to one `diluvium-sys` from one rev, so the copy `diluvium` links
-# is the copy that gets `numeric`.
-#
-# What that buys is not a Rust API -- DRT calls nothing in this crate. It is
-# `-DDV_NUMERIC` and §3.5's flags reaching the C build, which is what puts
-# `array` in a guest and makes B4's examples possible at all. `dv_features()`
-# reports it either way, so nothing downstream has to know this is here.
-#
-# TODO: drop this entry the moment the safe crate can forward the feature
-# (raised on diluvium#33) and write `diluvium = { ..., features = ["numeric"] }`
-# instead. Reaching around a wrapper is a workaround, not a design: it works
-# only while both come from one rev, and a `diluvium` that ever vendored its
-# own `diluvium-sys` would leave this silently setting a feature on a crate
-# nobody links.
-diluvium-sys = { git = "https://github.com/Aloecraft-org/diluvium", rev = "a9de62f108646a4f12e27692359480dfd7550100", features = ["numeric"] }
 
 # The transport layer: one Transport trait over TCP/WebSocket/WebRTC/SSH,
 # schemes gated per platform as typed refusals (SPEC.md §9; `ssh` is

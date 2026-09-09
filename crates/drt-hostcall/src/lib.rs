@@ -29,8 +29,8 @@
 //! 2. The dispatcher calls [`lift_columns`] on that answer, moving each
 //!    column's bytes into `blobs` and leaving the descriptor behind. Every
 //!    [`Reply`] a pump sees is already in §3.2's shape.
-//! 3. The pump encodes with [`to_wire`], which is where the lane's two
-//!    deliveries diverge -- see that function's TODO(A0).
+//! 3. The pump encodes with [`to_wire`], which is where the lane's second
+//!    delivery would go -- see that function's BLOCKED note.
 
 use serde::{Deserialize, Serialize};
 
@@ -296,24 +296,39 @@ pub fn lift_columns(value: rmpv::Value, blobs: &mut Vec<Vec<u8>>) -> rmpv::Value
 /// Encode a reply for the guest's reply queue: the one encode on the
 /// hostcall path, because it is the one that knows about the lane.
 ///
-/// TODO(A0): **the lane has two deliveries and only one exists yet.**
+/// BLOCKED: **the lane's second delivery has no landing place, and the
+/// reason is upstream.**
 ///
-/// The one this round's `dv.h` describes: the descriptors go out as they
-/// are, the host stages `blobs` on the instance, and the guest reads each
-/// with `dv_reply_blob(inst, index, &ptr, &len)` and hands it to
-/// `dv_array_adopt`, so the bytes never enter the encoding at all. That
-/// needs `dv_reply_blob`, which arrives with session A's A0 milestone
-/// (`doc/Plan-2026-09.md` §3.1); DRT reaches the core through the safe
-/// `diluvium` crate, so it becomes callable here when that pin lands.
+/// The delivery §3.2 designs: the descriptors go out as they are, the host
+/// stages `blobs` on the instance, and the guest fetches each by index and
+/// hands it to `dv_array_adopt`, so the bytes never enter the encoding at
+/// all. That was a guest-side *pull*, and it needed `dv_reply_blob` --
+/// which is not being added, correctly: DRT compiles no C, so the entry
+/// point §2's table names has a caller on neither side (settled with
+/// session A; §2's row is the thing that is wrong).
 ///
-/// The one below, until then: each descriptor is replaced by its blob's
-/// bytes as a msgpack `bin`, which a guest reads as a Lua string. That is
-/// **not a stopgap shape** -- it is exactly what §3.1 specifies a build
-/// without `numeric` to do, where `dv_array_adopt` "pushes a Lua string
-/// copy instead". So the guest-visible behaviour here is already the
-/// documented no-`numeric` behaviour, and A0 does not change what a guest
-/// without arrays sees; it adds the path for a guest with them, and takes
-/// away the one copy this makes.
+/// What the pin carries instead is a host-side *push*:
+/// `Instance::adopt(&[T])`, which adopts a buffer as a value on the
+/// instance's Lua stack while it is parked. It cannot close this lane,
+/// because **nothing in `dv.h` makes that stack value reachable by a
+/// guest**. Every guest-visible path -- `queue.wait`, `queue.pop`, a
+/// hostcall reply -- is `dv_queue_push` carrying msgpack bytes, and the
+/// adopted value is not on any of them. Measured against `8b54b5a`, both
+/// with the feature and without it: adopt a column into a parked instance,
+/// resume, and the guest is still parked on the same wait; push an
+/// ordinary message afterwards and the guest receives *that*, never the
+/// column. The bytes are charged to the instance either way, so a host
+/// that called it would pay a column's memory to hand over nothing.
+/// Reported to session A.
+///
+/// So the encoding below is the only delivery, and it is not a stopgap
+/// shape: it is exactly what §3.1 specifies a build without `numeric` to
+/// do, where `dv_array_adopt` "pushes a Lua string copy instead". Each
+/// descriptor is replaced by its blob's bytes as a msgpack `bin`, which a
+/// guest reads as a Lua string. What is still owed is the zero-copy path
+/// for a guest that has `array`, and it needs a reachable landing place
+/// first -- an adopted value delivered *as* a queue message is the shape
+/// that would fit this lane.
 ///
 /// Never base64, on either path (§3.2).
 ///
