@@ -18,6 +18,7 @@ fn load(engine: &DiluviumEngine, source: &str, name: &str) -> Box<dyn Instance> 
             program: ProgramBytes::Source(source),
             name,
             budget: Budget::default(),
+            numeric: Default::default(),
             unsafe_stdlib: false,
         })
         .unwrap()
@@ -135,6 +136,7 @@ fn a_snapshot_survives_the_process_and_continues() {
         snapshot: &bytes,
         host_stamp: Some("node-b"),
         budget: Budget::default(),
+        numeric: Default::default(),
         unsafe_stdlib: false,
     });
     assert!(matches!(wrong, Err(EngineError::SnapshotMismatch(_))));
@@ -144,6 +146,7 @@ fn a_snapshot_survives_the_process_and_continues() {
             snapshot: &bytes,
             host_stamp: Some("node-a"),
             budget: Budget::default(),
+            numeric: Default::default(),
             unsafe_stdlib: false,
         })
         .unwrap();
@@ -183,6 +186,7 @@ fn a_budget_bounds_a_runaway_program() {
                 instructions: Some(10_000),
                 memory_kb: None,
             },
+            numeric: Default::default(),
             unsafe_stdlib: false,
         })
         .unwrap();
@@ -190,4 +194,54 @@ fn a_budget_bounds_a_runaway_program() {
         Err(EngineError::Program(_)) => assert!(inst.exceeded()),
         other => panic!("expected the budget to stop it, got {other:?}"),
     }
+}
+
+/// The numeric bounds a `LoadSpec` states reach the instance, and the audit
+/// flag is false because nothing can have set it.
+///
+/// This is the test that fails when session A's A2 pin lands and
+/// `DiluviumInstance::apply_numeric` is still a no-op: the bounds have to
+/// stop being merely *carried* and start being *applied*, and the flag has
+/// to stop being a literal `false` and start being a reading. Until then
+/// both halves are true and this passes for the right reasons.
+#[test]
+fn numeric_bounds_reach_the_instance_and_no_fast_kernel_has_run() {
+    use drt_config::{Numeric, Tier};
+
+    let engine = DiluviumEngine::new().unwrap();
+    let bounds = Numeric {
+        max_elements: Some(4096),
+        max_tier: Some(Tier::Reproducible),
+    };
+    let inst = engine
+        .load(LoadSpec {
+            program: ProgramBytes::Source("local x = 1"),
+            name: "bounded",
+            budget: Budget::default(),
+            numeric: bounds,
+            unsafe_stdlib: false,
+        })
+        .unwrap();
+
+    assert_eq!(
+        inst.numeric_bounds(),
+        bounds,
+        "the bounds the spec stated did not reach the instance"
+    );
+    // No fast-tier backend exists in this workspace or in the pinned core,
+    // so no fast kernel can have run. `false` here is a fact, not a stub.
+    assert!(!inst.numeric_touched_fast());
+
+    // An instance loaded with no bounds states none, rather than inheriting
+    // some default this layer invented.
+    let plain = engine
+        .load(LoadSpec {
+            program: ProgramBytes::Source("local x = 1"),
+            name: "plain",
+            budget: Budget::default(),
+            numeric: Numeric::default(),
+            unsafe_stdlib: false,
+        })
+        .unwrap();
+    assert!(plain.numeric_bounds().is_unbounded());
 }

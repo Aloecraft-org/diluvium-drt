@@ -70,6 +70,7 @@ fn load(program: &str) -> Solo {
             program: ProgramBytes::Source(program),
             name: "test",
             budget: Default::default(),
+            numeric: Default::default(),
             unsafe_stdlib: false,
         },
         CapSet::root(vec![Grant::grant("host:later")]),

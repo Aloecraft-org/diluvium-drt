@@ -103,6 +103,9 @@ pub fn load_host_lua(path: &Path) -> Result<RootConfig, String> {
                 instructions: Some(10_000_000),
                 memory_kb: Some(16 * 1024),
             },
+            // A config file evaluates a data literal. It has no arrays
+            // and cannot reach a kernel, so there is no bound to state.
+            numeric: drt_config::Numeric::default(),
             unsafe_stdlib: false,
         })
         .map_err(|e| e.to_string())?;
@@ -239,19 +242,77 @@ fn map_host_lua(path: &Path, value: rmpv::Value) -> Result<RootConfig, String> {
             // carries traffic over a path the first three only measured.
             #[cfg(feature = "wireguard")]
             "wireguard" => config.wireguard = Some(map_wireguard(path, value)?),
+            // How much numeric work this instance may do. An instance-level
+            // bound, so it lands on `config.root` beside `caps` and the
+            // budget rather than beside the process-level blocks above --
+            // it attenuates at spawn, and those do not.
+            //
+            // Added BESIDE the existing keys, never by reworking the shared
+            // path: `doc/Plan-2026-09.md` §3.8's rule, with the corpus in
+            // `crates/drt-config/tests/corpus/` as the proof that the keys
+            // already out there still load.
+            "numeric" => config.root.numeric = map_numeric(path, value)?,
             other => {
                 // The C's loader promise, kept: an unknown key is a typo
                 // about to become a silent default, so it is an error and
                 // names itself.
                 return Err(format!(
                     "{}: unknown key '{other}' (known: supervisor, caps, \
-                     connectors, relay, stun, turn, wireguard)",
+                     connectors, numeric, relay, stun, turn, wireguard)",
                     path.display()
                 ));
             }
         }
     }
     Ok(config)
+}
+
+/// The `numeric` block: how much numeric work an instance may do, and how
+/// exactly it must be done.
+///
+/// Not feature-gated, unlike the four blocks above it. Those name servers a
+/// build may not carry; this names a bound, and a bound is meaningful on
+/// every build -- a config that says `max_tier = "exact"` should not become
+/// an unknown key on a binary that happens to lack a feature, because the
+/// answer it wants ("do not run fast kernels") is one every binary can give.
+fn map_numeric(path: &Path, block: rmpv::Value) -> Result<drt_config::Numeric, String> {
+    let rmpv::Value::Map(entries) = block else {
+        return Err(format!("{}: numeric must be a table", path.display()));
+    };
+    let mut numeric = drt_config::Numeric::default();
+    for (key, value) in entries {
+        let Some(key) = key.as_str() else {
+            return Err(format!("{}: a non-string numeric key", path.display()));
+        };
+        match key {
+            "max_elements" => {
+                numeric.max_elements = Some(value.as_u64().ok_or_else(|| {
+                    format!(
+                        "{}: numeric.max_elements must be a count of elements",
+                        path.display()
+                    )
+                })?)
+            }
+            "max_tier" => {
+                let name = value.as_str().ok_or_else(|| {
+                    format!("{}: numeric.max_tier must be a tier name", path.display())
+                })?;
+                numeric.max_tier = Some(drt_config::Tier::parse(name).ok_or_else(|| {
+                    format!(
+                        "{}: numeric.max_tier '{name}' is not one of exact, reproducible, fast",
+                        path.display()
+                    )
+                })?);
+            }
+            other => {
+                return Err(format!(
+                    "{}: unknown numeric key '{other}' (known: max_elements, max_tier)",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(numeric)
 }
 
 /// The `stun` block: the binding server as `drt start` and `drt stun` run

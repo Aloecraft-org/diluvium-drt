@@ -1,0 +1,37 @@
+[package]
+name = "drt-connector-data"
+description = "The data connector: parquet and CSV columns out of a granted directory, as raw buffers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+serde = { workspace = true }
+rmpv = { workspace = true }
+drt-caps = { workspace = true }
+drt-connector = { workspace = true }
+# The reply's blob lane: `column` is how a decoded column leaves here
+# without being walked by the msgpack encoder (doc/Plan-2026-09.md §3.2).
+drt-hostcall = { workspace = true }
+# The disk, through the same backend `fs` reads it through.
+drt-platform = { workspace = true }
+# One path jail, not two: `data` grants a directory exactly as `fs` does,
+# symlink case included, and reuses that connector's answer rather than
+# writing a second one.
+drt-connector-fs = { workspace = true }
+bytes = "1"
+# Deliberately NOT `default-features`: that pulls the whole arrow stack in
+# for a reader that never builds a RecordBatch, and `brotli`, which
+# doc/Plan-2026-09.md §5 rules out by name. The four codecs named there and
+# nothing else. `flate2-zlib-rs` is what parquet calls gzip.
+parquet = { version = "59", default-features = false, features = ["snap", "flate2-zlib-rs", "lz4", "zstd"] }
+# `spawn_blocking`: a decode is CPU work and must not be done on the drive
+# loop's thread. `rt` for the fallback runtime, the same shape `rest` uses.
+tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread"] }
+
+[dev-dependencies]
+drt-hostcall = { workspace = true }
+tempfile = "3"
+pollster = "0.4"

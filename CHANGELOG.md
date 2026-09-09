@@ -12,6 +12,141 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
+## [0.6.0] - unreleased (prerelease)
+
+`v0.6.0` &middot; dv ABI 1 &middot; diluvium `850e00d73220` (build13)
+
+**In progress, not cut.** The numeric round (`doc/Plan-2026-09.md`):
+DRT's half is a `features` compatibility fact, a raw-buffer lane in
+the hostcall reply, a `data` connector for parquet and CSV, and the
+config surface that bounds numeric work per instance.
+
+Minor rather than patch, by the rule this file's header states: the
+feature set is a new compatibility fact and `full`'s connector list
+changes. Both are checked by name, so neither can move under a
+version number that says nothing moved.
+
+`dv_abi` stays 1 until the pin that raises it lands. `diluvium` and
+`diluvium_build` name the same core v0.5.0rc8 carries, because this
+entry has not moved the pin yet.
+
+### Connectors
+
+- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `data`, `listen`
+- `slim`: `time`, `fs`, `crypto`, `listen`
+- `wasi`: `time`, `fs`, `crypto`, `sql`, `listen`
+- `web`: `time`, `fs`, `crypto`
+
+### Core features
+
+- `full`: `regex`
+- `slim`: `regex`
+- `wasi`: `regex`
+- `web`: `regex`
+
+### Added
+
+- **A corpus of every config shape that is deployed or shipped**, in
+  `crates/drt-config/tests/corpus/`, loaded through the real loader
+  and diffed against what it parsed to before.
+
+  `drt-config` is shared by everything, and this round adds fields to
+  it. Every shipped install runs a config this loader wrote, and a
+  regression there is caught by no other gate -- so the rule is that
+  any loader change failing a corpus file is wrong regardless of what
+  it enables. A refusal is snapshotted like any other outcome: three
+  of the shapes in there are refused on purpose, and "it still
+  refuses, for the same reason" is as much a fact about the loader as
+  "it still parses to this".
+- **`drt buildinfo` says which core is inside, not just which
+  revision**: `features` (what the embedded diluvium carries --
+  `regex` today, `numeric` when it lands) and `diluvium_build` (the N
+  in `5.5.1_buildN`, which is the ordered half of a fact the revision
+  states exactly). Both travel in `BUILDINFO.txt` and in this file,
+  which is `doc/Release.md`'s rule: the compatibility fact travels
+  with the bytes.
+- **A `data` connector**: `read_parquet`, `write_parquet`, `read_csv`
+  and `write_csv`, scoped to a granted directory exactly as `fs` is,
+  and using `fs`'s own path jail rather than a second one.
+
+  What it does not build is the point. A column crosses as raw bytes
+  on the reply's blob lane, so a million rows is a million bytes and
+  not a million Lua values; text crosses dictionary-encoded, `i64`
+  codes plus each distinct string once. Nulls follow the numeric
+  spec's Stage 4: an `f64` column says null with NaN, everything else
+  carries a `u8` validity mask, and a column with no null carries
+  nothing. Decoding runs on `spawn_blocking`, so the call parks the
+  way `rest` parks -- a synchronous decode is `exec`'s shape, and it
+  would stop every other instance in the deployment.
+
+  `full` only. Four codecs -- snappy, gzip, lz4, zstd -- and not
+  brotli, which this build does not carry, so a file using it is
+  refused by name at read rather than mis-decoded.
+- **A `numeric` block in the config**: `max_elements` and `max_tier`,
+  per instance, attenuating at spawn under the same rule as budgets.
+  A child may narrow either and raise neither, an unstated bound
+  inherits the parent's rather than becoming unlimited, and the
+  refusal names which of the two moved.
+
+  Beside `budget`, not inside it, because they bound different
+  things: instructions the guest executed, and elements a kernel
+  processed on its behalf. Added beside the existing config fields,
+  never through them -- the loader corpus is the proof, and it shows
+  52 added lines and no changed ones across all thirteen shapes.
+
+  `numeric_touched_fast` rides beside the fate on a stop event and is
+  a roster question next to `budget`. It is `false` everywhere today,
+  and that is a fact rather than a stub: no fast-tier backend exists
+  in this workspace or in the pinned core, so no fast kernel can have
+  run.
+- **`needs_features` in an example's `meta.json`**, beside
+  `needs_build`. A profile name says which connectors a binary has;
+  it does not say which core is inside it, and an example that needs
+  `numeric` is skipped by name on a build without it rather than
+  producing a diff whose real content is "this build does not carry
+  that". A core feature gets its own skip bucket and its own advice:
+  no cargo flag adds one, so "rebuild with `--all-features`" would be
+  a command that cannot help.
+- **`doc/Numeric.md`**, which states what the three determinism tiers
+  promise, the three different bounds on numeric work and which
+  failure each has, and how a column crosses the hostcall boundary.
+  Written for someone operating DRT rather than building the core.
+- `examples/23-reading-parquet`, and the size ledger the plan asks for: `full` at `release-small` grows 1,349,408 bytes (+20.1%) for the `data` connector.
+
+### Changed
+
+- **`drt-connector-fs` publishes its path jail.** `FsScope` and
+  `FsScopeType` are public so the `data` connector can grant a
+  directory through the same code rather than a second copy of it. A
+  path jail that exists twice is a path jail that is wrong once. No
+  behaviour of the `fs` connector changes.
+- **The hostcall reply's encode goes through `to_wire`**, by value,
+  rather than `to_bytes` by reference. A reply carrying no column
+  encodes identically; one carrying a column has its bytes moved
+  rather than copied.
+
+### Known issues
+
+- **A connector decode is work the instruction budget does not
+  bound** -- it is host work, not the guest's instructions, and not a
+  kernel either. The only bound is `max_bytes` on the `data` scope,
+  which is therefore the memory bound as well as the file bound.
+  Measured at roughly 4 ms per megabyte of parquet; the decode parks
+  on `spawn_blocking` so the deployment keeps running, and there is
+  no per-call timeout and no cancellation. `doc/Failure-Modes.md`
+  FM-5 has the numbers and how to size a scope.
+- **The numeric half of this entry is plumbed, not live.** The pin
+  does not carry a core with `numeric`, so: `features` and
+  `diluvium_build` in `buildinfo` are hard-coded from the profile
+  rather than read from the core, the blob lane delivers bytes inline
+  as a Lua string rather than through `dv_reply_blob`, the instance's
+  numeric bounds reach the instance but the core has nowhere to put
+  them, and `numeric_touched_fast` is `false` because no fast-tier
+  backend exists anywhere to set it. Each is marked `TODO(A0)` or
+  `TODO(A2)` at the one place it changes, and each has a test that
+  fails if the pin moves and the code does not.
+
+
 ## [0.5.0rc8] - unreleased (prerelease)
 
 `v0.5.0rc8` &middot; dv ABI 1 &middot; diluvium `850e00d73220`

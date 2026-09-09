@@ -1,0 +1,105 @@
+parsed to:
+RootConfig {
+    root: InstanceConfig {
+        program: Some(
+            Path(
+                "examples/hello.dlua",
+            ),
+        ),
+        caps: [
+            Grant {
+                effect: Grant,
+                capability: "host:time",
+                scope: None,
+            },
+            Grant {
+                effect: Grant,
+                capability: "host:fs/*",
+                scope: None,
+            },
+        ],
+        budget: Budget {
+            instructions: Some(
+                100000000,
+            ),
+            memory_kb: None,
+        },
+        numeric: Numeric {
+            max_elements: None,
+            max_tier: None,
+        },
+    },
+    connectors: {
+        "fs": ConnectorWiring {
+            backing: None,
+            scope: Some(
+                Scope(
+                    Map(
+                        [
+                            (
+                                String(
+                                    Utf8String {
+                                        s: Ok(
+                                            "scope",
+                                        ),
+                                    },
+                                ),
+                                String(
+                                    Utf8String {
+                                        s: Ok(
+                                            "./examples/workspace",
+                                        ),
+                                    },
+                                ),
+                            ),
+                            (
+                                String(
+                                    Utf8String {
+                                        s: Ok(
+                                            "access",
+                                        ),
+                                    },
+                                ),
+                                String(
+                                    Utf8String {
+                                        s: Ok(
+                                            "read",
+                                        ),
+                                    },
+                                ),
+                            ),
+                            (
+                                String(
+                                    Utf8String {
+                                        s: Ok(
+                                            "max_bytes",
+                                        ),
+                                    },
+                                ),
+                                Integer(
+                                    PosInt(
+                                        65536,
+                                    ),
+                                ),
+                            ),
+                        ],
+                    ),
+                ),
+            ),
+        },
+        "time": ConnectorWiring {
+            backing: None,
+            scope: None,
+        },
+    },
+    listeners: [],
+    residency: None,
+    relay: None,
+    stun: None,
+    turn: None,
+    wireguard: None,
+    identity: Identity {
+        host_key_path: None,
+    },
+    principals: [],
+}

@@ -1,0 +1,40 @@
+-- Columns, not tables.
+--
+--   drt run --config app.json
+--
+-- A parquet column arrives as raw BYTES: the host never turns it into Lua
+-- values, so a million rows is a million bytes in a string rather than a
+-- million table entries. Text arrives dictionary-encoded -- integer codes
+-- plus each distinct string once -- for the same reason.
+--
+-- example: omits the refused branch. host.call raises on a refusal and the
+-- config grants what this needs; host.try is the pcall-friendly half.
+
+-- The config granted a directory. Which file in it is the program's to name.
+local wrote = host.call("data/write_parquet", {
+  path    = "prices.parquet",
+  order   = { "day", "price", "city" },
+  columns = {
+    day   = { dtype = "i64", values = string.pack("<jjjj", 1, 2, 3, 4) },
+    price = { dtype = "f64", values = string.pack("<dddd", 0.1, 2.5, 0.1, 8.125) },
+    city  = { codes  = string.pack("<jjjj", 0, 1, 0, 1), uniques = { "oslo", "bergen" } },
+  },
+})
+print(("wrote %d rows, one of three columns is text"):format(wrote.rows))
+
+-- Two of the three columns, and three of the four rows. Naming them here is
+-- what stops the third column being decompressed at all.
+local t = host.call("data/read_parquet", {
+  path = "prices.parquet", columns = { "price", "city" }, start = 1, len = 3,
+})
+print(("read %d rows: %s"):format(t.rows, table.concat(t.order, ", ")))
+
+-- Bits, never %g. This output is byte-identical on glibc, musl, wasmtime and
+-- Windows, whose C libraries format decimals differently from each other.
+local price, city = t.columns.price, t.columns.city
+for i = 1, t.rows do
+  local at   = 1 + (i - 1) * 8
+  local bits = ("%016x"):format(string.unpack("<I8", price.values, at))
+  local code = string.unpack("<j", city.codes, at)
+  print(("  %s  %s"):format(bits, city.uniques[code + 1]))
+end

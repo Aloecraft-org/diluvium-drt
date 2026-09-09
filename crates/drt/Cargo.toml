@@ -68,6 +68,9 @@ drt-connector-crypto = { workspace = true, optional = true }
 drt-connector-rest = { workspace = true, optional = true }
 drt-connector-ssmtp = { workspace = true, optional = true }
 drt-connector-exec = { workspace = true, optional = true }
+# `full` only: the parquet reader is the one dependency in this workspace
+# that would not fit a slim binary, and a browser has no file to read.
+drt-connector-data = { workspace = true, optional = true }
 # The line editor behind `drt repl` on a tty (doc/Wasm.md D8). Optional
 # and not in `slim`: its native backend wants crossterm's event-stream and
 # Runtime-free: the workspace pin turns ego-cli's `runtime` feature off, so
@@ -97,7 +100,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 # connector is its own gate so a profile is a feature list, not a fork.
 default = ["slim"]
 slim = ["connector-time", "connector-fs", "connector-crypto", "listen", "cli"]
-full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "connector-exec", "tunnel", "relay", "stun", "netcheck", "turn", "wireguard"]
+full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "connector-exec", "connector-data", "tunnel", "relay", "stun", "netcheck", "turn", "wireguard"]
 # The portable build (doc/Wasm.md D2): what `drt` carries on
 # wasm32-wasip2, under wasmtime. Every connector here compiles for that
 # target with no source change and is exercised by the examples gate
@@ -158,6 +161,10 @@ connector-ssmtp = ["dep:drt-connector-ssmtp", "runtime"]
 # on stderr when one does: granting it is leaving the sandbox
 # (GUARANTEES.md), and that is the loud flag the guarantee promises.
 connector-exec = ["dep:drt-connector-exec"]
+# Parquet and CSV columns out of a granted directory, as raw buffers. In
+# `full` and nowhere else: the parquet reader is a large dependency, and
+# both smaller profiles exist to not carry things like it.
+connector-data = ["dep:drt-connector-data"]
 # The ambient tokio runtime the native drive loops enter (src/runtime.rs),
 # so a connector that awaits parks in the pump instead of `block_on`-ing
 # the drive thread. Implied by every tokio-backed connector rather than

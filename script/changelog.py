@@ -11,7 +11,8 @@ intact, so that the two repositories' release machinery reads the same and
 a fix to one is a fix a person can carry to the other. What changed is
 only what the compatibility facts are: diluvium records `lua_base` and
 `bytecode_format`, DRT records `dv_abi`, the embedded `diluvium` revision
-and the per-profile `connectors` set -- which is exactly what BUILDINFO.txt
+and build number, and the per-profile `connectors` and `features` sets --
+which is exactly what BUILDINFO.txt
 carries, because doc/Release.md's rule is that the compatibility fact
 travels with the bytes.
 
@@ -69,12 +70,20 @@ SECTIONS = [
 ]
 STATUSES = {"released", "unreleased", "tagged"}
 SCALARS = {"version", "tag", "date", "status", "stable", "latest", "mirror",
-           "dv_abi", "diluvium", "summary", "upgrading"}
-# Not a scalar: a mapping of profile name -> the connectors that profile
-# carries. This is the field that makes a version number honest. A release
-# whose connector set changed is not a patch release, whatever the digits
-# say, because `requires.connectors` is checked against it by name.
-MAPPINGS = {"connectors"}
+           "dv_abi", "diluvium", "diluvium_build", "summary", "upgrading"}
+# Not scalars: mappings of profile name -> a list this build carries for
+# that profile.
+#
+#   connectors  The field that makes a version number honest. A release
+#               whose connector set changed is not a patch release, whatever
+#               the digits say, because `requires.connectors` is checked
+#               against it by name.
+#   features    The same argument one level down: which features the
+#               embedded diluvium core carries (`regex`, later `numeric`).
+#               `dv_abi` says which ABI the core speaks; this says what is
+#               reachable through it, and a package needing `numeric` is
+#               admitted or refused by name against this list.
+MAPPINGS = {"connectors", "features"}
 KNOWN = SCALARS | MAPPINGS | {k for k, _ in SECTIONS}
 
 
@@ -145,17 +154,19 @@ def validate(doc):
         # the 'security:' block right below it -- passed validate and then
         # crashed render in CI. The two halves of this file disagreed about a
         # type and only one of them said so.
-        conns = r.get("connectors")
-        if conns is not None:
-            if not isinstance(conns, dict):
-                bad.append("%s: connectors must be a mapping of profile -> "
-                           "list" % where)
-            else:
-                for prof, names in conns.items():
-                    if not isinstance(names, list) or not all(
-                            isinstance(n, str) for n in names):
-                        bad.append("%s: connectors.%s must be a list of "
-                                   "strings" % (where, prof))
+        for key in sorted(MAPPINGS):
+            block = r.get(key)
+            if block is None:
+                continue
+            if not isinstance(block, dict):
+                bad.append("%s: %s must be a mapping of profile -> list"
+                           % (where, key))
+                continue
+            for prof, names in block.items():
+                if not isinstance(names, list) or not all(
+                        isinstance(n, str) for n in names):
+                    bad.append("%s: %s.%s must be a list of strings"
+                               % (where, key, prof))
 
         for key in sorted(SCALARS):
             val = r.get(key)
@@ -228,16 +239,24 @@ def render_release(r):
     if r.get("dv_abi") is not None:
         meta.append("dv ABI %s" % r["dv_abi"])
     if r.get("diluvium"):
-        meta.append("diluvium `%s`" % str(r["diluvium"])[:12])
+        rev = "diluvium `%s`" % str(r["diluvium"])[:12]
+        # The build number reads as part of the revision rather than beside
+        # it: they are one fact said two ways, exact and ordered.
+        if r.get("diluvium_build") is not None:
+            rev += " (build%s)" % r["diluvium_build"]
+        meta.append(rev)
     if meta:
         out += [" &middot; ".join(meta), ""]
     if r.get("summary"):
         out += [r["summary"].rstrip("\n"), ""]
-    if r.get("connectors"):
-        out += ["### Connectors", ""]
-        for prof in sorted(r["connectors"]):
+    for key, title in (("connectors", "Connectors"),
+                       ("features", "Core features")):
+        if not r.get(key):
+            continue
+        out += ["### " + title, ""]
+        for prof in sorted(r[key]):
             out.append("- `%s`: %s" % (prof, ", ".join(
-                "`%s`" % n for n in r["connectors"][prof])))
+                "`%s`" % n for n in r[key][prof]) or "_none_"))
         out.append("")
     for key, title in SECTIONS:
         if r.get(key):
@@ -281,8 +300,8 @@ def render_json(doc):
     for r in doc["releases"]:
         entry = {k: r.get(k) for k in
                  ("version", "tag", "date", "status", "stable", "mirror",
-                  "dv_abi", "diluvium", "connectors", "summary",
-                  "upgrading")}
+                  "dv_abi", "diluvium", "diluvium_build", "connectors",
+                  "features", "summary", "upgrading")}
         # PyYAML gives an unquoted yyyy-mm-dd back as a datetime.date; the
         # mirror wants a plain ISO string.
         entry["date"] = str(r["date"]) if r.get("date") else None

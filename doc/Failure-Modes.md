@@ -328,6 +328,96 @@ capability restriction (this needs no capability), the instruction budget
 (it is the thing being escaped), a memory budget (the loop allocates
 nothing), and `Restart=always` on its own.
 
+## FM-5: work the instruction budget does not bound — a kernel mid-call, and a decode
+
+**Two halves with one shape**, and they are at different stages of being
+real. Both are cases where an instance consumes resources the guest's
+instruction budget does not count, so `dv_usage` reports a small number
+while real work happens. Neither is a crash.
+
+### Half one: a connector decode — REAL TODAY
+
+**Mechanism.** `data/read_parquet` and `data/read_csv` decode a file. That
+is host work: it is not instructions the guest executed, so the
+instruction budget does not see it, and it is not a kernel, so
+`numeric.max_elements` does not see it either.
+
+**Reached when** a guest with `host:data/*` names a file. No special shape
+is needed; the ordinary call is the case.
+
+**The only bound is `max_bytes` on the connector's scope.** It is
+therefore two bounds at once — the largest file that may be read, and the
+most memory a decode may take — because a parquet file is read whole into
+memory: the reader needs the footer and then random access to the row
+groups the range touches. A scope that states none gets the 1 MB default,
+which is `fs`'s number for the same question.
+
+**Cost, measured on this tree** (release build, one `f64` column,
+`connectors/data/tests/decode_cost.rs`, run it with `--nocapture` for your
+own machine's):
+
+| Rows | File | Decode |
+|---|---|---|
+| 100,000 | 421 KB | 1.8 ms |
+| 1,000,000 | 4.3 MB | 18 ms |
+
+Roughly **4 ms per megabyte of parquet**, so the 1 MB default costs about
+that and a deliberately generous 64 MB scope costs about a quarter of a
+second. Those are the numbers to size a scope with.
+
+**Blast radius: one blocking thread, not the deployment.** The decode runs
+under `spawn_blocking`, so the call parks the way `rest` parks — the drive
+loop keeps stepping, every other instance keeps running, and the answer
+lands on the guest's reply queue when it is done. This is the whole reason
+it is not `exec`'s shape, which is FM-4's shape: a synchronous decode
+would stop every instance in the process for work that is not theirs.
+
+**What to do.** Set `max_bytes` deliberately on any `data` scope; the
+default is small on purpose. There is no per-call timeout and no
+cancellation: a decode that has started runs to completion. If that
+matters for a file size you intend to allow, the bound to move is
+`max_bytes`, not a timeout that does not exist.
+
+### Half two: a kernel exceeding mid-call — NOT REACHABLE YET
+
+**Not reachable in any build today**, and stated here rather than
+discovered later. No numeric kernels exist: the pinned core carries no
+`numeric` feature (`drt buildinfo` says `features: regex`), so nothing in
+this half can currently happen. It is written now because the design
+decisions that bound it are already made and an operator reading this
+entry after the pin moves should not have to reconstruct them.
+
+**Mechanism, once kernels exist.** A kernel charges the instruction budget
+**by element count, never by time**: one instruction per 64 elements,
+checked at block boundaries (`doc/Plan-2026-09.md` §3.4). So a budget can
+run out *inside* a matrix multiply, and the kernel raises an ordinary Lua
+error from there.
+
+**Why by element count.** Because the exceed point must be identical on
+every target — replay depends on it. A time-based charge would stop at a
+different element on every machine, and two runs of the same program would
+disagree about where.
+
+**What is bounded and what is not.** The budget bounds a kernel's work.
+`numeric.max_elements` bounds one call's size, and attenuates at spawn so
+a child cannot raise it. Neither bounds a **loop of caught errors**: FM-4's
+mechanism applies here unchanged — instruction exhaustion is a catchable
+Lua error and each catch buys `DV_HOOK_STEP` instructions — so a guest
+that wraps a kernel call in a `pcall` loop spins for the same reason and
+with the same non-fix. FM-4's upstream fix, `pcall` refusing to catch once
+`exceeded` is set, closes both.
+
+**Partial results.** An array being computed into when the budget fires
+holds whatever the kernel had written. The guest may catch the error and
+read it. That is not a corruption — it is the documented consequence of a
+bound firing mid-call — but a program treating a caught kernel error as
+"the array is unchanged" is wrong, and this is where that is written down.
+
+**When this becomes real**, the thing to check first is that
+`numeric_touched_fast` still reports honestly across it: a kernel that
+exceeded is still a kernel that ran, and if it was a fast-tier one the
+flag must be set on the instance whether or not the call completed.
+
 ## What ego-proc does and does not cover
 
 ego-proc is **not** a DRT dependency yet — `Cargo.toml` names it as work

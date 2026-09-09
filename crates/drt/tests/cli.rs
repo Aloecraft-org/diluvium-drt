@@ -318,9 +318,10 @@ fn buildinfo_names_the_release_tag_when_built_as_one() {
 #[test]
 fn profile_matches_its_manifest() {
     const PROFILES: [&str; 4] = ["full", "slim", "wasi", "web"];
-    const LEAVES: [&str; 17] = [
+    const LEAVES: [&str; 18] = [
         "cli",
         "connector-crypto",
+        "connector-data",
         "connector-exec",
         "connector-fs",
         "connector-rest",
@@ -409,6 +410,7 @@ fn profile_matches_its_manifest() {
     }
     feature!("cli");
     feature!("connector-crypto");
+    feature!("connector-data");
     feature!("connector-exec");
     feature!("connector-fs");
     feature!("connector-rest");
@@ -441,5 +443,102 @@ fn profile_matches_its_manifest() {
         reported, expected,
         "this binary was built with {enabled:?}, which Cargo.toml says is '{expected}'; \
          buildinfo says '{reported}', so main.rs's PROFILE_* tables and the manifest disagree"
+    );
+}
+
+/// The two hard-coded compatibility facts agree with the changelog, which
+/// agrees with `Cargo.lock`.
+///
+/// `features` and `diluvium_build` are stated in `cli.rs` rather than read
+/// off the core, because the core does not yet answer either question —
+/// `dv_features()` and `dv_build()` arrive with session A's A0 milestone
+/// (`doc/Plan-2026-09.md` §3.1), and `TODO(A0)` marks both tables. A fact a
+/// binary states about bytes it did not compile is a fact that can be
+/// wrong, and the way this one goes wrong is quiet: someone moves the pin,
+/// `buildinfo` keeps saying `build13`, and a package's
+/// `requires.diluvium_build` is checked against a number from two pins ago.
+///
+/// So the chain is closed instead: `script/changelog.py check` ties the
+/// changelog's `diluvium` revision to `Cargo.lock`, and this ties the
+/// binary's numbers to the changelog. Moving the pin without saying so
+/// fails one of the two. When A0 lands, this test and both tables go.
+#[test]
+fn the_hard_coded_core_facts_agree_with_the_changelog() {
+    let changelog =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../CHANGELOG.yaml"))
+            .expect("the changelog reads");
+
+    // The newest entry, which is the one the tree is building towards. Its
+    // fields are the first of each name after `releases:`.
+    let newest = changelog
+        .split_once("\nreleases:\n")
+        .expect("the changelog has releases")
+        .1;
+    let field = |name: &str| -> String {
+        newest
+            .lines()
+            .find_map(|l| l.trim().strip_prefix(&format!("{name}: ")))
+            .unwrap_or_else(|| panic!("the newest release records {name}"))
+            .trim()
+            .to_string()
+    };
+
+    let text =
+        String::from_utf8_lossy(&drt().arg("buildinfo").output().unwrap().stdout).to_string();
+    let says = |name: &str| -> String {
+        text.lines()
+            .find_map(|l| l.strip_prefix(&format!("{name}: ")))
+            .unwrap_or_else(|| panic!("buildinfo says {name}\n{text}"))
+            .to_string()
+    };
+
+    assert_eq!(
+        says("diluvium_build"),
+        field("diluvium_build"),
+        "DILUVIUM_BUILD in cli.rs and diluvium_build in CHANGELOG.yaml \
+         disagree. If the pin moved, both move; the changelog's revision is \
+         already checked against Cargo.lock by `script/changelog.py check`."
+    );
+
+    // The revision is stamped from `Cargo.lock` by build.rs, so this is the
+    // link that catches a pin moved without the changelog following.
+    assert_eq!(
+        says("diluvium"),
+        field("diluvium"),
+        "the pin in Cargo.lock and the revision in CHANGELOG.yaml disagree"
+    );
+
+    // `features` is per profile in the changelog, so compare against the
+    // profile this binary reports itself as. A `custom` build states none,
+    // and has no changelog line to be checked against.
+    let profile = says("profile");
+    if profile == "custom" {
+        assert_eq!(
+            says("features"),
+            "",
+            "a custom build cannot claim a named profile's features"
+        );
+        return;
+    }
+    let recorded = newest
+        .split_once("\n    features:\n")
+        .expect("the newest release records features")
+        .1
+        .lines()
+        .find_map(|l| l.trim().strip_prefix(&format!("{profile}: ")))
+        .unwrap_or_else(|| panic!("the newest release records features for `{profile}`"))
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .map(|f| f.trim().to_string())
+        .filter(|f| !f.is_empty())
+        .collect::<Vec<_>>()
+        .join(",");
+    assert_eq!(
+        says("features"),
+        recorded,
+        "CORE_FEATURES_* in cli.rs and features.{profile} in CHANGELOG.yaml \
+         disagree"
     );
 }

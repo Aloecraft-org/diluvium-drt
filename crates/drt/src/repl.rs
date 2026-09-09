@@ -99,6 +99,9 @@ impl Repl {
                 program: ProgramBytes::Source(PROGRAM),
                 name: "repl",
                 budget,
+                // The REPL states none: a line a user types is bounded by
+                // the same ceiling everything else in this process is.
+                numeric: drt_config::Numeric::default(),
                 // The REPL's own source is ours, not the user's. Sealed,
                 // the lines it evaluates run under the same stdlib every
                 // other guest gets, and a REPL is not a way around the

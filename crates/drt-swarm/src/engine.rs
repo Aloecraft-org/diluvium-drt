@@ -18,7 +18,7 @@
 
 use std::time::Duration;
 
-use drt_config::Budget;
+use drt_config::{Budget, Numeric};
 
 /// Everything that can go wrong at the seam.
 #[derive(Debug, thiserror::Error)]
@@ -159,6 +159,9 @@ pub struct LoadSpec<'a> {
     /// Applied before the first step; an unstated bound is unlimited here —
     /// resolve against the parent ceiling first (`Budget::resolved_against`).
     pub budget: Budget,
+    /// How much numeric work the instance may do, resolved against the
+    /// parent the same way and for the same reason (`Numeric::resolved_against`).
+    pub numeric: Numeric,
     /// `DV_FLAG_UNSAFE_STDLIB`: give the program `io`, `os` and `package`.
     /// Off by default — sealed — and under the swarm it attenuates like any
     /// other authority: a child inherits its parent's setting and may drop
@@ -170,6 +173,9 @@ pub struct LoadSpec<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct RestoreSpec<'a> {
     pub snapshot: &'a [u8],
+    /// The numeric bounds to restore under. The deployment's, not the
+    /// snapshot's, exactly as `budget` below is.
+    pub numeric: Numeric,
     /// The identity stamp: a stamped snapshot restores only under the same
     /// string, and passing `Some` refuses an unstamped snapshot — stamping
     /// is never advisory.
@@ -259,6 +265,33 @@ pub trait Instance: MaybeSend {
     fn usage(&self) -> UsageReport;
     /// Whether the budget has been exceeded.
     fn exceeded(&self) -> bool;
+    /// Whether any fast-tier numeric kernel has actually run in this
+    /// instance -- the sticky flag for the audit trail (`dv.h`'s
+    /// `dv_numeric_touched_fast`, `doc/Plan-2026-09.md` §3.1).
+    ///
+    /// Beside `exceeded` deliberately: both are one-way facts about what
+    /// happened rather than about what was configured, and both are read
+    /// the same way at the same moments. The static verdict says a program
+    /// *could* run a fast kernel; this says one *did*, and nothing is
+    /// banned by either (numeric spec §4).
+    ///
+    /// TODO(A2): defaults to `false` because the core has no such entry
+    /// point yet and no fast-tier backend exists to set it. When A2's pin
+    /// lands this reads `dv_numeric_touched_fast` and the default goes.
+    fn numeric_touched_fast(&self) -> bool {
+        false
+    }
+
+    /// The numeric bounds this instance was loaded under, as they were
+    /// applied.
+    ///
+    /// Distinct from `Swarm::numeric`, which answers what the *slot*
+    /// records and is the right answer for a hibernated instance that has
+    /// none. This answers what reached the instance, which is what has to
+    /// keep being true when A2's setters become real.
+    fn numeric_bounds(&self) -> Numeric {
+        Numeric::default()
+    }
     /// The whole parked state, stamped when `host_stamp` is `Some`.
     fn snapshot(&mut self, host_stamp: Option<&str>) -> Result<Vec<u8>, EngineError>;
 
@@ -338,9 +371,39 @@ pub mod diluvium_engine {
     struct DiluviumInstance {
         inner: diluvium::Instance,
         ids: Vec<diluvium::QueueId>,
+        /// The bounds this instance was loaded with, already resolved
+        /// against its parent's. Held rather than dropped so
+        /// [`DiluviumInstance::numeric_bounds`] can answer what was applied
+        /// -- which is what a test can assert on while the core still has
+        /// nowhere to put them.
+        numeric: Numeric,
     }
 
     impl DiluviumInstance {
+        /// Hand the instance's numeric bounds to the core.
+        ///
+        /// TODO(A2): this is where `dv_numeric_set_max_elements` and
+        /// `dv_numeric_set_max_tier` are called (`doc/Plan-2026-09.md`
+        /// §3.1). Neither exists in the pinned core, and DRT reaches the
+        /// core through the safe `diluvium` crate, so there is nothing to
+        /// call yet and this applies nothing.
+        ///
+        /// It is a function rather than a comment at the call site on
+        /// purpose: the bounds are resolved, carried and asserted end to
+        /// end today, so when the pin lands the change is two lines in one
+        /// place and every test around it already passes.
+        fn apply_numeric(&mut self) {
+            let Numeric {
+                max_elements: _,
+                max_tier: _,
+            } = self.numeric;
+        }
+
+        /// What was applied. See [`DiluviumInstance::apply_numeric`].
+        fn numeric_bounds(&self) -> Numeric {
+            self.numeric
+        }
+
         fn intern(&mut self, id: diluvium::QueueId) -> QueueHandle {
             let index = self.ids.iter().position(|k| *k == id).unwrap_or_else(|| {
                 self.ids.push(id);
@@ -484,20 +547,30 @@ pub mod diluvium_engine {
                 ProgramBytes::Bytecode(code) => cfg.load_bytecode(code, spec.name),
             }
             .map_err(lift_error)?;
-            Ok(Box::new(DiluviumInstance {
+            let mut instance = DiluviumInstance {
                 inner,
                 ids: Vec::new(),
-            }))
+                numeric: spec.numeric,
+            };
+            instance.apply_numeric();
+            Ok(Box::new(instance))
         }
 
         fn restore(&self, spec: RestoreSpec<'_>) -> Result<Box<dyn Instance>, EngineError> {
             let inner = config_for(&spec.budget, spec.unsafe_stdlib)
                 .restore(spec.snapshot, spec.host_stamp)
                 .map_err(lift_error)?;
-            Ok(Box::new(DiluviumInstance {
+            // A restored instance takes the bounds its RestoreSpec states,
+            // not the ones the snapshot was taken under: a bound is a
+            // property of the deployment restoring it, the way the budget
+            // beside it already is.
+            let mut instance = DiluviumInstance {
                 inner,
                 ids: Vec::new(),
-            }))
+                numeric: spec.numeric,
+            };
+            instance.apply_numeric();
+            Ok(Box::new(instance))
         }
     }
 
@@ -567,6 +640,21 @@ pub mod diluvium_engine {
 
         fn exceeded(&self) -> bool {
             self.inner.exceeded()
+        }
+
+        /// TODO(A2): `dv_numeric_touched_fast(inst)` once the pin carries
+        /// it. Until then the honest answer is `false`, and it is honest
+        /// rather than provisional: no fast-tier backend exists anywhere in
+        /// this workspace or in the pinned core, so no fast kernel can have
+        /// run, so the flag cannot be set. The day one exists this must
+        /// read the core, and `numeric_bounds_reach_the_instance` in
+        /// `tests/diluvium_engine.rs` is what fails if it does not.
+        fn numeric_touched_fast(&self) -> bool {
+            false
+        }
+
+        fn numeric_bounds(&self) -> Numeric {
+            self.numeric_bounds()
         }
 
         fn snapshot(&mut self, host_stamp: Option<&str>) -> Result<Vec<u8>, EngineError> {

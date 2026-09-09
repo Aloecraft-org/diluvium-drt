@@ -1,0 +1,21 @@
+{
+  "_comment": "`data` is wired to a PLACE, exactly as `fs` and `sql` are: the directory is a machine fact and belongs here, the filename is the program's.",
+
+  "program": { "path": "app.dlua" },
+
+  "_caps": "The ceiling. `host:data/*` covers all four verbs; `access` below decides which of them the connector answers.",
+  "caps": [
+    { "capability": "host:data/*" }
+  ],
+
+  "connectors": {
+    "data": {
+      "scope": {
+        "scope": ".",
+        "access": "readwrite"
+      }
+    }
+  },
+
+  "_omits": "example: omits budget, which a real deployment states; 06-budgets is the one that shows it."
+}

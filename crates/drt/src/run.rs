@@ -30,6 +30,7 @@ pub fn prepare(
     dispatcher: Arc<Dispatcher>,
     caps: Vec<Grant>,
     budget: drt_config::Budget,
+    numeric: drt_config::Numeric,
 ) -> Result<Solo, String> {
     let source = drt_platform::fs::read_to_string(program)
         .map_err(|e| format!("cannot read {}: {e}", program.display()))?;
@@ -49,6 +50,7 @@ pub fn prepare(
             program: ProgramBytes::Source(&source),
             name,
             budget,
+            numeric,
             unsafe_stdlib: false,
         },
         caps,
@@ -93,13 +95,14 @@ pub fn run(
     dispatcher: Arc<Dispatcher>,
     caps: Vec<Grant>,
     budget: drt_config::Budget,
+    numeric: drt_config::Numeric,
 ) -> Result<(), String> {
     // The same reactor `start` enters, for the same reason (src/runtime.rs):
     // `drt run`'s one instance is stalled by its own slow call either way,
     // but the call parks rather than blocks, so a deadline it carries is
     // the pump's to keep rather than the connector's fallback runtime's.
     let _runtime = crate::runtime::enter();
-    let mut solo = prepare(program, dispatcher.clone(), caps, budget)?;
+    let mut solo = prepare(program, dispatcher.clone(), caps, budget, numeric)?;
     loop {
         let next = solo.tick(None);
         // We own the clock (the instance has none): honour the ask.

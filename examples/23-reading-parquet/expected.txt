@@ -1,0 +1,5 @@
+wrote 4 rows, one of three columns is text
+read 3 rows: price, city
+  4004000000000000  bergen
+  3fb999999999999a  oslo
+  4020400000000000  bergen

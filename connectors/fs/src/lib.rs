@@ -31,8 +31,14 @@ const DEFAULT_MAX_BYTES: u64 = 1024 * 1024;
 /// What the host granted: a directory, how much of it, and how large a file
 /// may be. Field names match discofetch's `cap6.host.lua` so a deployment
 /// config ports across unchanged.
+///
+/// Public because it is the **jail**, and a second connector that grants a
+/// directory must use this one rather than write its own: `data` reads
+/// parquet and CSV out of a granted directory and needs exactly the same
+/// answer to "is this path inside it", including the symlink case. A path
+/// jail that exists twice is a path jail that is wrong once.
 #[derive(Debug, Clone, Deserialize)]
-struct FsScope {
+pub struct FsScope {
     /// The granted directory. Programs name files within it.
     scope: PathBuf,
     /// `read` (the default) or `readwrite`. These are the C host's two
@@ -46,7 +52,7 @@ struct FsScope {
 }
 
 impl FsScope {
-    fn parse(scope: Option<&Scope>) -> Result<Self, String> {
+    pub fn parse(scope: Option<&Scope>) -> Result<Self, String> {
         let Some(Scope(value)) = scope else {
             return Err("scope is required: name the directory this connector may use".into());
         };
@@ -76,11 +82,11 @@ impl FsScope {
         Ok(parsed)
     }
 
-    fn writable(&self) -> bool {
+    pub fn writable(&self) -> bool {
         self.access.as_deref() == Some("readwrite")
     }
 
-    fn max_bytes(&self) -> u64 {
+    pub fn max_bytes(&self) -> u64 {
         self.max_bytes.unwrap_or(DEFAULT_MAX_BYTES)
     }
 
@@ -91,7 +97,7 @@ impl FsScope {
     /// Resolved through the backend, not `std::fs`: the jail is the same
     /// jail over a disk and over a page's memory filesystem, and the
     /// backend is the only thing that differs (doc/Wasm.md §4.2).
-    fn root(&self, fs: &dyn Backend) -> Result<PathBuf, String> {
+    pub fn root(&self, fs: &dyn Backend) -> Result<PathBuf, String> {
         fs.canonicalize(&self.scope).map_err(|e| {
             format!(
                 "scope directory {} cannot be resolved: {e}",
@@ -105,7 +111,12 @@ impl FsScope {
     /// `must_exist` is false for writes, where the file is legitimately not
     /// there yet — then the *parent* is resolved instead, so a symlinked
     /// parent pointing out of the jail is still caught.
-    fn resolve(&self, fs: &dyn Backend, rel: &str, must_exist: bool) -> Result<PathBuf, String> {
+    pub fn resolve(
+        &self,
+        fs: &dyn Backend,
+        rel: &str,
+        must_exist: bool,
+    ) -> Result<PathBuf, String> {
         let root = self.root(fs)?;
         let rel_path = Path::new(rel);
         if names_a_root(rel_path) {
@@ -186,8 +197,17 @@ fn lexically_within(root: &Path, rel: &Path) -> bool {
     true
 }
 
-struct FsScopeType {
+/// The scope-type a directory-granting connector declares, so an
+/// unresolvable scope is a startup refusal by name rather than a puzzling
+/// error on first call. Public for the same reason [`FsScope`] is.
+pub struct FsScopeType {
     fs: Arc<dyn Backend>,
+}
+
+impl FsScopeType {
+    pub fn new(fs: Arc<dyn Backend>) -> Self {
+        FsScopeType { fs }
+    }
 }
 
 impl ScopeType for FsScopeType {
