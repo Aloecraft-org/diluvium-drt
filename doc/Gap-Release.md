@@ -203,14 +203,27 @@ one `list()` helper (`crates/drt/src/config.rs:145`) that resolves Lua's
 `{}` ambiguity for every list read, so `caps`, `headers`, `stun` and
 `allowed_ips` closed with it.
 
-**Worth a note for whoever files next.** All four issues swept here — #10,
-#11, #15 and #21 — were fixed within a day or two of being filed, and none
-was closed by the fix. Three of them sat on this list as open work through
-two or more candidates, and #15 had been confirmed fixed by its own
-reporter, in a comment on another issue, the same day it landed. The
-changelog was right about all four; the tracker was right about none. It is
-the least reliable source in this repository, and it is the one a release
-gets scoped against.
+**#1** — swept last and the oldest of them: `exec/run` was asked for on 1
+Sep as "implement it, or write down that it is refused", and **v0.4.2**
+implemented it. All four bounds the issue specified, 22 tests, and one
+addition the C host could not have — an `allow` list on the scope, since
+`dhost_exec.c`'s config has nowhere to put one and `host:exec/run` there
+was every program on the box. Its unverified worry (a config granting
+`host:exec` loading clean and failing at the call) cannot arise:
+`the_c_hosts_exec_true_loads_unchanged` runs that exact config through
+`drt run` and asserts the child's answer comes back.
+
+**Worth a note for whoever files next.** Every issue swept here — #1, #10,
+#11, #15 and #21 — had been fixed before it was read, and none was closed
+by the fix. Four sat on this list as open work through two or more
+candidates; #15 had been confirmed fixed by its own reporter, in a comment
+on another issue, the same day it landed; #1 stayed open across five
+releases. The changelog was right about all five and the tracker about
+none — and the tracker is what a release gets scoped against. This
+document's first draft carried two of them as open work on its word.
+
+The cheap fix is the one already in half the commit messages: `Closes #N`
+in the commit that does the work, so the sweep is not a person's job.
 
 ---
 
