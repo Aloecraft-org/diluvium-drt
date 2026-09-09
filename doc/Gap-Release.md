@@ -193,10 +193,24 @@ worth noting: `a_grace_of_zero_refuses_before_the_program_can_declare` keeps
 the old behaviour reachable as a setting rather than deleting it, since
 `admit_timeout_ms = 0` is exactly what the bug was.
 
-**Worth a note for whoever files next.** Both issues were fixed within a day
-or two of being filed and neither was closed, so both sat on this list as
-open work through two candidates. The changelog knew — `fixed:` under rc3 —
-and the issue tracker did not.
+**#15** — swept at the same time and the same story: all three of its
+fixes shipped in **v0.5.0rc6**, with tests. The held one-shot reports
+landed close to the submitted patch but **bounded** (`HELD_MAX = 64`,
+`crates/drt/src/wireguard.rs:139`), dropping the newest past the cap rather
+than the oldest, because the report a program blocks on is the mapping and
+the mapping is sent first. `peers = {}` was fixed past what it asked for —
+one `list()` helper (`crates/drt/src/config.rs:145`) that resolves Lua's
+`{}` ambiguity for every list read, so `caps`, `headers`, `stun` and
+`allowed_ips` closed with it.
+
+**Worth a note for whoever files next.** All four issues swept here — #10,
+#11, #15 and #21 — were fixed within a day or two of being filed, and none
+was closed by the fix. Three of them sat on this list as open work through
+two or more candidates, and #15 had been confirmed fixed by its own
+reporter, in a comment on another issue, the same day it landed. The
+changelog was right about all four; the tracker was right about none. It is
+the least reliable source in this repository, and it is the one a release
+gets scoped against.
 
 ---
 
