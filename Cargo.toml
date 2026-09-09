@@ -80,6 +80,30 @@ clap = { version = "4", features = ["derive"] }
 # would then describe whatever the branch happened to be that day.
 diluvium = { git = "https://github.com/Aloecraft-org/diluvium", rev = "a9de62f108646a4f12e27692359480dfd7550100" }
 
+# TEMPORARY, and the only reason this crate is named here: turning on the
+# core's `numeric` build.
+#
+# `numeric` is a feature of `diluvium-sys` (off by default, matching the
+# Makefile's NUMERIC), and DRT depends on the safe `diluvium` crate, which
+# has no `[features]` section to forward it through. So there is no way to
+# ask for it from where DRT sits. Naming `diluvium-sys` directly is how the
+# feature gets set: cargo unions features per package, and both paths
+# resolve to one `diluvium-sys` from one rev, so the copy `diluvium` links
+# is the copy that gets `numeric`.
+#
+# What that buys is not a Rust API -- DRT calls nothing in this crate. It is
+# `-DDV_NUMERIC` and §3.5's flags reaching the C build, which is what puts
+# `array` in a guest and makes B4's examples possible at all. `dv_features()`
+# reports it either way, so nothing downstream has to know this is here.
+#
+# TODO: drop this entry the moment the safe crate can forward the feature
+# (raised on diluvium#33) and write `diluvium = { ..., features = ["numeric"] }`
+# instead. Reaching around a wrapper is a workaround, not a design: it works
+# only while both come from one rev, and a `diluvium` that ever vendored its
+# own `diluvium-sys` would leave this silently setting a feature on a crate
+# nobody links.
+diluvium-sys = { git = "https://github.com/Aloecraft-org/diluvium", rev = "a9de62f108646a4f12e27692359480dfd7550100", features = ["numeric"] }
+
 # The transport layer: one Transport trait over TCP/WebSocket/WebRTC/SSH,
 # schemes gated per platform as typed refusals (SPEC.md §9; `ssh` is
 # russh-backed, pubkey-only, modern suite only).

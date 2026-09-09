@@ -16,6 +16,11 @@ drt-config = { workspace = true }
 drt-hostcall = { workspace = true }
 drt-connector = { workspace = true }
 diluvium = { workspace = true, optional = true }
+# Not called from Rust: it is here so the core is built with `numeric`.
+# See the workspace manifest -- the safe crate cannot forward the feature
+# yet, so it is set on the -sys crate directly. Rides `engine-diluvium`
+# because a build with no C core has nothing to set the flag on.
+diluvium-sys = { workspace = true, optional = true }
 
 [features]
 # The one v1 Engine impl: current diluvium, statically linked. On by
@@ -31,7 +36,7 @@ diluvium = { workspace = true, optional = true }
 # JS-hosted diluvium instance (SPEC.md §4), so `--no-default-features` is
 # both the seam and the whole story.
 default = ["engine-diluvium"]
-engine-diluvium = ["dep:diluvium"]
+engine-diluvium = ["dep:diluvium", "dep:diluvium-sys"]
 
 [dev-dependencies]
 tempfile = "3"

@@ -1381,6 +1381,7 @@ name = "drt-swarm"
 version = "0.5.0"
 dependencies = [
  "diluvium",
+ "diluvium-sys",
  "drt-caps",
  "drt-config",
  "drt-connector",

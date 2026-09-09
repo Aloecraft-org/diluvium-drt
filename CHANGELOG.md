@@ -423,11 +423,13 @@ the owner's. The revision tells them apart, which is why this file
 records both, but the ordered half of the fact is ambiguous until the
 owner opens diluvium's entry.
 
-**`numeric` is not in the feature list**, and that is not an
-oversight. The safe `diluvium` crate exposes no feature to forward to
-`diluvium-sys`'s `numeric`, so no DRT build can turn it on; raised
-with session A on their PR. Until that lands there is no `array` in a
-guest and B4's cross-target examples cannot be written.
+**`numeric` is on in every profile**, which is what puts `array` in
+a guest. The safe `diluvium` crate still exposes no feature to
+forward to `diluvium-sys`'s `numeric`, so the workspace names
+`diluvium-sys` directly and lets cargo's feature unification set it
+on the copy the safe crate links. That is a workaround with a `TODO`
+on it, not a design; it goes the moment A's crate can forward the
+feature.
 
 ### Connectors
 
@@ -438,10 +440,10 @@ guest and B4's cross-target examples cannot be written.
 
 ### Core features
 
-- `full`: `regex`, `json`, `msgpack`, `snapshot`
-- `slim`: `regex`, `json`, `msgpack`, `snapshot`
-- `wasi`: `regex`, `json`, `msgpack`, `snapshot`
-- `web`: `regex`, `json`, `msgpack`, `snapshot`
+- `full`: `regex`, `json`, `msgpack`, `snapshot`, `numeric`
+- `slim`: `regex`, `json`, `msgpack`, `snapshot`, `numeric`
+- `wasi`: `regex`, `json`, `msgpack`, `snapshot`, `numeric`
+- `web`: `regex`, `json`, `msgpack`, `snapshot`, `numeric`
 
 ### Added
 
@@ -523,6 +525,26 @@ guest and B4's cross-target examples cannot be written.
   with the reason and the alternative. Omitting the field is how a
   config means unlimited, and it is the only thing that reaches the
   core as `0`. A bound must not fail in the loose direction.
+- **Three cross-target numeric examples**, `24-arrays`,
+  `25-reductions-and-grouping` and `26-fft`. Each prints IEEE bit
+  patterns rather than decimals, and each is gated by one
+  `expected.txt` diffed on **four targets**: native x86-64
+  linux-gnu, `wasm32-wasip2` under wasmtime, `x86_64-pc-windows-gnu`
+  built by mingw, and `wasm32-unknown-unknown` in Chromium. All four
+  agree byte for byte, FFT twiddles included. The mingw run is the
+  contraction check -- a build path that missed `-ffp-contract=off`
+  would fuse a multiply-add, round once instead of twice, and
+  disagree in the last digit on that target alone.
+
+  None of them is `full`-only, deliberately: Windows `full` does not
+  build, and skipping the one run that catches a contraction bug
+  would leave the examples checking everything except the thing they
+  exist for.
+- **The browser gate now honours `needs_features`.** `run-all.sh`
+  learned it in 0.6.0's first half; its page-side twin never did, so
+  an example needing a core feature would have run in Chromium
+  against a module without it and reported a diff whose real content
+  was "this core does not carry that".
 - **`doc/Numeric.md`**, which states what the three determinism tiers
   promise, the three different bounds on numeric work and which
   failure each has, and how a column crosses the hostcall boundary.

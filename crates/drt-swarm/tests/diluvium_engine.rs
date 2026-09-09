@@ -59,7 +59,10 @@ fn abi_two_carries_what_it_says_it_does() {
     // And the per-instance numeric surface, which B3 wires to the config.
     let engine = DiluviumEngine::new().unwrap();
     let inst = load(&engine, "return 1", "abi2");
-    assert!(!inst.numeric_touched_fast(), "no fast backend exists to set it");
+    assert!(
+        !inst.numeric_touched_fast(),
+        "no fast backend exists to set it"
+    );
 }
 
 #[test]

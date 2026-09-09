@@ -1,0 +1,8 @@
+{
+  "name": "26-fft",
+  "teaches": "rfft on a real signal: n/2+1 complex bins, printed as real:imag bit patterns. The transform's claim is bit-identical output on every target, so a twiddle factor that drifted on one of them shows up as a differing hex digit here and nowhere else.",
+  "cmd": "drt run app.dlua",
+  "needs_network": false,
+  "needs_features": ["numeric"],
+  "normalise": []
+}

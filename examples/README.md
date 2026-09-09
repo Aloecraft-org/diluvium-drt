@@ -30,6 +30,16 @@ reference. Everything here is v0.4.2.
 | [`14-ssh-through-a-tunnel`](14-ssh-through-a-tunnel) | Use your own `ssh` client through DRT with OpenSSH's `ProxyCommand`. `scp`, `rsync`, `sftp` and `-L` come free. | `drt tunnel` |
 | [`15-sending-mail`](15-sending-mail) | Send mail without holding the relay's password, and without being able to choose who the mail is from. | `./demo.sh` |
 | [`16-exec`](16-exec) | `exec/run` runs a local command: a vector, never a shell string; the exit is an answer; and a deadline, a byte cap and an allow list are the deployment's. | `drt run --config deploy.json` |
+| [`17-serving-http`](17-serving-http) | `drt start` binds the port a config names and bridges each request onto a queue as a message; the reply on another queue is the response, and request headers cross only by allowlist. | `./demo.sh` |
+| [`18-capability-menu`](18-capability-menu) | `capabilities/list` answers what a deployment wired and what *this* instance may reach — gated on its own capability, so an auditor can report a swarm's whole reach while holding none of it. | `drt run --config auditor.json` |
+| [`19-a-tunnel-a-program-can-use`](19-a-tunnel-a-program-can-use) | The relay end to end on one machine: a device with no inbound address parks an outbound leg, and `--local` turns the caller half into a local port anything that speaks TCP can reach. | `./demo.sh` |
+| [`20-turn-relay`](20-turn-relay) | The TURN relay and the credential a program mints for it: one shared secret in two blocks, and the guest never holding it. A relay with no secret refuses to bind. | `./demo.sh` |
+| [`21-wireguard`](21-wireguard) | The `wireguard` block without a privilege: `keygen`, `pubkey` and a `check` that says whether a config can work without touching the interface. | `./demo.sh` |
+| [`22-wireguard-interface`](22-wireguard-interface) | The half that needs `CAP_NET_ADMIN`: the interface is really created, with the address and MTU the config names, and asked of the kernel rather than taken on DRT's word. | `./demo.sh` |
+| [`23-reading-parquet`](23-reading-parquet) | The `data` connector: parquet columns cross as raw bytes, and text crosses dictionary-encoded, so a million-row column is a million bytes and not a million values. | `drt run --config app.json` |
+| [`24-arrays`](24-arrays) | The `array` library: a typed buffer the core owns, elementwise arithmetic with a scalar broadcast, and why the contents print as IEEE bits and never as decimals. | `drt run app.dlua` |
+| [`25-reductions-and-grouping`](25-reductions-and-grouping) | The three rules that make a reduction answer the same thing everywhere: a canonical summation order, one total ordering with NaN last, and first-appearance group ids. | `drt run app.dlua` |
+| [`26-fft`](26-fft) | `rfft` on a real signal, printed as `real:imag` bit patterns. The example where a compiler flag that did not reach one target becomes a differing hex digit. | `drt run app.dlua` |
 
 `drt run` executes one program to completion and exits — no swarm, no
 listeners, no second instance — and it is what `01`–`07`, `10`, `12` and `16`

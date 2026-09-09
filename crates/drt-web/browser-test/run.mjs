@@ -137,6 +137,14 @@ for (const line of info.split('\n')) {
   if (/^(version|profile): /.test(line)) console.log(`     ${line}`);
 }
 const profile = (info.match(/^profile: (.*)$/m) ?? [])[1] ?? 'unknown';
+// What the CORE inside the module carries, which the profile name does not
+// say: a `web` build whose diluvium has `numeric` and one whose does not are
+// the same profile, and an example that reduces an array can only run on the
+// first. Comma-separated, as `buildinfo` prints it. Empty when the module
+// predates the field, which -- like an unknown profile -- runs everything
+// rather than skipping everything: a gate that silently stops checking is
+// worse than one that reports a diff.
+const features = (info.match(/^features: (.*)$/m) ?? [])[1] ?? '';
 if (process.env.DRT_WEB_BUILDINFO) fs.writeFileSync(process.env.DRT_WEB_BUILDINFO, info);
 console.log('');
 
@@ -149,6 +157,7 @@ let nFail = 0;
 const failed = [];
 const skipped = [];
 const wrongBuild = [];
+const wrongFeatures = [];
 const noSocket = [];
 
 const fail = (name, why) => {
@@ -184,6 +193,19 @@ for (const name of examples) {
     console.log(`skipped  ${name.padEnd(24)} (needs a ${meta.needs_build} build; this drt is ${profile})`);
     wrongBuild.push(name);
     continue;
+  }
+  // And the same for a feature of the core rather than a profile of the
+  // module. Its own bucket, not wrongBuild's: a profile is chosen by how
+  // drt-web is built, a core feature is inside the pinned diluvium, and the
+  // advice that fits one is wrong for the other.
+  if (Array.isArray(meta.needs_features) && meta.needs_features.length > 0 && features) {
+    const have = features.split(',');
+    const missing = meta.needs_features.filter((f) => !have.includes(f));
+    if (missing.length > 0) {
+      console.log(`skipped  ${name.padEnd(24)} (needs the ${missing.join(',')} feature; this drt has ${features})`);
+      wrongFeatures.push(name);
+      continue;
+    }
   }
   const expectedFile = path.join(dir, 'expected.txt');
   if (!fs.existsSync(expectedFile)) {
@@ -385,7 +407,7 @@ for (const name of examples) {
 // ---------------------------------------------------------------------------
 
 for (const n of uncovered) console.log(`NO META  ${n.padEnd(24)} not checked by anything — add a meta.json`);
-const nSkip = skipped.length + wrongBuild.length + noSocket.length;
+const nSkip = skipped.length + wrongBuild.length + wrongFeatures.length + noSocket.length;
 const total = nOk + nFail + nSkip + uncovered.length;
 console.log('');
 console.log(`${total} check(s): ${nOk} ok, ${nFail} failed, ${nSkip} skipped, ${uncovered.length} without a meta.json`);
@@ -396,6 +418,11 @@ if (skipped.length) {
 if (wrongBuild.length) {
   console.log(`skipped for needing another build (NOT a pass): ${wrongBuild.join(' ')}`);
   console.log('the browser is the `web` profile; the native gate covers the rest.');
+}
+if (wrongFeatures.length) {
+  console.log(`skipped for needing a core feature (NOT a pass): ${wrongFeatures.join(' ')}`);
+  console.log('the feature is in the embedded diluvium, not in drt-web: move the pin');
+  console.log('to a core built with it. `drt buildinfo` says what this one has.');
 }
 if (noSocket.length) {
   console.log(`skipped for binding a port (NOT a pass): ${noSocket.join(' ')}`);

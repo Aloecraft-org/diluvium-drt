@@ -4,6 +4,6 @@ dv_abi: 2
 dv_abi_expected: 2
 diluvium: <revision>
 diluvium_build: 13
-features: regex,json,msgpack,snapshot
+features: regex,json,msgpack,snapshot,numeric
 connectors: time,fs,crypto,sql,ssh,rest,ssmtp,exec,data,listen
 verbs: buildinfo,netcheck,ps,relay,repl,run,start,stun,tunnel,turn,wg
