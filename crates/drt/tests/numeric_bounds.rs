@@ -110,6 +110,38 @@ fn a_misspelled_numeric_key_or_tier_is_refused_by_name() {
     assert!(err.contains("numeric"), "got: {err}");
 }
 
+/// Zero is refused by the loader, with the reason and the alternative.
+///
+/// `dv_numeric_set_max_elements` reads `0` as "no limit". A config writing
+/// it means the opposite, so the value never gets in rather than inverting
+/// at the boundary.
+#[test]
+fn max_elements_zero_is_refused_with_the_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = load(
+        dir.path(),
+        "zero.host.lua",
+        r#"return { numeric = { max_elements = 0 } }"#,
+    )
+    .unwrap_err();
+    assert!(err.contains("no limit"), "got: {err}");
+    assert!(err.contains("Omit the field"), "it says what to do: {err}");
+
+    // One is a bound like any other; only zero is the ambiguous value.
+    assert_eq!(
+        load(
+            dir.path(),
+            "one.host.lua",
+            r#"return { numeric = { max_elements = 1 } }"#,
+        )
+        .unwrap()
+        .root
+        .numeric
+        .max_elements,
+        Some(1)
+    );
+}
+
 /// The block is not feature-gated, unlike `relay`, `stun`, `turn` and
 /// `wireguard`. Those name servers a build may not carry; this names a
 /// bound, and "do not run fast kernels" is an answer every binary can give.
@@ -271,10 +303,24 @@ mod spawn {
         );
     }
 
-    /// The roster answers the audit question for every live instance, and
-    /// the answer today is `false` everywhere: no fast-tier backend exists
-    /// in this workspace or in the pinned core, so no fast kernel can have
-    /// run. TODO(A2) makes this a real reading rather than a real `false`.
+    /// And a spawn request carrying it is denied, not silently unbounded.
+    #[test]
+    fn a_child_asking_for_a_zero_element_bound_is_denied() {
+        let seen = events(Numeric::default(), "numeric = { max_elements = 0 }");
+        let denied = seen
+            .iter()
+            .find(|(e, _)| e == "denied")
+            .unwrap_or_else(|| panic!("the child was not refused: {seen:?}"));
+        assert!(denied.1.contains("no limit"), "got: {}", denied.1);
+        assert!(!seen.iter().any(|(e, _)| e == "spawned"));
+    }
+
+    /// The roster answers the audit question for every live instance.
+    ///
+    /// Now a real reading of `dv_numeric_touched_fast` rather than a
+    /// literal, and still `false`: the pinned core carries no fast-tier
+    /// backend, so no fast kernel can have run. The value is the same; what
+    /// changed is that the core is the one saying it.
     #[test]
     fn the_roster_reports_the_audit_flag_and_it_is_false() {
         let engine = Arc::new(DiluviumEngine::new().unwrap());

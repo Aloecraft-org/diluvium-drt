@@ -400,7 +400,7 @@ creating anything.
 
 ## [0.6.0] - unreleased (prerelease)
 
-`v0.6.0` &middot; dv ABI 1 &middot; diluvium `850e00d73220` (build13)
+`v0.6.0` &middot; dv ABI 2 &middot; diluvium `a9de62f10864` (build13)
 
 **In progress, not cut.** The numeric round (`doc/Plan-2026-09.md`):
 DRT's half is a `features` compatibility fact, a raw-buffer lane in
@@ -412,9 +412,22 @@ feature set is a new compatibility fact and `full`'s connector list
 changes. Both are checked by name, so neither can move under a
 version number that says nothing moved.
 
-`dv_abi` stays 1 until the pin that raises it lands. `diluvium` and
-`diluvium_build` name the same core v0.5.0rc8 carries, because this
-entry has not moved the pin yet.
+**The pin has moved** to `a9de62f`, session A's numeric round --
+typed arrays, the embedded libm, FFT and NTT, both syntax tiers,
+classes. `dv_abi` is 2 with it, which is why this entry is minor
+twice over.
+
+`diluvium_build` is still 13, and that is A's core rather than the
+released build13: A left `VERSION` alone because cutting a release is
+the owner's. The revision tells them apart, which is why this file
+records both, but the ordered half of the fact is ambiguous until the
+owner opens diluvium's entry.
+
+**`numeric` is not in the feature list**, and that is not an
+oversight. The safe `diluvium` crate exposes no feature to forward to
+`diluvium-sys`'s `numeric`, so no DRT build can turn it on; raised
+with session A on their PR. Until that lands there is no `array` in a
+guest and B4's cross-target examples cannot be written.
 
 ### Connectors
 
@@ -425,10 +438,10 @@ entry has not moved the pin yet.
 
 ### Core features
 
-- `full`: `regex`
-- `slim`: `regex`
-- `wasi`: `regex`
-- `web`: `regex`
+- `full`: `regex`, `json`, `msgpack`, `snapshot`
+- `slim`: `regex`, `json`, `msgpack`, `snapshot`
+- `wasi`: `regex`, `json`, `msgpack`, `snapshot`
+- `web`: `regex`, `json`, `msgpack`, `snapshot`
 
 ### Added
 
@@ -493,6 +506,23 @@ entry has not moved the pin yet.
   that". A core feature gets its own skip bucket and its own advice:
   no cargo flag adds one, so "rebuild with `--all-features`" would be
   a command that cannot help.
+- **The compatibility facts are read off the core, not stated about
+  it.** `features` and `diluvium_build` were hard-coded per profile
+  with a `TODO(A0)`, because the pinned core answered neither
+  question; they now come from `dv_features()` and `dv_build()`
+  through the safe crate. The profile was never the right key for
+  either -- two binaries can share a profile and embed different
+  cores, which is exactly what a compatibility fact has to tell
+  apart -- and the hard-coded `features` was wrong as well as
+  misplaced: the core carries `regex`, `json`, `msgpack` and
+  `snapshot`, not `regex` alone.
+- **`numeric.max_elements` may not be 0.** The core reads `0` as *no
+  limit*; a config writing it means the strictest bound. There is no
+  translation that serves both readings, so zero is refused where it
+  can be written -- the `.host.lua` loader and the spawn path both --
+  with the reason and the alternative. Omitting the field is how a
+  config means unlimited, and it is the only thing that reaches the
+  core as `0`. A bound must not fail in the loose direction.
 - **`doc/Numeric.md`**, which states what the three determinism tiers
   promise, the three different bounds on numeric work and which
   failure each has, and how a column crosses the hostcall boundary.

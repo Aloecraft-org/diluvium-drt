@@ -317,6 +317,12 @@ fn map_numeric(path: &Path, block: rmpv::Value) -> Result<drt_config::Numeric, S
             }
         }
     }
+    // Refused here rather than translated at the ABI: see
+    // `Numeric::max_elements`. A config saying 0 means the strictest bound
+    // and the core would read the loosest.
+    numeric
+        .check_representable()
+        .map_err(|why| format!("{}: {why}", path.display()))?;
     Ok(numeric)
 }
 

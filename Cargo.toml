@@ -67,7 +67,18 @@ clap = { version = "4", features = ["derive"] }
 # The language, from its own repo — diluvium/diluvium-sys stay there,
 # versioned with the header (SPEC.md §2). The -sys build compiles the
 # amalgamated C core from the checkout, so a C toolchain is required.
-diluvium = { git = "https://github.com/Aloecraft-org/diluvium" }
+#
+# Pinned by revision rather than tracking a branch, because the numeric
+# round's core is not on diluvium's `main`: `a9de62f` is session A's
+# `numeric-syntax` at A6 plus one fix to the numeric corpus (which pinned
+# the FPU's NaN rather than the program's; the kernels are unchanged).
+# `doc/Plan-2026-09.md` §3.7 is the protocol -- B moves the pin to the hash
+# A records -- and A's `## Status` says "pin this commit or later".
+#
+# An exact rev, not `branch = "numeric-syntax"`: a branch pin re-resolves
+# on every `cargo update` and the compatibility facts BUILDINFO publishes
+# would then describe whatever the branch happened to be that day.
+diluvium = { git = "https://github.com/Aloecraft-org/diluvium", rev = "a9de62f108646a4f12e27692359480dfd7550100" }
 
 # The transport layer: one Transport trait over TCP/WebSocket/WebRTC/SSH,
 # schemes gated per platform as typed refusals (SPEC.md §9; `ssh` is
