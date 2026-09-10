@@ -567,6 +567,72 @@ pub struct WireguardPeer {
     pub preshared_key_env: Option<String>,
 }
 
+/// Which stack terminates the tunnel's IP side.
+///
+/// `kernel`: an interface this process creates, which needs
+/// `CAP_NET_ADMIN` (root on macOS, `wintun.dll` on Windows) and is reached
+/// by address like any other. `userspace`: a TCP/IP stack inside this
+/// process, needing no privilege at all and reached only through
+/// [`WireguardConfig::forward`] and [`WireguardConfig::expose`]. Explicit
+/// and never inferred from a missing privilege, by this repository's rule
+/// that a config which did not ask is not steered.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WireguardMode {
+    #[default]
+    Kernel,
+    Userspace,
+}
+
+impl WireguardMode {
+    /// The name as the config spells it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WireguardMode::Kernel => "kernel",
+            WireguardMode::Userspace => "userspace",
+        }
+    }
+
+    /// The config's spelling, or `None` for anything else -- the `.host.lua`
+    /// loader's half of the same two names serde reads from JSON.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "kernel" => Some(WireguardMode::Kernel),
+            "userspace" => Some(WireguardMode::Userspace),
+            _ => None,
+        }
+    }
+}
+
+/// A local port that reaches an address inside the tunnel, in
+/// `mode = "userspace"`: `ssh -p 2222 127.0.0.1` with nothing configured on
+/// the client. The caller half; `tunnel`'s `bind` is the same shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireguardForward {
+    /// The local `ip:port` to listen on. Port `0` takes an ephemeral one,
+    /// and the `wireguard_forward` report is how a program learns which.
+    pub bind: String,
+    /// The `ip:port` inside the tunnel that each accepted connection dials,
+    /// from the stack's own address. An address, not a name: there is no
+    /// resolver inside a tunnel.
+    pub to: String,
+}
+
+/// An address inside the tunnel that reaches a local port, in
+/// `mode = "userspace"`: what a peer dials to reach this machine's sshd.
+/// The device half; without it nothing listens inside a userspace stack,
+/// where in kernel mode the kernel would deliver to the box's own sshd.
+/// `tunnel --park --to`'s shape: dialed lazily, on the first connection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireguardExpose {
+    /// The `ip:port` a peer dials. The address is the block's own
+    /// `address`, because the stack answers on that and nothing else.
+    pub tunnel: String,
+    /// The local `host:port` each inbound connection is dialed to,
+    /// `127.0.0.1:22` in front of an sshd.
+    pub to: String,
+}
+
 /// The WireGuard peer this deployment is, as `drt start` and `drt wg` run
 /// it.
 ///
@@ -642,9 +708,26 @@ pub struct WireguardConfig {
     /// The tunnel interface to create: `drt0`, `wg0`, `utun` on macOS.
     /// Creating one needs privilege (CAP_NET_ADMIN on Linux, root on macOS,
     /// wintun.dll on Windows), and that is the whole privilege this needs:
-    /// no module, no `wg` tools, no `wg-quick`.
+    /// no module, no `wg` tools, no `wg-quick`. Not read in
+    /// `mode = "userspace"`, which creates nothing.
     #[serde(default = "default_wireguard_interface")]
     pub interface: String,
+    /// Kernel interface or in-process stack. `kernel` unless the config
+    /// says otherwise; see [`WireguardMode`].
+    #[serde(default)]
+    pub mode: WireguardMode,
+    /// `mode = "userspace"` only: local ports that reach into the tunnel.
+    /// In kernel mode the interface is reached by address and a forward
+    /// here is refused, since it is a config that believes it is in the
+    /// other mode.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forward: Vec<WireguardForward>,
+    /// `mode = "userspace"` only: addresses inside the tunnel that reach
+    /// local ports. A userspace stack with neither this nor `forward` is
+    /// refused: a device nothing can reach terminates traffic nobody can
+    /// hand it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expose: Vec<WireguardExpose>,
     /// This peer's private key, base64, inline. The same three knobs as
     /// every other secret in this config, resolved file, then env, then
     /// inline; one is required, since a device without a key has no

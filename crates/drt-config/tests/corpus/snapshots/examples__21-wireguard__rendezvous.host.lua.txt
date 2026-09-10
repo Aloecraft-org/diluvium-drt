@@ -31,6 +31,9 @@ RootConfig {
                 "stun1.l.google.com:19302",
             ],
             interface: "drt-fp",
+            mode: Kernel,
+            forward: [],
+            expose: [],
             private_key: Some(
                 "8nq7WxIN1FhAoPljA+Te1djRmDWpN/WZto6OTwktZnU=",
             ),

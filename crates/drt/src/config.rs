@@ -384,6 +384,9 @@ fn map_wireguard(path: &Path, block: rmpv::Value) -> Result<drt_config::Wireguar
         queue: "wg_in".into(),
         reply_queue: String::new(),
         report_ms: 10_000,
+        mode: drt_config::WireguardMode::Kernel,
+        forward: Vec::new(),
+        expose: Vec::new(),
     };
     for (key, value) in entries {
         let Some(key) = key.as_str() else {
@@ -441,17 +444,87 @@ fn map_wireguard(path: &Path, block: rmpv::Value) -> Result<drt_config::Wireguar
                     wg.peers.push(map_wireguard_peer(path, entry)?);
                 }
             }
+            "mode" => {
+                let name = value
+                    .as_str()
+                    .ok_or_else(|| bad("\"kernel\" or \"userspace\""))?;
+                wg.mode = drt_config::WireguardMode::parse(name)
+                    .ok_or_else(|| bad("\"kernel\" or \"userspace\""))?;
+            }
+            "forward" => {
+                for entry in list(&value).ok_or_else(|| bad("a list of { bind, to }"))? {
+                    let (bind, to) = map_wireguard_pair(path, "forward", "bind", entry)?;
+                    wg.forward.push(drt_config::WireguardForward { bind, to });
+                }
+            }
+            "expose" => {
+                for entry in list(&value).ok_or_else(|| bad("a list of { tunnel, to }"))? {
+                    let (tunnel, to) = map_wireguard_pair(path, "expose", "tunnel", entry)?;
+                    wg.expose.push(drt_config::WireguardExpose { tunnel, to });
+                }
+            }
             other => {
                 return Err(format!(
                     "{}: unknown wireguard key '{other}' (known: listen_port, interface, address, mtu, \
                      stun, turn_fallback, private_key, private_key_file, private_key_env, peers, \
-                     queue, reply_queue, report_ms)",
+                     queue, reply_queue, report_ms, mode, forward, expose)",
                     path.display()
                 ));
             }
         }
     }
     Ok(wg)
+}
+
+/// One entry of `wireguard.forward` or `wireguard.expose`: two strings,
+/// `to` and the one named by `first` (`bind` for a forward, `tunnel` for an
+/// expose). Both are required, a typo names itself, and which combinations
+/// can work is `wireguard::validate`'s to say.
+#[cfg(feature = "wireguard")]
+fn map_wireguard_pair(
+    path: &Path,
+    list: &str,
+    first: &str,
+    entry: &rmpv::Value,
+) -> Result<(String, String), String> {
+    let rmpv::Value::Map(fields) = entry else {
+        return Err(format!(
+            "{}: each wireguard.{list} entry must be a table {{ {first} = ..., to = ... }}",
+            path.display()
+        ));
+    };
+    let mut head = None;
+    let mut to = None;
+    for (k, v) in fields {
+        let key = k.as_str().unwrap_or("");
+        let text = v.as_str().map(str::to_string).ok_or_else(|| {
+            format!(
+                "{}: wireguard.{list}.{key} must be an ip:port",
+                path.display()
+            )
+        });
+        match key {
+            _ if key == first => head = Some(text?),
+            "to" => to = Some(text?),
+            other => {
+                return Err(format!(
+                    "{}: unknown wireguard.{list} key '{other}' (known: {first}, to)",
+                    path.display()
+                ));
+            }
+        }
+    }
+    match (head, to) {
+        (Some(head), Some(to)) => Ok((head, to)),
+        (None, _) => Err(format!(
+            "{}: a wireguard.{list} entry needs `{first}`",
+            path.display()
+        )),
+        (_, None) => Err(format!(
+            "{}: a wireguard.{list} entry needs `to`",
+            path.display()
+        )),
+    }
 }
 
 /// One entry of `wireguard.peers`.

@@ -23,7 +23,9 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use drt::wireguard::{command_from, private_key, public_key, Command, KEY_LEN};
-use drt_config::{WireguardConfig, WireguardPeer};
+use drt_config::{
+    WireguardConfig, WireguardExpose, WireguardForward, WireguardMode, WireguardPeer,
+};
 use gotatun::device::{Device, DeviceBuilder, DeviceTransports, Peer};
 use gotatun::packet::{Ip, Packet, PacketBufPool};
 use gotatun::tun::{IpRecv, IpSend, MtuWatcher};
@@ -434,7 +436,22 @@ fn scope(key: Option<&str>) -> WireguardConfig {
         queue: "wg_in".into(),
         reply_queue: String::new(),
         report_ms: 10_000,
+        mode: WireguardMode::Kernel,
+        forward: Vec::new(),
+        expose: Vec::new(),
     }
+}
+
+/// [`scope`], in userspace mode with one forward, which is the smallest
+/// block that mode accepts.
+fn userspace(key: Option<&str>) -> WireguardConfig {
+    let mut config = scope(key);
+    config.mode = WireguardMode::Userspace;
+    config.forward.push(WireguardForward {
+        bind: "127.0.0.1:0".into(),
+        to: "10.9.0.2:22".into(),
+    });
+    config
 }
 
 /// A key is 32 bytes, base64, and anything else is a paste that went
@@ -719,6 +736,196 @@ fn a_config_that_cannot_work_is_refused_before_anything_binds() {
     });
     let err = drt::wireguard::validate(&silent).unwrap_err();
     assert!(err.contains("allowed_ips"), "{err}");
+}
+
+/// The userspace mode's refusals, each by name, before anything binds. A
+/// wrong entry here otherwise appears as a connection that times out
+/// fifteen seconds later, with both numbers sitting in the config.
+#[test]
+fn a_userspace_block_that_cannot_work_is_refused_before_anything_binds() {
+    let good = B64.encode([1u8; KEY_LEN]);
+    let peer = |cidr: &str| WireguardPeer {
+        public_key: B64.encode([2u8; KEY_LEN]),
+        allowed_ips: vec![cidr.into()],
+        endpoint: None,
+        keepalive: None,
+        preshared_key_env: None,
+    };
+
+    // The smallest working block, and the mode is explicit in it.
+    let mut fine = userspace(Some(&good));
+    fine.peers.push(peer("10.9.0.2/32"));
+    assert_eq!(
+        drt::wireguard::validate(&fine).unwrap(),
+        Vec::<String>::new()
+    );
+    assert_eq!(scope(Some(&good)).mode, WireguardMode::Kernel);
+
+    // A stack nothing can reach terminates traffic nobody can hand it.
+    let mut unreachable = scope(Some(&good));
+    unreachable.mode = WireguardMode::Userspace;
+    let err = drt::wireguard::validate(&unreachable).unwrap_err();
+    assert!(err.contains("neither `forward` nor `expose`"), "{err}");
+
+    // A stack cannot answer from nowhere, where the kernel merely warns.
+    let mut homeless = userspace(Some(&good));
+    homeless.address = None;
+    let err = drt::wireguard::validate(&homeless).unwrap_err();
+    assert!(err.contains("needs an `address`"), "{err}");
+
+    // A forward in kernel mode is a config that believes it is in the
+    // other mode.
+    let mut confused = userspace(Some(&good));
+    confused.mode = WireguardMode::Kernel;
+    let err = drt::wireguard::validate(&confused).unwrap_err();
+    assert!(err.contains("`forward`"), "{err}");
+    assert!(err.contains("mode = \"userspace\""), "{err}");
+
+    // Two forwards on one port, and two exposes on one tunnel port.
+    let mut twice = userspace(Some(&good));
+    twice.forward.push(WireguardForward {
+        bind: "127.0.0.1:2222".into(),
+        to: "10.9.0.2:22".into(),
+    });
+    twice.forward.push(WireguardForward {
+        bind: "127.0.0.1:2222".into(),
+        to: "10.9.0.3:22".into(),
+    });
+    let err = drt::wireguard::validate(&twice).unwrap_err();
+    assert!(err.contains("forward[2].bind"), "{err}");
+    assert!(err.contains("already the bind of another"), "{err}");
+    let mut twice = userspace(Some(&good));
+    for _ in 0..2 {
+        twice.expose.push(WireguardExpose {
+            tunnel: "10.9.0.1:22".into(),
+            to: "127.0.0.1:22".into(),
+        });
+    }
+    let err = drt::wireguard::validate(&twice).unwrap_err();
+    assert!(err.contains("expose[1].tunnel"), "{err}");
+    assert!(err.contains("already exposed"), "{err}");
+
+    // Two ephemeral binds are two different ports, not a duplicate.
+    let mut ephemeral = userspace(Some(&good));
+    ephemeral.forward.push(WireguardForward {
+        bind: "127.0.0.1:0".into(),
+        to: "10.9.0.3:22".into(),
+    });
+    assert!(drt::wireguard::validate(&ephemeral).is_ok());
+
+    // A network address where a host belongs: the slip `address` already
+    // refuses, refused here for the same reason.
+    let mut network = userspace(Some(&good));
+    network.forward[0].to = "10.9.0.0:22".into();
+    let err = drt::wireguard::validate(&network).unwrap_err();
+    assert!(err.contains("forward[0].to"), "{err}");
+    assert!(err.contains("network address"), "{err}");
+
+    // A name has no resolver inside a tunnel.
+    let mut named = userspace(Some(&good));
+    named.forward[0].to = "fetchpoint:22".into();
+    let err = drt::wireguard::validate(&named).unwrap_err();
+    assert!(err.contains("not an ip:port"), "{err}");
+    assert!(err.contains("resolver"), "{err}");
+
+    // The stack answers on its own address only.
+    let mut elsewhere = userspace(Some(&good));
+    elsewhere.expose.push(WireguardExpose {
+        tunnel: "10.9.0.2:22".into(),
+        to: "127.0.0.1:22".into(),
+    });
+    let err = drt::wireguard::validate(&elsewhere).unwrap_err();
+    assert!(err.contains("expose[0].tunnel"), "{err}");
+    assert!(err.contains("own address 10.9.0.1"), "{err}");
+
+    // A `to` outside every peer's allowed_ips is a warning naming it --
+    // that connection will time out, and both numbers are in the config.
+    let mut unrouted = userspace(Some(&good));
+    unrouted.peers.push(peer("10.9.0.3/32"));
+    let warnings = drt::wireguard::validate(&unrouted).unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("10.9.0.2"), "{}", warnings[0]);
+    assert!(
+        warnings[0].contains("time out after 15s"),
+        "{}",
+        warnings[0]
+    );
+    // ...and silent when no peer is named yet, which is the config a
+    // rendezvous writes: the peer arrives over the reply queue.
+    let mut pending = userspace(Some(&good));
+    pending.reply_queue = "wg_out".into();
+    assert!(drt::wireguard::validate(&pending).unwrap().is_empty());
+
+    // The kernel-mode route warning is silent in userspace mode: the stack
+    // carries a default route, so `ip route add` would be wrong advice.
+    let mut hub = userspace(Some(&good));
+    hub.peers.push(peer("192.168.1.0/24"));
+    assert!(drt::wireguard::unroutable(&hub).is_empty());
+}
+
+/// `mode`, `forward` and `expose` load in both spellings to the same
+/// object, `forward = {}` is the empty list and not a type error, and a
+/// typo inside an entry names itself.
+#[test]
+fn the_userspace_keys_load_in_both_spellings() {
+    let dir = tempfile::tempdir().unwrap();
+    let json = dir.path().join("laptop.json");
+    std::fs::write(
+        &json,
+        r#"{ "wireguard": {
+            "mode": "userspace",
+            "address": "10.9.0.2/24",
+            "private_key_env": "WG_KEY",
+            "forward": [ { "bind": "127.0.0.1:2222", "to": "10.9.0.1:22" } ],
+            "expose": [ { "tunnel": "10.9.0.2:22", "to": "127.0.0.1:22" } ]
+        } }"#,
+    )
+    .unwrap();
+    let lua = dir.path().join("laptop.host.lua");
+    std::fs::write(
+        &lua,
+        r#"return { wireguard = {
+            mode = "userspace",
+            address = "10.9.0.2/24",
+            private_key_env = "WG_KEY",
+            forward = { { bind = "127.0.0.1:2222", to = "10.9.0.1:22" } },
+            expose = { { tunnel = "10.9.0.2:22", to = "127.0.0.1:22" } },
+        } }"#,
+    )
+    .unwrap();
+    let from_json = drt::config::load(Some(&json)).unwrap().wireguard.unwrap();
+    let from_lua = drt::config::load(Some(&lua)).unwrap().wireguard.unwrap();
+    assert_eq!(from_json, from_lua);
+    assert_eq!(from_json.mode, WireguardMode::Userspace);
+    assert_eq!(from_json.forward[0].bind, "127.0.0.1:2222");
+    assert_eq!(from_json.expose[0].tunnel, "10.9.0.2:22");
+
+    // Lua's `{}` is a list here, as it is for `peers` (issue #15).
+    let empty = dir.path().join("empty.host.lua");
+    std::fs::write(
+        &empty,
+        r#"return { wireguard = { forward = {}, expose = {} } }"#,
+    )
+    .unwrap();
+    let wg = drt::config::load(Some(&empty)).unwrap().wireguard.unwrap();
+    assert!(wg.forward.is_empty() && wg.expose.is_empty());
+    assert_eq!(wg.mode, WireguardMode::Kernel);
+
+    // A typo inside an entry, and a mode that is neither word.
+    let typo = dir.path().join("typo.host.lua");
+    std::fs::write(
+        &typo,
+        r#"return { wireguard = { forward = { { bnd = "127.0.0.1:2222", to = "10.9.0.1:22" } } } }"#,
+    )
+    .unwrap();
+    let err = drt::config::load(Some(&typo)).unwrap_err();
+    assert!(err.contains("bnd"), "{err}");
+    assert!(err.contains("known: bind, to"), "{err}");
+    let mode = dir.path().join("mode.host.lua");
+    std::fs::write(&mode, r#"return { wireguard = { mode = "user" } }"#).unwrap();
+    let err = drt::config::load(Some(&mode)).unwrap_err();
+    assert!(err.contains("wireguard.mode"), "{err}");
+    assert!(err.contains("\"userspace\""), "{err}");
 }
 
 /// An absent endpoint is nil on the wire and never the empty string: "not

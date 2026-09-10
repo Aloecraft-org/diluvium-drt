@@ -28,6 +28,9 @@ RootConfig {
             turn_fallback: false,
             stun: [],
             interface: "drt-fp",
+            mode: Kernel,
+            forward: [],
+            expose: [],
             private_key: Some(
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaA=",
             ),

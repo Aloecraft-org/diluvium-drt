@@ -78,9 +78,12 @@
 //! - Fan-out: [`Command`], what a program may ask of a running device, and
 //!   [`Report`], what it is told. Two enums, and the match on each is the
 //!   only dispatch in this file.
+//! - Configurable: [`CONNECT_TIMEOUT`], how long a forward's dial inside
+//!   the tunnel waits before it is a `wireguard_error` rather than a hang.
 //! - The UDP side: [`Transport`], which is gotatun's own socket plus the
 //!   option of a TURN allocation beside it, and [`unroutable`], which names
-//!   an `allowed_ips` no route will reach.
+//!   an `allowed_ips` no route will reach; [`unreachable_forwards`] is its
+//!   userspace-mode counterpart, naming a `forward.to` no peer is allowed.
 //! - Fan-out: [`INTERFACE_ERRNO`], what each way of failing to create the
 //!   interface means, and [`interface_here`], the same facts asked of this
 //!   machine before anything is created.
@@ -99,7 +102,7 @@ use ipnetwork::IpNetwork;
 use tokio::sync::mpsc;
 use webrtc_util::Conn as _;
 
-use drt_config::{WireguardConfig, WireguardPeer};
+use drt_config::{WireguardConfig, WireguardMode, WireguardPeer};
 
 /// A WireGuard key is 32 bytes, always. Curve25519 fixes it, `wg genkey`
 /// prints exactly this base64-encoded, and a key of any other length is a
@@ -118,6 +121,16 @@ pub const EVENT: [&str; 5] = [
     "wireguard_relay",
     "wireguard_error",
 ];
+
+/// How long a `forward`'s dial inside the tunnel may wait for its SYN to be
+/// answered before the accepted connection is closed and a
+/// `wireguard_error` names the entry.
+///
+/// Fifteen seconds is three handshake initiations at WireGuard's five
+/// second retransmit, plus a round trip: a peer that has not answered
+/// three initiations is not about to. A dead tunnel is a timeout, never a
+/// client sitting on a SYN forever.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// How often the device is polled for a change worth reporting.
 ///
@@ -315,9 +328,11 @@ pub fn validate(config: &WireguardConfig) -> Result<Vec<String>, String> {
     }
     private_key(config)?;
     peers(config)?;
+    validate_mode(config)?;
     // Returned rather than printed: `bind` validates too, so printing here
     // said everything twice on every start.
     let mut warnings = unroutable(config);
+    warnings.extend(unreachable_forwards(config));
     // A device with no peers is the config a rendezvous starts from, and
     // it is perfectly good -- but only if something can tell it about a
     // peer later. With no `reply_queue` there is no way to, so this one
@@ -333,6 +348,171 @@ pub fn validate(config: &WireguardConfig) -> Result<Vec<String>, String> {
         );
     }
     Ok(warnings)
+}
+
+/// The half of [`validate`] that is about the mode: what a userspace
+/// stack needs to be reachable, and what a kernel interface cannot carry.
+///
+/// Every refusal names the entry, because both numbers are in the config
+/// and a wrong one otherwise appears as a connection that times out. The
+/// stack answers on the block's `address` and nothing else, so an
+/// `expose.tunnel` elsewhere would listen on an address no packet is ever
+/// delivered to; a `to` that is the prefix's network address is the same
+/// transcription slip `address` refuses; and a name in `to` has no
+/// resolver inside a tunnel to answer it.
+fn validate_mode(config: &WireguardConfig) -> Result<(), String> {
+    match config.mode {
+        WireguardMode::Kernel => {
+            if !config.forward.is_empty() || !config.expose.is_empty() {
+                return Err(format!(
+                    "wireguard: `{}` is only reached through the kernel interface, so a \
+                     `forward` or `expose` here is a config that believes it is in the \
+                     other mode. Set mode = \"userspace\", or remove them.",
+                    if config.forward.is_empty() {
+                        "expose"
+                    } else {
+                        "forward"
+                    }
+                ));
+            }
+            Ok(())
+        }
+        WireguardMode::Userspace => {
+            if config.forward.is_empty() && config.expose.is_empty() {
+                return Err(
+                    "wireguard: mode = \"userspace\" with neither `forward` nor \
+                            `expose`: a userspace device nothing can reach terminates \
+                            traffic nobody can hand it. Name a local port that reaches \
+                            the tunnel, an address in it that reaches a local port, or \
+                            both."
+                        .into(),
+                );
+            }
+            let Some(cidr) = &config.address else {
+                return Err("wireguard: mode = \"userspace\" needs an `address`: the \
+                            kernel tolerates an interface with none, but a stack cannot \
+                            answer from nowhere. Give the one this device holds, like \
+                            10.9.0.1/24."
+                    .into());
+            };
+            // Already refused by name above when it does not parse.
+            let net: IpNetwork = cidr
+                .parse()
+                .map_err(|e| format!("wireguard.address: {e}"))?;
+            let own = net.ip();
+            let host_address = |label: &str, text: &str| -> Result<SocketAddr, String> {
+                let addr: SocketAddr = text.parse().map_err(|_| {
+                    format!(
+                        "wireguard.{label}: '{text}' is not an ip:port. An address and a \
+                         port, like 10.9.0.2:22: there is no resolver inside a tunnel."
+                    )
+                })?;
+                if addr.ip().is_unspecified() {
+                    return Err(format!(
+                        "wireguard.{label}: '{text}' is the unspecified address, which \
+                         nothing can dial"
+                    ));
+                }
+                if net.contains(addr.ip()) && addr.ip() == net.network() && net.prefix() < 32 {
+                    return Err(format!(
+                        "wireguard.{label}: '{text}' is the network address of {cidr}, not \
+                         a host on it. Give the address the far machine holds, like \
+                         10.9.0.2:22."
+                    ));
+                }
+                if addr.port() == 0 {
+                    return Err(format!(
+                        "wireguard.{label}: '{text}' has no port; something has to be \
+                         listening on one"
+                    ));
+                }
+                Ok(addr)
+            };
+            let mut binds: Vec<SocketAddr> = Vec::new();
+            for (i, entry) in config.forward.iter().enumerate() {
+                let bind: SocketAddr = entry.bind.parse().map_err(|_| {
+                    format!(
+                        "wireguard.forward[{i}].bind: '{}' is not an ip:port to listen \
+                         on, like 127.0.0.1:2222 (or :0 for an ephemeral port, reported \
+                         as `wireguard_forward`)",
+                        entry.bind
+                    )
+                })?;
+                if bind.port() != 0 && binds.contains(&bind) {
+                    return Err(format!(
+                        "wireguard.forward[{i}].bind: '{bind}' is already the bind of \
+                         another forward; one port reaches one place"
+                    ));
+                }
+                binds.push(bind);
+                host_address(&format!("forward[{i}].to"), &entry.to)?;
+            }
+            let mut tunnels: Vec<SocketAddr> = Vec::new();
+            for (i, entry) in config.expose.iter().enumerate() {
+                let tunnel = host_address(&format!("expose[{i}].tunnel"), &entry.tunnel)?;
+                if tunnel.ip() != own {
+                    return Err(format!(
+                        "wireguard.expose[{i}].tunnel: '{}' is not on this device's own \
+                         address {own}, which is the only one the stack answers on",
+                        entry.tunnel
+                    ));
+                }
+                if tunnels.contains(&tunnel) {
+                    return Err(format!(
+                        "wireguard.expose[{i}].tunnel: '{tunnel}' is already exposed by \
+                         another entry; one port reaches one place"
+                    ));
+                }
+                tunnels.push(tunnel);
+                if entry.to.trim().is_empty() {
+                    return Err(format!(
+                        "wireguard.expose[{i}].to: the local host:port this reaches is empty"
+                    ));
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Which `forward.to` no peer is allowed, in userspace mode: the
+/// counterpart of [`unroutable`]. A forward whose destination sits outside
+/// every peer's `allowed_ips` is configured perfectly and reaches nothing --
+/// the stack routes it to the device, the device has no peer for it, and
+/// the client waits out [`CONNECT_TIMEOUT`]. Both numbers are in the config,
+/// so it is a sentence at startup instead of a fifteen second silence.
+///
+/// A warning and not a refusal, and silent when the block names no peers
+/// at all: that is the config a rendezvous writes, and the peer arrives
+/// over `reply_queue` with the address the forward is waiting for.
+pub fn unreachable_forwards(config: &WireguardConfig) -> Vec<String> {
+    let mut said = Vec::new();
+    if config.mode != WireguardMode::Userspace || config.peers.is_empty() {
+        return said;
+    }
+    for entry in &config.forward {
+        let Ok(to) = entry.to.parse::<SocketAddr>() else {
+            continue; // `validate_mode` refuses this by name; not this function's job.
+        };
+        let allowed = config.peers.iter().any(|peer| {
+            peer.allowed_ips
+                .iter()
+                .filter_map(|cidr| cidr.parse::<IpNetwork>().ok())
+                .any(|net| net.contains(to.ip()))
+        });
+        if !allowed {
+            said.push(format!(
+                "forward {} -> {}: no peer is allowed {}, so that connection will \
+                 time out after {}s and carry nothing. Add it to a peer's allowed_ips, \
+                 or fix `to`.",
+                entry.bind,
+                entry.to,
+                to.ip(),
+                CONNECT_TIMEOUT.as_secs()
+            ));
+        }
+    }
+    said
 }
 
 /// Which `allowed_ips` no packet will ever reach, and what to do about it.
@@ -356,6 +536,13 @@ pub fn validate(config: &WireguardConfig) -> Result<Vec<String>, String> {
 /// thing is to name the gap and the command that closes it.
 pub fn unroutable(config: &WireguardConfig) -> Vec<String> {
     let mut said = Vec::new();
+    // A userspace stack carries a default route, so every allowed_ip is
+    // routed to the device and the `ip route add` below would be wrong
+    // advice. What can go unreached there is a `forward.to`, which
+    // `unreachable_forwards` names instead.
+    if config.mode == WireguardMode::Userspace {
+        return said;
+    }
     let on_link: Option<IpNetwork> = config.address.as_ref().and_then(|a| a.parse().ok());
     for peer in &config.peers {
         for cidr in &peer.allowed_ips {

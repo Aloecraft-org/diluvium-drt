@@ -46,6 +46,9 @@ RootConfig {
                 "stun2.example:3478",
             ],
             interface: "drt0",
+            mode: Kernel,
+            forward: [],
+            expose: [],
             private_key: None,
             private_key_file: None,
             private_key_env: Some(
