@@ -98,6 +98,12 @@ feature moved, the same core inside.
   its stated value. `examples/24-wireguard-userspace` carries a
   request end to end in the gate. TCP only: ssh needs nothing else,
   and UDP forwards arrive as their own ask.
+
+  What it costs, measured the way `doc/WireGuard.md` §3 measured
+  gotatun: `release-small` of `full` grows by 225,312 bytes, +2.8%,
+  for four pure-Rust crates (`smoltcp`, `heapless`, `hash32`,
+  `managed`). No new C toolchain, so every cross-build that carries
+  `wireguard` carries the mode.
 - **`wireguard_forward`**, one per `forward` and `expose` at startup,
   with the address actually bound. `bind = "127.0.0.1:0"` asks for
   an ephemeral port and the report is the only way a program learns

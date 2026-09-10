@@ -622,6 +622,24 @@ and every other profile still build on older toolchains, and a build
 without the feature on 1.94 says so precisely —
 `gotatun@0.9.2 requires rustc 1.95`. CI's `stable` is well past it.
 
+**The userspace mode, measured 2026-09-10.** The same profile,
+`release-small` of `full`, on `x86_64-unknown-linux-gnu` because that
+was the toolchain at hand -- the musl static binary the release ships is
+smaller in absolute terms, and the delta is what matters:
+
+| | |
+|---|---|
+| `full` before the mode (`f9e5dfc`) | 8,075,192 bytes |
+| `full` with the mode | 8,300,504 bytes |
+| delta | **+225,312 bytes, +2.8%** |
+| new dependencies | 4 crates: `smoltcp`, `heapless`, `hash32`, `managed` |
+
+Pure Rust, so "no new C toolchain" still holds, and the cross-builds
+that carry `wireguard` carry the mode. Inside the `wireguard` feature
+rather than a sub-feature of it, on purpose: a `wireguard-userspace`
+nobody enables is the mode nobody has, and the user who needs it is the
+one holding the release binary.
+
 **And it works.** `crates/drt/tests/wireguard.rs` runs two devices in one
 process — two loopback UDP sockets, a real handshake, a real IPv4 packet
 in one end and the same bytes out the other, in both directions. Nothing
