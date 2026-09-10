@@ -44,9 +44,11 @@ to its consumers" actually means. An item a consumer must *integrate* is not
 parallel — it is a second project, scheduled inside a freeze, in the
 repository least able to absorb it.
 
-The consequence is that this release is diagnostics and documentation. That
-is not a consolation prize: the highest-support-cost item on either list
-(issue #21) was a diagnostics bug, and it nearly cost a working design.
+The consequence is that this release is diagnostics, documentation, and --
+after issue #25 was aligned -- two small additions a consumer gets by
+upgrading and never has to adopt. That is not a consolation prize: the
+highest-support-cost item on either list (issue #21) was a diagnostics bug,
+and it nearly cost a working design.
 
 ---
 
@@ -128,6 +130,43 @@ draft missed because `tunnel::load_roots` did not exist when it was written.
   `doc/WireGuard.md:414`, with what follows from the design and what has
   not been measured kept apart.
 
+### 2.4 `drt netcheck --reflect <url>` configures itself — **landed here**
+
+Issue #25 §1, after the alignment on the issue: the first edge is asked,
+before anything is measured, how to measure against it, and the run takes
+the STUN pair and the vantages from a `measure` block in the answer.
+`--stun` and `--reflect-at` are overrides that win when typed; nothing is
+compiled in, and a bare run says it has nothing to measure against.
+
+Two things the alignment settled that the issue's first draft did not. It
+is a separate unpinned request and not a reordering: `cli.rs` runs the UDP
+half before the reflect fetches so an edge that disagrees with STUN's
+address is recorded as a disagreement, and a configuration taken from a
+measurement fetch would invert that. And the answer binds under the flags'
+own rules -- one server is still "1 given", and an answer's vantages still
+may not host the probe -- because the values merge before either rule
+looks. `--pin-source-port` became the default whenever more than one fetch
+is planned, after its stated premise (a "quieter wrong answer" without it)
+turned out not to describe the tool; the reporter retracted it on the
+issue. Six tests in `crates/drt/tests/reflect.rs`, against an edge that
+answers a `measure` block.
+
+The reader ships before the server half exists and no-ops until it does.
+"Landed here" means DRT's half; the one-flag invocation works for a user
+the day discofetch's edge answers the block.
+
+### 2.5 `wireguard_mapping.local` — **landed here**
+
+Issue #25 §2, a defect and not a refinement: the report carried one
+candidate, the server-reflexive address, so two machines behind one router
+had to hairpin through it and plenty of routers refuse. `local` is this
+machine's own address per family -- the routing table's pick toward the
+internet, learned from a connected UDP socket that sends nothing, which is
+the same mechanism `netcheck`'s `routable_v6` already used. No interface
+enumeration and no new dependency; the reporter chose that over a
+`getifaddrs` list until multi-homed machines show up with evidence.
+Always a list, never nil, so a program iterates it without a guard.
+
 ---
 
 ## 3. Out
@@ -156,6 +195,22 @@ should own that.
 §2.1 is what this release does about the pain meanwhile: the setcap
 conversation is much shorter once the error stops sending people to grant a
 privilege they already hold.
+
+**The requirement, from issue #25 §3, recorded so the sprint has it while
+the interface is still open.** Everything in the punch path is already
+unprivileged -- STUN, the rendezvous, the punch itself, the WireGuard
+protocol -- and `CAP_NET_ADMIN` buys exactly one thing: an adapter in the
+kernel's stack. A userspace mode is only useful with a way to *reach* it.
+Without an adapter nothing routes in, so the mode needs an exposure -- a
+forwarded local port (`--forward 2222:10.9.0.2:22`) or a SOCKS endpoint --
+or it terminates traffic nobody can hand it. `drt tunnel --local` already
+has that shape for the tunnel's caller half (landed; #13, PR #14 -- the
+issue cited it as open from a stale doc and corrected itself), and one
+exposure mechanism serving both would suit everyone. The product argument
+is the one to keep: a tool that demonstrably moves bytes *before* it asks
+for a privilege is a different trust proposition from one that asks first,
+and it is the difference between a feature for machines we administer and
+one for machines people own.
 
 ### 3.3 Windows and macOS artifacts — issue #17 §4, §5
 

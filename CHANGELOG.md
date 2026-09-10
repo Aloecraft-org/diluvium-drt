@@ -215,6 +215,51 @@ creating anything.
   a TLS terminator in front of the test edge and asserts both halves
   in one run -- unreachable without the flag, measured with it --
   because only the pair proves the flag did the work.
+- **`drt netcheck --reflect <url>` is the whole invocation** against
+  an edge that describes itself. The run asks the first edge, before
+  anything is measured, how to measure against it -- the STUN pair
+  and the vantage addresses -- and configures itself from a
+  `measure` block in the answer; `--stun` and `--reflect-at` become
+  overrides that win when typed. Six flags, two of them edge
+  addresses copied out of a document, were the shape that goes stale
+  the day a third edge exists (issue #25). Nothing is compiled in: a
+  bare run says it has nothing to measure against rather than
+  inventing somebody's infrastructure, and anyone's own reflect
+  endpoint gets the same one-flag behaviour.
+
+  Its own request, not a reordering. The UDP half runs before the
+  reflect fetches on purpose, so an edge that disagrees with STUN's
+  address is recorded as a disagreement; taking the STUN pair from a
+  measurement fetch would invert that, so the configuration fetch is
+  a separate unpinned one and its answer is not kept as a view. The
+  rules the flags live under bind the answer too -- one server is
+  still "1 given", and an answer's vantages still may not host the
+  probe -- because the values are merged before either rule looks.
+  The evidence block's first line says where each came from.
+- **Two vantages are pinned and compared by default.**
+  `--pin-source-port` used to be what turned two reflect fetches into
+  a TCP mapping comparison, and a caller who did not know the flag
+  got two unrelated observations from a run that could plainly have
+  compared them. Pinning happens whenever more than one fetch is
+  planned, which is the only time it measures anything; the flag is
+  kept and changes nothing. Not "measure both": that doubles the
+  requests against edges that rate-limit, and a 429 renders as "not
+  measured" -- a correct cheap outcome traded for a possibly-empty
+  expensive one.
+- **`wireguard_mapping` carries `local`**, this machine's own
+  addresses, one per family. The mapped address is one candidate --
+  server-reflexive -- and two machines behind one router publishing
+  only that have to hairpin through it, which plenty of routers
+  refuse: two machines on one LAN could not punch to each other from
+  the report alone (issue #25). A guest cannot learn its own
+  addresses -- no sockets, no `net`, an `fs` scope of one directory
+  -- so the report is the only place a roaming laptop can get them,
+  and `remap` refreshes them with the rest. The address the routing
+  table picks toward the internet, per family, not an interface
+  enumeration: no new dependency, and a multi-homed machine gets its
+  primary until there is evidence it needs more. Raw, and always a
+  list; publishing a LAN address is the program's decision, since it
+  discloses topology.
 
 ### Changed
 
