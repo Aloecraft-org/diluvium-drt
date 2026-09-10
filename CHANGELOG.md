@@ -148,12 +148,24 @@ feature moved, the same core inside.
   `forward.to`, and that is what is named instead.
 
 
-## [0.5.0rc8] - unreleased (prerelease)
+## [0.5.0rc8] - 2026-09-10 (prerelease)
 
 `v0.5.0rc8` &middot; dv ABI 1 &middot; diluvium `850e00d73220` (build13)
 
-**Not cut.** The gate rc7 should have had, and the client change
-that makes such a gate testable at all.
+**The gap release.** The gate rc7 should have had and the client
+change that makes such a gate testable at all, plus the small,
+no-adoption changes discofetch and vera asked for during the
+architecture sprint -- `doc/Gap-Release.md` is the scoping record,
+including the test that decided what rode and what waited.
+
+First tagged at `f9e5dfc` while this entry still said `unreleased`,
+and preflight refused it in two seconds -- `still status:
+unreleased`, `has no date` -- publishing nothing, which is the gate
+doing exactly what `doc/Release.md` says it is for. This is that
+tree with the entry saying what it is; the rehearsal (run 39 on
+`f9e5dfc`) was green on every platform, including the musl static
+build, both darwin targets, and the examples gate on a real Windows
+runner.
 
 **Cut from `main` after the numeric round's first half merged**
 (#23), so this candidate also carries what the `0.6.0` entry beneath
