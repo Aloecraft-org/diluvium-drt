@@ -12,12 +12,13 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
-## [0.5.0rc9] - unreleased (prerelease)
+## [0.5.0rc9] - 2026-09-10 (prerelease)
 
 `v0.5.0rc9` &middot; dv ABI 1 &middot; diluvium `850e00d73220` (build13)
 
-**Not cut.** The candidate after rc8: the no-root mode, and the
-tunnel verb from a file (issue #27).
+The candidate after rc8, cut from the same `main` plus issue #27, so
+it carries everything rc8 carries: the no-root mode, and the tunnel
+verb from a file.
 
 Everything in the punch path was unprivileged all along -- STUN, the
 rendezvous, the punch, the WireGuard protocol -- and `CAP_NET_ADMIN`

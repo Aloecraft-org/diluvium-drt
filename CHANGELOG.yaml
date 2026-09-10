@@ -70,8 +70,8 @@ repo: Aloecraft-org/diluvium-drt
 releases:
   - version: 0.5.0rc9
     tag: v0.5.0rc9
-    date: null
-    status: unreleased
+    date: 2026-09-10
+    status: released
     stable: false
     mirror: false
     dv_abi: 1
@@ -88,8 +88,9 @@ releases:
       wasi: [regex]
       web: [regex]
     summary: |
-      **Not cut.** The candidate after rc8: the no-root mode, and the
-      tunnel verb from a file (issue #27).
+      The candidate after rc8, cut from the same `main` plus issue #27, so
+      it carries everything rc8 carries: the no-root mode, and the tunnel
+      verb from a file.
 
       Everything in the punch path was unprivileged all along -- STUN, the
       rendezvous, the punch, the WireGuard protocol -- and `CAP_NET_ADMIN`
