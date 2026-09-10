@@ -348,13 +348,27 @@ point is to be safe to take.
 **The version is `v0.5.0rc8`**, and the entry was already open in
 `CHANGELOG.yaml` when this document proposed it.
 
+**Correction, kept in place.** This document first said rc8's compatibility
+facts were identical to rc7's. They were, on the branch as first cut. The
+branch was then rebased onto `main`, which had merged the numeric round's
+first half (#23): the `data` connector, the numeric config block, the blob
+lane, the `features` fact. So rc8 as it will actually be cut carries those
+too, its `connectors` set differs from rc7's, and by this repository's own
+rule that makes it more than a patch whatever the digits say. The entry
+records exactly what the binary reports, which is the rule that matters;
+the naming argument below stands on the mechanism, not on the facts
+happening to match. A candidate cut from `eba11c7` instead would be rc7
+plus the gap items alone, and that remains possible if the release is
+meant to carry nothing else. The workspace version is `0.5.0` for it, and
+`0.6.0` re-bumps when it is next to ship.
+
 **One thing not to re-litigate: the version scheme.** A candidate is
 `X.Y.ZrcN`, crate versions stay at `X.Y.Z`, and `script/changelog.py:318`
 enforces exactly that. A suffixed variant (`rc7g1`, to signal "rc7 plus a
 safe delta") was considered and dropped: the claim it encodes in a tag name
 is one `CHANGELOG.yaml` already records as *checkable fact* — `dv_abi`, the
 embedded `diluvium` revision, and the per-profile `connectors` set, all
-identical to rc7's here, and all carried on the artifact by `BUILDINFO.txt`.
+carried on the artifact by `BUILDINFO.txt`.
 That is `doc/Release.md`'s stated philosophy: records the coupling instead
 of encoding it, and the compatibility fact travels with the bytes. Changing
 the scheme would cost the one regex that keeps version strings from
