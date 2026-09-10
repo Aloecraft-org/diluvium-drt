@@ -23,6 +23,7 @@ relay — the UDP mapping could not be measured, and relay is the answer that wo
   use: use a tunnel
 
 evidence
+  config     nothing named to measure against: --reflect <url> supplies the rest, or --stun twice
   address    not measured (no STUN server or reflect edge answered)
   v6         <v6, this machine's>
   udp map    not measured (classifying a NAT mapping needs two servers on separate addresses; 0 given)
@@ -35,7 +36,10 @@ $ drt netcheck --stun stun.l.google.com:19302
 ```
 
 Neither run sent a packet; the second is refused before a STUN socket is
-opened, and both return in milliseconds. The `v6` line is read from your
+opened, and both return in milliseconds. The `config` line is the one to act
+on: a reflect edge that describes itself supplies the STUN pair and the
+vantages, so `drt netcheck --reflect <url>` is the whole invocation against
+one that does. The `v6` line is read from your
 routing table rather than from the network, so a machine holding a routable
 IPv6 address prints it here, answers `v6-direct`, and exits 0.
 

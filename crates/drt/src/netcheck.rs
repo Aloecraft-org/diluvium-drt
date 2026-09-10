@@ -198,6 +198,70 @@ pub struct Measurements {
     /// always `None` here and the renderer says "not measured" rather
     /// than naming a flag the binary does not accept.
     pub inbound: Option<(u16, Inbound)>,
+    /// Where the STUN pair and the vantages came from, in one sentence, or
+    /// what to name when nothing was (issue #25).
+    ///
+    /// Rendered first in the evidence block because it explains the rest
+    /// of it: a reader deciding whether to trust `udp map` needs to know
+    /// whether the servers were the ones they typed or the ones the edge
+    /// answered with. `None` when there is nothing to say -- servers named
+    /// by hand and no edge asked.
+    pub config: Option<String>,
+}
+
+/// What a reflect answer may say about how to measure against it.
+///
+/// The one-flag invocation (issue #25): `drt netcheck --reflect <url>`,
+/// and the edge answers with the STUN pair to use and the vantage
+/// addresses to pin, so the operator is no longer the transport for values
+/// the service already knows and a released binary carries none of them.
+/// Anyone standing up their own reflect endpoint gets the same behaviour
+/// against their own URL, which compiled-in defaults never could.
+///
+/// Read from a `measure` block beside `observed`; absent is empty, and
+/// each key falls back on its own -- a block naming servers and no
+/// vantages configures the servers and leaves the vantages to `--reflect-at`.
+/// Keys this reader does not know are ignored, so the block can grow
+/// without a version negotiation. The two rules the flags live under --
+/// fewer than two servers is a refusal, and a probe vantage must be one
+/// the run did not contact -- apply to these values exactly as to typed
+/// ones, because they are merged into the same arguments before either
+/// rule looks; the answer cannot weaken either.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Measure {
+    /// STUN servers, `host:port`, in the order to try.
+    pub stun: Vec<String>,
+    /// Vantage addresses, never names: distinctness has to be decidable
+    /// without a resolution step that could collapse two into one.
+    pub vantages: Vec<String>,
+}
+
+impl Measure {
+    /// The `measure` block of a reflect answer, or empty. A key whose value
+    /// is not a list of strings reads as absent rather than as an error,
+    /// because the flags are still there to fall back on and a diagnostic
+    /// that refuses to run over a malformed hint is a diagnostic nobody
+    /// runs.
+    pub fn from_answer(answer: &serde_json::Value) -> Measure {
+        let strings = |key: &str| -> Vec<String> {
+            answer
+                .get("measure")
+                .and_then(|m| m.get(key))
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|v| v.as_str())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        Measure {
+            stun: strings("stun"),
+            vantages: strings("vantages"),
+        }
+    }
 }
 
 impl Measurements {
@@ -467,6 +531,11 @@ pub fn render_text(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
     out.push_str(&format!("  use: {}\n\n", verdict.advice()));
     out.push_str("evidence\n");
 
+    // First, because it qualifies everything under it.
+    if let Some(config) = &m.config {
+        out.push_str(&format!("  config     {config}\n"));
+    }
+
     match m.observed_address {
         Some(a) => out.push_str(&format!(
             "  address    {}{}{}\n",
@@ -597,6 +666,7 @@ pub fn render_json(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
         "why": why,
         "advice": verdict.advice(),
         "evidence": {
+            "config": m.config,
             "address": {
                 "ip": m.observed_address.map(|a| a.to_string()),
                 "cgnat": m.is_cgnat(),
@@ -957,7 +1027,7 @@ pub mod gather {
         m: &mut Measurements,
         edges: &[&str],
         at: &[&str],
-        pin: bool,
+        force_pin: bool,
         extra_roots: &[tokio_rustls::rustls::pki_types::CertificateDer<'static>],
     ) {
         // The first fetch takes an ephemeral port and reports it; every
@@ -995,6 +1065,17 @@ pub mod gather {
                 }
             }
         }
+        // Pinned whenever more than one fetch is planned, which is the only
+        // time pinning measures anything: two vantages become a comparison,
+        // one vantage asked twice becomes the stability check, and one
+        // fetch alone is one vantage pinned or not. A caller used to have to
+        // know a flag to get the measurement the run could plainly make,
+        // and the alternative -- measuring both pinned and unpinned -- would
+        // double the requests against edges that rate-limit, trading a
+        // correct cheap outcome for a possibly-429'd expensive one (issue
+        // #25). `force_pin` is the old flag, kept so a script that names it
+        // keeps working; it changes nothing a bare run would not do.
+        let pin = force_pin || targets.len() >= 2;
         for (url, dest) in targets {
             match one_edge(url, dest, if pin { pinned } else { None }, extra_roots).await {
                 Ok((view, used_port)) => {
@@ -1101,6 +1182,41 @@ pub mod gather {
             },
             used_port,
         ))
+    }
+
+    /// The configuration fetch: ask one reflect edge how to measure against
+    /// it, **before** any measurement is taken (issue #25).
+    ///
+    /// Its own request rather than a reordering of the measurement ones.
+    /// The UDP half runs before the reflect fetches on purpose -- STUN's
+    /// address is the one the decisive measurement saw, and an edge that
+    /// disagrees with it is recorded as a disagreement rather than
+    /// overwriting it (`cli.rs`, and `Measurements::address_why`). Taking
+    /// the STUN pair from a reflect answer would put reflect first and
+    /// invert the order that rationale rests on; a separate unpinned fetch
+    /// costs one request and moves nothing. Its answer is not kept as a
+    /// view for the same reason: a value observed before STUN, on a mapping
+    /// that then moved, would turn a real disagreement into a stale one.
+    ///
+    /// `at` is honoured when given, since a name may deliberately not
+    /// resolve to the vantage an operator is pointing at.
+    pub async fn configure(
+        url: &str,
+        at: &[&str],
+        extra_roots: &[tokio_rustls::rustls::pki_types::CertificateDer<'static>],
+    ) -> Result<super::Measure, String> {
+        let found = if at.is_empty() {
+            crate::reflect::addresses(url).await?
+        } else {
+            crate::reflect::addresses_at(url, at)?
+        };
+        let Some(dest) = found.first().copied() else {
+            return Err("named no address".into());
+        };
+        let (body, _) = crate::reflect::get(url, dest, None, extra_roots).await?;
+        let answer: serde_json::Value =
+            serde_json::from_str(&body).map_err(|_| "the edge did not answer JSON".to_string())?;
+        Ok(super::Measure::from_answer(&answer))
     }
 
     pub async fn local_and_udp(m: &mut Measurements, stun_servers: &[&str], udp_port: Option<u16>) {
