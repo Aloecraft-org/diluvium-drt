@@ -1,7 +1,8 @@
 # WireGuard in DRT
 
-**Written 2026-09-06, against `claude/wireguard-gotatun`.** What landed,
-what it cost, what it does not do yet, and the measurements behind each.
+**Written 2026-09-06, against `claude/wireguard-gotatun`; revised
+2026-09-10 for the userspace mode (issue #27).** What landed, what it
+cost, what it does not do yet, and the measurements behind each.
 
 **On hole punching, up front:** what is built is the deployment-side half
 — measure our own mapping, be told where a peer is, talk to it — and it is
@@ -122,10 +123,86 @@ Without an `address` the interface would appear, hold no address, and stay
 down — an interface nothing can use, which is the `wg-quick` work this
 block exists to replace.
 
-**The privilege.** Creating the tunnel interface needs `CAP_NET_ADMIN` (or
-root) on Linux, root on macOS, and `wintun.dll` beside the binary on
-Windows. That is the *whole* privilege: no kernel module, no `wg` tools,
-no `wg-quick`, no second daemon.
+**The privilege, and the mode that needs none.** Creating the tunnel
+interface needs `CAP_NET_ADMIN` (or root) on Linux, root on macOS, and
+`wintun.dll` beside the binary on Windows. That is the *whole* privilege:
+no kernel module, no `wg` tools, no `wg-quick`, no second daemon.
+
+And it is only the interface. Everything in the punch path -- STUN, the
+rendezvous, the punch, the protocol -- was unprivileged all along, and
+`CAP_NET_ADMIN` bought exactly one thing: an adapter in the kernel's
+stack. `mode = "userspace"` does without the adapter. The device's IP
+side, which is a trait, is handed the channel pair the tests already
+drive it with, and a TCP/IP stack (smoltcp, pure Rust) sits on the far
+end inside the process. Nothing is created on the machine and no
+privilege is asked for; the tunnel is reached through two lists instead
+of an address:
+
+```json
+{
+  "wireguard": {
+    "mode": "userspace",
+    "listen_port": 51820,
+    "address": "10.9.0.2/24",
+    "private_key_env": "WG_KEY",
+    "forward": [ { "bind": "127.0.0.1:2222", "to": "10.9.0.1:22" } ],
+    "expose":  [ { "tunnel": "10.9.0.2:22", "to": "127.0.0.1:22" } ],
+    "peers": [ { "public_key": "…", "allowed_ips": ["10.9.0.1/32"] } ]
+  }
+}
+```
+
+`forward` is a port on localhost that reaches an address inside the
+tunnel -- `ssh -p 2222 127.0.0.1`, with nothing configured on the client.
+`expose` is an address inside the tunnel that reaches a local port, and
+it exists because the mode is half a product without it: in kernel mode
+the kernel delivers `10.9.0.2:22` to the box's own sshd, but nothing
+listens inside a userspace stack unless the config says what does. Same
+pump, opposite ends. The local address is `bind`, as every other block
+spells it; `local`, which the spec first proposed, is a reserved word in
+Lua and did not parse.
+
+`mode` is explicit and defaults to `kernel`: a config that did not ask is
+not steered into the other mode by a missing privilege. `interface` is
+not read in userspace mode. The stack answers on the block's `address`
+and nothing else, carries a default route so a peer whose `allowed_ips`
+sits outside the prefix still routes (there is nobody to run `ip route
+add`), and terminates TCP only -- ssh needs nothing else, and UDP
+forwards arrive as their own ask if something needs them.
+
+What a program sees is unchanged. `wireguard_mapping`, `endpoint`, `add`,
+`relay`, `remap` behave identically, so a rendezvous program cannot tell
+the modes apart from the queue. One addition: `wireguard_forward`, once
+per entry at startup, with the address actually bound -- `bind =
+"127.0.0.1:0"` asks for an ephemeral port and the report is how a program
+learns which. A forward whose dial inside the tunnel fails is a
+`wireguard_error` naming the entry, in words that tell "no peer is
+allowed it, or its tunnel is down" (the dial timed out, at fifteen
+seconds) from "a peer answered, and nothing listens there" (it was
+refused).
+
+The pump under it has six rules, stated at the top of
+`crates/drt/src/userspace.rs` so they are not re-learned: claim first
+and splice second, so a refused dial closes the local socket at once;
+half-close is real in both directions, so `printf … | ssh` gets its
+answer; bytes move only when the stack can take them, 64 KiB each way; a
+dead tunnel is a timeout and never a hang; an expose dials lazily, on
+the SYN; and a smoltcp listening socket is one-shot, so an expose re-arms
+the moment one leaves LISTEN. `drt wg check` says `userspace`, lists what
+the mode reaches from the config alone, binds nothing, and prints no
+`here:` lines, since it touches neither `/dev/net/tun` nor `CapEff`.
+
+**Proven without privilege.** `a_forward_reaches_an_expose_through_two_userspace_stacks`
+runs two userspace devices in one process, a forward on one reaching an
+expose on the other: every byte crossed a real handshake and a real
+smoltcp connection at each end, and it is the first wireguard test that
+moves TCP in CI at all. Beside it: half-close survives, the re-armed
+listener takes a second connection, a refused dial is EOF at once, an
+unexposed port is answered with a RST rather than black-holed, and the
+dead tunnel times out at the stated value. `examples/24-wireguard-userspace`
+carries a request end to end in the gate with no `--privileged` -- which
+two kernel interfaces on one host cannot do, because the kernel routes
+between them directly.
 
 **And it is not the only way that fails.** For a year that paragraph was
 attached to *every* error the interface could return, which made two
@@ -588,7 +665,10 @@ and the report shows the handshake —
   up — so the common case (one subnet of peers, routed by the address's own
   prefix) works with no `ip` commands at all. A second address, or a route
   to something outside that prefix, is still `ip addr add` /
-  `ip route add`.
+  `ip route add` -- in kernel mode. The userspace stack carries a default
+  route of its own, and its warning is about a `forward.to` no peer is
+  allowed instead; that is not a position on whether DRT owns kernel
+  routes.
 
   What changed is that a peer whose `allowed_ips` no route will reach is
   **named at startup**, with the command that fixes it. That case — a
@@ -603,17 +683,18 @@ and the report shows the handshake —
   IP Helper API on Windows — three implementations, which is why `wg-quick`
   is a per-platform shell script. Not started, and it should be a decision
   about whether DRT owns routes at all rather than a drive-by.
-- **No no-root mode.** The device still wants a kernel interface, so a
-  deployment needs `CAP_NET_ADMIN`. The pieces for a userspace mode are
-  all present — the IP side is a trait, and the tests already drive it
-  with channels — so a `--local`-shaped local port terminating TCP
-  in-process over a userspace stack (smoltcp) is the next change, and it
-  touches only the IP side of what is here. That is also §8's "reliable
-  stream over the UDP hole" from `doc/Ask-Discofetch-Reply.md`, answered
-  with WireGuard instead of QUIC.
+- **No SOCKS, no UDP forwards.** The userspace mode (§1) is a forward
+  list, because that is `ssh -p 2222 127.0.0.1` with no client
+  configuration; SOCKS5 is additive later on the same stack, and UDP
+  forwards arrive as their own ask. The kernel mode still wants
+  `CAP_NET_ADMIN`, and that is now a choice rather than the only option.
+  That was §8's "reliable stream over the UDP hole" from
+  `doc/Ask-Discofetch-Reply.md`, answered with WireGuard instead of QUIC.
 - **Not on Windows yet.** The cross-build works, but `full` does not
   build for Windows for unrelated reasons (`exec` is unix-only,
-  aws-lc-sys through russh), and `wintun.dll` would have to ship beside
-  the binary. `doc/Platforms.md` has the state of that.
+  aws-lc-sys through russh). `wintun.dll` beside the binary is a
+  kernel-mode need only: the userspace mode makes a Windows artifact
+  useful without it, which is a reason to schedule the artifact, not a
+  substitute for it. `doc/Platforms.md` has the state of that.
 - **Not in `wasi` or `web`.** Neither has a tunnel interface, and the
   wasm targets have no threads to drive one.

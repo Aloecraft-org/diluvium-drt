@@ -55,10 +55,12 @@ the `wireguard` block build and run wherever `full` does, and the
 `slim,wireguard` cross-build for `x86_64-pc-windows-gnu` is clean too --
 what they need is not a platform feature but permission to create a
 tunnel interface: CAP_NET_ADMIN or root on Linux, root on macOS,
-`wintun.dll` beside the binary on Windows. The wasm targets are the real
-no: neither has an interface to create, nor threads to drive one.
-`doc/WireGuard.md` has the measurements, including the userspace mode
-that would remove the privilege.
+`wintun.dll` beside the binary on Windows -- in kernel mode. In
+`mode = "userspace"` there is no interface and no privilege at all: the
+stack is inside the process, reached through a port on localhost, and
+`wintun.dll` is not needed for it. The wasm targets are the real no:
+neither has threads to drive a device. `doc/WireGuard.md` has the
+measurements, including the mode's.
 
 **wasip2 is a sandbox question.** The module cannot spawn or load
 anything at run time, which is the property that makes it a
