@@ -1048,8 +1048,9 @@ pub mod gather {
         // The first fetch takes an ephemeral port and reports it; every
         // fetch after it leaves from that same port. Sequential on purpose
         // -- see `reflect::connect_from`.
-        let mut pinned: Option<u16>;
-        let mut all_pinned: bool;
+        // An edge that does not resolve is asked nothing, and a run with
+        // one of those is not a comparison whatever the rest of it did.
+        let mut every_edge_resolved = true;
         // One name, every address it resolves to. `NETCHECK-SPEC.md` §2:
         // "One name, two A records. The client resolves
         // reflect.discofetch.link, connects to each returned address from
@@ -1075,7 +1076,7 @@ pub mod gather {
             match found {
                 Ok(found) => targets.extend(found.into_iter().map(|a| (*url, a))),
                 Err(why) => {
-                    all_pinned = false;
+                    every_edge_resolved = false;
                     m.reflect_why.push(format!("{url}: {why}"));
                 }
             }
@@ -1102,8 +1103,8 @@ pub mod gather {
         let mut retried = false;
         loop {
             let views_before = m.tcp_views.len();
-            pinned = None;
-            all_pinned = true;
+            let mut pinned: Option<u16> = None;
+            let mut all_pinned = every_edge_resolved;
             let mut lost = false;
             for (url, dest) in &targets {
                 let (url, dest) = (*url, *dest);
@@ -1165,12 +1166,13 @@ pub mod gather {
                 retried = true;
                 continue;
             }
+            // Only a run where EVERY view left from one port is a
+            // comparison. One failed bind, one edge that did not answer,
+            // or one that did not resolve, and these are separate
+            // observations again.
+            m.tcp_same_source_port = pin && all_pinned && m.tcp_views.len() > 1;
             break;
         }
-        // Only a run where EVERY view left from one port is a comparison.
-        // One failed bind, or one edge that did not answer, and these are
-        // separate observations again.
-        m.tcp_same_source_port = pin && all_pinned && m.tcp_views.len() > 1;
         // A vantage that answered but names itself nothing new is still a
         // vantage; the destination is what counted it.
         let _ = &m.tcp_views;
