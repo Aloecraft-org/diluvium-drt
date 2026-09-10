@@ -1,0 +1,14 @@
+{
+  "_comment": "What the fetchpoint serves: a program with an http listener, exactly 17-serving-http's and 19-a-tunnel-a-program-can-use's. It knows nothing about the tunnel; `expose` in fetchpoint.json is what makes it reachable through one.",
+
+  "program": { "path": "app.dlua" },
+
+  "listeners": [
+    {
+      "scheme": "http",
+      "address": "127.0.0.1:18522",
+      "queue": "http_in",
+      "reply_queue": "http_out"
+    }
+  ]
+}

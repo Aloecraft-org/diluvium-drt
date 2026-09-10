@@ -1,0 +1,9 @@
+{
+  "name": "24-wireguard-userspace",
+  "teaches": "The wireguard block with no privilege at all: `mode = \"userspace\"` puts a TCP/IP stack inside the process where kernel mode creates an interface, `forward` turns a port on localhost into an address inside the tunnel, and `expose` says what answers on the tunnel address at the other end. Two such peers on one machine cross a real tunnel -- handshake, encryption, a smoltcp connection at each end -- and a request goes through, which two kernel interfaces on one host cannot do. No CAP_NET_ADMIN, no sudo, no wintun.dll, so the gate runs it without --privileged, and that is the demonstration.",
+  "cmd": "./demo.sh",
+  "needs_network": false,
+  "needs_build": "full",
+  "needs_listener": true,
+  "normalise": []
+}

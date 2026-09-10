@@ -1186,23 +1186,25 @@ pub async fn serve(config: &WireguardConfig) -> Result<(), String> {
             let (device, _allocation, end) = bind_userspace(config).await?;
             // The foreground verb takes no commands and keeps no queue, so
             // the stack's reports -- which forward bound where, and a dial
-            // that failed -- are printed as they come.
+            // that failed -- are printed instead. What was bound is known
+            // the moment the stack is up and is printed here, in order,
+            // ahead of the peers; what fails later is printed as it comes.
             let (reports, mut said) = mpsc::unbounded_channel();
-            tokio::spawn(async move {
-                while let Some(report) = said.recv().await {
-                    match report {
-                        Report::Forward { kind, from, to } => {
-                            eprintln!("drt wg: {kind} {from} -> {to}")
-                        }
-                        Report::Refused { command, reason } => {
-                            eprintln!("drt wg: {command}: {reason}")
-                        }
-                        _ => {}
-                    }
-                }
-            });
             up("userspace");
             let _stack = crate::userspace::Stack::start(config, end, reports).await?;
+            let say = |report: Report| match report {
+                Report::Forward { kind, from, to } => eprintln!("drt wg: {kind} {from} -> {to}"),
+                Report::Refused { command, reason } => eprintln!("drt wg: {command}: {reason}"),
+                _ => {}
+            };
+            while let Ok(report) = said.try_recv() {
+                say(report);
+            }
+            tokio::spawn(async move {
+                while let Some(report) = said.recv().await {
+                    say(report);
+                }
+            });
             Wait::Userspace(device)
         }
     };

@@ -1,0 +1,22 @@
+{
+  "_comment": "One end of the tunnel, on the machine you are sitting at: no interface, no CAP_NET_ADMIN, no sudo. `forward` turns a port on localhost into an address inside the tunnel, so `curl` -- or `ssh -p` -- reaches the fetchpoint with nothing configured on the client. Keys are fixed so the example is reproducible; real ones come from `drt wg keygen`.",
+
+  "wireguard": {
+    "mode": "userspace",
+    "listen_port": 18520,
+    "address": "10.9.0.1/24",
+    "private_key": "pq4aaqPp91P4YGzMjJJm+lWEeV3lg7s2u5YfIts9b4c=",
+
+    "forward": [
+      { "bind": "127.0.0.1:18523", "to": "10.9.0.2:80" }
+    ],
+
+    "peers": [
+      {
+        "public_key": "/a3GH0hkjdB0oghXkh7cDyfCQInPtj0VOMXNK8kVQ20=",
+        "allowed_ips": ["10.9.0.2/32"],
+        "endpoint": "127.0.0.1:18521"
+      }
+    ]
+  }
+}

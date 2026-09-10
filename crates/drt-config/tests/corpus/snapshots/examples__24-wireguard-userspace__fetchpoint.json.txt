@@ -1,0 +1,67 @@
+parsed to:
+RootConfig {
+    root: InstanceConfig {
+        program: None,
+        caps: [],
+        budget: Budget {
+            instructions: None,
+            memory_kb: None,
+        },
+        numeric: Numeric {
+            max_elements: None,
+            max_tier: None,
+        },
+    },
+    connectors: {},
+    listeners: [],
+    residency: None,
+    relay: None,
+    stun: None,
+    turn: None,
+    wireguard: Some(
+        WireguardConfig {
+            listen_port: 18521,
+            address: Some(
+                "10.9.0.2/24",
+            ),
+            mtu: 1420,
+            turn_fallback: false,
+            stun: [],
+            interface: "drt0",
+            mode: Userspace,
+            forward: [],
+            expose: [
+                WireguardExpose {
+                    tunnel: "10.9.0.2:80",
+                    to: "127.0.0.1:18522",
+                },
+            ],
+            private_key: Some(
+                "SGHioeUAFwHnXjluOKgpS+QOBDRHfTSwZrhoxQHho9g=",
+            ),
+            private_key_file: None,
+            private_key_env: None,
+            peers: [
+                WireguardPeer {
+                    public_key: "lji56MXQ6Mhpi6WwKhqvSWth5YPmCTFq6dIl94sZt2Q=",
+                    allowed_ips: [
+                        "10.9.0.1/32",
+                    ],
+                    endpoint: Some(
+                        "127.0.0.1:18520",
+                    ),
+                    keepalive: None,
+                    preshared_key_env: None,
+                },
+            ],
+            queue: "wg_in",
+            reply_queue: "",
+            report_ms: 10000,
+        },
+    ),
+    tunnel: None,
+    identity: Identity {
+        host_key_path: None,
+    },
+    principals: [],
+}

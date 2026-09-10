@@ -34,6 +34,8 @@ const SHIPPED_EXACT: &[&str] = &[
     "examples/deployment.json",
     "examples/19-a-tunnel-a-program-can-use/park.json",
     "examples/19-a-tunnel-a-program-can-use/claim.json",
+    "examples/24-wireguard-userspace/laptop.json",
+    "examples/24-wireguard-userspace/fetchpoint.json",
 ];
 
 /// `/` in a repository path is `__` in a corpus filename. A corpus file
