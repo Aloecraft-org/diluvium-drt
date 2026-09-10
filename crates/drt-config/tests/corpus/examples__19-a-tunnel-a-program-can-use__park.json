@@ -1,0 +1,8 @@
+{
+  "_comment": "The device's half of the tunnel, from a file: hold a parked leg at the relay and dial `to` lazily when a caller claims it. The park key is a credential; here it is in a file a unit runs rather than on a command line in `ps`. `drt --config park.json tunnel`.",
+
+  "tunnel": {
+    "park": "ws://127.0.0.1:18490/park/fp?k=park-key-for-the-example-only",
+    "to": "127.0.0.1:18491"
+  }
+}

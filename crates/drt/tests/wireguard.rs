@@ -23,7 +23,9 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use drt::wireguard::{command_from, private_key, public_key, Command, KEY_LEN};
-use drt_config::{WireguardConfig, WireguardPeer};
+use drt_config::{
+    WireguardConfig, WireguardExpose, WireguardForward, WireguardMode, WireguardPeer,
+};
 use gotatun::device::{Device, DeviceBuilder, DeviceTransports, Peer};
 use gotatun::packet::{Ip, Packet, PacketBufPool};
 use gotatun::tun::{IpRecv, IpSend, MtuWatcher};
@@ -434,7 +436,22 @@ fn scope(key: Option<&str>) -> WireguardConfig {
         queue: "wg_in".into(),
         reply_queue: String::new(),
         report_ms: 10_000,
+        mode: WireguardMode::Kernel,
+        forward: Vec::new(),
+        expose: Vec::new(),
     }
+}
+
+/// [`scope`], in userspace mode with one forward, which is the smallest
+/// block that mode accepts.
+fn userspace(key: Option<&str>) -> WireguardConfig {
+    let mut config = scope(key);
+    config.mode = WireguardMode::Userspace;
+    config.forward.push(WireguardForward {
+        bind: "127.0.0.1:0".into(),
+        to: "10.9.0.2:22".into(),
+    });
+    config
 }
 
 /// A key is 32 bytes, base64, and anything else is a paste that went
@@ -719,6 +736,196 @@ fn a_config_that_cannot_work_is_refused_before_anything_binds() {
     });
     let err = drt::wireguard::validate(&silent).unwrap_err();
     assert!(err.contains("allowed_ips"), "{err}");
+}
+
+/// The userspace mode's refusals, each by name, before anything binds. A
+/// wrong entry here otherwise appears as a connection that times out
+/// fifteen seconds later, with both numbers sitting in the config.
+#[test]
+fn a_userspace_block_that_cannot_work_is_refused_before_anything_binds() {
+    let good = B64.encode([1u8; KEY_LEN]);
+    let peer = |cidr: &str| WireguardPeer {
+        public_key: B64.encode([2u8; KEY_LEN]),
+        allowed_ips: vec![cidr.into()],
+        endpoint: None,
+        keepalive: None,
+        preshared_key_env: None,
+    };
+
+    // The smallest working block, and the mode is explicit in it.
+    let mut fine = userspace(Some(&good));
+    fine.peers.push(peer("10.9.0.2/32"));
+    assert_eq!(
+        drt::wireguard::validate(&fine).unwrap(),
+        Vec::<String>::new()
+    );
+    assert_eq!(scope(Some(&good)).mode, WireguardMode::Kernel);
+
+    // A stack nothing can reach terminates traffic nobody can hand it.
+    let mut unreachable = scope(Some(&good));
+    unreachable.mode = WireguardMode::Userspace;
+    let err = drt::wireguard::validate(&unreachable).unwrap_err();
+    assert!(err.contains("neither `forward` nor `expose`"), "{err}");
+
+    // A stack cannot answer from nowhere, where the kernel merely warns.
+    let mut homeless = userspace(Some(&good));
+    homeless.address = None;
+    let err = drt::wireguard::validate(&homeless).unwrap_err();
+    assert!(err.contains("needs an `address`"), "{err}");
+
+    // A forward in kernel mode is a config that believes it is in the
+    // other mode.
+    let mut confused = userspace(Some(&good));
+    confused.mode = WireguardMode::Kernel;
+    let err = drt::wireguard::validate(&confused).unwrap_err();
+    assert!(err.contains("`forward`"), "{err}");
+    assert!(err.contains("mode = \"userspace\""), "{err}");
+
+    // Two forwards on one port, and two exposes on one tunnel port.
+    let mut twice = userspace(Some(&good));
+    twice.forward.push(WireguardForward {
+        bind: "127.0.0.1:2222".into(),
+        to: "10.9.0.2:22".into(),
+    });
+    twice.forward.push(WireguardForward {
+        bind: "127.0.0.1:2222".into(),
+        to: "10.9.0.3:22".into(),
+    });
+    let err = drt::wireguard::validate(&twice).unwrap_err();
+    assert!(err.contains("forward[2].bind"), "{err}");
+    assert!(err.contains("already the bind of another"), "{err}");
+    let mut twice = userspace(Some(&good));
+    for _ in 0..2 {
+        twice.expose.push(WireguardExpose {
+            tunnel: "10.9.0.1:22".into(),
+            to: "127.0.0.1:22".into(),
+        });
+    }
+    let err = drt::wireguard::validate(&twice).unwrap_err();
+    assert!(err.contains("expose[1].tunnel"), "{err}");
+    assert!(err.contains("already exposed"), "{err}");
+
+    // Two ephemeral binds are two different ports, not a duplicate.
+    let mut ephemeral = userspace(Some(&good));
+    ephemeral.forward.push(WireguardForward {
+        bind: "127.0.0.1:0".into(),
+        to: "10.9.0.3:22".into(),
+    });
+    assert!(drt::wireguard::validate(&ephemeral).is_ok());
+
+    // A network address where a host belongs: the slip `address` already
+    // refuses, refused here for the same reason.
+    let mut network = userspace(Some(&good));
+    network.forward[0].to = "10.9.0.0:22".into();
+    let err = drt::wireguard::validate(&network).unwrap_err();
+    assert!(err.contains("forward[0].to"), "{err}");
+    assert!(err.contains("network address"), "{err}");
+
+    // A name has no resolver inside a tunnel.
+    let mut named = userspace(Some(&good));
+    named.forward[0].to = "fetchpoint:22".into();
+    let err = drt::wireguard::validate(&named).unwrap_err();
+    assert!(err.contains("not an ip:port"), "{err}");
+    assert!(err.contains("resolver"), "{err}");
+
+    // The stack answers on its own address only.
+    let mut elsewhere = userspace(Some(&good));
+    elsewhere.expose.push(WireguardExpose {
+        tunnel: "10.9.0.2:22".into(),
+        to: "127.0.0.1:22".into(),
+    });
+    let err = drt::wireguard::validate(&elsewhere).unwrap_err();
+    assert!(err.contains("expose[0].tunnel"), "{err}");
+    assert!(err.contains("own address 10.9.0.1"), "{err}");
+
+    // A `to` outside every peer's allowed_ips is a warning naming it --
+    // that connection will time out, and both numbers are in the config.
+    let mut unrouted = userspace(Some(&good));
+    unrouted.peers.push(peer("10.9.0.3/32"));
+    let warnings = drt::wireguard::validate(&unrouted).unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("10.9.0.2"), "{}", warnings[0]);
+    assert!(
+        warnings[0].contains("time out after 15s"),
+        "{}",
+        warnings[0]
+    );
+    // ...and silent when no peer is named yet, which is the config a
+    // rendezvous writes: the peer arrives over the reply queue.
+    let mut pending = userspace(Some(&good));
+    pending.reply_queue = "wg_out".into();
+    assert!(drt::wireguard::validate(&pending).unwrap().is_empty());
+
+    // The kernel-mode route warning is silent in userspace mode: the stack
+    // carries a default route, so `ip route add` would be wrong advice.
+    let mut hub = userspace(Some(&good));
+    hub.peers.push(peer("192.168.1.0/24"));
+    assert!(drt::wireguard::unroutable(&hub).is_empty());
+}
+
+/// `mode`, `forward` and `expose` load in both spellings to the same
+/// object, `forward = {}` is the empty list and not a type error, and a
+/// typo inside an entry names itself.
+#[test]
+fn the_userspace_keys_load_in_both_spellings() {
+    let dir = tempfile::tempdir().unwrap();
+    let json = dir.path().join("laptop.json");
+    std::fs::write(
+        &json,
+        r#"{ "wireguard": {
+            "mode": "userspace",
+            "address": "10.9.0.2/24",
+            "private_key_env": "WG_KEY",
+            "forward": [ { "bind": "127.0.0.1:2222", "to": "10.9.0.1:22" } ],
+            "expose": [ { "tunnel": "10.9.0.2:22", "to": "127.0.0.1:22" } ]
+        } }"#,
+    )
+    .unwrap();
+    let lua = dir.path().join("laptop.host.lua");
+    std::fs::write(
+        &lua,
+        r#"return { wireguard = {
+            mode = "userspace",
+            address = "10.9.0.2/24",
+            private_key_env = "WG_KEY",
+            forward = { { bind = "127.0.0.1:2222", to = "10.9.0.1:22" } },
+            expose = { { tunnel = "10.9.0.2:22", to = "127.0.0.1:22" } },
+        } }"#,
+    )
+    .unwrap();
+    let from_json = drt::config::load(Some(&json)).unwrap().wireguard.unwrap();
+    let from_lua = drt::config::load(Some(&lua)).unwrap().wireguard.unwrap();
+    assert_eq!(from_json, from_lua);
+    assert_eq!(from_json.mode, WireguardMode::Userspace);
+    assert_eq!(from_json.forward[0].bind, "127.0.0.1:2222");
+    assert_eq!(from_json.expose[0].tunnel, "10.9.0.2:22");
+
+    // Lua's `{}` is a list here, as it is for `peers` (issue #15).
+    let empty = dir.path().join("empty.host.lua");
+    std::fs::write(
+        &empty,
+        r#"return { wireguard = { forward = {}, expose = {} } }"#,
+    )
+    .unwrap();
+    let wg = drt::config::load(Some(&empty)).unwrap().wireguard.unwrap();
+    assert!(wg.forward.is_empty() && wg.expose.is_empty());
+    assert_eq!(wg.mode, WireguardMode::Kernel);
+
+    // A typo inside an entry, and a mode that is neither word.
+    let typo = dir.path().join("typo.host.lua");
+    std::fs::write(
+        &typo,
+        r#"return { wireguard = { forward = { { bnd = "127.0.0.1:2222", to = "10.9.0.1:22" } } } }"#,
+    )
+    .unwrap();
+    let err = drt::config::load(Some(&typo)).unwrap_err();
+    assert!(err.contains("bnd"), "{err}");
+    assert!(err.contains("known: bind, to"), "{err}");
+    let mode = dir.path().join("mode.host.lua");
+    std::fs::write(&mode, r#"return { wireguard = { mode = "user" } }"#).unwrap();
+    let err = drt::config::load(Some(&mode)).unwrap_err();
+    assert!(err.contains("wireguard.mode"), "{err}");
+    assert!(err.contains("\"userspace\""), "{err}");
 }
 
 /// An absent endpoint is nil on the wire and never the empty string: "not
@@ -1871,4 +2078,340 @@ fn a_machine_with_no_tun_node_is_named_before_anything_is_created() {
         drt::wireguard::net_admin_here().is_some(),
         "CapEff is readable wherever /proc is mounted; None is for where it is not"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The userspace mode: TCP through two stacks, with no kernel and no privilege
+// ---------------------------------------------------------------------------
+
+/// One end of a userspace tunnel: a block in `mode = "userspace"` with its
+/// key inline, one peer, and whatever forwards and exposes the test wants.
+/// `peer_port` is `None` for a peer whose endpoint nobody has supplied,
+/// which is the dead-tunnel case.
+fn userspace_end(
+    secret: &StaticSecret,
+    port: u16,
+    address: &str,
+    peer: &StaticSecret,
+    peer_ip: &str,
+    peer_port: Option<u16>,
+) -> WireguardConfig {
+    let mut config = scope(Some(&B64.encode(secret.to_bytes())));
+    config.mode = WireguardMode::Userspace;
+    config.listen_port = port;
+    config.address = Some(address.into());
+    config.peers.push(WireguardPeer {
+        public_key: drt::wireguard::public_key(peer),
+        allowed_ips: vec![format!("{peer_ip}/32")],
+        endpoint: peer_port.map(|p| format!("127.0.0.1:{p}")),
+        keepalive: None,
+        preshared_key_env: None,
+    });
+    config
+}
+
+/// Bring one end up the way `WireguardBridge::start` does, on the test's
+/// runtime: `bind_userspace`, the stack on its channel end, and `drive`
+/// on the device. Returns the reports and the command sender that keeps
+/// `drive` alive.
+async fn userspace_up(
+    config: &WireguardConfig,
+) -> (
+    mpsc::UnboundedReceiver<drt::wireguard::Report>,
+    mpsc::UnboundedSender<drt::wireguard::Command>,
+) {
+    let (device, allocation, end) = drt::wireguard::bind_userspace(config)
+        .await
+        .expect("the userspace device binds");
+    let (report_tx, reports) = mpsc::unbounded_channel();
+    let _stack = drt::userspace::Stack::start(config, end, report_tx.clone())
+        .await
+        .expect("the stack starts");
+    let (commands, command_rx) = mpsc::unbounded_channel();
+    tokio::spawn(drt::wireguard::drive(
+        device,
+        Duration::from_secs(10),
+        report_tx,
+        command_rx,
+        allocation,
+        Some(config.clone()),
+    ));
+    (reports, commands)
+}
+
+/// The `wireguard_forward` for `to`, which is how a program learns the
+/// port an ephemeral `bind` took.
+async fn forward_bound(
+    reports: &mut mpsc::UnboundedReceiver<drt::wireguard::Report>,
+    to: &str,
+) -> SocketAddr {
+    loop {
+        match expect_report(reports, Duration::from_secs(5)).await {
+            drt::wireguard::Report::Forward {
+                kind: "forward",
+                from,
+                to: target,
+            } if target == to => return from.parse().unwrap(),
+            _ => continue,
+        }
+    }
+}
+
+/// The next `wireguard_error`, with its reason.
+async fn next_error(reports: &mut mpsc::UnboundedReceiver<drt::wireguard::Report>) -> String {
+    loop {
+        if let drt::wireguard::Report::Refused { reason, .. } =
+            expect_report(reports, Duration::from_secs(20)).await
+        {
+            return reason;
+        }
+    }
+}
+
+/// A loopback echo the test owns, on a port nobody else has.
+async fn echo_server() -> SocketAddr {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let echo = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = echo.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut c, _)) = echo.accept().await else {
+                continue;
+            };
+            tokio::spawn(async move {
+                let mut b = [0u8; 1024];
+                while let Ok(n) = c.read(&mut b).await {
+                    if n == 0 || c.write_all(&b[..n]).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    addr
+}
+
+/// **The userspace mode, end to end.** Two devices in one process, both
+/// `mode = "userspace"`: A forwards a local port to `10.9.0.2:7`, B
+/// exposes `10.9.0.2:7` to an echo the test owns. A client connects to
+/// A's port, writes, and reads the same bytes back -- every byte crossed
+/// a real handshake, a real smoltcp connection on each end, and the
+/// echo. Nothing below the pump is mocked, and no kernel interface and
+/// no privilege was involved, which is the whole point of the mode.
+///
+/// The same pair then proves the pump's rules: half-close survives, a
+/// second connection through the expose works (the one-shot listener was
+/// re-armed), a dial the far side refuses closes the local socket at once
+/// rather than hanging it, and a port nobody exposes is answered with a
+/// RST -- so "nothing listens there" is told apart from "no peer".
+#[test]
+fn a_forward_reaches_an_expose_through_two_userspace_stacks() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    rt().block_on(async {
+        let (secret_a, secret_b) = (
+            StaticSecret::from([0x31u8; KEY_LEN]),
+            StaticSecret::from([0x32u8; KEY_LEN]),
+        );
+        let (port_a, port_b) = (free_port(), free_port());
+        let echo = echo_server().await;
+        // A port nothing listens on, for the refused dial.
+        let nobody = {
+            let sock = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = sock.local_addr().unwrap();
+            drop(sock);
+            addr
+        };
+
+        let mut a = userspace_end(
+            &secret_a,
+            port_a,
+            "10.9.0.1/24",
+            &secret_b,
+            "10.9.0.2",
+            Some(port_b),
+        );
+        a.forward = vec![
+            WireguardForward {
+                bind: "127.0.0.1:0".into(),
+                to: "10.9.0.2:7".into(),
+            },
+            WireguardForward {
+                bind: "127.0.0.1:0".into(),
+                to: "10.9.0.2:8".into(),
+            },
+            WireguardForward {
+                bind: "127.0.0.1:0".into(),
+                to: "10.9.0.2:9".into(),
+            },
+        ];
+        let mut b = userspace_end(
+            &secret_b,
+            port_b,
+            "10.9.0.2/24",
+            &secret_a,
+            "10.9.0.1",
+            Some(port_a),
+        );
+        b.expose = vec![
+            WireguardExpose {
+                tunnel: "10.9.0.2:7".into(),
+                to: echo.to_string(),
+            },
+            WireguardExpose {
+                tunnel: "10.9.0.2:8".into(),
+                to: nobody.to_string(),
+            },
+        ];
+        assert!(drt::wireguard::validate(&a).unwrap().is_empty());
+        assert!(drt::wireguard::validate(&b).unwrap().is_empty());
+
+        let (mut reports_a, _commands_a) = userspace_up(&a).await;
+        let (mut reports_b, _commands_b) = userspace_up(&b).await;
+        let to_echo = forward_bound(&mut reports_a, "10.9.0.2:7").await;
+        let to_nobody = forward_bound(&mut reports_a, "10.9.0.2:8").await;
+        let to_unexposed = forward_bound(&mut reports_a, "10.9.0.2:9").await;
+        assert_ne!(
+            to_echo.port(),
+            0,
+            "an ephemeral bind reports the port it took"
+        );
+
+        // Bytes across, and back, through both stacks and the echo.
+        let mut client = tokio::net::TcpStream::connect(to_echo).await.unwrap();
+        client.write_all(b"marco").await.unwrap();
+        let mut back = [0u8; 5];
+        tokio::time::timeout(Duration::from_secs(15), client.read_exact(&mut back))
+            .await
+            .expect("the echo came back through both stacks")
+            .unwrap();
+        assert_eq!(&back, b"marco");
+
+        // Half-close: write, shut the write half, still read the reply,
+        // then the far side's FIN as EOF -- `printf … | ssh` in the small.
+        client.write_all(b"polo!").await.unwrap();
+        client.shutdown().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), client.read_exact(&mut back))
+            .await
+            .expect("the reply survived our FIN")
+            .unwrap();
+        assert_eq!(&back, b"polo!");
+        let n = tokio::time::timeout(Duration::from_secs(10), client.read(&mut back))
+            .await
+            .expect("the far side's FIN arrived as EOF")
+            .unwrap();
+        assert_eq!(n, 0);
+
+        // A second connection through the same expose: the listening
+        // socket that became the first connection was re-armed.
+        let mut second = tokio::net::TcpStream::connect(to_echo).await.unwrap();
+        second.write_all(b"again").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), second.read_exact(&mut back))
+            .await
+            .expect("the second connection was accepted")
+            .unwrap();
+        assert_eq!(&back, b"again");
+
+        // A dial the far side refuses: B's expose reaches a port nothing
+        // listens on, so the tunnel side is reset and our read is EOF at
+        // once, not a hang. B says why.
+        let mut refused = tokio::net::TcpStream::connect(to_nobody).await.unwrap();
+        let n = tokio::time::timeout(Duration::from_secs(10), refused.read(&mut back))
+            .await
+            .expect("a refused dial closed the accepted socket at once")
+            .unwrap_or(0);
+        assert_eq!(n, 0, "bytes arrived on a leg the far side refused");
+        let why = next_error(&mut reports_b).await;
+        assert!(why.contains("cannot dial"), "{why}");
+        assert!(why.contains(&nobody.to_string()), "{why}");
+
+        // A port nobody exposes gets a RST from B's stack, so A's dial is
+        // refused rather than left waiting out the timeout, and A says so
+        // in words a program can tell from "no peer".
+        let mut unexposed = tokio::net::TcpStream::connect(to_unexposed).await.unwrap();
+        let n = tokio::time::timeout(Duration::from_secs(10), unexposed.read(&mut back))
+            .await
+            .expect("an unexposed port was refused, not black-holed")
+            .unwrap_or(0);
+        assert_eq!(n, 0);
+        let why = next_error(&mut reports_a).await;
+        assert!(why.contains("10.9.0.2:9"), "{why}");
+        assert!(why.contains("nothing listens there"), "{why}");
+    });
+}
+
+/// A dead tunnel is a timeout, not a hang: a forward to a peer with no
+/// endpoint fails at `CONNECT_TIMEOUT`, the client's read is EOF, and the
+/// `wireguard_error` names the entry and the seconds. Takes the fifteen
+/// seconds it asserts, deliberately: the value is the promise.
+#[test]
+fn a_dead_tunnel_times_out_with_a_wireguard_error() {
+    use tokio::io::AsyncReadExt;
+    rt().block_on(async {
+        let (secret_a, secret_b) = (
+            StaticSecret::from([0x41u8; KEY_LEN]),
+            StaticSecret::from([0x42u8; KEY_LEN]),
+        );
+        let mut a = userspace_end(
+            &secret_a,
+            free_port(),
+            "10.9.0.1/24",
+            &secret_b,
+            "10.9.0.2",
+            None,
+        );
+        a.forward.push(WireguardForward {
+            bind: "127.0.0.1:0".into(),
+            to: "10.9.0.2:22".into(),
+        });
+        let (mut reports, _commands) = userspace_up(&a).await;
+        let bound = forward_bound(&mut reports, "10.9.0.2:22").await;
+
+        let started = std::time::Instant::now();
+        let mut client = tokio::net::TcpStream::connect(bound).await.unwrap();
+        let mut buf = [0u8; 8];
+        let n = tokio::time::timeout(
+            drt::wireguard::CONNECT_TIMEOUT + Duration::from_secs(10),
+            client.read(&mut buf),
+        )
+        .await
+        .expect("the dial gave up at the stated timeout rather than hanging")
+        .unwrap_or(0);
+        assert_eq!(n, 0);
+        let waited = started.elapsed();
+        assert!(
+            waited >= drt::wireguard::CONNECT_TIMEOUT - Duration::from_secs(1),
+            "gave up after {waited:?}, before the stated timeout"
+        );
+        let why = next_error(&mut reports).await;
+        assert!(why.contains("10.9.0.2:22"), "{why}");
+        assert!(
+            why.contains(&format!("{}s", drt::wireguard::CONNECT_TIMEOUT.as_secs())),
+            "{why}"
+        );
+        assert!(why.contains("no peer"), "{why}");
+    });
+}
+
+/// The `wireguard_forward` report carries the config's own key names, so
+/// a program reads back what it wrote: `bind` for a forward, `tunnel` for
+/// an expose.
+#[test]
+fn a_forward_report_uses_the_configs_own_names() {
+    let forward = drt::wireguard::report_value(&drt::wireguard::Report::Forward {
+        kind: "forward",
+        from: "127.0.0.1:41234".into(),
+        to: "10.9.0.2:22".into(),
+    });
+    assert_eq!(field(&forward, "event").as_str(), Some("wireguard_forward"));
+    assert_eq!(field(&forward, "kind").as_str(), Some("forward"));
+    assert_eq!(field(&forward, "bind").as_str(), Some("127.0.0.1:41234"));
+    assert_eq!(field(&forward, "to").as_str(), Some("10.9.0.2:22"));
+    let expose = drt::wireguard::report_value(&drt::wireguard::Report::Forward {
+        kind: "expose",
+        from: "10.9.0.1:22".into(),
+        to: "127.0.0.1:22".into(),
+    });
+    assert_eq!(field(&expose, "kind").as_str(), Some("expose"));
+    assert_eq!(field(&expose, "tunnel").as_str(), Some("10.9.0.1:22"));
+    assert!(drt::wireguard::EVENT.contains(&"wireguard_forward"));
 }

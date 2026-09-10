@@ -1,8 +1,8 @@
 # The gap release — v0.5.0rc8
 
 **Written 2026-09-08, against `eba11c7`,** and revised the same day against
-what had already landed. Sizes name the file and line they rest on, per
-`doc/Next.md`'s rule.
+what had already landed; §7 added 2026-09-10 for the candidate after it.
+Sizes name the file and line they rest on, per `doc/Next.md`'s rule.
 
 A **gap release** is a self-contained cut of DRT made *during* the
 architecture sprint, carrying work that is helpful but not critical, so that
@@ -18,6 +18,9 @@ it reaches consumers without either side waiting for the other.
 3. What is out, and which test it failed.
 4. The two vera asks, deferred, with the argument for scheduling them.
 5. Settled: the version, and one thing not to re-litigate.
+6. Verification.
+7. The follow-up, rc9: the no-root mode and the `tunnel` block, and the
+   criterion it amends.
 
 ---
 
@@ -393,3 +396,38 @@ test.
 
 Feature combinations built and checked, since `roots` is gated on either of
 two: `slim`, `slim,netcheck`, `slim,tunnel`, `full`, and `wasi`.
+
+## 7. The follow-up: v0.5.0rc9
+
+Issue #27, specified on 2026-09-10 and built the same day, as the
+candidate after rc8. Two items, both self-contained in DRT, both
+additive, both off the sprint's path.
+
+**The userspace mode.** `mode = "userspace"` on the `wireguard` block puts
+a TCP/IP stack inside the process where kernel mode creates an interface,
+reached through `forward` and `expose` lists. No `CAP_NET_ADMIN`, no
+`sudo`, no `wintun.dll`. It is exactly the change §3.2 predicted would
+obsolete `--tun-fd`, and it does: `--tun-fd` stays out for good, since
+the mode removes the device rather than moving who creates it.
+`doc/WireGuard.md` §1 has the shape and §4 the retired bullet.
+
+**The `tunnel` block.** `drt --config device.json tunnel`, one key per
+flag under the block's names, so the credential in a park or claim URL
+lives in a 0600 file rather than in `ps` and shell history. Independent
+of the mode and landed first, because it is the surface the direct
+carrier later slides in beneath: nothing in the file changes when
+`tunnel` learns to take the userspace stack as its path.
+
+**Criterion 3, amended.** Against §1 as written, the mode passes 1 and 2
+and fails 3: someone writes `mode` and `forward`. The label is kept and
+the criterion is now **requires no adoption by existing consumers** -- a
+consumer sitting on rc8 who does nothing keeps working byte for byte,
+and the mode is reached only by a config that asks for it. Carrying an
+item under a criterion it fails was the thing not to do; carrying it
+under the criterion the release actually means is fine.
+
+**Not in it**, recorded so it is not inferred: SOCKS5, UDP forwards,
+route management, a `getifaddrs` list, and the Windows and macOS
+artifacts (still §3.3). The direct path inside `drt tunnel` is the
+follow-on, as its own issue once discofetch's `--tunnel` exchange
+settles.

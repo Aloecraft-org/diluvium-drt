@@ -73,6 +73,23 @@ and it is the entire concurrency story: N concurrent sessions need no
 control protocol, only N claims and N replenishes. It reconnects forever
 with backoff, so a relay restart or a lost uplink heals itself.
 
+**From a file, which is how a device should run it.** The `?k=` is a
+credential, and on a command line it is in `ps`, in shell history, and in
+every "run this" someone pastes. The same verb reads a `tunnel` block --
+one key per flag, under the block's names -- so a unit runs
+`drt --config park.json tunnel` and the key lives in a 0600 file:
+
+```json
+{ "tunnel": { "park": "wss://rendezvous.example/park/xps?k=…", "to": "127.0.0.1:22" } }
+```
+
+The caller's half is `claim`, with `bind` where `--local` would go, and
+`listen`/`to` is the other server shape; `extra_roots` is spelled as
+`connectors.rest` spells it. A flag typed beside the file replaces the
+key it names, and a flag naming a different mode than the file is
+refused as the conflict it is. `examples/19-a-tunnel-a-program-can-use`
+runs both halves this way.
+
 ### 3. The caller
 
 The OpenSSH `ProxyCommand` contract — bytes on stdin/stdout, nothing more:

@@ -27,7 +27,7 @@ run here. Neither opens a port.
 
 ```
 $ drt tunnel
-drt tunnel: name a URL to bridge stdio to, --listen with --to, or --park with --to
+drt tunnel: name a URL to bridge stdio to (with --local to serve a local port instead), --listen with --to, or --park with --to; or `tunnel` in the --config file, which takes the same keys
 exit 1
 
 $ drt relay --config rendezvous.host.lua
@@ -40,6 +40,24 @@ exit 1
 **One command, three shapes.** A URL to bridge stdio to, `--listen`/`--to` in
 front of an sshd you can already reach, `--park`/`--to` on one you cannot.
 Given none of them, `drt tunnel` names all three rather than guessing.
+
+**Or one file.** Every flag is a key of a `tunnel` block, so the device's
+half is a file a setup script writes and a unit runs, with the key out of
+`ps` and shell history:
+
+```json
+{ "tunnel": { "park": "wss://rendezvous.example/park/xps?k=…", "to": "127.0.0.1:22" } }
+```
+
+```
+drt --config park.json tunnel
+```
+
+The URL is `claim` and `--local` is `bind`; `listen`, `to` and `park` are
+spelled as the flags are. A flag typed beside the file replaces the key it
+names, and a flag that names a different mode than the file is refused as
+the conflict it is. `19-a-tunnel-a-program-can-use` runs both halves that
+way.
 
 **The relay is configured, not flagged.** It reads the `relay` block of a
 config; its keys ship blank, and a blank key is refused when the file loads

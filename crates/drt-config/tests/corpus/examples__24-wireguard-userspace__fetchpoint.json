@@ -1,0 +1,22 @@
+{
+  "_comment": "The other end: the machine being reached. A userspace stack has no sshd of its own, so `expose` says what answers on the tunnel address -- here the http listener device.json serves on 127.0.0.1:18522, dialed lazily on each connection from the tunnel. Same block, opposite direction.",
+
+  "wireguard": {
+    "mode": "userspace",
+    "listen_port": 18521,
+    "address": "10.9.0.2/24",
+    "private_key": "SGHioeUAFwHnXjluOKgpS+QOBDRHfTSwZrhoxQHho9g=",
+
+    "expose": [
+      { "tunnel": "10.9.0.2:80", "to": "127.0.0.1:18522" }
+    ],
+
+    "peers": [
+      {
+        "public_key": "lji56MXQ6Mhpi6WwKhqvSWth5YPmCTFq6dIl94sZt2Q=",
+        "allowed_ips": ["10.9.0.1/32"],
+        "endpoint": "127.0.0.1:18520"
+      }
+    ]
+  }
+}

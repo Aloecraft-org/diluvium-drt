@@ -68,6 +68,144 @@ schema: 1
 repo: Aloecraft-org/diluvium-drt
 
 releases:
+  - version: 0.5.0rc9
+    tag: v0.5.0rc9
+    date: 2026-09-10
+    status: released
+    stable: false
+    mirror: false
+    dv_abi: 1
+    diluvium: 850e00d73220427be68ae8f909f83b06cb2095bd
+    diluvium_build: 13
+    connectors:
+      full: [time, fs, crypto, sql, ssh, rest, ssmtp, exec, data, listen]
+      slim: [time, fs, crypto, listen]
+      wasi: [time, fs, crypto, sql, listen]
+      web: [time, fs, crypto]
+    features:
+      full: [regex]
+      slim: [regex]
+      wasi: [regex]
+      web: [regex]
+    summary: |
+      The candidate after rc8, cut from the same `main` plus issue #27, so
+      it carries everything rc8 carries: the no-root mode, and the tunnel
+      verb from a file.
+
+      Everything in the punch path was unprivileged all along -- STUN, the
+      rendezvous, the punch, the WireGuard protocol -- and `CAP_NET_ADMIN`
+      bought exactly one thing: an adapter in the kernel's stack. A tool
+      that demonstrably moves bytes *before* it asks for a privilege is a
+      different trust proposition from one that asks first, and on macOS
+      and Windows "asks first" means most users say no. So the device's
+      IP side, which was always a trait, is handed a TCP/IP stack inside
+      the process instead of an interface, and "ssh through the hole"
+      becomes a port on localhost: no interface, no `sudo`, no
+      `wintun.dll`. Two such peers cross a real tunnel on one machine,
+      which two kernel interfaces cannot, and the gate runs that example
+      without `--privileged`.
+
+      A consumer sitting on rc8 who does nothing keeps working byte for
+      byte; the mode is reached only by a config that asks for it, which
+      is the gap-release criterion as `doc/Gap-Release.md` §7 now states
+      it. The compatibility facts are rc8's: no connector moved, no
+      feature moved, the same core inside.
+    added:
+      - |
+        **`mode = "userspace"` on the `wireguard` block**, with `forward`
+        and `expose`. A forward is a port on localhost that reaches an
+        address inside the tunnel -- `ssh -p 2222 127.0.0.1` with nothing
+        configured on the client -- and an expose is an address inside
+        the tunnel that reaches a local port, which is the device half
+        without which the mode would be half a product: in kernel mode
+        the kernel delivers `10.9.0.2:22` to the box's own sshd, but
+        nothing listens inside a userspace stack unless the config says
+        what does. Same pump, opposite ends; the local address is `bind`,
+        as every other block spells it.
+
+        The stack is smoltcp, pure Rust, inside the `wireguard` feature
+        and not a sub-feature of it: a mode nobody enables is the mode
+        nobody has, and the user who needs it is the one holding the
+        release binary. It owns one interface with the block's address
+        and a default route, a socket per connection, and one driver
+        task. The device does not know -- `drive`, `remap`, `apply`, the
+        reports and the relay fallback are generic over exactly the seam
+        this uses -- so a rendezvous program cannot tell the modes apart
+        from the queue. `mode` is explicit and defaults to `kernel`: a
+        config that did not ask is not steered into the other mode by a
+        missing privilege.
+
+        Refused at startup, by name: userspace with neither list, or no
+        `address`; a forward in kernel mode; two forwards on one port; a
+        `to` that is the prefix's network address, or a name (there is no
+        resolver inside a tunnel); an `expose.tunnel` off the block's own
+        address; a `bind` already held. A forward to an address no peer
+        is allowed is a warning naming it and the fifteen seconds it will
+        take to time out. `drt wg check` says `userspace`, lists what the
+        mode reaches from the config alone, binds nothing, and prints no
+        `here:` lines about a node and a capability the mode never
+        touches.
+
+        Proven without privilege: two userspace devices in one process, a
+        forward on one reaching an expose on the other through a real
+        handshake and a real smoltcp connection at each end -- the first
+        wireguard test that moves TCP in CI at all -- plus half-close in
+        both directions, the re-armed one-shot listener, a refused dial
+        closing the local socket at once, an unexposed port answered with
+        a RST rather than black-holed, and the dead tunnel timing out at
+        its stated value. `examples/24-wireguard-userspace` carries a
+        request end to end in the gate. TCP only: ssh needs nothing else,
+        and UDP forwards arrive as their own ask.
+
+        What it costs, measured the way `doc/WireGuard.md` §3 measured
+        gotatun: `release-small` of `full` grows by 225,312 bytes, +2.8%,
+        for four pure-Rust crates (`smoltcp`, `heapless`, `hash32`,
+        `managed`). No new C toolchain, so every cross-build that carries
+        `wireguard` carries the mode.
+      - |
+        **`wireguard_forward`**, one per `forward` and `expose` at startup,
+        with the address actually bound. `bind = "127.0.0.1:0"` asks for
+        an ephemeral port and the report is the only way a program learns
+        which; held with the other one-shots for a queue the program has
+        not declared yet. A forward whose dial inside the tunnel fails is
+        a `wireguard_error` naming the entry, in words that tell "no peer
+        is allowed it, or its tunnel is down" from "a peer answered, and
+        nothing listens there".
+      - |
+        **The `tunnel` block: `drt --config device.json tunnel`.** One key
+        per flag the verb takes, under the block's names -- the URL is
+        `claim`, because that is what the relay already calls the act;
+        `--local` is `bind`, as every other block spells the address it
+        listens on; `park`, `to`, `listen` and `extra_roots` as they are.
+        The `.host.lua` loader maps the same keys. The `?k=` in a park or
+        claim URL is a credential, and on a command line it is in `ps`,
+        in shell history, and in every "run this" someone pastes; in a
+        0600 file it is in none of them, and a device's tunnel becomes
+        one file a setup script writes and a unit runs.
+
+        Flags win per key, and the merged set is judged as one: a flag
+        naming a different mode than the file is the conflict two flags
+        naming two modes would be, refused by name and by source. A key
+        from another mode is refused rather than ignored, since in a file
+        a silently ignored key is exactly the failure a loader exists to
+        catch. Both halves of a real SSH session run from two files and
+        no flags in `crates/drt/tests/tunnel.rs`; example 19 runs both
+        halves from files, and 11 and 14 show the form.
+    changed:
+      - |
+        **`drt tunnel`'s flag constraints moved off the flags.** clap's
+        `requires` and `conflicts_with` judged the command line alone, and
+        a `--local` typed beside a `claim` the file supplies would have
+        been refused for lacking the URL it had. `tunnel::resolve` judges
+        the file and the flags together, so the refusals are one list in
+        one vocabulary; the bare `drt tunnel` sentence now names the file
+        as well as the three flag shapes.
+      - |
+        **The kernel-mode route warning is silent in userspace mode.** The
+        stack carries a default route, so "add the route yourself" would
+        be wrong advice there; what can go unreached in that mode is a
+        `forward.to`, and that is what is named instead.
+
   - version: 0.5.0rc8
     tag: v0.5.0rc8
     date: 2026-09-10

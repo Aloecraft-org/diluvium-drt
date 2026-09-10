@@ -60,6 +60,25 @@ Host xps
 
 Then `ssh xps` is all of it.
 
+## The key out of the URL you type
+
+The `?k=` is a credential, and a `ProxyCommand` line is in `~/.ssh/config`,
+in `ps` while the session runs, and in every "run this" you paste. The same
+verb reads a `tunnel` block instead, so the line names a file and the file
+holds the key:
+
+```json
+{ "tunnel": { "claim": "wss://relay.example/s/xps?k=YOUR_KEY" } }
+```
+
+```
+Host xps
+    ProxyCommand drt --config ~/.drt/xps.json tunnel
+    User you
+```
+
+`chmod 600` it. The device's half is the same shape with `park` and `to`.
+
 ## This is not `ssh/exec`
 
 `10-ssh-exec` is the other thing, and picking the wrong one costs an hour:

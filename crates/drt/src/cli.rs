@@ -244,6 +244,12 @@ pub enum Command {
     /// a parked device. With --listen/--to: accept WebSocket connections
     /// and bridge each to a TCP target, in front of any sshd. With
     /// --park/--to: the device side of the relay.
+    ///
+    /// Every flag is also a key of the `tunnel` block in --config, under
+    /// the block's name (the URL is `claim`, --local is `bind`), so the
+    /// credential in a park or claim URL can live in a 0600 file. Flags
+    /// win per key; a flag naming a different mode than the file is
+    /// refused as the conflict it is.
     #[cfg(feature = "tunnel")]
     Tunnel {
         /// The wss:// or ws:// URL to bridge stdio to.
@@ -255,10 +261,15 @@ pub enum Command {
         /// desktop client with no ProxyCommand support, reach a parked
         /// device this way. A claim the relay refuses closes the local
         /// connection at once rather than leaving it half-open.
-        #[arg(long, value_name = "HOST:PORT", requires = "url")]
+        ///
+        /// What each flag requires and conflicts with is judged with the
+        /// file's keys in `tunnel::resolve`, not here: a `requires` on
+        /// the flag alone would refuse `--local` beside a `claim` the
+        /// file supplies.
+        #[arg(long, value_name = "HOST:PORT")]
         local: Option<String>,
         /// Serve the other half: accept WebSockets here…
-        #[arg(long, requires = "to", conflicts_with_all = ["url", "park"])]
+        #[arg(long)]
         listen: Option<String>,
         /// …and bridge each connection to this host:port (used by both
         /// --listen and --park).
@@ -267,7 +278,7 @@ pub enum Command {
         /// The device side of the rendezvous relay: hold a parked leg at
         /// this /park URL; when a caller claims it, dial --to lazily and
         /// splice, re-parking a fresh leg immediately. Reconnects forever.
-        #[arg(long, requires = "to", conflicts_with = "url")]
+        #[arg(long)]
         park: Option<String>,
         /// Trust this PEM certificate in addition to the public roots --
         /// an internal CA in front of the gate, typically. Repeatable.
@@ -953,9 +964,14 @@ pub fn main(cli: Cli) -> ExitCode {
                     // A warning is not a failure: the config works the
                     // moment the route exists, and an exit code that said
                     // otherwise would fail a deploy over a note.
+                    let userspace = wg_config.mode == drt_config::WireguardMode::Userspace;
                     println!(
                         "ok: {} on port {}, {} peer(s){}",
-                        wg_config.interface,
+                        if userspace {
+                            "userspace"
+                        } else {
+                            &wg_config.interface
+                        },
                         wg_config.listen_port,
                         wg_config.peers.len(),
                         if warnings.is_empty() {
@@ -964,15 +980,53 @@ pub fn main(cli: Cli) -> ExitCode {
                             format!(", {} warning(s)", warnings.len())
                         }
                     );
+                    // What the mode reaches, from the config alone. No
+                    // port is bound: `check` promises not to create
+                    // anything, and a bound-and-released TCP port is a
+                    // side effect it should keep not having.
+                    if userspace {
+                        let forwards: Vec<String> = wg_config
+                            .forward
+                            .iter()
+                            .map(|f| format!("{} -> {}", f.bind, f.to))
+                            .collect();
+                        let exposes: Vec<String> = wg_config
+                            .expose
+                            .iter()
+                            .map(|e| format!("{} -> {}", e.tunnel, e.to))
+                            .collect();
+                        println!(
+                            "    no interface; {}{}{}",
+                            if forwards.is_empty() {
+                                String::new()
+                            } else {
+                                format!("forwards {}", forwards.join(", "))
+                            },
+                            if forwards.is_empty() || exposes.is_empty() {
+                                ""
+                            } else {
+                                "; "
+                            },
+                            if exposes.is_empty() {
+                                String::new()
+                            } else {
+                                format!("exposes {}", exposes.join(", "))
+                            }
+                        );
+                    }
                     // A config with no peers is the one a rendezvous
                     // writes, so `ok: ... 0 peer(s)` reads like a config
                     // that forgot something. Say what it will actually do
                     // instead of leaving the operator to guess.
                     if wg_config.peers.is_empty() {
                         println!(
-                            "    no peers named: it will create {}, {} measure its \
+                            "    no peers named: it will {}, {} measure its \
                              mapping, and wait for `add` on {}",
-                            wg_config.interface,
+                            if userspace {
+                                "run a stack in this process".to_string()
+                            } else {
+                                format!("create {}", wg_config.interface)
+                            },
                             match &wg_config.address {
                                 Some(cidr) => format!("give it {cidr},"),
                                 None => "which needs an address before it carries \
@@ -998,7 +1052,16 @@ pub fn main(cli: Cli) -> ExitCode {
                     // On stderr, beside the config's own warnings, for the
                     // same reason they are: stdout is the verdict and
                     // stderr is what qualifies it.
-                    let here = crate::wireguard::interface_here();
+                    //
+                    // Nothing to establish for a userspace stack: it
+                    // touches neither `/dev/net/tun` nor `CapEff`, so a
+                    // `here:` line about either would be an answer to a
+                    // question the config did not ask.
+                    let here = if userspace {
+                        Vec::new()
+                    } else {
+                        crate::wireguard::interface_here()
+                    };
                     for finding in &here {
                         eprintln!("here: {finding}");
                     }
@@ -1045,10 +1108,34 @@ pub fn main(cli: Cli) -> ExitCode {
             park,
             extra_root,
         } => {
+            // The file's block and the flags, judged together and before
+            // anything is bound: which mode this is, and which keys
+            // disagree, by name.
+            let resolved = match crate::tunnel::resolve(
+                config.tunnel.as_ref(),
+                &crate::tunnel::Flags {
+                    url,
+                    local,
+                    listen,
+                    to,
+                    park,
+                    extra_root,
+                },
+            ) {
+                Ok(resolved) => resolved,
+                Err(e) => {
+                    eprintln!("drt tunnel: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
             // Read and parse before anything is dialed, so a wrong path is
             // a refusal by name rather than a TLS error on the first
-            // connection.
-            let roots = match crate::roots::load_roots(&extra_root) {
+            // connection -- named as the flag or the config key, whichever
+            // the operator wrote.
+            let roots = match crate::roots::load_roots_named(
+                resolved.extra_roots_key,
+                &resolved.extra_roots,
+            ) {
                 Ok(roots) => roots,
                 Err(e) => {
                     eprintln!("drt tunnel: {e}");
@@ -1056,25 +1143,7 @@ pub fn main(cli: Cli) -> ExitCode {
                 }
             };
             let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
-            let outcome = match (url, local, listen, park, to) {
-                (Some(url), Some(local), _, _, _) => {
-                    runtime.block_on(crate::tunnel::local_to_ws(&local, &url, &roots))
-                }
-                (Some(url), None, _, _, _) => {
-                    runtime.block_on(crate::tunnel::stdio_to_ws(&url, &roots))
-                }
-                (None, None, Some(listen), None, Some(to)) => {
-                    runtime.block_on(crate::tunnel::ws_to_tcp(&listen, &to))
-                }
-                (None, None, None, Some(park), Some(to)) => {
-                    runtime.block_on(crate::tunnel::park(&park, &to, &roots))
-                }
-                _ => Err(
-                    "name a URL to bridge stdio to (with --local to serve a local port \
-                          instead), --listen with --to, or --park with --to"
-                        .into(),
-                ),
-            };
+            let outcome = runtime.block_on(crate::tunnel::run(resolved.mode, &roots));
             // Leak the runtime rather than drop it. tokio 1.53.1 has a
             // use-after-free in runtime teardown — `BlockingPool::shutdown`
             // racing a worker's `park::Inner::unpark` into a freed Condvar

@@ -567,6 +567,72 @@ pub struct WireguardPeer {
     pub preshared_key_env: Option<String>,
 }
 
+/// Which stack terminates the tunnel's IP side.
+///
+/// `kernel`: an interface this process creates, which needs
+/// `CAP_NET_ADMIN` (root on macOS, `wintun.dll` on Windows) and is reached
+/// by address like any other. `userspace`: a TCP/IP stack inside this
+/// process, needing no privilege at all and reached only through
+/// [`WireguardConfig::forward`] and [`WireguardConfig::expose`]. Explicit
+/// and never inferred from a missing privilege, by this repository's rule
+/// that a config which did not ask is not steered.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WireguardMode {
+    #[default]
+    Kernel,
+    Userspace,
+}
+
+impl WireguardMode {
+    /// The name as the config spells it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WireguardMode::Kernel => "kernel",
+            WireguardMode::Userspace => "userspace",
+        }
+    }
+
+    /// The config's spelling, or `None` for anything else -- the `.host.lua`
+    /// loader's half of the same two names serde reads from JSON.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "kernel" => Some(WireguardMode::Kernel),
+            "userspace" => Some(WireguardMode::Userspace),
+            _ => None,
+        }
+    }
+}
+
+/// A local port that reaches an address inside the tunnel, in
+/// `mode = "userspace"`: `ssh -p 2222 127.0.0.1` with nothing configured on
+/// the client. The caller half; `tunnel`'s `bind` is the same shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireguardForward {
+    /// The local `ip:port` to listen on. Port `0` takes an ephemeral one,
+    /// and the `wireguard_forward` report is how a program learns which.
+    pub bind: String,
+    /// The `ip:port` inside the tunnel that each accepted connection dials,
+    /// from the stack's own address. An address, not a name: there is no
+    /// resolver inside a tunnel.
+    pub to: String,
+}
+
+/// An address inside the tunnel that reaches a local port, in
+/// `mode = "userspace"`: what a peer dials to reach this machine's sshd.
+/// The device half; without it nothing listens inside a userspace stack,
+/// where in kernel mode the kernel would deliver to the box's own sshd.
+/// `tunnel --park --to`'s shape: dialed lazily, on the first connection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireguardExpose {
+    /// The `ip:port` a peer dials. The address is the block's own
+    /// `address`, because the stack answers on that and nothing else.
+    pub tunnel: String,
+    /// The local `host:port` each inbound connection is dialed to,
+    /// `127.0.0.1:22` in front of an sshd.
+    pub to: String,
+}
+
 /// The WireGuard peer this deployment is, as `drt start` and `drt wg` run
 /// it.
 ///
@@ -642,9 +708,26 @@ pub struct WireguardConfig {
     /// The tunnel interface to create: `drt0`, `wg0`, `utun` on macOS.
     /// Creating one needs privilege (CAP_NET_ADMIN on Linux, root on macOS,
     /// wintun.dll on Windows), and that is the whole privilege this needs:
-    /// no module, no `wg` tools, no `wg-quick`.
+    /// no module, no `wg` tools, no `wg-quick`. Not read in
+    /// `mode = "userspace"`, which creates nothing.
     #[serde(default = "default_wireguard_interface")]
     pub interface: String,
+    /// Kernel interface or in-process stack. `kernel` unless the config
+    /// says otherwise; see [`WireguardMode`].
+    #[serde(default)]
+    pub mode: WireguardMode,
+    /// `mode = "userspace"` only: local ports that reach into the tunnel.
+    /// In kernel mode the interface is reached by address and a forward
+    /// here is refused, since it is a config that believes it is in the
+    /// other mode.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forward: Vec<WireguardForward>,
+    /// `mode = "userspace"` only: addresses inside the tunnel that reach
+    /// local ports. A userspace stack with neither this nor `forward` is
+    /// refused: a device nothing can reach terminates traffic nobody can
+    /// hand it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expose: Vec<WireguardExpose>,
     /// This peer's private key, base64, inline. The same three knobs as
     /// every other secret in this config, resolved file, then env, then
     /// inline; one is required, since a device without a key has no
@@ -717,6 +800,61 @@ pub struct RelayLabel {
     pub caller_key: String,
 }
 
+/// `drt tunnel`, from a file: `drt --config device.json tunnel`.
+///
+/// One key per flag the verb takes, and the mode is told by which keys are
+/// present, exactly as the flags tell it: `park` with `to` is the device
+/// side of the relay, `claim` with `bind` is a local port that claims one
+/// leg per connection, `claim` alone is the stdio bridge (OpenSSH's
+/// `ProxyCommand` shape), and `listen` with `to` is a WebSocket acceptor
+/// in front of any sshd. Two of those in one block is a refusal by name,
+/// as is a key that belongs to another mode.
+///
+/// Why a file at all: the `?k=` in a park or claim URL is a credential.
+/// On a command line it is in `ps`, in shell history, and in every "run
+/// this" someone pastes; in a 0600 file it is in none of them. The rest is
+/// that a device's tunnel becomes one file a setup script writes and a
+/// unit runs, which is the shape everything else on a box already has.
+///
+/// Flags merge over the file **per key**: a flag naming a key the file
+/// also names replaces it, and a flag naming a different mode than the
+/// file is the same conflict two flags would be. Nothing here changes
+/// when the tunnel later takes a direct path: the same two files, and
+/// whether a session went direct or through the relay is DRT's to know.
+///
+/// `claim`, because that is what the relay calls the act (`Parked::Claimed`,
+/// "claim first, splice second") and the positional flag has no name of
+/// its own. `bind`, as every other block spells the local address it
+/// listens on. `park`, `to` and `listen` as the flags are.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TunnelConfig {
+    /// The `ws://` or `wss://` URL the caller half dials: the relay's
+    /// `/s/<label>?k=…`, or a gate straight in front of a `listen`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim: Option<String>,
+    /// With `claim`: serve this local address instead of stdio, one fresh
+    /// leg per accepted connection. `127.0.0.1:2222`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind: Option<String>,
+    /// The device side of the relay: hold a parked leg at this `/park/`
+    /// URL and dial `to` lazily when a caller claims it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub park: Option<String>,
+    /// The other half: accept WebSocket connections here and bridge each
+    /// to `to`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listen: Option<String>,
+    /// Where `park` and `listen` deliver: a `host:port` this process can
+    /// dial, `127.0.0.1:22` in front of an sshd.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// PEM files to trust beside the public roots, never instead of them --
+    /// spelled as `connectors.rest`'s `extra_roots` is, for its reason. An
+    /// internal CA in front of the gate, typically.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_roots: Vec<PathBuf>,
+}
+
 /// Process identity. The host key doubles as the node identity and the
 /// snapshot stamp source (SPEC.md §§8–9).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -757,6 +895,8 @@ pub struct RootConfig {
     pub turn: Option<TurnConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wireguard: Option<WireguardConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel: Option<TunnelConfig>,
     #[serde(default, skip_serializing_if = "Identity::is_default")]
     pub identity: Identity,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

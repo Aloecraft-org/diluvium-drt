@@ -12,6 +12,16 @@ Three terminals, or `./demo.sh` which is all of them:
 cd examples/19-a-tunnel-a-program-can-use
 drt relay --config rendezvous.host.lua
 drt start --config device.json
+drt --config park.json tunnel
+drt --config claim.json tunnel
+```
+
+The two tunnel files are the flags under the block's names -- `park.json`
+is `--park … --to 127.0.0.1:18491`, `claim.json` is the claim URL with
+`--local 127.0.0.1:18492` as `bind` -- and either command takes the flags
+instead:
+
+```
 drt tunnel --park "ws://127.0.0.1:18490/park/fp?k=park-key-for-the-example-only" \
            --to 127.0.0.1:18491
 drt tunnel "ws://127.0.0.1:18490/s/fp?k=caller-key-for-the-example-only" \
@@ -66,6 +76,15 @@ device forever; the caller key is what you hand out. Either can be rotated
 without the other, which is what per-label revocation is for. These are
 fixed strings so the example is reproducible — real ones come from
 `openssl rand -hex 24`.
+
+**The key is in a file, not in `ps`.** The `?k=` in a park or claim URL is
+a credential, and on a command line it is in the process list, in shell
+history, and in every "run this" someone pastes. `park.json` and
+`claim.json` are the same two commands with the key in a file a setup
+script writes and a unit runs; `chmod 600` them. A flag typed beside the
+file replaces the key it names, and a flag naming a different mode than
+the file is refused as the conflict it is, so a file cannot be quietly
+overridden into the wrong half.
 
 `11-tunnel-and-relay` is the same machinery with the refusals shown, and
 `14-ssh-through-a-tunnel` is the ProxyCommand form for a person at a shell.

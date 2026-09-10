@@ -28,6 +28,9 @@ RootConfig {
             turn_fallback: false,
             stun: [],
             interface: "drt-fp",
+            mode: Kernel,
+            forward: [],
+            expose: [],
             private_key: Some(
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaA=",
             ),
@@ -39,6 +42,7 @@ RootConfig {
             report_ms: 10000,
         },
     ),
+    tunnel: None,
     identity: Identity {
         host_key_path: None,
     },

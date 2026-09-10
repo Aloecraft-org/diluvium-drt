@@ -34,6 +34,7 @@ RootConfig {
         },
     ),
     wireguard: None,
+    tunnel: None,
     identity: Identity {
         host_key_path: None,
     },

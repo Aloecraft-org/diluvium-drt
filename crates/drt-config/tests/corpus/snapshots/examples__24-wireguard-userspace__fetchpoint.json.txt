@@ -20,31 +20,35 @@ RootConfig {
     turn: None,
     wireguard: Some(
         WireguardConfig {
-            listen_port: 51820,
+            listen_port: 18521,
             address: Some(
-                "10.9.0.1/24",
+                "10.9.0.2/24",
             ),
             mtu: 1420,
             turn_fallback: false,
             stun: [],
             interface: "drt0",
-            mode: Kernel,
+            mode: Userspace,
             forward: [],
-            expose: [],
+            expose: [
+                WireguardExpose {
+                    tunnel: "10.9.0.2:80",
+                    to: "127.0.0.1:18522",
+                },
+            ],
             private_key: Some(
-                "8nq7WxIN1FhAoPljA+Te1djRmDWpN/WZto6OTwktZnU=",
+                "SGHioeUAFwHnXjluOKgpS+QOBDRHfTSwZrhoxQHho9g=",
             ),
             private_key_file: None,
             private_key_env: None,
             peers: [
                 WireguardPeer {
-                    public_key: "p6VqzzX91j0TRajLGT9Dlkn0TEvvk+j4m9E38LlXhSQ=",
+                    public_key: "lji56MXQ6Mhpi6WwKhqvSWth5YPmCTFq6dIl94sZt2Q=",
                     allowed_ips: [
-                        "10.9.0.2/32",
-                        "192.168.1.0/24",
+                        "10.9.0.1/32",
                     ],
                     endpoint: Some(
-                        "203.0.113.7:51820",
+                        "127.0.0.1:18520",
                     ),
                     keepalive: None,
                     preshared_key_env: None,
