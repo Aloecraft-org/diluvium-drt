@@ -1082,6 +1082,12 @@ impl<H: SwarmHost> Swarm<H> {
         // the same channel, with the field named.
         let parent_numeric = self.slots[parent_index].numeric;
         let requested_numeric = field_numeric(request);
+        // Representable before comparable: a bound whose meaning inverts at
+        // the ABI is refused whatever it would have attenuated to.
+        if let Err(why) = requested_numeric.check_representable() {
+            self.emit(parent_id, "denied", 0, Some(why));
+            return;
+        }
         if !requested_numeric.fits_within(&parent_numeric) {
             let which = if requested_numeric
                 .max_elements

@@ -1,0 +1,8 @@
+{
+  "name": "26-reductions-and-grouping",
+  "teaches": "The three rules that make a reduction answer the same thing on every target: a canonical summation order that is not left-to-right, one total ordering with NaN last (so NaN loses min and wins max), and group ids handed out in first-appearance order rather than by hash or sort.",
+  "cmd": "drt run app.dlua",
+  "needs_network": false,
+  "needs_features": ["numeric"],
+  "normalise": []
+}

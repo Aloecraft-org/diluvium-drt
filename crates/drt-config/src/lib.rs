@@ -41,9 +41,18 @@ pub struct Budget {
 /// "inherit the parent's".
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Numeric {
-    /// The most elements one kernel call may process. `None` is no bound;
-    /// `Some(0)` is a bound of zero, which is a real configuration -- an
-    /// instance that may hold arrays and may not compute over them.
+    /// The most elements one kernel call may process. `None` is no bound
+    /// stated, which under attenuation means "inherit the parent's".
+    ///
+    /// **Never `Some(0)`.** `dv_numeric_set_max_elements` reads `0` as *no
+    /// limit*, so a config writing `max_elements = 0` and meaning "forbid"
+    /// would get "unbounded" -- a bound failing in the one direction a
+    /// bound must never fail in. Rather than carry a value whose meaning
+    /// inverts at the boundary, zero is refused where it can be written:
+    /// [`Numeric::check_representable`] is that check, and the loader and
+    /// the spawn path both run it. An unstated bound is the only way to
+    /// mean unlimited, and it is the only thing that reaches the core as
+    /// `0`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_elements: Option<u64>,
     /// The loosest determinism tier a kernel may run at.
@@ -101,6 +110,23 @@ impl Tier {
 impl Numeric {
     pub fn is_unbounded(&self) -> bool {
         *self == Numeric::default()
+    }
+
+    /// Why these bounds cannot be represented, if they cannot.
+    ///
+    /// One case, and see [`Numeric::max_elements`] for why it is a refusal
+    /// rather than a translation: zero means "no limit" at the ABI and
+    /// "none allowed" to anyone reading the config, and the two cannot both
+    /// be served.
+    pub fn check_representable(&self) -> Result<(), &'static str> {
+        if self.max_elements == Some(0) {
+            return Err(
+                "numeric.max_elements may not be 0: the core reads 0 as \"no limit\", which is \
+                 the opposite of what writing it here would mean. Omit the field for no limit, \
+                 or state the number of elements you mean to allow",
+            );
+        }
+        Ok(())
     }
 
     /// A child's numeric bounds fit when neither is looser than its
@@ -194,6 +220,9 @@ pub enum ConfigError {
     BudgetExceedsParent,
     /// The child states a larger `max_elements` than the parent's.
     NumericElementsExceedParent,
+    /// The child states numeric bounds that cannot be represented at the
+    /// ABI; the string says which and why.
+    NumericUnrepresentable(&'static str),
     /// The child states a looser `max_tier` than the parent's -- asking to
     /// be allowed results its parent would not accept.
     NumericTierExceedsParent,
@@ -210,6 +239,7 @@ impl std::fmt::Display for ConfigError {
                 "numeric.max_elements exceeds the parent's; a child may state a smaller \
                  element bound than its parent's, never a larger",
             ),
+            ConfigError::NumericUnrepresentable(why) => f.write_str(why),
             ConfigError::NumericTierExceedsParent => f.write_str(
                 "numeric.max_tier is looser than the parent's; a child may state a stricter \
                  tier than its parent's, never a looser one",
@@ -236,6 +266,9 @@ impl InstanceConfig {
         if !self.budget.fits_within(&parent.budget) {
             return Err(ConfigError::BudgetExceedsParent);
         }
+        self.numeric
+            .check_representable()
+            .map_err(ConfigError::NumericUnrepresentable)?;
         // Checked one bound at a time so the refusal names which one moved:
         // "your numeric block is wrong" is not an answer anyone can act on.
         let elements_only = Numeric {
@@ -1061,29 +1094,43 @@ mod tests {
         );
     }
 
-    /// `max_elements: Some(0)` is a real configuration, not an absent one:
-    /// an instance that may hold arrays and may not compute over them.
+    /// Zero is refused rather than carried.
+    ///
+    /// `dv_numeric_set_max_elements` reads `0` as "no limit", so a config
+    /// writing `max_elements = 0` and meaning "forbid" would get the
+    /// loosest bound instead of the strictest. There is no translation that
+    /// serves both readings, so the value never gets in.
     #[test]
-    fn a_zero_element_bound_is_a_bound_and_not_an_absence() {
-        let parent = InstanceConfig {
-            numeric: Numeric {
-                max_elements: Some(0),
-                max_tier: None,
-            },
-            ..cfg(vec![], Budget::default())
+    fn a_zero_element_bound_is_refused_rather_than_inverted() {
+        let zero = Numeric {
+            max_elements: Some(0),
+            max_tier: None,
         };
-        let child = InstanceConfig {
-            numeric: Numeric {
-                max_elements: Some(1),
-                max_tier: None,
-            },
-            ..cfg(vec![], Budget::default())
-        };
-        assert_eq!(
-            child.check_attenuation(&parent),
-            Err(ConfigError::NumericElementsExceedParent)
+        let why = zero.check_representable().unwrap_err();
+        assert!(why.contains("no limit"), "the refusal says why: {why}");
+        assert!(
+            why.contains("Omit the field"),
+            "and what to do instead: {why}"
         );
-        assert!(!parent.numeric.is_unbounded());
+
+        // And it is refused through the attenuation check, which is the
+        // path a spawn request takes.
+        let child = InstanceConfig {
+            numeric: zero,
+            ..cfg(vec![], Budget::default())
+        };
+        assert!(matches!(
+            child.check_attenuation(&cfg(vec![], Budget::default())),
+            Err(ConfigError::NumericUnrepresentable(_))
+        ));
+
+        // Any other number is fine, one included.
+        assert!(Numeric {
+            max_elements: Some(1),
+            max_tier: None,
+        }
+        .check_representable()
+        .is_ok());
     }
 
     /// The tier names are the ones the spec and the config use, and they

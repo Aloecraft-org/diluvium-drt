@@ -18,7 +18,7 @@
 
 use std::time::Duration;
 
-use drt_config::{Budget, Numeric};
+use drt_config::{Budget, Numeric, Tier};
 
 /// Everything that can go wrong at the seam.
 #[derive(Debug, thiserror::Error)]
@@ -275,9 +275,9 @@ pub trait Instance: MaybeSend {
     /// *could* run a fast kernel; this says one *did*, and nothing is
     /// banned by either (numeric spec §4).
     ///
-    /// TODO(A2): defaults to `false` because the core has no such entry
-    /// point yet and no fast-tier backend exists to set it. When A2's pin
-    /// lands this reads `dv_numeric_touched_fast` and the default goes.
+    /// Defaults to `false` for an engine that cannot answer -- which is
+    /// the honest answer there, since an engine with no numeric kernels
+    /// cannot have run one.
     fn numeric_touched_fast(&self) -> bool {
         false
     }
@@ -316,6 +316,40 @@ pub trait Instance: MaybeSend {
 /// fallback, which is how `drt buildinfo` first reported `dv_abi: 0` on a
 /// binary with a perfectly good engine in it. `Option` rather than `0`
 /// because a consumer must be able to tell "no engine" from "ABI zero".
+pub fn core_features() -> Option<Vec<&'static str>> {
+    #[cfg(feature = "engine-diluvium")]
+    {
+        Some(diluvium_engine::core_features())
+    }
+    #[cfg(not(feature = "engine-diluvium"))]
+    {
+        None
+    }
+}
+
+/// The build number the linked core reports: the N in `5.5.1_buildN`.
+///
+/// Here rather than in the `drt` binary for the same reason
+/// [`abi_versions`] is, and `None` rather than `0` for the same reason too:
+/// a consumer must be able to tell "no engine" from a build numbered zero.
+pub fn core_build() -> Option<i32> {
+    #[cfg(feature = "engine-diluvium")]
+    {
+        Some(diluvium_engine::core_build())
+    }
+    #[cfg(not(feature = "engine-diluvium"))]
+    {
+        None
+    }
+}
+
+/// The feature names the linked core was compiled with, or `None` when this
+/// build carries no engine.
+///
+/// A **build** fact read off the linked library, not a claim this crate
+/// makes about it: `regex`, `json`, `msgpack`, `snapshot`, and `numeric`
+/// when the core was compiled with it. Which of them a given instance may
+/// reach is the capability layer's question, not this one's.
 pub fn abi_versions() -> Option<(u32, u32)> {
     #[cfg(feature = "engine-diluvium")]
     {
@@ -351,6 +385,16 @@ pub mod diluvium_engine {
         (diluvium::library_abi_version(), diluvium::abi_version())
     }
 
+    /// What the linked core carries, read from `dv_features()`.
+    pub fn core_features() -> Vec<&'static str> {
+        diluvium::library_features()
+    }
+
+    /// The build number the linked core reports, from `dv_build()`.
+    pub fn core_build() -> i32 {
+        diluvium::library_build()
+    }
+
     pub struct DiluviumEngine;
 
     impl DiluviumEngine {
@@ -382,21 +426,28 @@ pub mod diluvium_engine {
     impl DiluviumInstance {
         /// Hand the instance's numeric bounds to the core.
         ///
-        /// TODO(A2): this is where `dv_numeric_set_max_elements` and
-        /// `dv_numeric_set_max_tier` are called (`doc/Plan-2026-09.md`
-        /// §3.1). Neither exists in the pinned core, and DRT reaches the
-        /// core through the safe `diluvium` crate, so there is nothing to
-        /// call yet and this applies nothing.
+        /// **`0` is the core's "no limit"**, which is the opposite of what
+        /// a reader of `max_elements = 0` would expect and the reason
+        /// `drt-config` refuses to represent it: an unstated bound is the
+        /// only way to mean unlimited, and it is the only thing that
+        /// arrives here as `0`. A config that could write `0` and mean
+        /// "forbid" would get "unbounded", which is the worst direction for
+        /// a bound to fail in.
         ///
-        /// It is a function rather than a comment at the call site on
-        /// purpose: the bounds are resolved, carried and asserted end to
-        /// end today, so when the pin lands the change is two lines in one
-        /// place and every test around it already passes.
+        /// An unstated tier is not set at all: the core's default is
+        /// `Fast`, the weakest and therefore the open one, which is what
+        /// "no bound stated" means. Setting something here instead would be
+        /// this layer inventing a policy the config did not ask for.
         fn apply_numeric(&mut self) {
-            let Numeric {
-                max_elements: _,
-                max_tier: _,
-            } = self.numeric;
+            self.inner
+                .set_numeric_max_elements(self.numeric.max_elements.unwrap_or(0));
+            if let Some(tier) = self.numeric.max_tier {
+                self.inner.set_numeric_max_tier(match tier {
+                    Tier::Exact => diluvium::Tier::Exact,
+                    Tier::Reproducible => diluvium::Tier::Reproducible,
+                    Tier::Fast => diluvium::Tier::Fast,
+                });
+            }
         }
 
         /// What was applied. See [`DiluviumInstance::apply_numeric`].
@@ -650,7 +701,7 @@ pub mod diluvium_engine {
         /// read the core, and `numeric_bounds_reach_the_instance` in
         /// `tests/diluvium_engine.rs` is what fails if it does not.
         fn numeric_touched_fast(&self) -> bool {
-            false
+            self.inner.numeric_touched_fast()
         }
 
         fn numeric_bounds(&self) -> Numeric {

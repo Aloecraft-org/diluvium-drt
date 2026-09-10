@@ -1,0 +1,8 @@
+{
+  "name": "25-arrays",
+  "teaches": "An array is a typed buffer the core owns rather than a Lua table: the dtype follows the values, arithmetic is elementwise with a scalar broadcast, and a comparison answers a u8 mask. Its contents print as IEEE bits, never as decimals, so one expected.txt is valid on glibc, musl, wasmtime, Chromium and mingw.",
+  "cmd": "drt run app.dlua",
+  "needs_network": false,
+  "needs_features": ["numeric"],
+  "normalise": []
+}

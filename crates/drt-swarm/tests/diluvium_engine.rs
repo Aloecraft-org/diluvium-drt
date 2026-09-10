@@ -29,8 +29,39 @@ fn version_first() {
     let engine = DiluviumEngine::new().unwrap();
     assert_eq!(
         engine.abi_version(),
-        1,
-        "dv ABI v1 — a bump is a decision, not a surprise"
+        2,
+        "dv ABI v2 — a bump is a decision, not a surprise"
+    );
+}
+
+/// What ABI 2 added, present and callable.
+///
+/// The number moving is the decision `version_first` guards; this is what
+/// the number is *about*. `dv.h`'s own note on the bump names these three
+/// plus the numeric setters, and a build that reports 2 while any of them
+/// is missing is reporting a version it does not speak.
+#[test]
+fn abi_two_carries_what_it_says_it_does() {
+    // Features and the build number, read off the library rather than
+    // stated about it — the pair that made `buildinfo`'s hard-coded
+    // tables unnecessary.
+    let features = drt_swarm::engine::core_features().expect("this build has an engine");
+    assert!(
+        features.contains(&"regex"),
+        "the feature list is the library's: {features:?}"
+    );
+    assert!(
+        !features.iter().any(|f| f.is_empty()),
+        "a blank feature name means the string was split wrong: {features:?}"
+    );
+    assert!(drt_swarm::engine::core_build().expect("this build has an engine") > 0);
+
+    // And the per-instance numeric surface, which B3 wires to the config.
+    let engine = DiluviumEngine::new().unwrap();
+    let inst = load(&engine, "return 1", "abi2");
+    assert!(
+        !inst.numeric_touched_fast(),
+        "no fast backend exists to set it"
     );
 }
 

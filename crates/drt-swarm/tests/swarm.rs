@@ -737,10 +737,12 @@ mod pump {
     /// wraps eight-byte doubles with `drt_hostcall::column`, the dispatcher
     /// moves them into the reply's side channel and leaves `{dtype, len,
     /// blob}` behind, and the pump's encode puts them where the descriptor
-    /// was. The guest is an ordinary program with no `numeric` and no
-    /// `array`, so what arrives is a Lua string -- which is exactly what
-    /// §3.1 says `dv_array_adopt` does in a build without the feature, so
-    /// this behaviour does not change when A0 lands.
+    /// was. What arrives is a Lua string -- which is exactly what §3.1
+    /// says `dv_array_adopt` does in a build without the feature, and is
+    /// still what arrives now that the core has `numeric`: the zero-copy
+    /// delivery has no landing place a guest can reach, so this is the
+    /// lane's only delivery. See `drt_hostcall::to_wire`'s BLOCKED note
+    /// for what is missing and what was measured.
     ///
     /// Asserted on the **bits**, per §3.3, not on a formatted double: the
     /// question is whether the exact bytes crossed, and `%g` on four

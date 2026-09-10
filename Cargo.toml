@@ -23,28 +23,28 @@ members = [
 ]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Aloecraft-org/diluvium-drt"
 
 [workspace.dependencies]
-drt-config = { path = "crates/drt-config", version = "0.5.0" }
-drt-caps = { path = "crates/drt-caps", version = "0.5.0" }
-drt-hostcall = { path = "crates/drt-hostcall", version = "0.5.0" }
-drt-platform = { path = "crates/drt-platform", version = "0.5.0" }
-drt-connector = { path = "crates/drt-connector", version = "0.5.0" }
-drt-swarm = { path = "crates/drt-swarm", version = "0.5.0" }
-drt-web = { path = "crates/drt-web", version = "0.5.0" }
-drt-connector-time = { path = "connectors/time", version = "0.5.0" }
-drt-connector-ssh = { path = "connectors/ssh", version = "0.5.0" }
-drt-connector-fs = { path = "connectors/fs", version = "0.5.0" }
-drt-connector-sql = { path = "connectors/sql", version = "0.5.0" }
-drt-connector-crypto = { path = "connectors/crypto", version = "0.5.0" }
-drt-connector-rest = { path = "connectors/rest", version = "0.5.0" }
-drt-connector-ssmtp = { path = "connectors/ssmtp", version = "0.5.0" }
-drt-connector-exec = { path = "connectors/exec", version = "0.5.0" }
-drt-connector-data = { path = "connectors/data", version = "0.5.0" }
+drt-config = { path = "crates/drt-config", version = "0.6.0" }
+drt-caps = { path = "crates/drt-caps", version = "0.6.0" }
+drt-hostcall = { path = "crates/drt-hostcall", version = "0.6.0" }
+drt-platform = { path = "crates/drt-platform", version = "0.6.0" }
+drt-connector = { path = "crates/drt-connector", version = "0.6.0" }
+drt-swarm = { path = "crates/drt-swarm", version = "0.6.0" }
+drt-web = { path = "crates/drt-web", version = "0.6.0" }
+drt-connector-time = { path = "connectors/time", version = "0.6.0" }
+drt-connector-ssh = { path = "connectors/ssh", version = "0.6.0" }
+drt-connector-fs = { path = "connectors/fs", version = "0.6.0" }
+drt-connector-sql = { path = "connectors/sql", version = "0.6.0" }
+drt-connector-crypto = { path = "connectors/crypto", version = "0.6.0" }
+drt-connector-rest = { path = "connectors/rest", version = "0.6.0" }
+drt-connector-ssmtp = { path = "connectors/ssmtp", version = "0.6.0" }
+drt-connector-exec = { path = "connectors/exec", version = "0.6.0" }
+drt-connector-data = { path = "connectors/data", version = "0.6.0" }
 # The line editor, one for every target (doc/Wasm.md D8, M8). From git
 # because that is where it lives; the browser half pins wasm-bindgen
 # `=0.2.127`, which is this workspace's pin already.
@@ -67,7 +67,20 @@ clap = { version = "4", features = ["derive"] }
 # The language, from its own repo — diluvium/diluvium-sys stay there,
 # versioned with the header (SPEC.md §2). The -sys build compiles the
 # amalgamated C core from the checkout, so a C toolchain is required.
-diluvium = { git = "https://github.com/Aloecraft-org/diluvium" }
+#
+# Pinned by revision rather than tracking a branch, because the numeric
+# round's core is not on diluvium's `main`: `8b54b5a` is session A's
+# `numeric-syntax` at A6 plus the two interface fixes B asked for -- the
+# `numeric` feature passthrough this line uses, and a safe wrapper for
+# `dv_array_adopt`.
+# `doc/Plan-2026-09.md` §3.7 is the protocol -- B moves the pin to the hash
+# A records -- and A's `## Status` says "pin this commit or later".
+#
+# An exact rev, not `branch = "numeric-syntax"`: a branch pin re-resolves
+# on every `cargo update` and the compatibility facts BUILDINFO publishes
+# would then describe whatever the branch happened to be that day.
+diluvium = { git = "https://github.com/Aloecraft-org/diluvium", rev = "8b54b5a", features = ["numeric"] }
+
 
 # The transport layer: one Transport trait over TCP/WebSocket/WebRTC/SSH,
 # schemes gated per platform as typed refusals (SPEC.md §9; `ssh` is
