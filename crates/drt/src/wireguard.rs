@@ -700,6 +700,12 @@ pub struct Mapping {
     pub address: Option<SocketAddr>,
     /// What was measured, in one line, for a log or a refusal.
     pub why: String,
+    /// This machine's own addresses, one per family: the host candidates a
+    /// same-LAN peer needs, which the mapped address cannot serve (issue
+    /// #25 -- two machines behind one router would have to hairpin through
+    /// it). Raw and unfiltered; whether to publish one is the program's
+    /// call, since a LAN address discloses topology. Empty offline.
+    pub local: Vec<std::net::IpAddr>,
 }
 
 /// Measure this device's own mapping, on `listen_port`, **before** the
@@ -765,6 +771,7 @@ pub async fn measure(config: &WireguardConfig) -> Result<Mapping, String> {
         punchable,
         address,
         why,
+        local: crate::netcheck::gather::local_addresses(),
     })
 }
 
@@ -2029,6 +2036,13 @@ pub fn report_value(report: &Report) -> rmpv::Value {
             ("address".into(), addr_value(m.address)),
             ("punchable".into(), rmpv::Value::Boolean(m.punchable)),
             ("why".into(), m.why.as_str().into()),
+            // Always a list, never nil, so a program iterates it without
+            // a guard: empty is "this machine has no route", which is a
+            // fact and not an absence.
+            (
+                "local".into(),
+                rmpv::Value::Array(m.local.iter().map(|a| a.to_string().into()).collect()),
+            ),
         ]),
         Report::Relaying { address, server } => rmpv::Value::Map(vec![
             ("event".into(), "wireguard_relay".into()),

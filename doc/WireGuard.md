@@ -263,6 +263,19 @@ symmetric NAT it does not — which is exactly the case the measurement
 reports as `punchable: false`, where the relay is the path and no punch
 was ever going to work.
 
+**The report also carries `local`** — this machine's own addresses, one
+per family, as a peer on the same network would reach them. The mapped
+address is a server-reflexive candidate and nothing else; two machines
+behind one router publishing only that must hairpin through it, and
+plenty of routers refuse, so two machines on one LAN could not punch to
+each other from the report alone (issue #25). `local` is the host
+candidate ICE uses for exactly that. It is the address the routing table
+picks toward the internet, per family — not an interface enumeration —
+so a multi-homed machine reports its primary and no more, and a machine
+with no route reports an empty list, never nil. Raw and unfiltered:
+whether to publish a LAN address is the program's decision, since it
+discloses topology, and `remap` refreshes it along with the rest.
+
 ### What a program does with it
 
 ```lua

@@ -732,16 +732,8 @@ pub mod gather {
     /// use for a public destination — a connected UDP socket sends nothing,
     /// so this is a local operation, not a probe.
     pub fn routable_v6() -> Option<std::net::IpAddr> {
-        use std::net::{IpAddr, SocketAddr, UdpSocket};
-        let sock = UdpSocket::bind("[::]:0").ok()?;
-        // 2001:4860:4860::8888 is a well-known public destination. Nothing
-        // is sent; connect() only makes the kernel pick a source address.
-        sock.connect(SocketAddr::from((
-            "2001:4860:4860::8888".parse::<IpAddr>().ok()?,
-            53,
-        )))
-        .ok()?;
-        let local = sock.local_addr().ok()?.ip();
+        use std::net::IpAddr;
+        let local = source_toward("2001:4860:4860::8888".parse().ok()?)?;
         match local {
             IpAddr::V6(v6)
                 if !v6.is_loopback()
@@ -755,6 +747,54 @@ pub mod gather {
             }
             _ => None,
         }
+    }
+
+    /// The source address the routing table would pick toward `dest`.
+    ///
+    /// A connected UDP socket sends nothing; `connect()` only makes the
+    /// kernel choose, so this is a local operation and not a probe.
+    /// `dest` decides the family. `None` when there is no route at all,
+    /// which an offline machine answers honestly rather than with
+    /// loopback.
+    fn source_toward(dest: std::net::IpAddr) -> Option<std::net::IpAddr> {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
+        let unspecified: IpAddr = match dest {
+            IpAddr::V4(_) => Ipv4Addr::UNSPECIFIED.into(),
+            IpAddr::V6(_) => Ipv6Addr::UNSPECIFIED.into(),
+        };
+        let sock = UdpSocket::bind(SocketAddr::new(unspecified, 0)).ok()?;
+        // 8.8.8.8 and 2001:4860:4860::8888 are well-known public
+        // destinations. Nothing is sent to either.
+        sock.connect(SocketAddr::new(dest, 53)).ok()?;
+        let local = sock.local_addr().ok()?.ip();
+        (!local.is_loopback() && !local.is_unspecified()).then_some(local)
+    }
+
+    /// This machine's own addresses, one per family, as a peer on the same
+    /// network would reach them (issue #25).
+    ///
+    /// The one candidate a mapping report could not carry. `wireguard_mapping`
+    /// publishes the server-reflexive address -- what a STUN server saw --
+    /// and two machines behind one router then have to hairpin through it,
+    /// which plenty of routers refuse; so two machines on one LAN could not
+    /// punch to each other from the report alone. A host candidate is what
+    /// ICE uses for exactly that, and a guest cannot learn one on its own:
+    /// no sockets, no `net`, an `fs` scope of one directory.
+    ///
+    /// Two addresses and not a list, on purpose. The address the routing
+    /// table picks toward the internet *is* the one a same-LAN peer reaches,
+    /// so the primary per family covers the case that was filed, and a
+    /// dual-stack home roughly doubles the coverage for no interface
+    /// enumeration and no new dependency. Multi-homed machines would want
+    /// `getifaddrs`; that arrives with evidence they are common, not before.
+    /// Raw: private, link-scoped, whatever the table answers. Whether to
+    /// publish a LAN address at all is a program's decision, since it
+    /// discloses topology.
+    pub fn local_addresses() -> Vec<std::net::IpAddr> {
+        ["8.8.8.8", "2001:4860:4860::8888"]
+            .iter()
+            .filter_map(|d| source_toward(d.parse().ok()?))
+            .collect()
     }
 
     /// Fill in the measurements this build can take without an edge:
@@ -1698,6 +1738,24 @@ mod tests {
             let (v, why) = decide(m);
             assert_eq!(v, RULES[i].verdict, "case {i} selected the wrong verdict");
             assert_eq!(why, RULES[i].why, "case {i} matched a different rule");
+        }
+    }
+}
+
+#[cfg(all(test, feature = "stun"))]
+mod local_tests {
+    /// Whatever the routing table answers is at most one address per
+    /// family, and never one a peer could not reach. An offline machine
+    /// answers nothing, which is the honest shape and must not panic.
+    #[test]
+    fn local_addresses_are_at_most_one_per_family_and_never_loopback() {
+        let found = super::gather::local_addresses();
+        assert!(found.len() <= 2, "{found:?}");
+        let v4 = found.iter().filter(|a| a.is_ipv4()).count();
+        let v6 = found.iter().filter(|a| a.is_ipv6()).count();
+        assert!(v4 <= 1 && v6 <= 1, "one per family: {found:?}");
+        for a in &found {
+            assert!(!a.is_loopback() && !a.is_unspecified(), "{a}");
         }
     }
 }
