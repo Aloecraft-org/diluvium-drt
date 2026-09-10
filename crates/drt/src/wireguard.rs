@@ -69,7 +69,8 @@
 //!
 //! ## surface block
 //!
-//! - Entry points: [`serve`] (`drt wg`), [`bind`], [`WireguardBridge::start`],
+//! - Entry points: [`serve`] (`drt wg`), [`bind`] and [`bind_userspace`]
+//!   (one per `mode`), [`WireguardBridge::start`],
 //!   [`WireguardBridge::report`] and [`WireguardBridge::collect`]
 //!   (`drt start`), and [`drive`], the task both run.
 //! - Configurable: [`KEY_LEN`], the key length the protocol fixes;
@@ -79,7 +80,13 @@
 //!   [`Report`], what it is told. Two enums, and the match on each is the
 //!   only dispatch in this file.
 //! - Configurable: [`CONNECT_TIMEOUT`], how long a forward's dial inside
-//!   the tunnel waits before it is a `wireguard_error` rather than a hang.
+//!   the tunnel waits before it is a `wireguard_error` rather than a hang;
+//!   [`PACKET_QUEUE`], how many packets may wait between the device and
+//!   the userspace stack in each direction.
+//! - The IP side, in userspace mode: [`Kernel`] and [`Userspace`] are the
+//!   two transport tuples, [`ChannelTx`]/[`ChannelRx`] the channel pair the
+//!   device speaks to a stack through, and [`StackEnd`] the stack's end of
+//!   it. The stack itself is `crate::userspace`.
 //! - The UDP side: [`Transport`], which is gotatun's own socket plus the
 //!   option of a TURN allocation beside it, and [`unroutable`], which names
 //!   an `allowed_ips` no route will reach; [`unreachable_forwards`] is its
@@ -95,7 +102,8 @@ use base64::Engine as _;
 use std::sync::Arc;
 
 use gotatun::device::{Device, DeviceBuilder, DeviceTransports, Peer};
-use gotatun::packet::{Packet, PacketBufPool};
+use gotatun::packet::{Ip, Packet, PacketBufPool};
+use gotatun::tun::{IpRecv, IpSend, MtuWatcher};
 use gotatun::udp::{UdpRecv, UdpSend, UdpTransportFactory};
 use gotatun::x25519::{PublicKey, StaticSecret};
 use ipnetwork::IpNetwork;
@@ -114,13 +122,20 @@ pub const KEY_LEN: usize = 32;
 pub const COMMAND: [&str; 6] = ["endpoint", "keepalive", "add", "remove", "relay", "remap"];
 
 /// The events a program is sent on the queue.
-pub const EVENT: [&str; 5] = [
+pub const EVENT: [&str; 6] = [
     "wireguard",
     "wireguard_endpoint",
     "wireguard_mapping",
     "wireguard_relay",
     "wireguard_error",
+    "wireguard_forward",
 ];
+
+/// How many packets may wait between the device and the userspace stack
+/// in each direction before one is dropped, the way a tun queue drops.
+/// A thousand is a few hundred milliseconds at a full MTU on a fast link;
+/// TCP retransmits, and a queue deeper than this would only add latency.
+pub const PACKET_QUEUE: usize = 1024;
 
 /// How long a `forward`'s dial inside the tunnel may wait for its SYN to be
 /// answered before the accepted connection is closed and a
@@ -701,6 +716,127 @@ pub type Kernel = (
     gotatun::tun::tun_async_device::TunDevice,
 );
 
+/// The transports a userspace-mode device uses: the same [`Transport`],
+/// and the channel pair a stack sits on the far end of.
+pub type Userspace = (Transport, ChannelTx, ChannelRx);
+
+/// The device's outbound IP side in userspace mode: decrypted packets
+/// arrive here, on their way to the stack.
+///
+/// Lifted from the tests, where this pair is what proves two devices carry
+/// a packet with no kernel and no privilege; here it is the product.
+pub struct ChannelTx(mpsc::Sender<Vec<u8>>);
+
+impl IpSend for ChannelTx {
+    async fn send(&mut self, packet: Packet<Ip>) -> std::io::Result<()> {
+        // A full queue drops, as a tun queue does; TCP retransmits, and
+        // stalling the device's receive path for one slow stack would
+        // hold every peer's handshakes and keepalives behind it.
+        let _ = self.0.try_send(packet.into_bytes().to_vec());
+        Ok(())
+    }
+}
+
+/// The device's inbound IP side in userspace mode: the stack's packets
+/// arrive here to be encrypted and sent to whichever peer owns their
+/// destination.
+pub struct ChannelRx {
+    rx: mpsc::Receiver<Vec<u8>>,
+    mtu: MtuWatcher,
+}
+
+impl IpRecv for ChannelRx {
+    async fn recv<'a>(
+        &'a mut self,
+        pool: &mut PacketBufPool,
+    ) -> std::io::Result<impl Iterator<Item = Packet<Ip>> + Send + 'a> {
+        let bytes = self
+            .rx
+            .recv()
+            .await
+            .ok_or_else(|| std::io::Error::other("the userspace stack is gone"))?;
+        let mut packet = pool.get();
+        if bytes.len() > packet.len() {
+            return Err(std::io::Error::other(format!(
+                "a {} byte packet from the stack does not fit a {} byte buffer",
+                bytes.len(),
+                packet.len()
+            )));
+        }
+        packet[..bytes.len()].copy_from_slice(&bytes);
+        packet.truncate(bytes.len());
+        match packet.try_into_ip() {
+            Ok(packet) => Ok(std::iter::once(packet)),
+            Err(e) => Err(std::io::Error::other(e.to_string())),
+        }
+    }
+
+    fn mtu(&self) -> MtuWatcher {
+        self.mtu.clone()
+    }
+}
+
+/// The stack's end of the channel pair: what it writes into the device,
+/// what it reads out of it, and the MTU sender the device's watcher reads.
+pub struct StackEnd {
+    /// An IP packet written here is encrypted and sent to its peer.
+    pub inject: mpsc::Sender<Vec<u8>>,
+    /// Decrypted packets from peers come out here.
+    pub observe: mpsc::Receiver<Vec<u8>>,
+    /// Kept by whoever holds the stack: a dropped sender would make every
+    /// read of the watcher fail.
+    pub mtu: tokio::sync::watch::Sender<u16>,
+}
+
+/// The channel pair for one device, [`PACKET_QUEUE`] deep each way.
+pub fn channel_pair(mtu: u16) -> (StackEnd, ChannelTx, ChannelRx) {
+    let (inject, rx) = mpsc::channel(PACKET_QUEUE);
+    let (tx, observe) = mpsc::channel(PACKET_QUEUE);
+    let (mtu_tx, mtu_rx) = tokio::sync::watch::channel(mtu);
+    (
+        StackEnd {
+            inject,
+            observe,
+            mtu: mtu_tx,
+        },
+        ChannelTx(tx),
+        ChannelRx {
+            rx,
+            mtu: mtu_rx.into(),
+        },
+    )
+}
+
+/// [`bind`] for `mode = "userspace"`: the same port, the same peers, the
+/// same refusals, and a channel pair where the kernel interface would be.
+/// Nothing is created on the machine and no privilege is asked for; the
+/// stack that terminates the other end is `userspace::Stack::start`'s,
+/// on the [`StackEnd`] returned here.
+pub async fn bind_userspace(
+    config: &WireguardConfig,
+) -> Result<(Device<Userspace>, Option<Allocation>, StackEnd), String> {
+    validate(config)?;
+    let secret = private_key(config)?;
+    let peers = peers(config)?;
+    let (end, tx, rx) = channel_pair(config.mtu);
+    let (transport, allocation) = Transport::new(config.turn_fallback);
+    let device = DeviceBuilder::new()
+        .with_udp(transport)
+        .with_ip_pair(tx, rx)
+        .with_listen_port(config.listen_port)
+        .with_private_key(secret)
+        .with_peers(peers)
+        .build()
+        .await
+        .map_err(|e| {
+            format!(
+                "wireguard: cannot bind UDP port {}: {e}",
+                config.listen_port
+            )
+        })?;
+    Ok((device, allocation, end))
+}
+
 /// Create the tunnel interface, **with an address, an MTU, and the link
 /// up**.
 ///
@@ -1025,19 +1161,51 @@ pub async fn serve(config: &WireguardConfig) -> Result<(), String> {
             Err(e) => eprintln!("drt wg: could not measure the mapping: {e}"),
         }
     }
-    let (mut device, _allocation) = bind(config).await?;
-    eprintln!(
-        "drt wg: {} up on port {}, mtu {}{}, public key {}",
-        config.interface,
-        config.listen_port,
-        config.mtu,
-        config
-            .address
-            .as_deref()
-            .map(|a| format!(", address {a}"))
-            .unwrap_or_else(|| ", no address (set `address`, or ip addr add)".into()),
-        public_key(&secret)
-    );
+    let up = |what: &str| {
+        eprintln!(
+            "drt wg: {what} up on port {}, mtu {}{}, public key {}",
+            config.listen_port,
+            config.mtu,
+            config
+                .address
+                .as_deref()
+                .map(|a| format!(", address {a}"))
+                .unwrap_or_else(|| ", no address (set `address`, or ip addr add)".into()),
+            public_key(&secret)
+        );
+    };
+    // The one branch on the mode: which `bind`, and whether a stack sits
+    // on the IP side. `wait` is the same either way.
+    let mut device = match config.mode {
+        WireguardMode::Kernel => {
+            let (device, _allocation) = bind(config).await?;
+            up(&config.interface);
+            Wait::Kernel(device)
+        }
+        WireguardMode::Userspace => {
+            let (device, _allocation, end) = bind_userspace(config).await?;
+            // The foreground verb takes no commands and keeps no queue, so
+            // the stack's reports -- which forward bound where, and a dial
+            // that failed -- are printed as they come.
+            let (reports, mut said) = mpsc::unbounded_channel();
+            tokio::spawn(async move {
+                while let Some(report) = said.recv().await {
+                    match report {
+                        Report::Forward { kind, from, to } => {
+                            eprintln!("drt wg: {kind} {from} -> {to}")
+                        }
+                        Report::Refused { command, reason } => {
+                            eprintln!("drt wg: {command}: {reason}")
+                        }
+                        _ => {}
+                    }
+                }
+            });
+            up("userspace");
+            let _stack = crate::userspace::Stack::start(config, end, reports).await?;
+            Wait::Userspace(device)
+        }
+    };
     for spec in &config.peers {
         eprintln!(
             "drt wg: peer {} allowed {}{}",
@@ -1049,8 +1217,18 @@ pub async fn serve(config: &WireguardConfig) -> Result<(), String> {
                 .unwrap_or_else(|| " (no endpoint yet)".into()),
         );
     }
-    device.wait().await;
+    match &mut device {
+        Wait::Kernel(device) => device.wait().await,
+        Wait::Userspace(device) => device.wait().await,
+    }
     Ok(())
+}
+
+/// The foreground verb's device, one variant per mode, so `serve` can
+/// bring either up and then wait on it with one line.
+enum Wait {
+    Kernel(Device<Kernel>),
+    Userspace(Device<Userspace>),
 }
 
 // ---------------------------------------------------------------------------
@@ -1192,6 +1370,16 @@ pub enum Report {
     /// waiting for a handshake that will never come should learn that its
     /// command was malformed rather than conclude the network is bad.
     Refused { command: String, reason: String },
+    /// One `forward` or `expose` of a userspace-mode device, once at
+    /// startup, with the address it actually bound: a `bind` of
+    /// `127.0.0.1:0` asks for an ephemeral port, and this is the only way
+    /// a program learns which. `kind` is `"forward"` or `"expose"`, and
+    /// `from` is the bind address or the tunnel address respectively.
+    Forward {
+        kind: &'static str,
+        from: String,
+        to: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -1714,6 +1902,44 @@ pub struct WireguardBridge {
     _runtime: std::thread::JoinHandle<()>,
 }
 
+/// The thread that drives a device for the bridge's life. Generic over the
+/// transports, so the kernel-tun device and the userspace one run the
+/// same loop on the same shape of thread.
+fn drive_on<T: DeviceTransports + 'static>(
+    rt: tokio::runtime::Runtime,
+    device: Device<T>,
+    every: Duration,
+    reports: mpsc::UnboundedSender<Report>,
+    commands: mpsc::UnboundedReceiver<Command>,
+    allocation: Option<Allocation>,
+    config: &WireguardConfig,
+) -> std::thread::JoinHandle<()>
+where
+    Device<T>: Send,
+{
+    let remap_config = config.clone();
+    std::thread::spawn(move || {
+        rt.block_on(drive(
+            device,
+            every,
+            reports,
+            commands,
+            allocation,
+            // The config is kept so `remap` can measure against it
+            // later: the servers to ask and the port to ask about.
+            Some(remap_config),
+        ));
+        // Leaked, not dropped. `drive` RETURNS when the bridge is
+        // dropped, so unlike `stun`'s server this thread reaches the
+        // end of its runtime's life -- straight into FM-1
+        // (doc/Failure-Modes.md), the tokio 1.53.1 use-after-free in
+        // runtime teardown that every foreground verb here leaks
+        // around. The deployment is on its way down; the OS reclaims
+        // what drop would have.
+        std::mem::forget(rt);
+    })
+}
+
 impl WireguardBridge {
     /// Bring the device up and drive it on its own runtime.
     ///
@@ -1753,30 +1979,36 @@ impl WireguardBridge {
             }
         }
 
-        let (device, allocation) = rt.block_on(bind(config))?;
         let (commands, command_rx) = mpsc::unbounded_channel();
         let every = Duration::from_millis(config.report_ms.max(1));
-        let remap_config = config.clone();
-        let runtime = std::thread::spawn(move || {
-            rt.block_on(drive(
-                device,
-                every,
-                report_tx,
-                command_rx,
-                allocation,
-                // The config is kept so `remap` can measure against it
-                // later: the servers to ask and the port to ask about.
-                Some(remap_config),
-            ));
-            // Leaked, not dropped. `drive` RETURNS when the bridge is
-            // dropped, so unlike `stun`'s server this thread reaches the
-            // end of its runtime's life -- straight into FM-1
-            // (doc/Failure-Modes.md), the tokio 1.53.1 use-after-free in
-            // runtime teardown that every foreground verb here leaks
-            // around. The deployment is on its way down; the OS reclaims
-            // what drop would have.
-            std::mem::forget(rt);
-        });
+        // The one branch on the mode: which `bind`, and whether a stack
+        // sits on the IP side. `drive` is generic, so it is the same
+        // thread either way.
+        let (runtime, interface) = match config.mode {
+            WireguardMode::Kernel => {
+                let (device, allocation) = rt.block_on(bind(config))?;
+                (
+                    drive_on(rt, device, every, report_tx, command_rx, allocation, config),
+                    config.interface.clone(),
+                )
+            }
+            WireguardMode::Userspace => {
+                let (device, allocation, end) = rt.block_on(bind_userspace(config))?;
+                // The stack binds every forward here, before `drive`, so
+                // a held port fails `drt start` by name. Its tasks live on
+                // the same runtime and end with it.
+                let stack = rt.block_on(crate::userspace::Stack::start(
+                    config,
+                    end,
+                    report_tx.clone(),
+                ))?;
+                std::mem::forget(stack);
+                (
+                    drive_on(rt, device, every, report_tx, command_rx, allocation, config),
+                    "userspace".to_string(),
+                )
+            }
+        };
         Ok(WireguardBridge {
             reports,
             commands,
@@ -1784,7 +2016,7 @@ impl WireguardBridge {
             held: Vec::new(),
             queue: config.queue.clone(),
             reply_queue: config.reply_queue.clone(),
-            interface: config.interface.clone(),
+            interface,
             listen_port: config.listen_port,
             public_key: public_key(&secret),
             _runtime: runtime,
@@ -2241,6 +2473,17 @@ pub fn report_value(report: &Report) -> rmpv::Value {
             ("event".into(), "wireguard_error".into()),
             ("command".into(), command.as_str().into()),
             ("reason".into(), reason.as_str().into()),
+        ]),
+        // The config's own key names, so a program reads back what it
+        // wrote: `bind` for a forward, `tunnel` for an expose.
+        Report::Forward { kind, from, to } => rmpv::Value::Map(vec![
+            ("event".into(), "wireguard_forward".into()),
+            ("kind".into(), (*kind).into()),
+            (
+                if *kind == "expose" { "tunnel" } else { "bind" }.into(),
+                from.as_str().into(),
+            ),
+            ("to".into(), to.as_str().into()),
         ]),
     }
 }

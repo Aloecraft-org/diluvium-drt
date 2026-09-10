@@ -2079,3 +2079,339 @@ fn a_machine_with_no_tun_node_is_named_before_anything_is_created() {
         "CapEff is readable wherever /proc is mounted; None is for where it is not"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The userspace mode: TCP through two stacks, with no kernel and no privilege
+// ---------------------------------------------------------------------------
+
+/// One end of a userspace tunnel: a block in `mode = "userspace"` with its
+/// key inline, one peer, and whatever forwards and exposes the test wants.
+/// `peer_port` is `None` for a peer whose endpoint nobody has supplied,
+/// which is the dead-tunnel case.
+fn userspace_end(
+    secret: &StaticSecret,
+    port: u16,
+    address: &str,
+    peer: &StaticSecret,
+    peer_ip: &str,
+    peer_port: Option<u16>,
+) -> WireguardConfig {
+    let mut config = scope(Some(&B64.encode(secret.to_bytes())));
+    config.mode = WireguardMode::Userspace;
+    config.listen_port = port;
+    config.address = Some(address.into());
+    config.peers.push(WireguardPeer {
+        public_key: drt::wireguard::public_key(peer),
+        allowed_ips: vec![format!("{peer_ip}/32")],
+        endpoint: peer_port.map(|p| format!("127.0.0.1:{p}")),
+        keepalive: None,
+        preshared_key_env: None,
+    });
+    config
+}
+
+/// Bring one end up the way `WireguardBridge::start` does, on the test's
+/// runtime: `bind_userspace`, the stack on its channel end, and `drive`
+/// on the device. Returns the reports and the command sender that keeps
+/// `drive` alive.
+async fn userspace_up(
+    config: &WireguardConfig,
+) -> (
+    mpsc::UnboundedReceiver<drt::wireguard::Report>,
+    mpsc::UnboundedSender<drt::wireguard::Command>,
+) {
+    let (device, allocation, end) = drt::wireguard::bind_userspace(config)
+        .await
+        .expect("the userspace device binds");
+    let (report_tx, reports) = mpsc::unbounded_channel();
+    let _stack = drt::userspace::Stack::start(config, end, report_tx.clone())
+        .await
+        .expect("the stack starts");
+    let (commands, command_rx) = mpsc::unbounded_channel();
+    tokio::spawn(drt::wireguard::drive(
+        device,
+        Duration::from_secs(10),
+        report_tx,
+        command_rx,
+        allocation,
+        Some(config.clone()),
+    ));
+    (reports, commands)
+}
+
+/// The `wireguard_forward` for `to`, which is how a program learns the
+/// port an ephemeral `bind` took.
+async fn forward_bound(
+    reports: &mut mpsc::UnboundedReceiver<drt::wireguard::Report>,
+    to: &str,
+) -> SocketAddr {
+    loop {
+        match expect_report(reports, Duration::from_secs(5)).await {
+            drt::wireguard::Report::Forward {
+                kind: "forward",
+                from,
+                to: target,
+            } if target == to => return from.parse().unwrap(),
+            _ => continue,
+        }
+    }
+}
+
+/// The next `wireguard_error`, with its reason.
+async fn next_error(reports: &mut mpsc::UnboundedReceiver<drt::wireguard::Report>) -> String {
+    loop {
+        if let drt::wireguard::Report::Refused { reason, .. } =
+            expect_report(reports, Duration::from_secs(20)).await
+        {
+            return reason;
+        }
+    }
+}
+
+/// A loopback echo the test owns, on a port nobody else has.
+async fn echo_server() -> SocketAddr {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let echo = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = echo.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut c, _)) = echo.accept().await else {
+                continue;
+            };
+            tokio::spawn(async move {
+                let mut b = [0u8; 1024];
+                while let Ok(n) = c.read(&mut b).await {
+                    if n == 0 || c.write_all(&b[..n]).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    addr
+}
+
+/// **The userspace mode, end to end.** Two devices in one process, both
+/// `mode = "userspace"`: A forwards a local port to `10.9.0.2:7`, B
+/// exposes `10.9.0.2:7` to an echo the test owns. A client connects to
+/// A's port, writes, and reads the same bytes back -- every byte crossed
+/// a real handshake, a real smoltcp connection on each end, and the
+/// echo. Nothing below the pump is mocked, and no kernel interface and
+/// no privilege was involved, which is the whole point of the mode.
+///
+/// The same pair then proves the pump's rules: half-close survives, a
+/// second connection through the expose works (the one-shot listener was
+/// re-armed), a dial the far side refuses closes the local socket at once
+/// rather than hanging it, and a port nobody exposes is answered with a
+/// RST -- so "nothing listens there" is told apart from "no peer".
+#[test]
+fn a_forward_reaches_an_expose_through_two_userspace_stacks() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    rt().block_on(async {
+        let (secret_a, secret_b) = (
+            StaticSecret::from([0x31u8; KEY_LEN]),
+            StaticSecret::from([0x32u8; KEY_LEN]),
+        );
+        let (port_a, port_b) = (free_port(), free_port());
+        let echo = echo_server().await;
+        // A port nothing listens on, for the refused dial.
+        let nobody = {
+            let sock = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = sock.local_addr().unwrap();
+            drop(sock);
+            addr
+        };
+
+        let mut a = userspace_end(
+            &secret_a,
+            port_a,
+            "10.9.0.1/24",
+            &secret_b,
+            "10.9.0.2",
+            Some(port_b),
+        );
+        a.forward = vec![
+            WireguardForward {
+                bind: "127.0.0.1:0".into(),
+                to: "10.9.0.2:7".into(),
+            },
+            WireguardForward {
+                bind: "127.0.0.1:0".into(),
+                to: "10.9.0.2:8".into(),
+            },
+            WireguardForward {
+                bind: "127.0.0.1:0".into(),
+                to: "10.9.0.2:9".into(),
+            },
+        ];
+        let mut b = userspace_end(
+            &secret_b,
+            port_b,
+            "10.9.0.2/24",
+            &secret_a,
+            "10.9.0.1",
+            Some(port_a),
+        );
+        b.expose = vec![
+            WireguardExpose {
+                tunnel: "10.9.0.2:7".into(),
+                to: echo.to_string(),
+            },
+            WireguardExpose {
+                tunnel: "10.9.0.2:8".into(),
+                to: nobody.to_string(),
+            },
+        ];
+        assert!(drt::wireguard::validate(&a).unwrap().is_empty());
+        assert!(drt::wireguard::validate(&b).unwrap().is_empty());
+
+        let (mut reports_a, _commands_a) = userspace_up(&a).await;
+        let (mut reports_b, _commands_b) = userspace_up(&b).await;
+        let to_echo = forward_bound(&mut reports_a, "10.9.0.2:7").await;
+        let to_nobody = forward_bound(&mut reports_a, "10.9.0.2:8").await;
+        let to_unexposed = forward_bound(&mut reports_a, "10.9.0.2:9").await;
+        assert_ne!(
+            to_echo.port(),
+            0,
+            "an ephemeral bind reports the port it took"
+        );
+
+        // Bytes across, and back, through both stacks and the echo.
+        let mut client = tokio::net::TcpStream::connect(to_echo).await.unwrap();
+        client.write_all(b"marco").await.unwrap();
+        let mut back = [0u8; 5];
+        tokio::time::timeout(Duration::from_secs(15), client.read_exact(&mut back))
+            .await
+            .expect("the echo came back through both stacks")
+            .unwrap();
+        assert_eq!(&back, b"marco");
+
+        // Half-close: write, shut the write half, still read the reply,
+        // then the far side's FIN as EOF -- `printf … | ssh` in the small.
+        client.write_all(b"polo!").await.unwrap();
+        client.shutdown().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), client.read_exact(&mut back))
+            .await
+            .expect("the reply survived our FIN")
+            .unwrap();
+        assert_eq!(&back, b"polo!");
+        let n = tokio::time::timeout(Duration::from_secs(10), client.read(&mut back))
+            .await
+            .expect("the far side's FIN arrived as EOF")
+            .unwrap();
+        assert_eq!(n, 0);
+
+        // A second connection through the same expose: the listening
+        // socket that became the first connection was re-armed.
+        let mut second = tokio::net::TcpStream::connect(to_echo).await.unwrap();
+        second.write_all(b"again").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), second.read_exact(&mut back))
+            .await
+            .expect("the second connection was accepted")
+            .unwrap();
+        assert_eq!(&back, b"again");
+
+        // A dial the far side refuses: B's expose reaches a port nothing
+        // listens on, so the tunnel side is reset and our read is EOF at
+        // once, not a hang. B says why.
+        let mut refused = tokio::net::TcpStream::connect(to_nobody).await.unwrap();
+        let n = tokio::time::timeout(Duration::from_secs(10), refused.read(&mut back))
+            .await
+            .expect("a refused dial closed the accepted socket at once")
+            .unwrap_or(0);
+        assert_eq!(n, 0, "bytes arrived on a leg the far side refused");
+        let why = next_error(&mut reports_b).await;
+        assert!(why.contains("cannot dial"), "{why}");
+        assert!(why.contains(&nobody.to_string()), "{why}");
+
+        // A port nobody exposes gets a RST from B's stack, so A's dial is
+        // refused rather than left waiting out the timeout, and A says so
+        // in words a program can tell from "no peer".
+        let mut unexposed = tokio::net::TcpStream::connect(to_unexposed).await.unwrap();
+        let n = tokio::time::timeout(Duration::from_secs(10), unexposed.read(&mut back))
+            .await
+            .expect("an unexposed port was refused, not black-holed")
+            .unwrap_or(0);
+        assert_eq!(n, 0);
+        let why = next_error(&mut reports_a).await;
+        assert!(why.contains("10.9.0.2:9"), "{why}");
+        assert!(why.contains("nothing listens there"), "{why}");
+    });
+}
+
+/// A dead tunnel is a timeout, not a hang: a forward to a peer with no
+/// endpoint fails at `CONNECT_TIMEOUT`, the client's read is EOF, and the
+/// `wireguard_error` names the entry and the seconds. Takes the fifteen
+/// seconds it asserts, deliberately: the value is the promise.
+#[test]
+fn a_dead_tunnel_times_out_with_a_wireguard_error() {
+    use tokio::io::AsyncReadExt;
+    rt().block_on(async {
+        let (secret_a, secret_b) = (
+            StaticSecret::from([0x41u8; KEY_LEN]),
+            StaticSecret::from([0x42u8; KEY_LEN]),
+        );
+        let mut a = userspace_end(
+            &secret_a,
+            free_port(),
+            "10.9.0.1/24",
+            &secret_b,
+            "10.9.0.2",
+            None,
+        );
+        a.forward.push(WireguardForward {
+            bind: "127.0.0.1:0".into(),
+            to: "10.9.0.2:22".into(),
+        });
+        let (mut reports, _commands) = userspace_up(&a).await;
+        let bound = forward_bound(&mut reports, "10.9.0.2:22").await;
+
+        let started = std::time::Instant::now();
+        let mut client = tokio::net::TcpStream::connect(bound).await.unwrap();
+        let mut buf = [0u8; 8];
+        let n = tokio::time::timeout(
+            drt::wireguard::CONNECT_TIMEOUT + Duration::from_secs(10),
+            client.read(&mut buf),
+        )
+        .await
+        .expect("the dial gave up at the stated timeout rather than hanging")
+        .unwrap_or(0);
+        assert_eq!(n, 0);
+        let waited = started.elapsed();
+        assert!(
+            waited >= drt::wireguard::CONNECT_TIMEOUT - Duration::from_secs(1),
+            "gave up after {waited:?}, before the stated timeout"
+        );
+        let why = next_error(&mut reports).await;
+        assert!(why.contains("10.9.0.2:22"), "{why}");
+        assert!(
+            why.contains(&format!("{}s", drt::wireguard::CONNECT_TIMEOUT.as_secs())),
+            "{why}"
+        );
+        assert!(why.contains("no peer"), "{why}");
+    });
+}
+
+/// The `wireguard_forward` report carries the config's own key names, so
+/// a program reads back what it wrote: `bind` for a forward, `tunnel` for
+/// an expose.
+#[test]
+fn a_forward_report_uses_the_configs_own_names() {
+    let forward = drt::wireguard::report_value(&drt::wireguard::Report::Forward {
+        kind: "forward",
+        from: "127.0.0.1:41234".into(),
+        to: "10.9.0.2:22".into(),
+    });
+    assert_eq!(field(&forward, "event").as_str(), Some("wireguard_forward"));
+    assert_eq!(field(&forward, "kind").as_str(), Some("forward"));
+    assert_eq!(field(&forward, "bind").as_str(), Some("127.0.0.1:41234"));
+    assert_eq!(field(&forward, "to").as_str(), Some("10.9.0.2:22"));
+    let expose = drt::wireguard::report_value(&drt::wireguard::Report::Forward {
+        kind: "expose",
+        from: "10.9.0.1:22".into(),
+        to: "127.0.0.1:22".into(),
+    });
+    assert_eq!(field(&expose, "kind").as_str(), Some("expose"));
+    assert_eq!(field(&expose, "tunnel").as_str(), Some("10.9.0.1:22"));
+    assert!(drt::wireguard::EVENT.contains(&"wireguard_forward"));
+}

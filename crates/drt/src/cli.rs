@@ -964,9 +964,14 @@ pub fn main(cli: Cli) -> ExitCode {
                     // A warning is not a failure: the config works the
                     // moment the route exists, and an exit code that said
                     // otherwise would fail a deploy over a note.
+                    let userspace = wg_config.mode == drt_config::WireguardMode::Userspace;
                     println!(
                         "ok: {} on port {}, {} peer(s){}",
-                        wg_config.interface,
+                        if userspace {
+                            "userspace"
+                        } else {
+                            &wg_config.interface
+                        },
                         wg_config.listen_port,
                         wg_config.peers.len(),
                         if warnings.is_empty() {
@@ -975,15 +980,53 @@ pub fn main(cli: Cli) -> ExitCode {
                             format!(", {} warning(s)", warnings.len())
                         }
                     );
+                    // What the mode reaches, from the config alone. No
+                    // port is bound: `check` promises not to create
+                    // anything, and a bound-and-released TCP port is a
+                    // side effect it should keep not having.
+                    if userspace {
+                        let forwards: Vec<String> = wg_config
+                            .forward
+                            .iter()
+                            .map(|f| format!("{} -> {}", f.bind, f.to))
+                            .collect();
+                        let exposes: Vec<String> = wg_config
+                            .expose
+                            .iter()
+                            .map(|e| format!("{} -> {}", e.tunnel, e.to))
+                            .collect();
+                        println!(
+                            "    no interface; {}{}{}",
+                            if forwards.is_empty() {
+                                String::new()
+                            } else {
+                                format!("forwards {}", forwards.join(", "))
+                            },
+                            if forwards.is_empty() || exposes.is_empty() {
+                                ""
+                            } else {
+                                "; "
+                            },
+                            if exposes.is_empty() {
+                                String::new()
+                            } else {
+                                format!("exposes {}", exposes.join(", "))
+                            }
+                        );
+                    }
                     // A config with no peers is the one a rendezvous
                     // writes, so `ok: ... 0 peer(s)` reads like a config
                     // that forgot something. Say what it will actually do
                     // instead of leaving the operator to guess.
                     if wg_config.peers.is_empty() {
                         println!(
-                            "    no peers named: it will create {}, {} measure its \
+                            "    no peers named: it will {}, {} measure its \
                              mapping, and wait for `add` on {}",
-                            wg_config.interface,
+                            if userspace {
+                                "run a stack in this process".to_string()
+                            } else {
+                                format!("create {}", wg_config.interface)
+                            },
                             match &wg_config.address {
                                 Some(cidr) => format!("give it {cidr},"),
                                 None => "which needs an address before it carries \
@@ -1009,7 +1052,16 @@ pub fn main(cli: Cli) -> ExitCode {
                     // On stderr, beside the config's own warnings, for the
                     // same reason they are: stdout is the verdict and
                     // stderr is what qualifies it.
-                    let here = crate::wireguard::interface_here();
+                    //
+                    // Nothing to establish for a userspace stack: it
+                    // touches neither `/dev/net/tun` nor `CapEff`, so a
+                    // `here:` line about either would be an answer to a
+                    // question the config did not ask.
+                    let here = if userspace {
+                        Vec::new()
+                    } else {
+                        crate::wireguard::interface_here()
+                    };
                     for finding in &here {
                         eprintln!("here: {finding}");
                     }

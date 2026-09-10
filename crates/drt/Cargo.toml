@@ -30,6 +30,15 @@ gotatun = { workspace = true, optional = true }
 turn = { version = "0.17", optional = true }
 webrtc-util = { version = "0.17", optional = true }
 ipnetwork = { workspace = true, optional = true }
+# The userspace IP side of the WireGuard device (src/userspace.rs): a
+# TCP/IP stack inside the process, on the far end of the channel pair the
+# tests already drive gotatun with, so `mode = "userspace"` needs no
+# interface and no privilege. Pure Rust, no C, so doc/WireGuard.md §3's
+# "no new toolchain" holds. `std` for heap-backed socket buffers, `async`
+# for the wakers the pump waits on, `medium-ip` because what crosses the
+# channels is raw IP with nothing framed around it, and both families
+# because `wireguard_mapping.local` already reports both.
+smoltcp = { version = "0.14", default-features = false, features = ["std", "alloc", "async", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-tcp"], optional = true }
 base64 = { version = "0.22", optional = true }
 # The relay's WebSocket stack. Host-side machinery takes the right Rust
 # primitive: tokio-tungstenite splits for a full-duplex splice, delivers
@@ -200,7 +209,12 @@ turn = ["dep:ego_transport", "dep:tokio"]
 # "the UDP transport"). webrtc-rs's, and the same crate the `turn` tests
 # allocate through, so the server DRT serves and the client it dials are
 # one implementation's two halves.
-wireguard = ["dep:gotatun", "dep:ipnetwork", "dep:base64", "dep:tokio", "dep:turn", "dep:webrtc-util"]
+#
+# `smoltcp` is the userspace mode, inside this feature and not a
+# sub-feature of it: a `wireguard-userspace` nobody enables is the mode
+# nobody has, and the user who needs it is the one holding the release
+# binary.
+wireguard = ["dep:gotatun", "dep:ipnetwork", "dep:base64", "dep:tokio", "dep:turn", "dep:webrtc-util", "dep:smoltcp"]
 # `drt relay`: the rendezvous relay — parked WSS legs paired by label and
 # spliced. In `full` beside tunnel; a relay is server machinery.
 # Depends on `listen` because the relay's control plane rides the same
