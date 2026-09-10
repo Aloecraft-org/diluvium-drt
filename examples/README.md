@@ -37,9 +37,10 @@ reference. Everything here is v0.4.2.
 | [`21-wireguard`](21-wireguard) | The `wireguard` block without a privilege: `keygen`, `pubkey` and a `check` that says whether a config can work without touching the interface. | `./demo.sh` |
 | [`22-wireguard-interface`](22-wireguard-interface) | The half that needs `CAP_NET_ADMIN`: the interface is really created, with the address and MTU the config names, and asked of the kernel rather than taken on DRT's word. | `./demo.sh` |
 | [`23-reading-parquet`](23-reading-parquet) | The `data` connector: parquet columns cross as raw bytes, and text crosses dictionary-encoded, so a million-row column is a million bytes and not a million values. | `drt run --config app.json` |
-| [`24-arrays`](24-arrays) | The `array` library: a typed buffer the core owns, elementwise arithmetic with a scalar broadcast, and why the contents print as IEEE bits and never as decimals. | `drt run app.dlua` |
-| [`25-reductions-and-grouping`](25-reductions-and-grouping) | The three rules that make a reduction answer the same thing everywhere: a canonical summation order, one total ordering with NaN last, and first-appearance group ids. | `drt run app.dlua` |
-| [`26-fft`](26-fft) | `rfft` on a real signal, printed as `real:imag` bit patterns. The example where a compiler flag that did not reach one target becomes a differing hex digit. | `drt run app.dlua` |
+| [`24-wireguard-userspace`](24-wireguard-userspace) | The `wireguard` block with no privilege at all: `mode = "userspace"` puts a TCP/IP stack in the process, `forward` and `expose` carry ports across, and two peers on one machine cross a real tunnel — which two kernel interfaces cannot. | `./demo.sh` |
+| [`25-arrays`](25-arrays) | The `array` library: a typed buffer the core owns, elementwise arithmetic with a scalar broadcast, and why the contents print as IEEE bits and never as decimals. | `drt run app.dlua` |
+| [`26-reductions-and-grouping`](26-reductions-and-grouping) | The three rules that make a reduction answer the same thing everywhere: a canonical summation order, one total ordering with NaN last, and first-appearance group ids. | `drt run app.dlua` |
+| [`27-fft`](27-fft) | `rfft` on a real signal, printed as `real:imag` bit patterns. The example where a compiler flag that did not reach one target becomes a differing hex digit. | `drt run app.dlua` |
 
 `drt run` executes one program to completion and exits — no swarm, no
 listeners, no second instance — and it is what `01`–`07`, `10`, `12` and `16`

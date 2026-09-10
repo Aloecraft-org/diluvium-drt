@@ -1,4 +1,4 @@
-version: 0.5.0
+version: 0.6.0
 profile: full
 dv_abi: 2
 dv_abi_expected: 2

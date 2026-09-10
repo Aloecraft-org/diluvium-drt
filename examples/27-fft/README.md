@@ -1,4 +1,4 @@
-# 26-fft
+# 27-fft
 
 The transform whose entire claim is that its bits are identical on every
 target. This is where a twiddle factor that drifted on one of them becomes
@@ -10,7 +10,7 @@ lists it under `features`).
 ## Run it
 
 ```
-cd examples/26-fft
+cd examples/27-fft
 drt run app.dlua
 ```
 

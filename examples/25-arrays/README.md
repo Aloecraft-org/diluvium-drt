@@ -1,4 +1,4 @@
-# 24-arrays
+# 25-arrays
 
 The `array` library: a typed buffer the core owns, and the printing rule that
 makes one expected output valid on every target.
@@ -9,7 +9,7 @@ lists it under `features`; without it `array` is nil and the first line raises.
 ## Run it
 
 ```
-cd examples/24-arrays
+cd examples/25-arrays
 drt run app.dlua
 ```
 

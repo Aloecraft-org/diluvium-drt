@@ -1,4 +1,4 @@
-# 25-reductions-and-grouping
+# 26-reductions-and-grouping
 
 Three rules decide what a reduction answers. All three exist so that the answer
 is *the same* on every target, rather than merely close on each of them.
@@ -9,7 +9,7 @@ lists it under `features`).
 ## Run it
 
 ```
-cd examples/25-reductions-and-grouping
+cd examples/26-reductions-and-grouping
 drt run app.dlua
 ```
 
