@@ -42,42 +42,43 @@ fn echoing_edge(edge_name: &str) -> String {
     url
 }
 
-/// `--pin-source-port` is what turns two vantages into a measurement.
+/// Two vantages are pinned and compared by default.
 ///
-/// Without it, two fetches leave from two ephemeral ports and the line
-/// refuses to compare them. With it, both leave from one port, both edges
-/// observe that port, and the comparison is real — which on loopback means
-/// `independent`, there being no NAT to be otherwise.
+/// The flag used to be what turned two vantages into a measurement, and
+/// a caller who did not know it got two unrelated observations from a run
+/// that could plainly have compared them. Pinning happens whenever more
+/// than one fetch is planned now, which is the only time it measures
+/// anything; the flag is kept and changes nothing (issue #25).
 ///
-/// This is the mechanism, proven on this platform with no new dependency:
 /// `tokio::net::TcpSocket` binds and sets `SO_REUSEADDR` natively, so the
 /// `socket2` the work was sized against was never needed.
 #[test]
-fn pinning_the_source_port_is_what_makes_two_edges_a_comparison() {
+fn two_edges_are_pinned_and_compared_by_default() {
     let a = echoing_edge("gate1");
     let b = echoing_edge("gate2");
 
-    let loose = netcheck(&["--reflect", &a, "--reflect", &b]);
+    let bare = netcheck(&["--reflect", &a, "--reflect", &b]);
     assert!(
-        loose.contains("separate source ports; not a comparison"),
-        "{loose}"
-    );
-
-    let pinned = netcheck(&["--pin-source-port", "--reflect", &a, "--reflect", &b]);
-    assert!(
-        pinned.contains("independent (pinned source port, sequential)"),
-        "{pinned}"
+        bare.contains("independent (pinned source port, sequential)"),
+        "{bare}"
     );
     // Both vantages observed ONE port, which is the whole measurement.
-    let ports: Vec<&str> = pinned
+    let ports: Vec<&str> = bare
         .lines()
         .find(|l| l.contains("tcp map"))
         .unwrap()
         .split_whitespace()
         .filter(|t| t.chars().all(|c| c.is_ascii_digit()) && t.len() > 3)
         .collect();
-    assert_eq!(ports.len(), 2, "{pinned}");
-    assert_eq!(ports[0], ports[1], "one source port, seen twice: {pinned}");
+    assert_eq!(ports.len(), 2, "{bare}");
+    assert_eq!(ports[0], ports[1], "one source port, seen twice: {bare}");
+
+    // The flag is a no-op on a run that pins anyway.
+    let forced = netcheck(&["--pin-source-port", "--reflect", &a, "--reflect", &b]);
+    assert!(
+        forced.contains("independent (pinned source port, sequential)"),
+        "{forced}"
+    );
 }
 
 /// One edge named twice is not a comparison, and used to say it was.
@@ -92,10 +93,12 @@ fn pinning_the_source_port_is_what_makes_two_edges_a_comparison() {
 /// What the run really measures is whether the mapping held, which is worth
 /// knowing on its own: if it did not, no two-edge comparison can ever
 /// succeed on this network and standing up a second vantage buys nothing.
+/// Pinned by default now, since two fetches are planned, so the bare
+/// command gets the stability check.
 #[test]
 fn one_edge_asked_twice_is_a_stability_check_not_a_comparison() {
     let a = echoing_edge("gate1");
-    let text = netcheck(&["--pin-source-port", "--reflect", &a, "--reflect", &a]);
+    let text = netcheck(&["--reflect", &a, "--reflect", &a]);
     assert!(
         !text.contains("independent (pinned"),
         "two views of ONE destination say nothing about endpoint-independence: {text}"
@@ -109,7 +112,7 @@ fn one_edge_asked_twice_is_a_stability_check_not_a_comparison() {
     // Two genuinely different edges still compare, so the guard is about
     // distinct destinations rather than refusing everything.
     let b = echoing_edge("gate2");
-    let both = netcheck(&["--pin-source-port", "--reflect", &a, "--reflect", &b]);
+    let both = netcheck(&["--reflect", &a, "--reflect", &b]);
     assert!(
         both.contains("independent (pinned source port, sequential)"),
         "{both}"
@@ -135,10 +138,15 @@ fn a_failed_edge_in_a_pinned_run_is_not_half_a_comparison() {
         drop(l);
         format!("http://127.0.0.1:{p}/")
     };
-    let text = netcheck(&["--pin-source-port", "--reflect", &a, "--reflect", &dead]);
+    let text = netcheck(&["--reflect", &a, "--reflect", &dead]);
     assert!(!text.contains("per-destination"), "{text}");
     assert!(!text.contains("independent"), "{text}");
     assert!(text.contains("(one vantage; not a comparison)"), "{text}");
+    // And the edge that did not answer is named on the same line, with its
+    // reason: a comparison that became one vantage says why, rather than
+    // reading as a network that only ever had one.
+    assert!(text.contains("(unanswered: "), "{text}");
+    assert!(text.contains("connect:"), "{text}");
 }
 
 /// An edge that answers one request with the shape `api/supervisor.lua`
@@ -200,20 +208,24 @@ fn one_edge_fills_the_address_and_one_vantage() {
     );
 }
 
-/// Two edges are two vantages and **not** a comparison, because each fetch
-/// is its own connection with its own source port. Measured against the
-/// live edge: two fetches answered 3075 and 56304.
+/// Two edges that report different ports from one pinned source port are
+/// a per-destination mapping, and the run says so rather than calling it a
+/// comparison it declined to make.
+///
+/// The canned edges answer fixed, differing ports, which is what a NAT
+/// that maps per destination looks like from outside. Before pin-by-default
+/// this run left from two source ports and could only refuse to compare;
+/// now it is the comparison, and the honest label is the unwelcome one.
 #[test]
-fn two_edges_render_both_and_refuse_to_compare_them() {
+fn two_edges_reporting_different_ports_are_per_destination() {
     let a = edge(Some("gate1"), Some("203.0.113.7"), Some(51823));
     let b = edge(Some("gate2"), Some("203.0.113.7"), Some(51999));
     let text = netcheck(&["--reflect", &a, "--reflect", &b]);
     assert!(text.contains("51823 (gate1), 51999 (gate2)"), "{text}");
     assert!(
-        text.contains("separate source ports; not a comparison"),
+        text.contains("per-destination (pinned source port, sequential)"),
         "{text}"
     );
-    assert!(!text.contains("per-destination"), "{text}");
 }
 
 /// An unobserved port is not measured, never zero — the spec is explicit,
@@ -513,4 +525,286 @@ fn a_rate_limited_probe_is_not_measured_never_refused() {
         "and it says which silence: {text}"
     );
     assert!(!text.contains("refused"), "never a finding: {text}");
+}
+
+// ---------------------------------------------------------------------------
+// `--extra-root`: the flag that makes netcheck usable behind an intercepting
+// proxy. depth: a TLS terminator in front of the plain edge above.
+// ---------------------------------------------------------------------------
+
+/// A TLS terminator in front of an [`echoing_edge`], plus the self-signed
+/// certificate a client has to be told to trust.
+///
+/// The same twenty lines as the tunnel suite's `tls_gate`, and for the same
+/// reason: no public CA will vouch for a loopback edge, so the only way to
+/// exercise the trust path at all is to stand up a CA nobody trusts and
+/// name it. That is also exactly the shape of the case in the field — an
+/// egress proxy re-signing with a CA that is private to one company.
+///
+/// Returns the `https://` URL, the PEM to trust, and the directory holding
+/// it, which the caller must keep alive.
+fn tls_edge(edge_name: &str) -> (String, std::path::PathBuf, tempfile::TempDir) {
+    use std::sync::Arc;
+    use tokio_rustls::rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
+
+    // The upstream this terminates onto: the plain edge the rest of this
+    // file already drives, unchanged.
+    let upstream = echoing_edge(edge_name)
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .to_string();
+
+    // `localhost` rather than the address, so the name in the URL is the
+    // name in the certificate; `--reflect-at` is what actually points the
+    // connection at loopback.
+    let issued = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+        .expect("a self-signed certificate for the edge");
+    let cert = CertificateDer::from(issued.cert.der().to_vec());
+    let key = PrivatePkcs8KeyDer::from(issued.key_pair.serialize_der());
+
+    let dir = tempfile::tempdir().unwrap();
+    let pem = dir.path().join("edge-ca.pem");
+    std::fs::write(&pem, issued.cert.pem()).unwrap();
+
+    let config = tokio_rustls::rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert], key.into())
+        .expect("the edge's certificate and key agree");
+
+    // Bound on this thread so the port is known before the test proceeds;
+    // served on another, which owns the runtime.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    listener.set_nonblocking(true).unwrap();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            while let Ok((sock, _)) = listener.accept().await {
+                let acceptor = acceptor.clone();
+                let upstream = upstream.clone();
+                tokio::spawn(async move {
+                    let Ok(mut tls) = acceptor.accept(sock).await else {
+                        return;
+                    };
+                    let Ok(mut up) = tokio::net::TcpStream::connect(&upstream).await else {
+                        return;
+                    };
+                    let _ = tokio::io::copy_bidirectional(&mut tls, &mut up).await;
+                });
+            }
+        });
+    });
+
+    (format!("https://localhost:{port}/"), pem, dir)
+}
+
+/// An edge behind a CA the public roots do not know is unreachable, and
+/// `--extra-root` is what reaches it.
+///
+/// This is the whole of discofetch's ask: `netcheck` is what we tell people
+/// to run when they do not know their own network, and a corporate network
+/// — the one case where that question is hardest to answer — is exactly
+/// where an intercepting proxy re-signs the fetch with a CA no public root
+/// vouches for. Before the flag the answer was `not measured`, which is
+/// honest and useless.
+///
+/// Both halves are asserted, because only the pair proves the flag did the
+/// work: the same edge, the same run, unreachable without it and measured
+/// with it.
+#[test]
+fn an_intercepted_edge_is_unreachable_until_extra_root_names_its_ca() {
+    let (url, pem, _dir) = tls_edge("gate1");
+
+    let without = netcheck(&["--reflect", &url, "--reflect-at", "127.0.0.1"]);
+    assert!(
+        without.contains("address    not measured"),
+        "an untrusted CA is a silence, not an address: {without}"
+    );
+    assert!(
+        without.contains("tls:"),
+        "and it names TLS as the reason rather than a bare failure: {without}"
+    );
+
+    let with = netcheck(&[
+        "--reflect",
+        &url,
+        "--reflect-at",
+        "127.0.0.1",
+        "--extra-root",
+        pem.to_str().unwrap(),
+    ]);
+    assert!(
+        with.contains("address    127.0.0.1"),
+        "named, the CA verifies and the edge answers: {with}"
+    );
+    assert!(
+        with.contains("(gate1)"),
+        "and it is the edge we stood up: {with}"
+    );
+}
+
+/// A path that is not a certificate is refused by name, before anything is
+/// measured.
+///
+/// The promise `load_roots` makes in its first sentence. A file accepted at
+/// load and refused at dial is the late, obscure failure the flag exists to
+/// prevent, so the refusal has to come first and has to say which file.
+#[test]
+fn a_file_that_is_not_a_certificate_is_refused_by_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let junk = dir.path().join("not-a-cert.pem");
+    std::fs::write(&junk, b"this is not a certificate\n").unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_drt"))
+        .arg("netcheck")
+        .args(["--extra-root", junk.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "a bad root is a refusal: {err}");
+    assert!(err.contains("--extra-root"), "named by flag: {err}");
+    assert!(err.contains("not-a-cert.pem"), "and by file: {err}");
+}
+
+// ---------------------------------------------------------------------------
+// Issue #25: one flag, and the edge supplies the rest.
+// depth: an edge that answers a `measure` block, on every loopback address.
+// ---------------------------------------------------------------------------
+
+/// A reflect edge that answers the given `measure` block beside what it
+/// observed, bound on every address so the vantages it names -- two
+/// loopback addresses -- both reach it. The seen port is echoed, so a
+/// pinned pair of fetches reads as one port twice.
+fn configuring_edge(measure: &str) -> String {
+    let listener = TcpListener::bind("0.0.0.0:0").unwrap();
+    let url = format!(
+        "http://127.0.0.1:{}/",
+        listener.local_addr().unwrap().port()
+    );
+    let measure = measure.to_string();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let seen = stream.peer_addr().unwrap();
+            let local = stream.local_addr().unwrap();
+            let mut scratch = [0u8; 2048];
+            let _ = stream.read(&mut scratch);
+            // The edge names itself by the address it was reached at, so
+            // two vantages of one listener are two names.
+            let body = format!(
+                "{{\"observed\":{{\"address\":\"{}\",\"port\":{},\"edge\":\"edge-{}\"}},\
+                 \"measure\":{measure}}}",
+                seen.ip(),
+                seen.port(),
+                local.ip()
+            );
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    url
+}
+
+/// The whole of the ask: one `--reflect`, and the answer configures the
+/// run. The vantages it names are both fetched and compared, and the STUN
+/// pair it names is the pair asked -- which the `udp map` line proves by
+/// naming a server nothing on this command line ever typed.
+#[test]
+fn one_reflect_flag_and_the_answer_configures_the_run() {
+    let url = configuring_edge(
+        r#"{"stun":["answered-a.invalid:3478","answered-b.invalid:3478"],
+            "vantages":["127.0.0.1","127.0.0.2"]}"#,
+    );
+    let text = netcheck(&["--reflect", &url]);
+    assert!(
+        text.contains(&format!(
+            "config     {url}: stun from the answer (2), vantages from the answer (2)"
+        )),
+        "{text}"
+    );
+    assert!(text.contains("(edge-127.0.0.1)"), "{text}");
+    assert!(text.contains("(edge-127.0.0.2)"), "{text}");
+    assert!(
+        text.contains("independent (pinned source port, sequential)"),
+        "two answered vantages are pinned and compared: {text}"
+    );
+    assert!(
+        text.contains("answered-a.invalid"),
+        "the servers asked were the answer's: {text}"
+    );
+}
+
+/// A typed flag wins over the answer, one key at a time.
+#[test]
+fn a_typed_flag_wins_over_the_answer_per_key() {
+    let url = configuring_edge(
+        r#"{"stun":["answered-a.invalid:3478","answered-b.invalid:3478"],
+            "vantages":["127.0.0.1","127.0.0.2"]}"#,
+    );
+    let text = netcheck(&["--reflect", &url, "--reflect-at", "127.0.0.1"]);
+    assert!(
+        text.contains("stun from the answer (2), vantages from --reflect-at"),
+        "{text}"
+    );
+    assert!(text.contains("(one vantage; not a comparison)"), "{text}");
+    assert!(!text.contains("edge-127.0.0.2"), "{text}");
+}
+
+/// The answer cannot weaken the rules the flags live under.
+///
+/// One server is still "1 given", and two entries that are one address are
+/// still one destination -- the stability check, not a comparison.
+#[test]
+fn an_answer_cannot_weaken_the_two_server_rule_or_fake_a_second_vantage() {
+    let one = configuring_edge(r#"{"stun":["only.invalid:3478"],"vantages":["127.0.0.1"]}"#);
+    let text = netcheck(&["--reflect", &one]);
+    assert!(text.contains("1 given"), "{text}");
+
+    let twice = configuring_edge(r#"{"vantages":["127.0.0.1","127.0.0.1"]}"#);
+    let text = netcheck(&["--reflect", &twice]);
+    assert!(text.contains("one edge twice: the mapping held"), "{text}");
+    assert!(!text.contains("independent (pinned"), "{text}");
+}
+
+/// An answer with no `measure` block, or a malformed one, is the old run.
+#[test]
+fn an_answer_without_a_measure_block_leaves_the_run_to_the_flags() {
+    let plain = echoing_edge("gate1");
+    let text = netcheck(&["--reflect", &plain]);
+    assert!(
+        text.contains(&format!("config     {plain}: no stun, no vantages")),
+        "{text}"
+    );
+    assert!(text.contains("0 given"), "{text}");
+
+    let malformed = configuring_edge(r#"{"stun":"not-a-list","vantages":42}"#);
+    let text = netcheck(&["--reflect", &malformed, "--stun", "typed.invalid:3478"]);
+    assert!(
+        text.contains("stun from --stun, no vantages"),
+        "a malformed key reads as absent: {text}"
+    );
+}
+
+/// A bare run names what it is missing, and invents nobody's infrastructure.
+#[test]
+fn a_bare_run_says_it_has_nothing_to_measure_against() {
+    let text = netcheck(&[]);
+    assert!(
+        text.contains(
+            "config     nothing named to measure against: --reflect <url> supplies the rest"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("discofetch"), "{text}");
 }

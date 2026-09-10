@@ -761,6 +761,7 @@ fn a_report_says_nil_for_an_endpoint_it_does_not_have() {
             punchable: false,
             address: None,
             why: "a fresh mapping per destination".into(),
+            local: vec![],
         }));
     assert_eq!(
         field(&symmetric, "event").as_str(),
@@ -768,6 +769,28 @@ fn a_report_says_nil_for_an_endpoint_it_does_not_have() {
     );
     assert_eq!(*field(&symmetric, "address"), rmpv::Value::Nil);
     assert_eq!(*field(&symmetric, "punchable"), rmpv::Value::Boolean(false));
+    // No route is an empty list, never nil: a program iterates `local`
+    // without a guard.
+    assert_eq!(*field(&symmetric, "local"), rmpv::Value::Array(vec![]));
+
+    // The host candidates ride the same report, as strings a program hands
+    // straight to a rendezvous (issue #25). Both families, in the order the
+    // measurement found them.
+    let with_local =
+        drt::wireguard::report_value(&drt::wireguard::Report::Mapping(drt::wireguard::Mapping {
+            kind: "independent",
+            punchable: true,
+            address: Some("203.0.113.10:51820".parse().unwrap()),
+            why: "one mapping for every destination".into(),
+            local: vec![
+                "192.168.1.50".parse().unwrap(),
+                "2001:db8::50".parse().unwrap(),
+            ],
+        }));
+    assert_eq!(
+        *field(&with_local, "local"),
+        rmpv::Value::Array(vec!["192.168.1.50".into(), "2001:db8::50".into()])
+    );
 
     // And a refusal reaches the program that caused it, not just a log.
     let refused = drt::wireguard::report_value(&drt::wireguard::Report::Refused {

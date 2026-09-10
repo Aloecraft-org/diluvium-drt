@@ -49,8 +49,9 @@ pub async fn get(
     url: &str,
     dest: std::net::SocketAddr,
     from_port: Option<u16>,
+    extra_roots: &[tokio_rustls::rustls::pki_types::CertificateDer<'static>],
 ) -> Result<(String, u16), String> {
-    tokio::time::timeout(TIMEOUT, fetch(url, dest, from_port))
+    tokio::time::timeout(TIMEOUT, fetch(url, dest, from_port, extra_roots))
         .await
         .map_err(|_| format!("no answer within {}s", TIMEOUT.as_secs()))?
 }
@@ -122,6 +123,7 @@ async fn fetch(
     url: &str,
     dest: std::net::SocketAddr,
     from_port: Option<u16>,
+    extra_roots: &[tokio_rustls::rustls::pki_types::CertificateDer<'static>],
 ) -> Result<(String, u16), String> {
     // The `Host` header stays the name whichever address answered: one
     // vhost serves the label from every vantage, which is the whole reason
@@ -136,10 +138,13 @@ async fn fetch(
     let (stream, local_port) = connect_from(dest, from_port).await?;
 
     if tls {
-        let mut roots = tokio_rustls::rustls::RootCertStore::empty();
-        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        // webpki's roots, plus whatever `--extra-root` named -- added and
+        // never substituted, which `roots::store` is the one place that
+        // decides. An intercepting proxy is the case this serves, and it
+        // is the case `netcheck` meets most: a corporate network is
+        // exactly where "what can this network do" is hardest to answer.
         let config = tokio_rustls::rustls::ClientConfig::builder()
-            .with_root_certificates(roots)
+            .with_root_certificates(crate::roots::store(extra_roots))
             .with_no_client_auth();
         let name = tokio_rustls::rustls::pki_types::ServerName::try_from(host.clone())
             .map_err(|_| "the url's host is not a name a certificate can be checked against")?;
@@ -172,6 +177,12 @@ async fn fetch(
 //     else. That is reported, not worked around, because silently falling
 //     back to an ephemeral port would produce two numbers that look like a
 //     comparison and are not.
+/// How a pinned bind that lost its port reports itself. A constant because
+/// `netcheck::gather::reflect` reads it back to tell that loss -- which it
+/// answers by measuring again from a fresh port, once -- from every other
+/// way a fetch can fail.
+pub const PORT_LOST: &str = "could not leave from port";
+
 async fn connect_from(
     addr: std::net::SocketAddr,
     from_port: Option<u16>,
@@ -194,7 +205,7 @@ async fn connect_from(
         };
         socket
             .bind(local)
-            .map_err(|e| format!("could not leave from port {pinned}: {e}"))?;
+            .map_err(|e| format!("{PORT_LOST} {pinned}: {e}"))?;
     }
 
     let stream = socket

@@ -289,6 +289,10 @@ pub enum Command {
         /// to classify a mapping; `detect_mapping` refuses below two rather
         /// than guessing, so one server yields "not measured" and the
         /// relay fallback, never a confident wrong answer.
+        ///
+        /// An override. A `--reflect` edge that names its own pair in its
+        /// answer supplies them, and this flag is for a network being
+        /// diagnosed by hand; when both are given, this wins.
         #[arg(long = "stun", value_name = "HOST:PORT")]
         stun: Vec<String>,
         /// A reflect edge, repeatable. Fills the `address` and `tcp map`
@@ -296,9 +300,13 @@ pub enum Command {
         /// names itself. An edge that does not answer stays "not
         /// measured", with the reason — never a guess and never a zero.
         ///
-        /// Two edges do not yet make a comparison: each fetch is its own
-        /// connection with its own source port, and comparing those
-        /// compares nothing. See `Measurements::tcp_agrees`.
+        /// This is the one flag an ordinary run needs. The first edge is
+        /// asked, before anything is measured, how to measure against it
+        /// -- the STUN pair and the vantage addresses -- and the run
+        /// configures itself from the answer. An edge that answers with
+        /// nothing of the kind leaves the run to `--stun` and
+        /// `--reflect-at`, exactly as before. The evidence block's first
+        /// line says which happened.
         #[arg(long = "reflect", value_name = "URL")]
         reflect: Vec<String>,
         /// Ask `--reflect` at this address rather than at the one its name
@@ -308,8 +316,10 @@ pub enum Command {
         /// One `--reflect` is one vantage whatever its name resolves to,
         /// so a name with two A records still yields one view per run;
         /// naming each address here is what gets a comparison. It is
-        /// `curl --resolve` by another name, and it stays necessary for
-        /// that reason rather than until some record lands.
+        /// `curl --resolve` by another name.
+        ///
+        /// An override, like `--stun`: an edge that lists its vantages in
+        /// its answer supplies them, and this flag wins when both are given.
         #[arg(long = "reflect-at", value_name = "ADDRESS")]
         reflect_at: Vec<String>,
         /// Ask a probe edge to connect back to the address it observes,
@@ -341,10 +351,12 @@ pub enum Command {
         /// port**, which is what turns two edges into a TCP mapping
         /// comparison rather than two unrelated observations.
         ///
-        /// Sequential, so a NAT may rebind between the requests; the
-        /// evidence line says so. Off by default because it binds a
-        /// specific port, which can fail, and because with fewer than two
-        /// edges it measures nothing.
+        /// On by default whenever more than one fetch is planned, which is
+        /// the only time it measures anything, so a bare run gets the
+        /// comparison it can make. This flag forces it for a single fetch
+        /// -- where it measures nothing -- and exists so a script written
+        /// when it was required keeps working. Sequential either way, so a
+        /// NAT may rebind between the requests; the evidence line says so.
         #[arg(long = "pin-source-port")]
         pin_source_port: bool,
         /// Take the UDP mapping from **this local port** rather than an
@@ -356,6 +368,18 @@ pub enum Command {
         /// `udp map`, never quietly replaced.
         #[arg(long = "udp-port", value_name = "N")]
         udp_port: Option<u16>,
+        /// Trust this PEM certificate in addition to the public roots --
+        /// an intercepting proxy's CA, typically. Repeatable. Added, never
+        /// substituted, the same rule and wording `drt tunnel` uses.
+        ///
+        /// This is the flag that makes `netcheck` usable on a corporate
+        /// network, which is the network whose behaviour is hardest to
+        /// guess and where "run netcheck" is most often the advice.
+        /// Without it an intercepted `--reflect` fetch fails
+        /// `UnknownIssuer` and the TCP half reads "not measured" -- an
+        /// honest answer, but not the one the operator can act on.
+        #[arg(long = "extra-root", value_name = "PEM")]
+        extra_root: Vec<std::path::PathBuf>,
         /// Machine-readable output. The default is human text, because the
         /// primary consumer is a person deciding what to do next.
         #[arg(long)]
@@ -1024,7 +1048,7 @@ pub fn main(cli: Cli) -> ExitCode {
             // Read and parse before anything is dialed, so a wrong path is
             // a refusal by name rather than a TLS error on the first
             // connection.
-            let roots = match crate::tunnel::load_roots(&extra_root) {
+            let roots = match crate::roots::load_roots(&extra_root) {
                 Ok(roots) => roots,
                 Err(e) => {
                     eprintln!("drt tunnel: {e}");
@@ -1096,24 +1120,91 @@ pub fn main(cli: Cli) -> ExitCode {
             probe_at,
             pin_source_port,
             udp_port,
+            extra_root,
             json,
         } => {
+            // Before the runtime and before any measurement: a wrong path
+            // should cost nothing and be named, not surface as a TLS error
+            // partway through a diagnostic.
+            let roots = match crate::roots::load_roots(&extra_root) {
+                Ok(roots) => roots,
+                Err(e) => {
+                    eprintln!("drt netcheck: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
             let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
             let mut m = crate::netcheck::Measurements::default();
-            let servers: Vec<&str> = stun.iter().map(String::as_str).collect();
             let edges: Vec<&str> = reflect.iter().map(String::as_str).collect();
-            let at: Vec<&str> = reflect_at.iter().map(String::as_str).collect();
+            let typed_at: Vec<&str> = reflect_at.iter().map(String::as_str).collect();
             runtime.block_on(async {
+                // The configuration fetch first, and only when an edge is
+                // named: what to measure against comes from the thing being
+                // measured against, never from this binary (issue #25).
+                // Merged per key, the typed value winning, and the flags'
+                // own rules apply to the result -- so an answer naming one
+                // server is still "1 given", and an answer's vantages still
+                // may not host the probe.
+                let mut servers: Vec<String> = stun.clone();
+                let mut at: Vec<String> = reflect_at.clone();
+                let from = |what: &str, typed: bool, answered: usize| {
+                    if typed {
+                        format!(
+                            "{what} from --{}",
+                            if what == "stun" { "stun" } else { "reflect-at" }
+                        )
+                    } else if answered > 0 {
+                        format!("{what} from the answer ({answered})")
+                    } else {
+                        format!("no {what}")
+                    }
+                };
+                m.config = match edges.first() {
+                    Some(first) => {
+                        match crate::netcheck::gather::configure(first, &typed_at, &roots).await {
+                            Ok(answer) => {
+                                if servers.is_empty() {
+                                    servers = answer.stun.clone();
+                                }
+                                if at.is_empty() {
+                                    at = answer.vantages.clone();
+                                }
+                                Some(format!(
+                                    "{first}: {}, {}",
+                                    from("stun", !stun.is_empty(), answer.stun.len()),
+                                    from("vantages", !reflect_at.is_empty(), answer.vantages.len())
+                                ))
+                            }
+                            Err(why) => Some(format!("{first}: not read ({why}); flags only")),
+                        }
+                    }
+                    None if stun.is_empty() => Some(
+                        "nothing named to measure against: --reflect <url> supplies the rest, \
+                         or --stun twice"
+                            .into(),
+                    ),
+                    None => None,
+                };
+                let servers: Vec<&str> = servers.iter().map(String::as_str).collect();
+                let at: Vec<&str> = at.iter().map(String::as_str).collect();
                 crate::netcheck::gather::local_and_udp(&mut m, &servers, udp_port).await;
                 // After the UDP half on purpose: STUN's address is the one
                 // the decisive measurement saw, and an edge that disagrees
                 // with it is recorded as a disagreement rather than
                 // overwriting it.
-                crate::netcheck::gather::reflect(&mut m, &edges, &at, pin_source_port).await;
+                crate::netcheck::gather::reflect(&mut m, &edges, &at, pin_source_port, &roots)
+                    .await;
                 // Last: it needs the reflect views to know which vantages
                 // this run has already contacted.
                 if let Some(first) = edges.first() {
-                    crate::netcheck::gather::probe(&mut m, first, probe_at.as_deref(), &port).await;
+                    crate::netcheck::gather::probe(
+                        &mut m,
+                        first,
+                        probe_at.as_deref(),
+                        &port,
+                        &roots,
+                    )
+                    .await;
                 } else if !port.is_empty() {
                     m.inbound_why =
                         Some("--port needs a --reflect edge to derive the probe host from".into());

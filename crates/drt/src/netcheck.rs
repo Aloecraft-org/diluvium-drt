@@ -198,6 +198,70 @@ pub struct Measurements {
     /// always `None` here and the renderer says "not measured" rather
     /// than naming a flag the binary does not accept.
     pub inbound: Option<(u16, Inbound)>,
+    /// Where the STUN pair and the vantages came from, in one sentence, or
+    /// what to name when nothing was (issue #25).
+    ///
+    /// Rendered first in the evidence block because it explains the rest
+    /// of it: a reader deciding whether to trust `udp map` needs to know
+    /// whether the servers were the ones they typed or the ones the edge
+    /// answered with. `None` when there is nothing to say -- servers named
+    /// by hand and no edge asked.
+    pub config: Option<String>,
+}
+
+/// What a reflect answer may say about how to measure against it.
+///
+/// The one-flag invocation (issue #25): `drt netcheck --reflect <url>`,
+/// and the edge answers with the STUN pair to use and the vantage
+/// addresses to pin, so the operator is no longer the transport for values
+/// the service already knows and a released binary carries none of them.
+/// Anyone standing up their own reflect endpoint gets the same behaviour
+/// against their own URL, which compiled-in defaults never could.
+///
+/// Read from a `measure` block beside `observed`; absent is empty, and
+/// each key falls back on its own -- a block naming servers and no
+/// vantages configures the servers and leaves the vantages to `--reflect-at`.
+/// Keys this reader does not know are ignored, so the block can grow
+/// without a version negotiation. The two rules the flags live under --
+/// fewer than two servers is a refusal, and a probe vantage must be one
+/// the run did not contact -- apply to these values exactly as to typed
+/// ones, because they are merged into the same arguments before either
+/// rule looks; the answer cannot weaken either.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Measure {
+    /// STUN servers, `host:port`, in the order to try.
+    pub stun: Vec<String>,
+    /// Vantage addresses, never names: distinctness has to be decidable
+    /// without a resolution step that could collapse two into one.
+    pub vantages: Vec<String>,
+}
+
+impl Measure {
+    /// The `measure` block of a reflect answer, or empty. A key whose value
+    /// is not a list of strings reads as absent rather than as an error,
+    /// because the flags are still there to fall back on and a diagnostic
+    /// that refuses to run over a malformed hint is a diagnostic nobody
+    /// runs.
+    pub fn from_answer(answer: &serde_json::Value) -> Measure {
+        let strings = |key: &str| -> Vec<String> {
+            answer
+                .get("measure")
+                .and_then(|m| m.get(key))
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|v| v.as_str())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        Measure {
+            stun: strings("stun"),
+            vantages: strings("vantages"),
+        }
+    }
 }
 
 impl Measurements {
@@ -467,6 +531,11 @@ pub fn render_text(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
     out.push_str(&format!("  use: {}\n\n", verdict.advice()));
     out.push_str("evidence\n");
 
+    // First, because it qualifies everything under it.
+    if let Some(config) = &m.config {
+        out.push_str(&format!("  config     {config}\n"));
+    }
+
     match m.observed_address {
         Some(a) => out.push_str(&format!(
             "  address    {}{}{}\n",
@@ -544,7 +613,22 @@ pub fn render_text(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
             }
             None => "  (one vantage; not a comparison)",
         };
-        out.push_str(&format!("  tcp map    {}{}\n", pairs.join(", "), label));
+        // An edge that did not answer beside one that did is the reason a
+        // comparison became one vantage, and it used to be recorded and
+        // never shown -- rendered only when NO edge answered. With pinning
+        // the default, a lost bind would have read as a network with one
+        // vantage and no hint that a second was asked.
+        let unanswered = if m.reflect_why.is_empty() {
+            String::new()
+        } else {
+            format!("  (unanswered: {})", m.reflect_why.join("; "))
+        };
+        out.push_str(&format!(
+            "  tcp map    {}{}{}\n",
+            pairs.join(", "),
+            label,
+            unanswered
+        ));
     }
 
     let name = |r: Inbound| match r {
@@ -597,6 +681,7 @@ pub fn render_json(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
         "why": why,
         "advice": verdict.advice(),
         "evidence": {
+            "config": m.config,
             "address": {
                 "ip": m.observed_address.map(|a| a.to_string()),
                 "cgnat": m.is_cgnat(),
@@ -732,16 +817,8 @@ pub mod gather {
     /// use for a public destination — a connected UDP socket sends nothing,
     /// so this is a local operation, not a probe.
     pub fn routable_v6() -> Option<std::net::IpAddr> {
-        use std::net::{IpAddr, SocketAddr, UdpSocket};
-        let sock = UdpSocket::bind("[::]:0").ok()?;
-        // 2001:4860:4860::8888 is a well-known public destination. Nothing
-        // is sent; connect() only makes the kernel pick a source address.
-        sock.connect(SocketAddr::from((
-            "2001:4860:4860::8888".parse::<IpAddr>().ok()?,
-            53,
-        )))
-        .ok()?;
-        let local = sock.local_addr().ok()?.ip();
+        use std::net::IpAddr;
+        let local = source_toward("2001:4860:4860::8888".parse().ok()?)?;
         match local {
             IpAddr::V6(v6)
                 if !v6.is_loopback()
@@ -755,6 +832,54 @@ pub mod gather {
             }
             _ => None,
         }
+    }
+
+    /// The source address the routing table would pick toward `dest`.
+    ///
+    /// A connected UDP socket sends nothing; `connect()` only makes the
+    /// kernel choose, so this is a local operation and not a probe.
+    /// `dest` decides the family. `None` when there is no route at all,
+    /// which an offline machine answers honestly rather than with
+    /// loopback.
+    fn source_toward(dest: std::net::IpAddr) -> Option<std::net::IpAddr> {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
+        let unspecified: IpAddr = match dest {
+            IpAddr::V4(_) => Ipv4Addr::UNSPECIFIED.into(),
+            IpAddr::V6(_) => Ipv6Addr::UNSPECIFIED.into(),
+        };
+        let sock = UdpSocket::bind(SocketAddr::new(unspecified, 0)).ok()?;
+        // 8.8.8.8 and 2001:4860:4860::8888 are well-known public
+        // destinations. Nothing is sent to either.
+        sock.connect(SocketAddr::new(dest, 53)).ok()?;
+        let local = sock.local_addr().ok()?.ip();
+        (!local.is_loopback() && !local.is_unspecified()).then_some(local)
+    }
+
+    /// This machine's own addresses, one per family, as a peer on the same
+    /// network would reach them (issue #25).
+    ///
+    /// The one candidate a mapping report could not carry. `wireguard_mapping`
+    /// publishes the server-reflexive address -- what a STUN server saw --
+    /// and two machines behind one router then have to hairpin through it,
+    /// which plenty of routers refuse; so two machines on one LAN could not
+    /// punch to each other from the report alone. A host candidate is what
+    /// ICE uses for exactly that, and a guest cannot learn one on its own:
+    /// no sockets, no `net`, an `fs` scope of one directory.
+    ///
+    /// Two addresses and not a list, on purpose. The address the routing
+    /// table picks toward the internet *is* the one a same-LAN peer reaches,
+    /// so the primary per family covers the case that was filed, and a
+    /// dual-stack home roughly doubles the coverage for no interface
+    /// enumeration and no new dependency. Multi-homed machines would want
+    /// `getifaddrs`; that arrives with evidence they are common, not before.
+    /// Raw: private, link-scoped, whatever the table answers. Whether to
+    /// publish a LAN address at all is a program's decision, since it
+    /// discloses topology.
+    pub fn local_addresses() -> Vec<std::net::IpAddr> {
+        ["8.8.8.8", "2001:4860:4860::8888"]
+            .iter()
+            .filter_map(|d| source_toward(d.parse().ok()?))
+            .collect()
     }
 
     /// Fill in the measurements this build can take without an edge:
@@ -788,6 +913,7 @@ pub mod gather {
         reflect_url: &str,
         probe_at: Option<&str>,
         ports: &[u16],
+        extra_roots: &[tokio_rustls::rustls::pki_types::CertificateDer<'static>],
     ) {
         if ports.is_empty() {
             return;
@@ -838,7 +964,7 @@ pub mod gather {
                 Some(token) => format!("{url}?port={port}&token={token}"),
                 None => format!("{url}?port={port}"),
             };
-            match crate::reflect::get(&query, dest, None).await {
+            match crate::reflect::get(&query, dest, None, extra_roots).await {
                 Ok((body, _)) => match parse_probe(&body) {
                     Ok(result) => m.inbound_all.push((*port, result)),
                     Err(why) => {
@@ -912,12 +1038,19 @@ pub mod gather {
     /// rendering it as a closed port would be a confidently wrong answer
     /// about the user's network, which is the one thing this module exists
     /// not to do.
-    pub async fn reflect(m: &mut Measurements, edges: &[&str], at: &[&str], pin: bool) {
+    pub async fn reflect(
+        m: &mut Measurements,
+        edges: &[&str],
+        at: &[&str],
+        force_pin: bool,
+        extra_roots: &[tokio_rustls::rustls::pki_types::CertificateDer<'static>],
+    ) {
         // The first fetch takes an ephemeral port and reports it; every
         // fetch after it leaves from that same port. Sequential on purpose
         // -- see `reflect::connect_from`.
-        let mut pinned: Option<u16> = None;
-        let mut all_pinned = true;
+        // An edge that does not resolve is asked nothing, and a run with
+        // one of those is not a comparison whatever the rest of it did.
+        let mut every_edge_resolved = true;
         // One name, every address it resolves to. `NETCHECK-SPEC.md` §2:
         // "One name, two A records. The client resolves
         // reflect.discofetch.link, connects to each returned address from
@@ -943,59 +1076,103 @@ pub mod gather {
             match found {
                 Ok(found) => targets.extend(found.into_iter().map(|a| (*url, a))),
                 Err(why) => {
-                    all_pinned = false;
+                    every_edge_resolved = false;
                     m.reflect_why.push(format!("{url}: {why}"));
                 }
             }
         }
-        for (url, dest) in targets {
-            match one_edge(url, dest, if pin { pinned } else { None }).await {
-                Ok((view, used_port)) => {
-                    if pin {
-                        match pinned {
-                            None => pinned = Some(used_port),
-                            // A bind that did not take is not a comparison.
-                            Some(want) if want != used_port => all_pinned = false,
-                            Some(_) => {}
-                        }
-                    }
-                    // The address an edge saw over TCP. STUN's is over UDP,
-                    // and a network may egress differently per protocol, so
-                    // a disagreement is recorded rather than resolved.
-                    if let Some(seen) = view.address {
-                        match m.observed_address {
-                            None => m.observed_address = Some(seen),
-                            // Different protocols may egress differently,
-                            // so this is a finding to show and not a
-                            // conflict to resolve. First one wins the field;
-                            // a second disagreement is the same story.
-                            Some(known) if known != seen => {
-                                m.address_why.get_or_insert_with(|| {
-                                    format!("{} saw {seen}, over TCP", view.edge)
-                                });
+        // Pinned whenever more than one fetch is planned, which is the only
+        // time pinning measures anything: two vantages become a comparison,
+        // one vantage asked twice becomes the stability check, and one
+        // fetch alone is one vantage pinned or not. A caller used to have to
+        // know a flag to get the measurement the run could plainly make,
+        // and the alternative -- measuring both pinned and unpinned -- would
+        // double the requests against edges that rate-limit, trading a
+        // correct cheap outcome for a possibly-429'd expensive one (issue
+        // #25). `force_pin` is the old flag, kept so a script that names it
+        // keeps working; it changes nothing a bare run would not do.
+        let pin = force_pin || targets.len() >= 2;
+        // A pinned port can be lost between two sequential fetches: the
+        // first releases it, and on a busy machine any other process may
+        // take it as its own ephemeral port before the second binds it.
+        // That is not a fact about the network, so the run starts again
+        // from a fresh port, once, with the loss recorded. A second loss is
+        // reported as any failed fetch is; two in a row is the machine
+        // saying something, and hiding it under a third try would not be
+        // measuring. Found by CI, where twenty of these run at once.
+        let mut retried = false;
+        loop {
+            let views_before = m.tcp_views.len();
+            let mut pinned: Option<u16> = None;
+            let mut all_pinned = every_edge_resolved;
+            let mut lost = false;
+            for (url, dest) in &targets {
+                let (url, dest) = (*url, *dest);
+                match one_edge(url, dest, if pin { pinned } else { None }, extra_roots).await {
+                    Ok((view, used_port)) => {
+                        if pin {
+                            match pinned {
+                                None => pinned = Some(used_port),
+                                // A bind that did not take is not a comparison.
+                                Some(want) if want != used_port => all_pinned = false,
+                                Some(_) => {}
                             }
-                            Some(_) => {}
                         }
+                        // The address an edge saw over TCP. STUN's is over UDP,
+                        // and a network may egress differently per protocol, so
+                        // a disagreement is recorded rather than resolved.
+                        if let Some(seen) = view.address {
+                            match m.observed_address {
+                                None => m.observed_address = Some(seen),
+                                // Different protocols may egress differently,
+                                // so this is a finding to show and not a
+                                // conflict to resolve. First one wins the field;
+                                // a second disagreement is the same story.
+                                Some(known) if known != seen => {
+                                    m.address_why.get_or_insert_with(|| {
+                                        format!("{} saw {seen}, over TCP", view.edge)
+                                    });
+                                }
+                                Some(_) => {}
+                            }
+                        }
+                        if view.token.is_some() {
+                            m.probe_token = view.token.clone();
+                        }
+                        m.tcp_views.push(EdgeView {
+                            edge: view.edge,
+                            port: view.port,
+                            dest: dest.to_string(),
+                        });
                     }
-                    if view.token.is_some() {
-                        m.probe_token = view.token.clone();
+                    Err(why) if pin && !retried && why.contains(crate::reflect::PORT_LOST) => {
+                        m.reflect_why.push(format!(
+                            "{url} via {dest}: {why}; measured again from a fresh port"
+                        ));
+                        lost = true;
+                        break;
                     }
-                    m.tcp_views.push(EdgeView {
-                        edge: view.edge,
-                        port: view.port,
-                        dest: dest.to_string(),
-                    });
-                }
-                Err(why) => {
-                    all_pinned = false;
-                    m.reflect_why.push(format!("{url} via {dest}: {why}"));
+                    Err(why) => {
+                        all_pinned = false;
+                        m.reflect_why.push(format!("{url} via {dest}: {why}"));
+                    }
                 }
             }
+            if lost {
+                // The views of the run that lost its port are not this
+                // run's; the address they observed is the same edge's and
+                // stays, since a second observation of it changes nothing.
+                m.tcp_views.truncate(views_before);
+                retried = true;
+                continue;
+            }
+            // Only a run where EVERY view left from one port is a
+            // comparison. One failed bind, one edge that did not answer,
+            // or one that did not resolve, and these are separate
+            // observations again.
+            m.tcp_same_source_port = pin && all_pinned && m.tcp_views.len() > 1;
+            break;
         }
-        // Only a run where EVERY view left from one port is a comparison.
-        // One failed bind, or one edge that did not answer, and these are
-        // separate observations again.
-        m.tcp_same_source_port = pin && all_pinned && m.tcp_views.len() > 1;
         // A vantage that answered but names itself nothing new is still a
         // vantage; the destination is what counted it.
         let _ = &m.tcp_views;
@@ -1013,8 +1190,9 @@ pub mod gather {
         url: &str,
         dest: std::net::SocketAddr,
         from_port: Option<u16>,
+        extra_roots: &[tokio_rustls::rustls::pki_types::CertificateDer<'static>],
     ) -> Result<(EdgeAnswer, u16), String> {
-        let (body, used_port) = crate::reflect::get(url, dest, from_port).await?;
+        let (body, used_port) = crate::reflect::get(url, dest, from_port, extra_roots).await?;
         let json: serde_json::Value =
             serde_json::from_str(&body).map_err(|_| "the edge did not answer JSON".to_string())?;
         let observed = json
@@ -1053,6 +1231,41 @@ pub mod gather {
             },
             used_port,
         ))
+    }
+
+    /// The configuration fetch: ask one reflect edge how to measure against
+    /// it, **before** any measurement is taken (issue #25).
+    ///
+    /// Its own request rather than a reordering of the measurement ones.
+    /// The UDP half runs before the reflect fetches on purpose -- STUN's
+    /// address is the one the decisive measurement saw, and an edge that
+    /// disagrees with it is recorded as a disagreement rather than
+    /// overwriting it (`cli.rs`, and `Measurements::address_why`). Taking
+    /// the STUN pair from a reflect answer would put reflect first and
+    /// invert the order that rationale rests on; a separate unpinned fetch
+    /// costs one request and moves nothing. Its answer is not kept as a
+    /// view for the same reason: a value observed before STUN, on a mapping
+    /// that then moved, would turn a real disagreement into a stale one.
+    ///
+    /// `at` is honoured when given, since a name may deliberately not
+    /// resolve to the vantage an operator is pointing at.
+    pub async fn configure(
+        url: &str,
+        at: &[&str],
+        extra_roots: &[tokio_rustls::rustls::pki_types::CertificateDer<'static>],
+    ) -> Result<super::Measure, String> {
+        let found = if at.is_empty() {
+            crate::reflect::addresses(url).await?
+        } else {
+            crate::reflect::addresses_at(url, at)?
+        };
+        let Some(dest) = found.first().copied() else {
+            return Err("named no address".into());
+        };
+        let (body, _) = crate::reflect::get(url, dest, None, extra_roots).await?;
+        let answer: serde_json::Value =
+            serde_json::from_str(&body).map_err(|_| "the edge did not answer JSON".to_string())?;
+        Ok(super::Measure::from_answer(&answer))
     }
 
     pub async fn local_and_udp(m: &mut Measurements, stun_servers: &[&str], udp_port: Option<u16>) {
@@ -1690,6 +1903,24 @@ mod tests {
             let (v, why) = decide(m);
             assert_eq!(v, RULES[i].verdict, "case {i} selected the wrong verdict");
             assert_eq!(why, RULES[i].why, "case {i} matched a different rule");
+        }
+    }
+}
+
+#[cfg(all(test, feature = "stun"))]
+mod local_tests {
+    /// Whatever the routing table answers is at most one address per
+    /// family, and never one a peer could not reach. An offline machine
+    /// answers nothing, which is the honest shape and must not panic.
+    #[test]
+    fn local_addresses_are_at_most_one_per_family_and_never_loopback() {
+        let found = super::gather::local_addresses();
+        assert!(found.len() <= 2, "{found:?}");
+        let v4 = found.iter().filter(|a| a.is_ipv4()).count();
+        let v6 = found.iter().filter(|a| a.is_ipv6()).count();
+        assert!(v4 <= 1 && v6 <= 1, "one per family: {found:?}");
+        for a in &found {
+            assert!(!a.is_loopback() && !a.is_unspecified(), "{a}");
         }
     }
 }
