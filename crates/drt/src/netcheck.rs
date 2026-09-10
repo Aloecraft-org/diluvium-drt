@@ -613,7 +613,22 @@ pub fn render_text(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
             }
             None => "  (one vantage; not a comparison)",
         };
-        out.push_str(&format!("  tcp map    {}{}\n", pairs.join(", "), label));
+        // An edge that did not answer beside one that did is the reason a
+        // comparison became one vantage, and it used to be recorded and
+        // never shown -- rendered only when NO edge answered. With pinning
+        // the default, a lost bind would have read as a network with one
+        // vantage and no hint that a second was asked.
+        let unanswered = if m.reflect_why.is_empty() {
+            String::new()
+        } else {
+            format!("  (unanswered: {})", m.reflect_why.join("; "))
+        };
+        out.push_str(&format!(
+            "  tcp map    {}{}{}\n",
+            pairs.join(", "),
+            label,
+            unanswered
+        ));
     }
 
     let name = |r: Inbound| match r {
@@ -1033,8 +1048,8 @@ pub mod gather {
         // The first fetch takes an ephemeral port and reports it; every
         // fetch after it leaves from that same port. Sequential on purpose
         // -- see `reflect::connect_from`.
-        let mut pinned: Option<u16> = None;
-        let mut all_pinned = true;
+        let mut pinned: Option<u16>;
+        let mut all_pinned: bool;
         // One name, every address it resolves to. `NETCHECK-SPEC.md` §2:
         // "One name, two A records. The client resolves
         // reflect.discofetch.link, connects to each returned address from
@@ -1076,49 +1091,81 @@ pub mod gather {
         // #25). `force_pin` is the old flag, kept so a script that names it
         // keeps working; it changes nothing a bare run would not do.
         let pin = force_pin || targets.len() >= 2;
-        for (url, dest) in targets {
-            match one_edge(url, dest, if pin { pinned } else { None }, extra_roots).await {
-                Ok((view, used_port)) => {
-                    if pin {
-                        match pinned {
-                            None => pinned = Some(used_port),
-                            // A bind that did not take is not a comparison.
-                            Some(want) if want != used_port => all_pinned = false,
-                            Some(_) => {}
-                        }
-                    }
-                    // The address an edge saw over TCP. STUN's is over UDP,
-                    // and a network may egress differently per protocol, so
-                    // a disagreement is recorded rather than resolved.
-                    if let Some(seen) = view.address {
-                        match m.observed_address {
-                            None => m.observed_address = Some(seen),
-                            // Different protocols may egress differently,
-                            // so this is a finding to show and not a
-                            // conflict to resolve. First one wins the field;
-                            // a second disagreement is the same story.
-                            Some(known) if known != seen => {
-                                m.address_why.get_or_insert_with(|| {
-                                    format!("{} saw {seen}, over TCP", view.edge)
-                                });
+        // A pinned port can be lost between two sequential fetches: the
+        // first releases it, and on a busy machine any other process may
+        // take it as its own ephemeral port before the second binds it.
+        // That is not a fact about the network, so the run starts again
+        // from a fresh port, once, with the loss recorded. A second loss is
+        // reported as any failed fetch is; two in a row is the machine
+        // saying something, and hiding it under a third try would not be
+        // measuring. Found by CI, where twenty of these run at once.
+        let mut retried = false;
+        loop {
+            let views_before = m.tcp_views.len();
+            pinned = None;
+            all_pinned = true;
+            let mut lost = false;
+            for (url, dest) in &targets {
+                let (url, dest) = (*url, *dest);
+                match one_edge(url, dest, if pin { pinned } else { None }, extra_roots).await {
+                    Ok((view, used_port)) => {
+                        if pin {
+                            match pinned {
+                                None => pinned = Some(used_port),
+                                // A bind that did not take is not a comparison.
+                                Some(want) if want != used_port => all_pinned = false,
+                                Some(_) => {}
                             }
-                            Some(_) => {}
                         }
+                        // The address an edge saw over TCP. STUN's is over UDP,
+                        // and a network may egress differently per protocol, so
+                        // a disagreement is recorded rather than resolved.
+                        if let Some(seen) = view.address {
+                            match m.observed_address {
+                                None => m.observed_address = Some(seen),
+                                // Different protocols may egress differently,
+                                // so this is a finding to show and not a
+                                // conflict to resolve. First one wins the field;
+                                // a second disagreement is the same story.
+                                Some(known) if known != seen => {
+                                    m.address_why.get_or_insert_with(|| {
+                                        format!("{} saw {seen}, over TCP", view.edge)
+                                    });
+                                }
+                                Some(_) => {}
+                            }
+                        }
+                        if view.token.is_some() {
+                            m.probe_token = view.token.clone();
+                        }
+                        m.tcp_views.push(EdgeView {
+                            edge: view.edge,
+                            port: view.port,
+                            dest: dest.to_string(),
+                        });
                     }
-                    if view.token.is_some() {
-                        m.probe_token = view.token.clone();
+                    Err(why) if pin && !retried && why.contains(crate::reflect::PORT_LOST) => {
+                        m.reflect_why.push(format!(
+                            "{url} via {dest}: {why}; measured again from a fresh port"
+                        ));
+                        lost = true;
+                        break;
                     }
-                    m.tcp_views.push(EdgeView {
-                        edge: view.edge,
-                        port: view.port,
-                        dest: dest.to_string(),
-                    });
-                }
-                Err(why) => {
-                    all_pinned = false;
-                    m.reflect_why.push(format!("{url} via {dest}: {why}"));
+                    Err(why) => {
+                        all_pinned = false;
+                        m.reflect_why.push(format!("{url} via {dest}: {why}"));
+                    }
                 }
             }
+            if lost {
+                // The views of the run that lost its port are not this
+                // run's; the address they observed is the same edge's and
+                // stays, since a second observation of it changes nothing.
+                m.tcp_views.truncate(views_before);
+                retried = true;
+                continue;
+            }
+            break;
         }
         // Only a run where EVERY view left from one port is a comparison.
         // One failed bind, or one edge that did not answer, and these are

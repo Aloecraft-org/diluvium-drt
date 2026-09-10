@@ -188,6 +188,17 @@ releases:
         requests against edges that rate-limit, and a 429 renders as "not
         measured" -- a correct cheap outcome traded for a possibly-empty
         expensive one.
+
+        Two things pinning by default made visible. A pinned port can be
+        lost between the two sequential fetches -- released by the first,
+        taken by any other process as its own ephemeral port before the
+        second binds it -- which is a fact about the machine and not the
+        network, so the run measures again from a fresh port, once, with
+        the loss recorded; CI found it, running twenty of these at once.
+        And an edge that failed beside one that answered was recorded and
+        never shown, rendered only when no edge answered at all; it is
+        named on the `tcp map` line now, so a comparison that became one
+        vantage says why.
       - |
         **`wireguard_mapping` carries `local`**, this machine's own
         addresses, one per family. The mapped address is one candidate --

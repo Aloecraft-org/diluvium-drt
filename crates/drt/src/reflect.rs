@@ -177,6 +177,12 @@ async fn fetch(
 //     else. That is reported, not worked around, because silently falling
 //     back to an ephemeral port would produce two numbers that look like a
 //     comparison and are not.
+/// How a pinned bind that lost its port reports itself. A constant because
+/// `netcheck::gather::reflect` reads it back to tell that loss -- which it
+/// answers by measuring again from a fresh port, once -- from every other
+/// way a fetch can fail.
+pub const PORT_LOST: &str = "could not leave from port";
+
 async fn connect_from(
     addr: std::net::SocketAddr,
     from_port: Option<u16>,
@@ -199,7 +205,7 @@ async fn connect_from(
         };
         socket
             .bind(local)
-            .map_err(|e| format!("could not leave from port {pinned}: {e}"))?;
+            .map_err(|e| format!("{PORT_LOST} {pinned}: {e}"))?;
     }
 
     let stream = socket

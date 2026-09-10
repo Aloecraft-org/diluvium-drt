@@ -138,10 +138,15 @@ fn a_failed_edge_in_a_pinned_run_is_not_half_a_comparison() {
         drop(l);
         format!("http://127.0.0.1:{p}/")
     };
-    let text = netcheck(&["--pin-source-port", "--reflect", &a, "--reflect", &dead]);
+    let text = netcheck(&["--reflect", &a, "--reflect", &dead]);
     assert!(!text.contains("per-destination"), "{text}");
     assert!(!text.contains("independent"), "{text}");
     assert!(text.contains("(one vantage; not a comparison)"), "{text}");
+    // And the edge that did not answer is named on the same line, with its
+    // reason: a comparison that became one vantage says why, rather than
+    // reading as a network that only ever had one.
+    assert!(text.contains("(unanswered: "), "{text}");
+    assert!(text.contains("connect:"), "{text}");
 }
 
 /// An edge that answers one request with the shape `api/supervisor.lua`
