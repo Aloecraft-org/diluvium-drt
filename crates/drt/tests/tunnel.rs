@@ -421,3 +421,330 @@ async fn a_gate_signed_by_nobody_is_refused_on_trust() {
         "TLS is not compiled into the WebSocket client: {err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The `tunnel` block: the same verb from a file
+// ---------------------------------------------------------------------------
+
+/// A port nothing holds, bound and released: `run` binds where it is told
+/// and reports the address on stderr, so a test that needs to dial it has
+/// to choose the port itself.
+fn free_port() -> u16 {
+    let sock = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = sock.local_addr().unwrap().port();
+    drop(sock);
+    port
+}
+
+/// Wait for something to accept on `addr`, so a session is not attempted
+/// against a listener a spawned task has not bound yet.
+async fn until_listening(addr: &str) {
+    for _ in 0..100 {
+        if tokio::net::TcpStream::connect(addr).await.is_ok() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("nothing listened on {addr} within five seconds");
+}
+
+/// Both halves from two files and no flags: a device file (`listen` +
+/// `to`, in front of a real sshd) and a caller file (`claim` + `bind`), each
+/// read through `config::load` the way `drt --config <file> tunnel` reads
+/// it, resolved with an empty command line, and run. Then a stock SSH
+/// client dials the caller's port: kex, pinned host key, pubkey auth, one
+/// exec. The JSON and the `.host.lua` spellings of the same block load to
+/// the same object, which is what "one name for both loaders" means.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tunnel_from_two_files_and_no_flags_carries_a_real_ssh_session() {
+    let host_key = generate_ed25519();
+    let host_pub = host_key.public_key().clone();
+    let client_key = generate_ed25519();
+    let mut config = SshServerConfig::new(host_key);
+    config.authorization = ClientAuthorization::Keys(vec![client_key.public_key().clone()]);
+    let sshd = SshListener::bind("127.0.0.1:0", config).await.unwrap();
+    let sshd_addr = sshd.local_addr().to_string();
+    tokio::spawn(async move {
+        while let Ok(mut conn) = sshd.accept().await {
+            tokio::spawn(async move {
+                while let Ok(mut channel) = conn.next_channel().await {
+                    let SshChannelKind::Exec(command) = channel.kind().clone() else {
+                        continue;
+                    };
+                    let mut out = b"from a file: ".to_vec();
+                    out.extend_from_slice(&command);
+                    use ego_transport::transport::Transport;
+                    channel.send(&out).await.unwrap();
+                    channel.exit_status(0).await.unwrap();
+                    channel.send_eof().await.ok();
+                    channel.close().await.ok();
+                }
+            });
+        }
+    });
+
+    let listen = format!("127.0.0.1:{}", free_port());
+    let bind = format!("127.0.0.1:{}", free_port());
+    let dir = tempfile::tempdir().unwrap();
+    let device = dir.path().join("device.json");
+    std::fs::write(
+        &device,
+        format!(r#"{{ "tunnel": {{ "listen": "{listen}", "to": "{sshd_addr}" }} }}"#),
+    )
+    .unwrap();
+    let caller = dir.path().join("caller.json");
+    std::fs::write(
+        &caller,
+        format!(r#"{{ "tunnel": {{ "claim": "ws://{listen}", "bind": "{bind}" }} }}"#),
+    )
+    .unwrap();
+    // The same caller block in the C host's dialect, loaded by extension.
+    let caller_lua = dir.path().join("caller.host.lua");
+    std::fs::write(
+        &caller_lua,
+        format!(r#"return {{ tunnel = {{ claim = "ws://{listen}", bind = "{bind}" }} }}"#),
+    )
+    .unwrap();
+    let from_json = drt::config::load(Some(&caller)).unwrap();
+    let from_lua = drt::config::load(Some(&caller_lua)).unwrap();
+    assert_eq!(from_json.tunnel, from_lua.tunnel);
+    assert!(from_json.tunnel.is_some());
+
+    let none = drt::tunnel::Flags::default();
+    let device_mode = drt::tunnel::resolve(
+        drt::config::load(Some(&device)).unwrap().tunnel.as_ref(),
+        &none,
+    )
+    .unwrap();
+    assert_eq!(
+        device_mode.mode,
+        drt::tunnel::Mode::Listen {
+            listen: listen.clone(),
+            to: sshd_addr.clone()
+        }
+    );
+    assert_eq!(device_mode.extra_roots_key, "tunnel.extra_roots");
+    let caller_mode = drt::tunnel::resolve(from_json.tunnel.as_ref(), &none).unwrap();
+    assert_eq!(
+        caller_mode.mode,
+        drt::tunnel::Mode::Local {
+            claim: format!("ws://{listen}"),
+            bind: bind.clone()
+        }
+    );
+
+    tokio::spawn(async move {
+        let _ = drt::tunnel::run(device_mode.mode, &[]).await;
+    });
+    until_listening(&listen).await;
+    tokio::spawn(async move {
+        let _ = drt::tunnel::run(caller_mode.mode, &[]).await;
+    });
+    until_listening(&bind).await;
+
+    let conn = SshClientConnection::connect(
+        &bind,
+        SshClientConfig {
+            user: "tester".into(),
+            key: client_key,
+            host_verification: HostKeyVerification::Keys(vec![host_pub]),
+            inactivity_timeout: None,
+        },
+    )
+    .await
+    .expect("the SSH handshake did not survive two files' worth of bridge");
+    let mut channel = conn.open_exec(b"uname").await.unwrap();
+    let mut stdout = Vec::new();
+    let mut exit = None;
+    loop {
+        match channel.next_event().await {
+            SshChannelEvent::Data(bytes) => stdout.extend_from_slice(&bytes),
+            SshChannelEvent::ExitStatus(code) => exit = Some(code),
+            SshChannelEvent::Eof | SshChannelEvent::Closed => break,
+            _ => {}
+        }
+    }
+    assert_eq!(String::from_utf8_lossy(&stdout), "from a file: uname");
+    assert_eq!(exit, Some(0));
+
+    // An address already held is refused by the mode's own bind, naming
+    // it, which is the startup refusal a unit file wants to see.
+    let held = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let held_addr = held.local_addr().unwrap().to_string();
+    let err = drt::tunnel::run(
+        drt::tunnel::Mode::Listen {
+            listen: held_addr.clone(),
+            to: sshd_addr,
+        },
+        &[],
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains(&held_addr), "{err}");
+}
+
+/// Flags win per key, and only per key: a `--local` typed beside a file
+/// that names `claim` and `bind` replaces `bind` and leaves `claim`
+/// standing. `--extra-root` replaces the file's list wholesale, and the
+/// refusals about it change their name to match.
+#[test]
+fn a_flag_replaces_the_file_key_it_names_and_no_other() {
+    let file = drt_config::TunnelConfig {
+        claim: Some("wss://relay.example/s/xps?k=file".into()),
+        bind: Some("127.0.0.1:2222".into()),
+        extra_roots: vec!["/etc/drt/gate.pem".into()],
+        ..Default::default()
+    };
+    let flags = drt::tunnel::Flags {
+        local: Some("127.0.0.1:3333".into()),
+        ..Default::default()
+    };
+    let resolved = drt::tunnel::resolve(Some(&file), &flags).unwrap();
+    assert_eq!(
+        resolved.mode,
+        drt::tunnel::Mode::Local {
+            claim: "wss://relay.example/s/xps?k=file".into(),
+            bind: "127.0.0.1:3333".into(),
+        }
+    );
+    assert_eq!(
+        resolved.extra_roots,
+        vec![std::path::PathBuf::from("/etc/drt/gate.pem")]
+    );
+    assert_eq!(resolved.extra_roots_key, "tunnel.extra_roots");
+
+    let flags = drt::tunnel::Flags {
+        extra_root: vec!["/tmp/other.pem".into()],
+        ..Default::default()
+    };
+    let resolved = drt::tunnel::resolve(Some(&file), &flags).unwrap();
+    assert_eq!(
+        resolved.extra_roots,
+        vec![std::path::PathBuf::from("/tmp/other.pem")]
+    );
+    assert_eq!(resolved.extra_roots_key, "--extra-root");
+
+    // The refusal about a PEM names what the operator wrote: the key in
+    // the file, or the flag.
+    let missing = vec![std::path::PathBuf::from("/nonexistent/gate.pem")];
+    let err = drt::roots::load_roots_named("tunnel.extra_roots", &missing).unwrap_err();
+    assert!(
+        err.starts_with("tunnel.extra_roots '/nonexistent/gate.pem'"),
+        "{err}"
+    );
+    let err = drt::roots::load_roots(&missing).unwrap_err();
+    assert!(
+        err.starts_with("--extra-root '/nonexistent/gate.pem'"),
+        "{err}"
+    );
+}
+
+/// Two modes in one tunnel are refused by name and by source, whether the
+/// two keys came from two flags, two lines of the file, or one of each:
+/// the command line and the file are judged as one set.
+#[test]
+fn two_modes_in_one_tunnel_are_refused_by_name_and_source() {
+    let park_file = drt_config::TunnelConfig {
+        park: Some("wss://relay.example/park/xps?k=park".into()),
+        to: Some("127.0.0.1:22".into()),
+        ..Default::default()
+    };
+    // A URL on the command line beside a file that parks.
+    let flags = drt::tunnel::Flags {
+        url: Some("wss://relay.example/s/xps?k=caller".into()),
+        ..Default::default()
+    };
+    let err = drt::tunnel::resolve(Some(&park_file), &flags).unwrap_err();
+    assert!(err.contains("`tunnel.park` in the config"), "{err}");
+    assert!(err.contains("the URL on the command line"), "{err}");
+    assert!(err.contains("two modes"), "{err}");
+
+    // Two flags: what clap's `conflicts_with` used to say, said here so
+    // the file and the flags share one refusal.
+    let flags = drt::tunnel::Flags {
+        url: Some("wss://relay.example/s/xps?k=caller".into()),
+        park: Some("wss://relay.example/park/xps?k=park".into()),
+        to: Some("127.0.0.1:22".into()),
+        ..Default::default()
+    };
+    let err = drt::tunnel::resolve(None, &flags).unwrap_err();
+    assert!(err.contains("the URL on the command line"), "{err}");
+    assert!(err.contains("`--park`"), "{err}");
+
+    // Two lines of one file.
+    let both = drt_config::TunnelConfig {
+        listen: Some("127.0.0.1:8022".into()),
+        park: Some("wss://relay.example/park/xps?k=park".into()),
+        to: Some("127.0.0.1:22".into()),
+        ..Default::default()
+    };
+    let err = drt::tunnel::resolve(Some(&both), &drt::tunnel::Flags::default()).unwrap_err();
+    assert!(err.contains("`tunnel.park` in the config"), "{err}");
+    assert!(err.contains("`tunnel.listen` in the config"), "{err}");
+}
+
+/// A key that belongs to a mode this tunnel is not in is refused, never
+/// ignored: in a file, a silently ignored key is exactly the failure a
+/// loader exists to catch. And a mode missing the key it needs says which.
+#[test]
+fn a_key_from_another_mode_is_refused_rather_than_ignored() {
+    let none = drt::tunnel::Flags::default();
+    let resolve = |file: drt_config::TunnelConfig| drt::tunnel::resolve(Some(&file), &none);
+
+    // `bind` without `claim`.
+    let err = resolve(drt_config::TunnelConfig {
+        bind: Some("127.0.0.1:2222".into()),
+        ..Default::default()
+    })
+    .unwrap_err();
+    assert!(err.contains("`tunnel.bind` in the config"), "{err}");
+    assert!(err.contains("belongs with `claim`"), "{err}");
+
+    // `to` beside a claim.
+    let err = resolve(drt_config::TunnelConfig {
+        claim: Some("wss://relay.example/s/xps?k=caller".into()),
+        to: Some("127.0.0.1:22".into()),
+        ..Default::default()
+    })
+    .unwrap_err();
+    assert!(err.contains("`tunnel.to` in the config"), "{err}");
+    assert!(err.contains("belongs with `park` or `listen`"), "{err}");
+
+    // `bind` beside a park, typed as the flag.
+    let err = drt::tunnel::resolve(
+        Some(&drt_config::TunnelConfig {
+            park: Some("wss://relay.example/park/xps?k=park".into()),
+            to: Some("127.0.0.1:22".into()),
+            ..Default::default()
+        }),
+        &drt::tunnel::Flags {
+            local: Some("127.0.0.1:2222".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert!(err.contains("`--local`"), "{err}");
+    assert!(err.contains("belongs with `claim`"), "{err}");
+
+    // A park and a listen each need `to`, and say so with both spellings.
+    for file in [
+        drt_config::TunnelConfig {
+            park: Some("wss://relay.example/park/xps?k=park".into()),
+            ..Default::default()
+        },
+        drt_config::TunnelConfig {
+            listen: Some("127.0.0.1:8022".into()),
+            ..Default::default()
+        },
+    ] {
+        let err = resolve(file).unwrap_err();
+        assert!(err.contains("needs `to`"), "{err}");
+        assert!(err.contains("`--to`"), "{err}");
+        assert!(err.contains("`tunnel.to`"), "{err}");
+    }
+
+    // Nothing at all names both places a mode can come from.
+    let err = drt::tunnel::resolve(None, &none).unwrap_err();
+    assert!(err.contains("--park with --to"), "{err}");
+    assert!(err.contains("`tunnel` in the --config file"), "{err}");
+}

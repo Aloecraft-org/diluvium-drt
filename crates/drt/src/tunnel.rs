@@ -56,7 +56,22 @@
 //! composition is `--local` ([`local_to_ws`]): the connector dials a
 //! local port, and each connection there is its own leg through the
 //! relay.
+//!
+//! ## surface block
+//!
+//! - Entry points: [`resolve`], the file's `tunnel` block and the flags
+//!   merged into one [`Mode`]; [`run`], that mode carried out; and the
+//!   four modes themselves, [`stdio_to_ws`], [`local_to_ws`],
+//!   [`ws_to_tcp`] and [`park`], which `run` dispatches to and a test
+//!   drives directly. [`serve_local`] and [`serve_ws_bridge`] are the
+//!   accept loops behind two of them, over a listener the caller bound.
+//! - Configurable: [`CHUNK`], how much is moved per read.
+//! - Fan-out: [`Mode`], the four things a tunnel can be, and the one
+//!   match on it in [`run`]. [`Flags`] is the command line as typed and
+//!   `drt_config::TunnelConfig` is the file; `resolve` is the only place
+//!   the two are judged, so the refusals are one list in one vocabulary.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -81,6 +96,190 @@ pub type WsClient = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// How much is moved per read. A throughput knob and nothing more.
 const CHUNK: usize = 64 * 1024;
+
+/// The four things a tunnel can be. Which one is told by which keys are
+/// present -- in the file, on the command line, or merged from both --
+/// and never by a mode flag of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mode {
+    /// `drt tunnel <url>`: stdio to the URL, OpenSSH's `ProxyCommand` shape.
+    Stdio { claim: String },
+    /// `drt tunnel <url> --local <bind>`: a local port, one fresh leg per
+    /// accepted connection.
+    Local { claim: String, bind: String },
+    /// `drt tunnel --listen <addr> --to <target>`: WebSockets in, TCP out,
+    /// in front of any sshd.
+    Listen { listen: String, to: String },
+    /// `drt tunnel --park <url> --to <target>`: the device side of the
+    /// relay, dialing `to` lazily when a caller claims the leg.
+    Park { park: String, to: String },
+}
+
+/// `drt tunnel`'s flags, as typed. Each is one key of the `tunnel` block
+/// under its command-line name; [`resolve`] merges them over the file.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Flags {
+    /// The positional URL: the block's `claim`.
+    pub url: Option<String>,
+    /// `--local`: the block's `bind`.
+    pub local: Option<String>,
+    /// `--listen`.
+    pub listen: Option<String>,
+    /// `--to`.
+    pub to: Option<String>,
+    /// `--park`.
+    pub park: Option<String>,
+    /// `--extra-root`, repeatable: the block's `extra_roots`.
+    pub extra_root: Vec<PathBuf>,
+}
+
+/// What [`resolve`] settles: the mode, and the PEM files to trust beside
+/// the public roots, with the name a refusal about one of them should use
+/// (`--extra-root` when they came from the flag, `tunnel.extra_roots` when
+/// from the file).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resolved {
+    pub mode: Mode,
+    pub extra_roots: Vec<PathBuf>,
+    pub extra_roots_key: &'static str,
+}
+
+/// Where a key came from, so a conflict can say which line and which flag
+/// disagree rather than only that two keys do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Source {
+    File,
+    Flag,
+}
+
+/// A key's name as the operator wrote it: the block's key in the file,
+/// the flag on the command line.
+fn spelled(key: &str, source: Source) -> String {
+    match source {
+        Source::File => format!("`tunnel.{key}` in the config"),
+        Source::Flag => match key {
+            "claim" => "the URL on the command line".to_string(),
+            "bind" => "`--local`".to_string(),
+            other => format!("`--{other}`"),
+        },
+    }
+}
+
+/// The file's `tunnel` block and the flags, merged into one [`Mode`].
+///
+/// **Flags win per key.** A flag naming a key the file also names replaces
+/// it; every other key the file names stands. Then the merged keys are
+/// judged as one set, so a flag naming a different mode than the file is
+/// exactly the conflict two flags naming two modes would be, refused by
+/// name and with where each came from -- the same rule `netcheck` shipped
+/// for `--reflect` over a `measure` block.
+///
+/// Refused here, before anything is bound or dialed: two modes in one
+/// tunnel (`park` beside `claim`, `listen` beside `claim`, `park` beside
+/// `listen`); `park` or `listen` without `to`; `bind` without `claim`; `to`
+/// without `park` or `listen`; and nothing at all, which says what to
+/// name. A `bind` or `listen` address already held is refused by the
+/// mode's own bind, and an unusable PEM by `roots::load_roots_named`, each
+/// naming the key it read.
+pub fn resolve(file: Option<&drt_config::TunnelConfig>, flags: &Flags) -> Result<Resolved, String> {
+    // One key, one source, the flag's when both name it.
+    let pick = |from_flag: &Option<String>, from_file: Option<&String>| match (from_flag, from_file)
+    {
+        (Some(v), _) => Some((v.clone(), Source::Flag)),
+        (None, Some(v)) => Some((v.clone(), Source::File)),
+        (None, None) => None,
+    };
+    let claim = pick(&flags.url, file.and_then(|f| f.claim.as_ref()));
+    let bind = pick(&flags.local, file.and_then(|f| f.bind.as_ref()));
+    let park = pick(&flags.park, file.and_then(|f| f.park.as_ref()));
+    let listen = pick(&flags.listen, file.and_then(|f| f.listen.as_ref()));
+    let to = pick(&flags.to, file.and_then(|f| f.to.as_ref()));
+    let (extra_roots, extra_roots_key) = if !flags.extra_root.is_empty() {
+        (flags.extra_root.clone(), "--extra-root")
+    } else {
+        (
+            file.map(|f| f.extra_roots.clone()).unwrap_or_default(),
+            "tunnel.extra_roots",
+        )
+    };
+
+    // Two modes in one tunnel, named by the keys that chose them.
+    let modes: Vec<(&str, Source)> = [("claim", &claim), ("park", &park), ("listen", &listen)]
+        .into_iter()
+        .filter_map(|(name, key)| key.as_ref().map(|(_, source)| (name, *source)))
+        .collect();
+    if let [(a, sa), (b, sb), ..] = modes[..] {
+        return Err(format!(
+            "tunnel: {} and {} name two modes; a tunnel is one claim, one park, or one listen",
+            spelled(a, sa),
+            spelled(b, sb)
+        ));
+    }
+
+    // A key that belongs to a mode this tunnel is not in, named as such
+    // rather than ignored: in a file, a silently ignored key is exactly
+    // the failure this loader exists to catch.
+    let belongs = |key: &str, owner: &str, present: &Option<(String, Source)>| match present {
+        Some((_, source)) => Err(format!(
+            "tunnel: {} belongs with {owner}, and this tunnel has none",
+            spelled(key, *source)
+        )),
+        None => Ok(()),
+    };
+    let needs = |key: &str, mode: &str, present: &Option<(String, Source)>| match present {
+        Some((value, _)) => Ok(value.clone()),
+        None => Err(format!(
+            "tunnel: a {mode} needs `{key}`, the host:port it delivers to (`--{key}`, or \
+             `tunnel.{key}` in the config)"
+        )),
+    };
+    let mode = match (claim, park, listen) {
+        (Some((claim, _)), None, None) => {
+            belongs("to", "`park` or `listen`", &to)?;
+            match bind {
+                Some((bind, _)) => Mode::Local { claim, bind },
+                None => Mode::Stdio { claim },
+            }
+        }
+        (None, Some((park, _)), None) => {
+            belongs("bind", "`claim`", &bind)?;
+            let to = needs("to", "park", &to)?;
+            Mode::Park { park, to }
+        }
+        (None, None, Some((listen, _))) => {
+            belongs("bind", "`claim`", &bind)?;
+            let to = needs("to", "listen", &to)?;
+            Mode::Listen { listen, to }
+        }
+        _ => {
+            belongs("bind", "`claim`", &bind)?;
+            belongs("to", "`park` or `listen`", &to)?;
+            return Err(
+                "name a URL to bridge stdio to (with --local to serve a local port \
+                        instead), --listen with --to, or --park with --to; or `tunnel` in \
+                        the --config file, which takes the same keys"
+                    .into(),
+            );
+        }
+    };
+    Ok(Resolved {
+        mode,
+        extra_roots,
+        extra_roots_key,
+    })
+}
+
+/// Carry out a [`Mode`]: the one match on it, and what `drt tunnel` runs
+/// once [`resolve`] has spoken. Returns when the tunnel ends, which for
+/// `Park` is never.
+pub async fn run(mode: Mode, extra_roots: &[CertificateDer<'static>]) -> Result<(), String> {
+    match mode {
+        Mode::Stdio { claim } => stdio_to_ws(&claim, extra_roots).await,
+        Mode::Local { claim, bind } => local_to_ws(&bind, &claim, extra_roots).await,
+        Mode::Listen { listen, to } => ws_to_tcp(&listen, &to).await,
+        Mode::Park { park: url, to } => park(&url, &to, extra_roots).await,
+    }
+}
 
 /// Dial a `ws://` or `wss://` URL, trusting `extra_roots` beside the
 /// public ones.

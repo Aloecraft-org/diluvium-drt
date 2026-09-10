@@ -71,6 +71,7 @@ RootConfig {
             report_ms: 10000,
         },
     ),
+    tunnel: None,
     identity: Identity {
         host_key_path: None,
     },

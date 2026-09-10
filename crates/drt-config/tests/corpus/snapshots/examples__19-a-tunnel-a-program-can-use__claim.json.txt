@@ -17,22 +17,22 @@ RootConfig {
     residency: None,
     relay: None,
     stun: None,
-    turn: Some(
-        TurnConfig {
-            bind: "127.0.0.1:18493",
-            relay_address: "127.0.0.1",
-            relay_bind: "0.0.0.0",
-            realm: "example",
-            key: None,
-            key_file: None,
-            key_env: None,
-            max_allocations: 256,
-            queue: "turn_in",
-            report_ms: 10000,
+    turn: None,
+    wireguard: None,
+    tunnel: Some(
+        TunnelConfig {
+            claim: Some(
+                "ws://127.0.0.1:18490/s/fp?k=caller-key-for-the-example-only",
+            ),
+            bind: Some(
+                "127.0.0.1:18492",
+            ),
+            park: None,
+            listen: None,
+            to: None,
+            extra_roots: [],
         },
     ),
-    wireguard: None,
-    tunnel: None,
     identity: Identity {
         host_key_path: None,
     },

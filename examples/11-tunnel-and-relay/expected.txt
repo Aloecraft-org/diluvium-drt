@@ -1,5 +1,5 @@
 $ drt tunnel
-drt tunnel: name a URL to bridge stdio to (with --local to serve a local port instead), --listen with --to, or --park with --to
+drt tunnel: name a URL to bridge stdio to (with --local to serve a local port instead), --listen with --to, or --park with --to; or `tunnel` in the --config file, which takes the same keys
 exit 1
 
 $ drt relay --config rendezvous.host.lua

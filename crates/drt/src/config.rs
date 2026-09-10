@@ -242,6 +242,11 @@ fn map_host_lua(path: &Path, value: rmpv::Value) -> Result<RootConfig, String> {
             // carries traffic over a path the first three only measured.
             #[cfg(feature = "wireguard")]
             "wireguard" => config.wireguard = Some(map_wireguard(path, value)?),
+            // `drt tunnel` from a file, so the credential in a park or
+            // claim URL lives in a 0600 file and not in `ps`. The same
+            // keys as the JSON block, one name for both loaders.
+            #[cfg(feature = "tunnel")]
+            "tunnel" => config.tunnel = Some(map_tunnel(path, value)?),
             // How much numeric work this instance may do. An instance-level
             // bound, so it lands on `config.root` beside `caps` and the
             // budget rather than beside the process-level blocks above --
@@ -258,7 +263,7 @@ fn map_host_lua(path: &Path, value: rmpv::Value) -> Result<RootConfig, String> {
                 // names itself.
                 return Err(format!(
                     "{}: unknown key '{other}' (known: supervisor, caps, \
-                     connectors, numeric, relay, stun, turn, wireguard)",
+                     connectors, numeric, relay, stun, turn, wireguard, tunnel)",
                     path.display()
                 ));
             }
@@ -515,6 +520,52 @@ fn map_wireguard_peer(
         ));
     }
     Ok(peer)
+}
+
+/// The `tunnel` block: `drt tunnel` from a file. One key per flag, read
+/// as strings and nothing decided here -- which keys make which mode, and
+/// which combinations are refused, is `tunnel::resolve`'s, so the file
+/// and the flags are judged by one function and in one vocabulary.
+#[cfg(feature = "tunnel")]
+fn map_tunnel(path: &Path, block: rmpv::Value) -> Result<drt_config::TunnelConfig, String> {
+    let rmpv::Value::Map(entries) = block else {
+        return Err(format!("{}: tunnel must be a table", path.display()));
+    };
+    let mut tunnel = drt_config::TunnelConfig::default();
+    for (key, value) in entries {
+        let Some(key) = key.as_str() else {
+            return Err(format!("{}: a non-string tunnel key", path.display()));
+        };
+        let bad = |what: &str| format!("{}: tunnel.{key} must be {what}", path.display());
+        let text = |what: &str| -> Result<String, String> {
+            Ok(value.as_str().ok_or_else(|| bad(what))?.to_string())
+        };
+        match key {
+            "claim" => tunnel.claim = Some(text("a ws:// or wss:// URL")?),
+            "bind" => tunnel.bind = Some(text("a host:port to listen on")?),
+            "park" => tunnel.park = Some(text("a ws:// or wss:// /park URL")?),
+            "listen" => tunnel.listen = Some(text("a host:port to listen on")?),
+            "to" => tunnel.to = Some(text("a host:port to dial")?),
+            "extra_roots" => {
+                for entry in list(&value).ok_or_else(|| bad("a list of PEM paths"))? {
+                    tunnel.extra_roots.push(
+                        entry
+                            .as_str()
+                            .ok_or_else(|| bad("a list of PEM paths"))?
+                            .into(),
+                    );
+                }
+            }
+            other => {
+                return Err(format!(
+                    "{}: unknown tunnel key '{other}' (known: claim, bind, park, listen, to, \
+                     extra_roots)",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(tunnel)
 }
 
 /// The `turn` block: the relay for the peers `stun` says cannot punch, as

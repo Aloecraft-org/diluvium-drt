@@ -32,6 +32,7 @@ RootConfig {
     stun: None,
     turn: None,
     wireguard: None,
+    tunnel: None,
     identity: Identity {
         host_key_path: None,
     },

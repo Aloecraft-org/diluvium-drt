@@ -717,6 +717,61 @@ pub struct RelayLabel {
     pub caller_key: String,
 }
 
+/// `drt tunnel`, from a file: `drt --config device.json tunnel`.
+///
+/// One key per flag the verb takes, and the mode is told by which keys are
+/// present, exactly as the flags tell it: `park` with `to` is the device
+/// side of the relay, `claim` with `bind` is a local port that claims one
+/// leg per connection, `claim` alone is the stdio bridge (OpenSSH's
+/// `ProxyCommand` shape), and `listen` with `to` is a WebSocket acceptor
+/// in front of any sshd. Two of those in one block is a refusal by name,
+/// as is a key that belongs to another mode.
+///
+/// Why a file at all: the `?k=` in a park or claim URL is a credential.
+/// On a command line it is in `ps`, in shell history, and in every "run
+/// this" someone pastes; in a 0600 file it is in none of them. The rest is
+/// that a device's tunnel becomes one file a setup script writes and a
+/// unit runs, which is the shape everything else on a box already has.
+///
+/// Flags merge over the file **per key**: a flag naming a key the file
+/// also names replaces it, and a flag naming a different mode than the
+/// file is the same conflict two flags would be. Nothing here changes
+/// when the tunnel later takes a direct path: the same two files, and
+/// whether a session went direct or through the relay is DRT's to know.
+///
+/// `claim`, because that is what the relay calls the act (`Parked::Claimed`,
+/// "claim first, splice second") and the positional flag has no name of
+/// its own. `bind`, as every other block spells the local address it
+/// listens on. `park`, `to` and `listen` as the flags are.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TunnelConfig {
+    /// The `ws://` or `wss://` URL the caller half dials: the relay's
+    /// `/s/<label>?k=…`, or a gate straight in front of a `listen`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim: Option<String>,
+    /// With `claim`: serve this local address instead of stdio, one fresh
+    /// leg per accepted connection. `127.0.0.1:2222`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind: Option<String>,
+    /// The device side of the relay: hold a parked leg at this `/park/`
+    /// URL and dial `to` lazily when a caller claims it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub park: Option<String>,
+    /// The other half: accept WebSocket connections here and bridge each
+    /// to `to`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listen: Option<String>,
+    /// Where `park` and `listen` deliver: a `host:port` this process can
+    /// dial, `127.0.0.1:22` in front of an sshd.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// PEM files to trust beside the public roots, never instead of them --
+    /// spelled as `connectors.rest`'s `extra_roots` is, for its reason. An
+    /// internal CA in front of the gate, typically.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_roots: Vec<PathBuf>,
+}
+
 /// Process identity. The host key doubles as the node identity and the
 /// snapshot stamp source (SPEC.md §§8–9).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -757,6 +812,8 @@ pub struct RootConfig {
     pub turn: Option<TurnConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wireguard: Option<WireguardConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel: Option<TunnelConfig>,
     #[serde(default, skip_serializing_if = "Identity::is_default")]
     pub identity: Identity,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

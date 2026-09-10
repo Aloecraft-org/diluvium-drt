@@ -111,6 +111,7 @@ drt --config rv.host.lua relay       # the rendezvous relay, standalone
 drt tunnel --park wss://…/park/xps?k=… --to 127.0.0.1:22   # the device half
 ssh -o ProxyCommand="drt tunnel wss://…/s/xps?k=…" user@xps # the caller half
 drt tunnel wss://…/s/xps?k=… --local 127.0.0.1:2222       # the caller half, for a program
+drt --config tn.json tunnel          # either half, with the key in a 0600 file
 drt --config nc.host.lua netcheck    # what can this network do, with the evidence
 drt --config st.host.lua stun        # a STUN server: what address did that come from
 drt --config tn.host.lua turn        # a TURN relay, for what cannot be punched

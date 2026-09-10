@@ -15,11 +15,13 @@
 //!
 //! ## surface block
 //!
-//! - Entry points: [`load_roots`], PEM files to certificates, and
-//!   [`store`], certificates to a `RootCertStore` with webpki's beside
-//!   them.
+//! - Entry points: [`load_roots`], PEM files to certificates;
+//!   [`load_roots_named`], the same with the refusals naming a config key
+//!   rather than the flag; and [`store`], certificates to a
+//!   `RootCertStore` with webpki's beside them.
 //! - Configurable: nothing here. The flag is `--extra-root` on every verb
-//!   that takes one, and its name appears in every refusal below.
+//!   that takes one, and its name appears in every refusal below unless
+//!   the caller names the key it read instead.
 
 use tokio_rustls::rustls::pki_types::CertificateDer;
 use tokio_rustls::rustls::RootCertStore;
@@ -28,16 +30,26 @@ use tokio_rustls::rustls::RootCertStore;
 /// dialed**, so a wrong path or a key file handed over by mistake is a
 /// refusal by name rather than a TLS error on the first connection.
 pub fn load_roots(paths: &[std::path::PathBuf]) -> Result<Vec<CertificateDer<'static>>, String> {
+    load_roots_named("--extra-root", paths)
+}
+
+/// [`load_roots`] with the refusals naming `key` instead of the flag: the
+/// `tunnel` block's `extra_roots` is the same list read from a file, and a
+/// refusal should name the line the operator wrote.
+pub fn load_roots_named(
+    key: &str,
+    paths: &[std::path::PathBuf],
+) -> Result<Vec<CertificateDer<'static>>, String> {
     use tokio_rustls::rustls::pki_types::pem::PemObject;
     let mut out = Vec::new();
     for path in paths {
         let name = path.display();
         let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(path)
-            .map_err(|e| format!("--extra-root '{name}': {e}"))?
+            .map_err(|e| format!("{key} '{name}': {e}"))?
             .collect::<Result<_, _>>()
-            .map_err(|e| format!("--extra-root '{name}': {e}"))?;
+            .map_err(|e| format!("{key} '{name}': {e}"))?;
         if certs.is_empty() {
-            return Err(format!("--extra-root '{name}': no certificate in it"));
+            return Err(format!("{key} '{name}': no certificate in it"));
         }
         // webpki has to be able to use it, or it is trusted for nothing --
         // the check `connectors/rest`'s loader has always made. Parsing as
@@ -50,7 +62,7 @@ pub fn load_roots(paths: &[std::path::PathBuf]) -> Result<Vec<CertificateDer<'st
         let (_, ignored) = probe.add_parsable_certificates(certs.iter().cloned());
         if ignored > 0 {
             return Err(format!(
-                "--extra-root '{name}': {ignored} certificate(s) are not usable as trust anchors"
+                "{key} '{name}': {ignored} certificate(s) are not usable as trust anchors"
             ));
         }
         out.extend(certs);
