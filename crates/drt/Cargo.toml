@@ -57,6 +57,10 @@ tokio-tungstenite = { version = "0.24", optional = true, features = ["rustls-tls
 futures-util = { version = "0.3", default-features = false, optional = true }
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "io-std", "io-util", "net", "sync", "time", "macros"], optional = true }
 serde_json = "1"
+# The root's files are read through one generic helper (`drt_root::read_json`),
+# which needs the trait by name. Already in the tree under everything else
+# here; `drt` simply had no reason to name it until a root had files of its own.
+serde = { workspace = true }
 # The reflect fetch's TLS. Pinned to what `connectors/rest` already builds,
 # so `full` links one stack rather than two and `netcheck` costs it nothing.
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"], optional = true }

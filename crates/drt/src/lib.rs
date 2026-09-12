@@ -4,9 +4,17 @@
 /// The command surface, parsed and assembled once for every host.
 pub mod cli;
 pub mod config;
+/// Start-time consent: print the ceiling, honour `-y` and
+/// `--accept-changes`, write the entry, refuse by name when there is nobody
+/// to ask. `drt_config::consent` is the format; this is the gate.
+pub mod consent_gate;
 /// The drive loop as a state machine: what `run`, `repl` and the browser
 /// tier drive an instance with (doc/Wasm.md D6).
 pub mod drive;
+/// A root on disk: discovery, the layout, and the IO that fills
+/// `drt-config`'s resolver inputs. Named for `.drt_root/` rather than
+/// `root`, because `roots` here is PEM trust anchors.
+pub mod drt_root;
 #[cfg(feature = "listen")]
 pub mod listen;
 /// `drt netcheck`: the NAT diagnostic. The verdict table is pure and
@@ -29,6 +37,11 @@ pub mod runtime;
 pub mod start;
 #[cfg(feature = "stun")]
 pub mod stun;
+/// One installed filesystem and one lock, shared by every test here that
+/// needs a root without a disk. `install` is process-wide, so a per-module
+/// lock is not one.
+#[cfg(test)]
+mod testfs;
 #[cfg(feature = "tunnel")]
 pub mod tunnel;
 #[cfg(feature = "turn")]
