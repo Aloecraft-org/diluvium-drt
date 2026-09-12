@@ -920,6 +920,24 @@ entry has not moved the pin yet.
   on the way in. Asked for by dollup; the two types were asymmetric for
   no reason.
 
+### Fixed
+
+- **`--features stun` did not compile at all**, and nor did any
+  feature set carrying `stun` without `netcheck`. The `gather`
+  module's reflect half -- `probe`, `reflect`, `one_edge`,
+  `configure` -- reaches an HTTPS edge through `crate::reflect` and
+  names `tokio_rustls` in its signatures, but was gated on `stun`
+  while both of those live behind `netcheck`. `cli.rs` had the
+  mirror-image slip: the `Netcheck` match arm was gated on `stun`
+  while the `Command::Netcheck` variant it matched was gated on
+  `netcheck`.
+
+  Only `full` and the default profile were built anywhere, so a
+  profile the crate advertises -- and the one a deployment running
+  only the STUN server would pick -- had been uncompilable without
+  anything noticing. The reflect half now carries the `netcheck`
+  gate its dependencies do, and the verb's arm matches its variant.
+
 ### Known issues
 
 - **A connector decode is work the instruction budget does not

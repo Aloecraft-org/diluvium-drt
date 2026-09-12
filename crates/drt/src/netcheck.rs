@@ -725,9 +725,19 @@ pub fn render_json(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
 /// Gated on `stun` because the decisive measurement is
 /// `ego_transport::stun::detect_mapping`. The verdict table above compiles
 /// and is tested without it.
+///
+/// Two tiers inside, and the inner one is not decoration. The UDP half
+/// needs only STUN; the reflect half (`probe`, `reflect`, `one_edge`,
+/// `configure`) reaches an HTTPS edge through [`crate::reflect`] and names
+/// `tokio_rustls` in its signatures, and both of those live behind
+/// `netcheck`. Gating that half on `stun` is what made `--features stun`
+/// -- a profile this crate advertises, and the one a small deployment
+/// running only the STUN server would pick -- fail to compile at all.
 #[cfg(feature = "stun")]
 pub mod gather {
-    use super::{EdgeView, Inbound, Measurements, UdpMapping, MAX_PROBE_PORTS};
+    #[cfg(feature = "netcheck")]
+    use super::{EdgeView, Inbound, MAX_PROBE_PORTS};
+    use super::{Measurements, UdpMapping};
     use ego_transport::stun::{detect_mapping, NatMapping, ProbeConfig};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
@@ -908,6 +918,7 @@ pub mod gather {
     /// The token is carried and never parsed. No minting exists yet; when it
     /// does it is one more opaque query parameter and the response shape is
     /// unchanged, so nothing here has to know what it says.
+    #[cfg(feature = "netcheck")]
     pub async fn probe(
         m: &mut Measurements,
         reflect_url: &str,
@@ -993,6 +1004,7 @@ pub mod gather {
     ///
     /// The `<label>--probe` shape is the prober's, and the same one the zone
     /// and mail pullers use (`deploy/probe/README.md`).
+    #[cfg(feature = "netcheck")]
     fn probe_url(reflect_url: &str) -> Option<String> {
         let (scheme, rest) = reflect_url.split_once("://")?;
         let (authority, _) = rest.split_once('/').unwrap_or((rest, ""));
@@ -1009,6 +1021,7 @@ pub mod gather {
         Some(format!("{scheme}://{label}--probe.{domain}{port}/"))
     }
 
+    #[cfg(feature = "netcheck")]
     fn parse_probe(body: &str) -> Result<Inbound, String> {
         let json: serde_json::Value =
             serde_json::from_str(body).map_err(|_| "the prober did not answer JSON".to_string())?;
@@ -1038,6 +1051,7 @@ pub mod gather {
     /// rendering it as a closed port would be a confidently wrong answer
     /// about the user's network, which is the one thing this module exists
     /// not to do.
+    #[cfg(feature = "netcheck")]
     pub async fn reflect(
         m: &mut Measurements,
         edges: &[&str],
@@ -1179,6 +1193,7 @@ pub mod gather {
     }
 
     /// What one edge answered.
+    #[cfg(feature = "netcheck")]
     struct EdgeAnswer {
         edge: String,
         port: Option<u16>,
@@ -1186,6 +1201,7 @@ pub mod gather {
         token: Option<String>,
     }
 
+    #[cfg(feature = "netcheck")]
     async fn one_edge(
         url: &str,
         dest: std::net::SocketAddr,
@@ -1249,6 +1265,7 @@ pub mod gather {
     ///
     /// `at` is honoured when given, since a name may deliberately not
     /// resolve to the vantage an operator is pointing at.
+    #[cfg(feature = "netcheck")]
     pub async fn configure(
         url: &str,
         at: &[&str],

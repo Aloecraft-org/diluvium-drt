@@ -1034,6 +1034,23 @@ releases:
         backend exists anywhere to set it. Each is marked `TODO(A0)` or
         `TODO(A2)` at the one place it changes, and each has a test that
         fails if the pin moves and the code does not.
+    fixed:
+      - |
+        **`--features stun` did not compile at all**, and nor did any
+        feature set carrying `stun` without `netcheck`. The `gather`
+        module's reflect half -- `probe`, `reflect`, `one_edge`,
+        `configure` -- reaches an HTTPS edge through `crate::reflect` and
+        names `tokio_rustls` in its signatures, but was gated on `stun`
+        while both of those live behind `netcheck`. `cli.rs` had the
+        mirror-image slip: the `Netcheck` match arm was gated on `stun`
+        while the `Command::Netcheck` variant it matched was gated on
+        `netcheck`.
+
+        Only `full` and the default profile were built anywhere, so a
+        profile the crate advertises -- and the one a deployment running
+        only the STUN server would pick -- had been uncompilable without
+        anything noticing. The reflect half now carries the `netcheck`
+        gate its dependencies do, and the verb's arm matches its variant.
 
   - version: 0.5.0rc7
     tag: v0.5.0rc7

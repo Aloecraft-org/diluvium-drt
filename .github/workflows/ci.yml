@@ -49,6 +49,56 @@ jobs:
       - name: Builds without the consent feature (the web carve-out)
         run: cargo check -p drt-config --no-default-features
 
+  features:
+    # Every shipping feature, alone. The gap this closes had been open the
+    # whole time: CI built `default` and `--all-features` and nothing
+    # between, so `--features stun` -- a profile Cargo.toml advertises, and
+    # the one a deployment running only the STUN server would pick -- did
+    # not compile at all and no job was in a position to notice. The same
+    # slip had already been found twice by hand (`turn-client`, then this).
+    #
+    # One feature at a time, not a full power set: the defect is always a
+    # gate naming a feature that does not imply what the code behind it
+    # needs, and a lone feature is where that shows. Combinations are
+    # covered by `--all-features` above.
+    #
+    # `wireguard` is absent on purpose -- gotatun needs a newer rustc than
+    # the rest of this matrix pins, and `--all-features` in the release
+    # workflow is where it is built.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        feature:
+          - slim
+          - cli
+          - listen
+          - runtime
+          - connector-time
+          - connector-fs
+          - connector-sql
+          - connector-crypto
+          - connector-rest
+          - connector-ssmtp
+          - connector-ssh
+          - connector-exec
+          - connector-data
+          - tunnel
+          - relay
+          - stun
+          - netcheck
+          - turn
+          - turn-client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # `--no-default-features` so the feature under test is the only thing
+      # on beyond what it pulls in itself. With defaults left on, `slim`
+      # would satisfy half of these gates and the job would prove nothing.
+      - name: cargo check -p drt --features ${{ matrix.feature }}
+        run: cargo check -p drt --all-targets --no-default-features --features ${{ matrix.feature }}
+
   test:
     runs-on: ubuntu-latest
     steps:

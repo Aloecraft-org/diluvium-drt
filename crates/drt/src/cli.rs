@@ -1842,7 +1842,7 @@ pub fn main(cli: Cli) -> ExitCode {
                 }
             }
         }
-        #[cfg(feature = "stun")]
+        #[cfg(feature = "netcheck")]
         Command::Netcheck {
             stun,
             reflect,
