@@ -20,6 +20,12 @@
 //! 1. **No root is the no-root path**, unchanged: `--config` with its own caps
 //!    as the ceiling, or the wide local default with neither. The wide default
 //!    lives there and nowhere else.
+//!
+//! And one rule that is not about order: **what runs is `live/`**. A file entry
+//! resolves to `live/<name>/<entry>`, never to `dlua_dir` or `init/`. Those are
+//! where a deploy reads *from*; nothing loads out of either, which is what makes
+//! `drt deploy` a step an operator can see rather than something `start` does
+//! invisibly — and what makes an edit not take effect until it is deployed.
 //! 2. **A root's findings are reported before anything runs**, all of them, and
 //!    the first blocking one stops start. Audit prints the same list from the
 //!    same function; this is the runtime's end of "they cannot drift".
@@ -52,6 +58,18 @@ pub struct Booted {
     /// What to run. `None` on the no-root path, where the config names its own
     /// program exactly as it always has.
     pub runnable: Option<Runnable>,
+    /// Which subdirectory of `live/` this deployment uses, and whether
+    /// something is already there. `None` on the no-root path.
+    pub deployment: Option<Deployment>,
+}
+
+/// A root's deployment: what it is called under `live/`, where a deploy would
+/// read from, and whether it is there now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deployment {
+    pub name: String,
+    pub source: crate::deploy::Source,
+    pub deployed: bool,
 }
 
 /// Hand-written because a [`drt_connector::Dispatcher`] holds trait objects
@@ -103,6 +121,7 @@ pub fn boot(
             root: None,
             resolution: None,
             runnable: None,
+            deployment: None,
         });
     };
 
@@ -147,7 +166,7 @@ pub fn boot(
 
     nesting(&root, project.allow_nested, ask)?;
 
-    let (mut config, runnable) = profile_config(&root, &inputs, &resolution)?;
+    let (mut config, runnable, deployment) = profile_config(&root, &inputs, &resolution, project)?;
 
     // Rule 3. Before a connector is wired, and not at all for a report.
     //
@@ -185,6 +204,7 @@ pub fn boot(
         root: Some(root),
         resolution: Some(resolution),
         runnable: Some(runnable),
+        deployment: Some(deployment),
     })
 }
 
@@ -224,7 +244,8 @@ fn profile_config(
     root: &Root,
     inputs: &drt_config::resolve::ResolveInputs,
     resolution: &Resolution,
-) -> Result<(RootConfig, Runnable), String> {
+    project: &drt_config::project::ProjectJson,
+) -> Result<(RootConfig, Runnable, Deployment), String> {
     let rooted = inputs.root.as_ref().expect("a root was resolved");
     let name = resolution
         .profile
@@ -240,14 +261,23 @@ fn profile_config(
         .entry
         .as_ref()
         .ok_or_else(|| format!("profile '{}' declares no entry", name.value))?;
-    let runnable = entry_runnable(root, &config, &entry.value)?;
+    let deployment = Deployment {
+        name: crate::deploy::deployment_name(root, Some(project)),
+        source: crate::deploy::source_for(root, &config),
+        deployed: false,
+    };
+    let deployment = Deployment {
+        deployed: crate::deploy::is_deployed(root, &deployment.name),
+        ..deployment
+    };
+    let runnable = entry_runnable(root, &deployment, &entry.value)?;
     // A native program is not loaded, so the config names none. `start` would
     // otherwise refuse a deployment with no program, which is the right
     // refusal for every case except this one.
     if let Runnable::Program(program) = &runnable {
         config.root.program = Some(program.clone());
     }
-    Ok((config, runnable))
+    Ok((config, runnable, deployment))
 }
 
 /// What an entry turns out to be.
@@ -270,18 +300,19 @@ pub enum Runnable {
 
 /// An entry, as something to run.
 ///
-/// `dlua_dir` + a filename becomes the path the loader opens; a `stdlib:` name
-/// becomes either source inside the binary or a native program. Resolution
-/// already checked that a file entry exists, so a failure here is about the
-/// stdlib half and says which name it could not find.
-pub fn entry_runnable(root: &Root, config: &RootConfig, entry: &Entry) -> Result<Runnable, String> {
+/// A file entry resolves **under `live/`**, not under `dlua_dir`: those are
+/// where a deploy reads from, and what runs is what was deployed. Resolution has
+/// already checked that the entry exists in the source, so the failure worth
+/// naming here is the stdlib half.
+pub fn entry_runnable(
+    root: &Root,
+    deployment: &Deployment,
+    entry: &Entry,
+) -> Result<Runnable, String> {
     match entry {
-        Entry::File(path) => {
-            let dir = config.dlua_dir.as_deref().unwrap_or("");
-            Ok(Runnable::Program(Program::Path(
-                root.dir.join(dir).join(path),
-            )))
-        }
+        Entry::File(path) => Ok(Runnable::Program(Program::Path(
+            crate::deploy::live_path(root, &deployment.name).join(path),
+        ))),
         Entry::Stdlib(name) => match crate::stdlib::lookup(name) {
             Some(crate::stdlib::Kind::Native(native)) => Ok(Runnable::Native(native)),
             Some(crate::stdlib::Kind::Source(src)) => {
@@ -356,9 +387,15 @@ mod tests {
         );
         assert_eq!(
             booted.config.root.program,
-            Some(Program::Path(PathBuf::from("/r/dlua/app.dlua"))),
-            "dlua_dir + entry became the path the loader opens"
+            Some(Program::Path(PathBuf::from(
+                "/r/.drt_root/live/my_drt_project/app.dlua"
+            ))),
+            "what runs is live/, not the authoring directory"
         );
+        let deployment = booted.deployment.as_ref().unwrap();
+        assert_eq!(deployment.name, "my_drt_project");
+        assert_eq!(deployment.source.describe(), "dlua_dir");
+        assert!(!deployment.deployed, "nothing has been deployed yet");
         // Consent was accepted by `-y`, so the file is there for next time.
         assert!(seeded.consent().is_some());
     }
@@ -505,16 +542,25 @@ mod tests {
                 r#"{"entry":"stdlib:nonesuch"}"#,
             )],
         );
-        let config = RootConfig::default();
-        let e =
-            entry_runnable(&seeded.root, &config, &Entry::Stdlib("nonesuch".into())).unwrap_err();
+        let deployment = Deployment {
+            name: "p".into(),
+            source: crate::deploy::Source::Init(seeded.root.init()),
+            deployed: false,
+        };
+        let e = entry_runnable(&seeded.root, &deployment, &Entry::Stdlib("nonesuch".into()))
+            .unwrap_err();
         assert!(e.contains("nonesuch"), "{e}");
         assert!(e.contains("preflight"), "it lists what is here: {e}");
 
         // And the name this build *does* carry resolves, rather than being
         // reported absent by a second registry that disagreed with the first.
         assert_eq!(
-            entry_runnable(&seeded.root, &config, &Entry::Stdlib("preflight".into())).unwrap(),
+            entry_runnable(
+                &seeded.root,
+                &deployment,
+                &Entry::Stdlib("preflight".into())
+            )
+            .unwrap(),
             Runnable::Native("preflight")
         );
     }

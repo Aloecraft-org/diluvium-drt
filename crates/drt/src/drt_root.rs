@@ -196,6 +196,9 @@ impl Root {
                 profiles,
                 profile_dir,
                 dlua_dir: dlua,
+                // The other candidate source: a profile with no `dlua_dir`
+                // deploys from `init/`, and its entry has to exist there.
+                init: drt_platform::fs::read_dir(self.init()).unwrap_or_default(),
                 // The pin is a fact about the binary that is running, which
                 // is not necessarily `.drt_root/drt`: `drt` on `PATH` is the
                 // documented happy path. So it is this binary's own version,

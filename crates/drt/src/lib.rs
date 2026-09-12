@@ -11,6 +11,9 @@ pub mod config;
 /// `--accept-changes`, write the entry, refuse by name when there is nobody
 /// to ask. `drt_config::consent` is the format; this is the gate.
 pub mod consent_gate;
+/// `deploy`, `rm` and `commit`: dlua_dir or init/ into live/, and live/ back
+/// into init/ with an envelope. Nothing loads out of anywhere but live/.
+pub mod deploy;
 /// The drive loop as a state machine: what `run`, `repl` and the browser
 /// tier drive an instance with (doc/Wasm.md D6).
 pub mod drive;

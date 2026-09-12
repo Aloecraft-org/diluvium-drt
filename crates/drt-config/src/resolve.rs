@@ -342,8 +342,16 @@ pub struct RootInputs {
     /// so "the files match the declared list" can be answered even for a
     /// file resolution could not read.
     pub profile_dir: Vec<String>,
-    /// Filenames under the resolved `dlua_dir`, for the entry-exists check.
+    /// Filenames under the candidate `dlua_dir`s, for the entry-exists check.
     pub dlua_dir: Vec<String>,
+    /// Filenames under `init/`, for the same check on a profile that sets no
+    /// `dlua_dir`.
+    ///
+    /// Two listings and not one, because which of them an entry must exist in
+    /// is the profile's choice: a debug profile points at `dlua/` and a released
+    /// root's profile does not, and checking the wrong one would report every
+    /// released root's entry as missing.
+    pub init: Vec<String>,
     /// Which drt the caller has established is present, for the pin comparison.
     ///
     /// **`None` means "could not establish it", and no [`Finding::PinMismatch`]
@@ -815,15 +823,19 @@ fn check_entry(out: &mut Resolution, profile: &str, root: &RootInputs) {
     let Entry::File(path) = entry else {
         return;
     };
-    if !root.dlua_dir.iter().any(|f| f == path) {
+    // Which directory an entry must exist in is the profile's choice: one that
+    // sets `dlua_dir` deploys from there, one that does not deploys from
+    // `init/`. Checking `dlua_dir` either way would report every released
+    // root's entry as missing.
+    let (listing, where_from) = match out.dlua_dir.as_ref() {
+        Some(dir) => (&root.dlua_dir, dir.value.clone()),
+        None => (&root.init, "init/".to_string()),
+    };
+    if !listing.iter().any(|f| f == path) {
         out.findings.push(Finding::EntryMissing {
             profile: profile.to_string(),
             entry: path.clone(),
-            dlua_dir: out
-                .dlua_dir
-                .as_ref()
-                .map(|d| d.value.clone())
-                .unwrap_or_default(),
+            dlua_dir: where_from,
         });
     }
 }
@@ -865,6 +877,7 @@ mod tests {
                 .map(|(f, c)| (f.to_string(), c))
                 .collect(),
             dlua_dir: vec!["app.dlua".into()],
+            init: vec!["app.dlua".into()],
             binary_version: Some("0.5.0".into()),
             project: Some(project),
         }
@@ -1103,6 +1116,41 @@ mod tests {
             out.blocker().is_none(),
             "an unnamed, unversioned, unpinned root still starts; audit still says all three"
         );
+    }
+
+    /// A released root sets no `dlua_dir` and deploys from `init/`, so that is
+    /// where its entry must be. Checking `dlua_dir` either way would report
+    /// every released root's entry as missing.
+    #[test]
+    fn a_profile_without_a_dlua_dir_has_its_entry_checked_against_init() {
+        let caps = vec![Grant::grant("host:fs/*")];
+        let released = RootConfig {
+            dlua_dir: None,
+            entry: Some(Entry::parse("app.dlua").unwrap()),
+            root: crate::InstanceConfig {
+                caps: caps.clone(),
+                ..crate::InstanceConfig::default()
+            },
+            ..RootConfig::default()
+        };
+        let mut r = root(project(caps), vec![("debug.config.json", released)]);
+        r.dlua_dir = Vec::new();
+        r.init = vec!["app.dlua".into()];
+
+        let out = resolve(&ResolveInputs {
+            root: Some(r.clone()),
+            ..ResolveInputs::default()
+        });
+        assert!(out.blocker().is_none(), "{:?}", out.findings);
+
+        // And it is still reported when it really is absent, naming init/.
+        r.init = Vec::new();
+        let out = resolve(&ResolveInputs {
+            root: Some(r),
+            ..ResolveInputs::default()
+        });
+        let e = out.blocker().expect("blocks").to_string();
+        assert!(e.contains("app.dlua") && e.contains("init/"), "{e}");
     }
 
     #[test]

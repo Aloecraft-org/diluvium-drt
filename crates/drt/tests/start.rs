@@ -819,9 +819,14 @@ mod rooted {
 
         assert_eq!(
             booted.config.root.program,
-            Some(drt_config::Program::Path(tmp.path().join("dlua/app.dlua"))),
-            "dlua_dir + entry resolved against the root's own directory"
+            Some(drt_config::Program::Path(
+                tmp.path().join(".drt_root/live/my_drt_project/app.dlua")
+            )),
+            "what runs is live/, and a deploy is what puts it there"
         );
+        let deployment = booted.deployment.as_ref().unwrap();
+        assert_eq!(deployment.source.describe(), "dlua_dir");
+        assert!(!deployment.deployed, "boot deploys nothing; start does");
         assert!(
             tmp.path().join(".drt_root/consent.json").exists(),
             "-y wrote the acceptance"
@@ -911,6 +916,65 @@ mod rooted {
         )
         .expect("--root finds it");
         assert_eq!(booted.root.as_ref().unwrap().dir, tmp.path());
+    }
+
+    /// The development loop from the doc's transcript, on a real disk: deploy,
+    /// run what was deployed, edit, see the old thing still running, deploy
+    /// again, see the edit. The lag is the whole reason `live/` is a directory
+    /// of its own rather than an implementation detail of `start`.
+    #[test]
+    fn the_deploy_edit_deploy_loop_behaves_as_documented() {
+        let tmp = tempfile::tempdir().unwrap();
+        lay_out(tmp.path(), PROJECT);
+        let yes = Flags {
+            yes: true,
+            accept_changes: false,
+        };
+        let booted = boot::boot(tmp.path(), None, None, None, yes, &mut Quiet::default()).unwrap();
+        let root = booted.root.as_ref().unwrap();
+        let deployment = booted.deployment.as_ref().unwrap();
+
+        drt::deploy::deploy(root, &deployment.name, &deployment.source).unwrap();
+        let live = drt::deploy::live_path(root, &deployment.name).join("app.dlua");
+        assert_eq!(
+            std::fs::read_to_string(&live).unwrap(),
+            "print('hello from app.dlua')\n"
+        );
+        assert!(drt::deploy::is_deployed(root, &deployment.name));
+
+        // An edit that has not been deployed is not what runs.
+        std::fs::write(tmp.path().join("dlua/app.dlua"), "print('edited')\n").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&live).unwrap(),
+            "print('hello from app.dlua')\n",
+            "an edit reaches live/ only through a deploy"
+        );
+        drt::deploy::deploy(root, &deployment.name, &deployment.source).unwrap();
+        assert_eq!(std::fs::read_to_string(&live).unwrap(), "print('edited')\n");
+
+        // Commit captures what runs, and the envelope describes exactly that.
+        let project: drt_config::project::ProjectJson = serde_json::from_str(
+            &std::fs::read_to_string(tmp.path().join(".drt_root/project.json")).unwrap(),
+        )
+        .unwrap();
+        let committed = drt::deploy::commit(root, &deployment.name, &project).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join(".drt_root/init/app.dlua")).unwrap(),
+            "print('edited')\n"
+        );
+        let envelope: drt_config::envelope::Envelope = serde_json::from_str(
+            &std::fs::read_to_string(tmp.path().join(".drt_root/state/envelope.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(envelope.hash().unwrap(), committed.hash);
+        assert!(envelope
+            .differences(&drt::deploy::hashes(&root.init()).unwrap())
+            .is_empty());
+
+        // And rm takes it away, idempotently.
+        drt::deploy::remove(root, &deployment.name).unwrap();
+        assert!(!drt::deploy::is_deployed(root, &deployment.name));
+        drt::deploy::remove(root, &deployment.name).unwrap();
     }
 
     /// `drt start preflight` resolves and reports, and the report is the

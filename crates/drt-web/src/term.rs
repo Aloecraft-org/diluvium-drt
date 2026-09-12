@@ -184,6 +184,7 @@ impl Term {
             // and saying so beats silently starting something else.
             Command::Start {
                 profile: Some(name),
+                ..
             } => {
                 say(
                     Fd::Stderr,
@@ -194,15 +195,28 @@ impl Term {
                 );
                 Session::exited(1)
             }
-            Command::Start { profile: None } => match drt::start::prepare(&config, dispatcher) {
-                Ok(driver) => Session {
-                    kind: Kind::Start(driver),
-                },
-                Err(e) => {
-                    say(Fd::Stderr, &format!("drt start: {e}\n"));
-                    Session::exited(1)
+            Command::Start { profile: None, .. } => {
+                match drt::start::prepare(&config, dispatcher) {
+                    Ok(driver) => Session {
+                        kind: Kind::Start(driver),
+                    },
+                    Err(e) => {
+                        say(Fd::Stderr, &format!("drt start: {e}\n"));
+                        Session::exited(1)
+                    }
                 }
-            },
+            }
+            // The root verbs. A page has no `.drt_root/` -- there is no disk to
+            // put one on and no `live/` to copy into -- so each says so rather
+            // than appearing to work. `key` is absent for a different reason:
+            // a page has nowhere to keep a private key that a page should keep.
+            Command::Deploy | Command::Rm | Command::Commit | Command::Key { .. } => {
+                say(
+                    Fd::Stderr,
+                    "drt: that verb acts on a root, and a page has none\n",
+                );
+                Session::exited(1)
+            }
             Command::Repl { unsafe_stdlib } => {
                 let build = if unsafe_stdlib {
                     Repl::unsealed

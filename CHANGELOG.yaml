@@ -846,6 +846,61 @@ releases:
         The key **file format** lives in `drt-config`, not here: dollup reads
         the same key out of `~/.dollup/keys/`, and two implementations of one
         format are two formats that agree until they do not.
+      - |
+        **`drt deploy`, `drt rm`, `drt commit`, and `start`'s deploy step.**
+
+        ```text
+          dlua_dir ──deploy──▶ live/<name> ──commit──▶ init/
+             init/ ──deploy──▶
+        ```
+
+        **What runs is `live/`**, and only `live/`. Nothing loads out of
+        `dlua_dir` or `init/` — they are where a deploy reads *from* — which is
+        what makes `drt deploy` a step an operator can see rather than something
+        `start` does invisibly, and what makes an edit not take effect until it
+        is deployed. The first version of this resolved the entry straight out
+        of `dlua_dir`, which worked and skipped the model entirely.
+
+        `drt start` deploys and runs. On an already-deployed root it says so and
+        stops, listing the three things the operator might have meant, because a
+        deploy replaces rather than merges and `live/` is where a stateful node's
+        directory survives restarts — overwriting it is destructive enough to be
+        asked for, which is `--rm`. `drt run` is the verb that does *not* deploy:
+        it runs `live/` as it stands, and says what to run when nothing is there.
+
+        `commit` takes from `live/` and never from `dlua_dir`, so nothing reaches
+        `init/` without having been visible in what runs and a supervisor can
+        review a commit by looking at the deployment. `rm` deliberately does not
+        go through resolution: it is how an operator gets out of a root that will
+        not start, so it must not need the root to resolve.
+
+        Bounded at 10,000 files and 256 MiB per copy, each a named refusal. The
+        alternative to a bound is filling a disk and hearing about it from the
+        kernel with a half-written `live/`.
+      - |
+        **The envelope**, in `drt-config` so dollup's audit reads the same type.
+        `commit` is its single writer, so there is one current record to check,
+        and `push` signs its hash rather than a file list it assembled itself.
+
+        Both hashing regimes meet in that one file and the boundary is commented
+        where it happens: a **file's** hash is over its bytes as they are, which
+        is dollup's artifact regime — canonicalizing a `.dlua` would be absurd —
+        while the **envelope object** is authored into a type and re-serialized
+        before signing, so hashing it goes through canonical JSON like every
+        other signed object. `files` is a `BTreeMap` for a reason that is not
+        tidiness: an insertion-ordered map would hash differently on two
+        filesystems that list a directory differently, so one tree would have two
+        envelopes.
+
+        `differences` answers with *what* differs rather than a boolean, because
+        "your root does not match its envelope" is not something anyone can act
+        on.
+      - |
+        **`RootInputs` gained an `init` listing**, beside `dlua_dir`. Which
+        directory an entry must exist in is the profile's choice — one that sets
+        `dlua_dir` deploys from there, one that does not deploys from `init/` —
+        and checking `dlua_dir` either way reported every released root's entry
+        as missing. Two listings, and the profile picks.
     changed:
       - |
         **`drt-connector-fs` publishes its path jail.** `FsScope` and

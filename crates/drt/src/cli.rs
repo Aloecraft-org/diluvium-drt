@@ -243,7 +243,29 @@ pub enum Command {
         /// Without one, `project.json`'s `default_profile` decides, and
         /// without a `project.json` the pre-recognized fallback order does.
         profile: Option<String>,
+        /// Replace what is already deployed, then start.
+        ///
+        /// Without it, `start` on an already-deployed root says so and stops
+        /// rather than overwriting `live/`. A deploy replaces rather than
+        /// merges, and `live/` is what a stateful node's directory survives
+        /// restarts in, so overwriting it is destructive enough to be asked for.
+        #[arg(long)]
+        rm: bool,
     },
+    /// Copy this profile's source into `live/`, and nothing else.
+    ///
+    /// From `dlua_dir` when the profile sets one, else from `init/`. What runs
+    /// is always `live/`, so this is the step that makes an edit take effect.
+    Deploy,
+    /// Delete this deployment from `live/`.
+    Rm,
+    /// Capture what is running, from `live/` into `init/`, and write the
+    /// envelope.
+    ///
+    /// From `live/` and never from an editor's buffer: nothing reaches `init/`
+    /// without having been visible in what runs, so a supervisor can review a
+    /// commit by looking at the deployment.
+    Commit,
     /// A REPL is an instance, not a mode: a sealed guest with a generous
     /// local grant, bridged to this terminal.
     Repl {
@@ -550,7 +572,17 @@ pub fn buildinfo(json: bool) -> String {
         connectors.push("listen");
     }
 
-    let mut verbs: Vec<&str> = vec!["buildinfo", "key", "ps", "repl", "run", "start"];
+    let mut verbs: Vec<&str> = vec![
+        "buildinfo",
+        "commit",
+        "deploy",
+        "key",
+        "ps",
+        "repl",
+        "rm",
+        "run",
+        "start",
+    ];
     if cfg!(feature = "relay") {
         verbs.push("relay");
     }
@@ -875,6 +907,25 @@ pub fn assemble(cli: &Cli) -> Result<(RootConfig, drt_connector::Dispatcher), St
     Ok((config, drt_connector::Dispatcher::new(registry)))
 }
 
+/// Print the setup report. One place, so `drt start preflight` and
+/// `drt run -p preflight` say the same thing.
+fn preflight_report(resolution: &drt_config::resolve::Resolution) -> ExitCode {
+    let pin = resolution.pin.as_ref().map(|p| p.value.as_str());
+    match crate::stdlib::preflight(
+        resolution,
+        pin,
+        env!("CARGO_PKG_VERSION"),
+        resolution.consent.as_ref(),
+        &mut std::io::stdout(),
+    ) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("drt: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// `drt key`: generate, or sign.
 fn key_verb(cli: &Cli, action: &KeyAction) -> ExitCode {
     match action {
@@ -970,7 +1021,15 @@ fn run_verb(
     use drt_config::resolve::Requested;
 
     let Some(target) = target else {
-        // No argument: the config's own program, as it always was.
+        // No argument inside a root: run what is deployed. `drt run` is the
+        // verb that does *not* deploy -- the already-deployed message points
+        // here for exactly that -- so it reads `live/` as it stands and says so
+        // when there is nothing there.
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        if crate::drt_root::discover(&cwd, cli.root.as_deref()).is_some() {
+            return run_profile(cli, None);
+        }
+        // Outside a root: the config's own program, as it always was.
         let Some(drt_config::Program::Path(path)) = config.root.program.clone() else {
             eprintln!("drt run: name a program, as an argument or as `program` in the config");
             return ExitCode::FAILURE;
@@ -1038,25 +1097,56 @@ fn run_verb(
             }
         },
         // `drt run -p <profile>` runs `live/` as it stands; `drt start
-        // <profile>` deploys first. The already-deployed message is what
-        // teaches the difference, so this arm must not quietly deploy.
+        // <profile>` deploys first. The already-deployed message is what teaches
+        // the difference, so this arm must not quietly deploy.
         Requested::Profile(name) => {
-            let Some(root) = root else {
+            if root.is_none() {
                 eprintln!(
                     "drt run: there is no root here, so '{name}' names no profile; \
                      `--config <path>` is the self-contained form"
                 );
                 return ExitCode::FAILURE;
-            };
-            eprintln!(
-                "drt run: running a profile from {} is not built yet; \
-                 `drt start {name}` deploys and runs it",
-                root.live().display()
-            );
-            ExitCode::FAILURE
+            }
+            run_profile(cli, Some(&name))
         }
         Requested::Default => unreachable!("classify never answers Default"),
     }
+}
+
+/// Run a profile from `live/` as it stands, deploying nothing.
+///
+/// Through the same `boot` that `start` uses, so the two agree about which
+/// profile is current, where its entry is, and what consent says — and then
+/// stops short of the one step that makes them different.
+fn run_profile(cli: &Cli, profile: Option<&str>) -> ExitCode {
+    let booted = match booted_with(cli, "run", profile) {
+        Ok(booted) => booted,
+        Err(code) => return code,
+    };
+    if let Some(deployment) = &booted.deployment {
+        if !deployment.deployed {
+            eprintln!(
+                "drt run: '{}' is not deployed; `drt deploy` copies {} into live/, \
+                 or `drt start` does both",
+                deployment.name,
+                deployment.source.describe()
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+    // A native stdlib entry reports rather than running, here as in `start`.
+    if let (Some(crate::boot::Runnable::Native(name)), Some(resolution)) =
+        (&booted.runnable, &booted.resolution)
+    {
+        if *name == crate::stdlib::PREFLIGHT {
+            return preflight_report(resolution);
+        }
+    }
+    let Some(drt_config::Program::Path(path)) = booted.config.root.program.clone() else {
+        eprintln!("drt run: this profile names no program to run");
+        return ExitCode::FAILURE;
+    };
+    drive_run(&path, &booted.config, booted.dispatcher)
 }
 
 /// Read every byte of stdin. The piped-code case, and the reason `-` is
@@ -1120,7 +1210,134 @@ fn drive_source(
 /// Separate from [`main`] because it is the one verb that does not take
 /// [`assemble`]'s config: `crate::boot` produces its own, and the order there
 /// is load-bearing (consent before connectors).
-fn start_verb(cli: &Cli, profile: Option<&str>) -> ExitCode {
+/// Find the root for a verb that needs one, or say why there is none.
+fn rooted(cli: &Cli, verb: &str) -> Result<crate::drt_root::Root, ExitCode> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    crate::drt_root::discover(&cwd, cli.root.as_deref()).ok_or_else(|| {
+        eprintln!(
+            "drt {verb}: there is no root here; run it inside one, name one with --root, \
+             or `dollup init` to make one"
+        );
+        ExitCode::FAILURE
+    })
+}
+
+/// `boot`, for a verb that only needs the resolution and not a dispatcher.
+///
+/// Through the same function `start` uses, so a `deploy` and the `start` that
+/// would follow it cannot disagree about which profile is current or where its
+/// source is. `-y` is passed through because a verb that writes into a root is
+/// a verb an operator ran deliberately; it does not widen anything, since
+/// `--accept-changes` is still separate.
+fn booted_with(
+    cli: &Cli,
+    verb: &str,
+    profile: Option<&str>,
+) -> Result<crate::boot::Booted, ExitCode> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut ask = crate::consent_gate::Terminal;
+    crate::boot::boot(
+        &cwd,
+        cli.root.as_deref(),
+        cli.config.as_deref(),
+        profile,
+        crate::consent_gate::Flags {
+            yes: cli.yes,
+            accept_changes: cli.accept_changes,
+        },
+        &mut ask,
+    )
+    .map_err(|e| {
+        eprintln!("drt {verb}: {e}");
+        ExitCode::FAILURE
+    })
+}
+
+/// `drt deploy`: source into `live/`, and nothing else.
+fn deploy_verb(cli: &Cli) -> ExitCode {
+    let booted = match booted_with(cli, "deploy", None) {
+        Ok(booted) => booted,
+        Err(code) => return code,
+    };
+    let (Some(root), Some(deployment)) = (&booted.root, &booted.deployment) else {
+        eprintln!("drt deploy: there is no root here to deploy into");
+        return ExitCode::FAILURE;
+    };
+    match crate::deploy::deploy(root, &deployment.name, &deployment.source) {
+        Ok(report) => {
+            eprintln!(
+                "deployed {} from {} ({} file(s))",
+                deployment.name,
+                deployment.source.describe(),
+                report.files
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("drt deploy: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `drt rm`: this deployment gone from `live/`.
+fn rm_verb(cli: &Cli) -> ExitCode {
+    let root = match rooted(cli, "rm") {
+        Ok(root) => root,
+        Err(code) => return code,
+    };
+    // Deliberately not through `boot`: `rm` is how an operator gets out of a
+    // root that will not start, so it must not need the root to resolve. The
+    // name comes from `project.json` if it is readable and from the directory
+    // otherwise, which is what `deployment_name` already does.
+    let (inputs, _) = root.read(drt_config::resolve::Requested::Default, Vec::new());
+    let project = inputs.root.as_ref().and_then(|r| r.project.as_ref());
+    let name = crate::deploy::deployment_name(&root, project);
+    match crate::deploy::remove(&root, &name) {
+        Ok(()) => {
+            eprintln!("removed {name} from live/");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("drt rm: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `drt commit`: what is running, captured into `init/`, with an envelope.
+fn commit_verb(cli: &Cli) -> ExitCode {
+    let booted = match booted_with(cli, "commit", None) {
+        Ok(booted) => booted,
+        Err(code) => return code,
+    };
+    let (Some(root), Some(deployment)) = (&booted.root, &booted.deployment) else {
+        eprintln!("drt commit: there is no root here to commit in");
+        return ExitCode::FAILURE;
+    };
+    let (inputs, _) = root.read(drt_config::resolve::Requested::Default, Vec::new());
+    let Some(project) = inputs.root.as_ref().and_then(|r| r.project.clone()) else {
+        eprintln!(
+            "drt commit: this root has no project.json, so a commit has no root_id to record"
+        );
+        return ExitCode::FAILURE;
+    };
+    match crate::deploy::commit(root, &deployment.name, &project) {
+        Ok(committed) => {
+            eprintln!(
+                "committed {} file(s) into init/\nenvelope: {}",
+                committed.report.files, committed.hash
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("drt commit: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn start_verb(cli: &Cli, profile: Option<&str>, rm: bool) -> ExitCode {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut ask = crate::consent_gate::Terminal;
     let booted = match crate::boot::boot(
@@ -1165,6 +1382,36 @@ fn start_verb(cli: &Cli, profile: Option<&str>) -> ExitCode {
         }
     }
 
+    // Deploy, then run. `live/` is what runs, so this is the step that makes
+    // `start` different from `run` -- and the already-deployed message is where
+    // a reader learns that difference.
+    if let (Some(root), Some(deployment)) = (&booted.root, &booted.deployment) {
+        if deployment.deployed && !rm {
+            let name = &deployment.name;
+            eprintln!("'{name}' is already deployed");
+            eprintln!();
+            eprintln!("   drt run         # run {name} from live");
+            eprintln!("   drt rm          # delete {name} from live");
+            // Relative to the root, which is how the profile wrote it: an
+            // absolute path here is four lines of noise in the message an
+            // operator sees most often.
+            let from = deployment
+                .source
+                .path()
+                .strip_prefix(&root.dir)
+                .unwrap_or(deployment.source.path());
+            eprintln!(
+                "   drt start --rm  # start {name} from {} (overwrites live/{name})",
+                from.display()
+            );
+            return ExitCode::FAILURE;
+        }
+        if let Err(e) = crate::deploy::deploy(root, &deployment.name, &deployment.source) {
+            eprintln!("drt start: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
+
     match start::start(&booted.config, booted.dispatcher) {
         // Ok means the swarm drained: every instance exited. For a
         // server-shaped deployment that never happens and foreground-forever
@@ -1188,8 +1435,12 @@ pub fn main(cli: Cli) -> ExitCode {
     // deployment's config is the *resolved profile's* and not `--config`'s, so
     // going through `assemble` first would wire one set of connectors to throw
     // away and announce `exec` twice on a config that names it.
-    if let Command::Start { ref profile } = cli.command {
-        return start_verb(&cli, profile.as_deref());
+    match cli.command {
+        Command::Start { ref profile, rm } => return start_verb(&cli, profile.as_deref(), rm),
+        Command::Deploy => return deploy_verb(&cli),
+        Command::Rm => return rm_verb(&cli),
+        Command::Commit => return commit_verb(&cli),
+        _ => {}
     }
     let (config, dispatcher) = match assemble(&cli) {
         Ok(pair) => pair,
@@ -1211,11 +1462,13 @@ pub fn main(cli: Cli) -> ExitCode {
             &config,
             dispatcher,
         ),
-        // `start` is handled before `assemble` (see `main`), so this arm
-        // cannot be reached. Kept as a named unreachable rather than deleted,
-        // because clap's `Command` must still be exhaustive here and a `_`
-        // arm would swallow the next verb somebody adds.
-        Command::Start { .. } => unreachable!("start is dispatched before assemble"),
+        // The root verbs are handled before `assemble` (see `main`), so these
+        // arms cannot be reached. Kept as named unreachables rather than
+        // deleted, because clap's `Command` must still be exhaustive here and a
+        // `_` arm would swallow the next verb somebody adds.
+        Command::Start { .. } | Command::Deploy | Command::Rm | Command::Commit => {
+            unreachable!("the root verbs are dispatched before assemble")
+        }
         #[cfg(feature = "relay")]
         Command::Relay => {
             let Some(relay_config) = config.relay.clone() else {

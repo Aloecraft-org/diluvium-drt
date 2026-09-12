@@ -26,6 +26,9 @@
 //! - [`consent`] — `consent.json`: the operator acknowledging that ceiling,
 //!   and the one relation that decides whether a change prompts.
 //! - [`gsr`] — grant signing requests and the decisions about them.
+//! - [`envelope`] — the computed record of what a root has committed, written
+//!   by `commit` and signed by `push`. The only computed thing a root carries
+//!   that travels.
 //! - [`resolve`] — what `start` would do, as a pure function, so `dollup
 //!   audit` and `stdlib:preflight` report the runtime's answer rather than an
 //!   approximation of it.
@@ -37,6 +40,7 @@
 //!   [`drt_caps::Scope`].
 
 pub mod canon;
+pub mod envelope;
 pub mod id;
 pub mod project;
 pub mod realm;
