@@ -15,6 +15,9 @@ pub mod drive;
 /// `drt-config`'s resolver inputs. Named for `.drt_root/` rather than
 /// `root`, because `roots` here is PEM trust anchors.
 pub mod drt_root;
+/// The grants desk: where `request_grant` lands and where a signed decision
+/// is read back. Files only -- it knows nothing of portals.
+pub mod gsr;
 #[cfg(feature = "listen")]
 pub mod listen;
 /// `drt netcheck`: the NAT diagnostic. The verdict table is pure and

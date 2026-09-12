@@ -421,6 +421,19 @@ pub fn serve_with_observer<B: Acceptor>(
         None => None,
     };
 
+    // The tunnel, if the config names one. Last of the five because it is
+    // the one that only carries: it has no counters to report and no
+    // questions to ask, so there is nothing below for it to take part in.
+    #[cfg(feature = "tunnel")]
+    let _tunnel = match &config.tunnel {
+        Some(cfg) => {
+            let bridge = crate::tunnel::TunnelBridge::start(cfg)?;
+            eprintln!("drt start: tunnel serving the `tunnel` block");
+            Some(bridge)
+        }
+        None => None,
+    };
+
     // Requests whose queue the program has not declared yet, oldest
     // first. Stepping before delivering (below) covers a program that
     // declares before its first park, and nothing more: a program that

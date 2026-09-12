@@ -587,6 +587,99 @@ entry has not moved the pin yet.
   instead of each writing their own and diverging, which is what makes
   a disagreement between `dollup audit` and `drt start` a diff rather
   than an investigation.
+- **Node paths, derived at spawn.** An instance's place in the tree --
+  `root`, `root/intake`, `root/intake/worker` -- composed from its
+  parent's path and refused a reserved segment, which is what "`drt` is a
+  privileged name" means in code: `root/drt` does not exist, and neither
+  does `root/state`.
+
+  The spawn request may name the last segment and nothing else. That
+  presence is the whole stateful-versus-ephemeral distinction: a node
+  that wants a stable name asks for one, and a node that does not gets
+  its instance id, which is unique for the life of the swarm because
+  handles are never reused. Neither is declared as a kind anywhere,
+  which keeps it from becoming a third thing to configure.
+- **`CapSet` records who holds it.** `Principal`'s doc has always said
+  "who a capability set belongs to *or* was granted by"; provenance
+  recorded the granter and this is the other half.
+
+  It exists so a hostcall answered by the dispatcher knows which node is
+  asking without a second identity channel threaded through every
+  connector. `Connector::call` receives its wiring's scope and nothing
+  about the instance -- deliberately, because a scope is a place and not
+  an identity -- so the alternative was a parameter on nine connectors
+  that eight of them would ignore. A holder is carried, never checked: a
+  name is not an authority, and the attenuation refusals are identical
+  either way.
+- **Both hostcalls from consent.md §10.** `capabilities/list` gains
+  `held` (which grants this instance actually holds under a family, with
+  their effects) and `within_ceiling` (whether the root's declared
+  ceiling could ever permit it). Added as fields on each entry rather
+  than by reshaping the reply, so a program written against the C host
+  reads the same `{name, kind, owner, granted, visibility}` and ignores
+  the rest.
+
+  `within_ceiling` is the one that earns its place: "not granted, ask"
+  and "not granted, and this root will never allow it, reconfigure" are
+  different messages, and only the second is worth failing early on.
+
+  `capabilities/request_grant` is the other, under the same family so
+  that `host:capabilities/list` alone reports without being able to ask
+  -- an auditor and a petitioner are different grants. It answers
+  `pending`, `granted` or `denied` as the reply **value** under
+  `Status::Ok`: `doc/Hostcall.md` has no pending status on purpose, and a
+  realm outside the ceiling comes back `ok` plus `denied` rather than
+  `Status::Denied`, which means "you do not hold `host:...`" and would
+  send a node looking for the wrong fix.
+- **The grants desk**: `state/gsr/pending/` written, `state/gsr/decided/`
+  read and verified, files only, no knowledge of HTTP or portals.
+
+  The lookup order is stated rather than implied, because getting it
+  wrong is invisible until a restart: compute the identity hash, check
+  `decided/` for a *verified* decision, then check `pending/`, then and
+  only then write. A restart recomputes the same hash and finds the
+  standing decision with no second pending file, which is the property
+  content-addressing bought and an identity carrying the moment of asking
+  would have lost.
+
+  Nothing is trusted because it is in `state/`: the four-step chain runs
+  on every read, and `project.json` and `consent.json` are re-read per
+  request rather than cached -- a ceiling the operator has since narrowed
+  must bind, and a signer they have since added should not need a
+  restart. A decision that fails verification is reported to the node
+  with the step that failed and the file is left alone; deleting the
+  evidence of a failed verification is the last thing this should do.
+- **`drt start` serves the `tunnel` block.** The arrangement `relay`,
+  `stun`, `turn` and `wg` already had: a `park` leg on a fetchpoint
+  belongs in the deployment that fetchpoint *is*, not in a second process
+  somebody has to remember to launch beside it. `tunnel::resolve` is the
+  verb's own, so a block that starts under `drt start` is exactly a block
+  that starts under `drt tunnel` -- a rename, not a second
+  implementation. It reports nothing, deliberately: a tunnel's
+  interesting events are the relay's and are already on that bridge.
+- **Start-time consent**, and the asymmetry that is the point of it:
+  `-y` accepts a **first** acceptance and nothing else. A `-y` that also
+  accepted a widening would mean every systemd unit and CI job carried
+  permanent pre-consent to every future ceiling the root might declare --
+  the approval chain's invariant still true on paper and defeated in
+  practice. Widening takes `--accept-changes`, typed by somebody who read
+  the delta. No TTY and no applicable flag is a named failure: never
+  hang, never assume yes.
+
+  The delta goes to stderr and the objection is repeated on the refusal
+  line. Under a supervisor those get read separately -- a scraper, a
+  paged alert, a `systemctl status` tail -- so the line that killed the
+  unit says what changed rather than only which flag would have allowed
+  it.
+- **Root discovery, with two walks that must not be merged.** Discovery
+  does **not** walk up: `.drt_root/` is looked for in the working
+  directory and nowhere else, so `cd build && drt start` inside a root is
+  the no-root path rather than silently somebody else's deployment. The
+  nesting check **does** walk up, and the inner root's `allow_nested`
+  governs it, because the outer root's config cannot be relied on to be
+  readable by whoever is running here. `--root` is what a systemd unit
+  should use: systemd's default working directory is `/`, so a unit
+  relying on discovery would find no root and not say so.
 
 ### Changed
 
@@ -599,6 +692,21 @@ entry has not moved the pin yet.
   rather than `to_bytes` by reference. A reply carrying no column
   encodes identically; one carrying a column has its bytes moved
   rather than copied.
+- **The platform filesystem gains `create_dir_all` and `remove_dir_all`**,
+  and its header stops promising six operations. A root has to be
+  written, not only read, and a comment saying six while the list grows
+  is the kind of lie this codebase's style exists to prevent.
+
+  `remove_dir_all` is component-wise, because `Path::starts_with` is:
+  removing `/work` must not take `/workshop`, and the byte-prefix version
+  is the obvious one to reach for and is wrong. Both are idempotent, so a
+  root's layout is created and a deployment removed without every caller
+  carrying an "unless it is already there" branch.
+- **`Signature` carries raw bytes like `PublicKey` does**
+  (`from_bytes`/`as_bytes`), so a consumer holding a detached signature
+  that never passed through this crate's JSON does not have to base64 it
+  on the way in. Asked for by dollup; the two types were asymmetric for
+  no reason.
 
 ### Known issues
 

@@ -94,6 +94,10 @@ futures-executor = { version = "0.3", default-features = false, features = ["std
 
 [dev-dependencies]
 tempfile = "3"
+# Driving one dispatch to completion in a test, the way drt-connector's own
+# tests do. No runtime is wanted here: the call under test answers on its
+# first poll by construction.
+pollster = "0.4"
 # The driver test's connector that answers on its second poll.
 async-trait = { workspace = true }
 # The tunnel test drives a real SSH session through both bridge halves.

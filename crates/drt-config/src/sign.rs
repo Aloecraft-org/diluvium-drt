@@ -112,6 +112,19 @@ impl SecretKey {
     }
 }
 
+impl Signature {
+    /// The raw 64 bytes. Symmetric with [`PublicKey::from_bytes`]: a consumer
+    /// holding a detached signature from somewhere other than this crate's
+    /// JSON should not have to base64 it to get it in here.
+    pub fn from_bytes(bytes: [u8; 64]) -> Signature {
+        Signature(bytes)
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 64] {
+        &self.0
+    }
+}
+
 impl PublicKey {
     pub fn from_bytes(bytes: [u8; 32]) -> PublicKey {
         PublicKey(bytes)
@@ -296,6 +309,23 @@ mod tests {
         let signature: Signature = serde_json::from_str(&signature_json).unwrap();
 
         assert_eq!(public.verify(b"payload", &signature), Ok(()));
+    }
+
+    /// The two types carry bytes the same way, which is what dollup needs
+    /// for a detached signature that never passed through this crate's JSON.
+    #[test]
+    fn a_signature_carries_bytes_the_way_a_public_key_does() {
+        let key = key();
+        let signature = key.sign(b"payload");
+
+        let raw: [u8; 64] = *signature.as_bytes();
+        let rebuilt = Signature::from_bytes(raw);
+        assert_eq!(rebuilt, signature);
+        assert_eq!(key.public_key().verify(b"payload", &rebuilt), Ok(()));
+
+        // And the base64 form agrees with the byte form.
+        let text: String = signature.clone().into();
+        assert_eq!(Signature::try_from(text).unwrap(), rebuilt);
     }
 
     #[test]

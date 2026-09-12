@@ -1152,6 +1152,7 @@ dependencies = [
  "gotatun",
  "httparse",
  "ipnetwork",
+ "pollster",
  "rcgen",
  "rmpv",
  "serde",

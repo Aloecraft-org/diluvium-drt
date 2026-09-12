@@ -31,6 +31,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use drt_caps::{CapSet, Effect, Grant, Principal};
+use drt_config::project::{BadNodePath, NodePath};
 use drt_config::{Budget, Numeric, Tier};
 
 use crate::engine::{
@@ -208,6 +209,14 @@ struct Slot {
     /// 0 when the slot is free. A handle is never reused.
     id: u32,
     parent: u32,
+    /// Where this instance sits in the tree: `root`, `root/intake`,
+    /// `root/intake/worker`. **Derived at spawn from the parent's path**,
+    /// never declared by the spawning program beyond the last segment, which
+    /// is what makes it usable as the subject of an audit record.
+    ///
+    /// A free slot's path is never read; it holds the root path rather than an
+    /// `Option` so that every read is a path and not an unwrap.
+    path: NodePath,
     inst: Option<Box<dyn Instance>>,
     caps: Arc<CapSet>,
     budget: Budget,
@@ -236,6 +245,7 @@ impl Slot {
         Slot {
             id: 0,
             parent: 0,
+            path: NodePath::root(),
             inst: None,
             caps: CapSet::root(Vec::new()),
             budget: Budget::default(),
@@ -448,7 +458,8 @@ impl<H: SwarmHost> Swarm<H> {
         {
             let slot = &mut self.slots[index];
             slot.parent = 0;
-            slot.caps = CapSet::root(caps);
+            slot.path = NodePath::root();
+            slot.caps = CapSet::root_held_by(Principal(slot.path.to_string()), caps);
             slot.budget = budget;
             slot.numeric = numeric;
             slot.unsafe_stdlib = self.unsafe_stdlib;
@@ -494,6 +505,14 @@ impl<H: SwarmHost> Swarm<H> {
     /// How many slots the table actually holds, used or free.
     pub fn slots_allocated(&self) -> usize {
         self.slots.len()
+    }
+
+    /// Where an instance sits in the tree. The subject of a GSR request, and
+    /// the identity a grant attaches to -- consent.md §7 binds a grant to the
+    /// node path rather than to the instance, so a restart does not re-prompt.
+    pub fn path(&self, id: InstanceId) -> Option<&NodePath> {
+        let index = self.find(id)?;
+        Some(&self.slots[index].path)
     }
 
     pub fn parent(&self, id: InstanceId) -> Option<InstanceId> {
@@ -1033,19 +1052,40 @@ impl<H: SwarmHost> Swarm<H> {
                 .filter(|g| g.effect == Effect::Deny)
                 .cloned(),
         );
+        // The child's position in the tree, derived from its parent's. The
+        // request may name the last segment -- a stateful node wants a stable
+        // name -- and may not name anything else: reserved names are refused
+        // here, which is what "`drt` is a privileged name" actually means, and
+        // a name carrying a separator would be a node claiming a position it
+        // was not given.
+        let requested_name = field_str(request, "name");
+        let child_path = match derive_path(
+            &self.slots[parent_index].path,
+            requested_name.as_deref(),
+            self.next_id,
+        ) {
+            Ok(path) => path,
+            Err(e) => {
+                self.emit(parent_id, "denied", 0, Some(&e.to_string()));
+                return;
+            }
+        };
         let parent_caps = Arc::clone(&self.slots[parent_index].caps);
-        let child_caps =
-            match parent_caps.attenuate(Principal(format!("instance-{parent_id}")), grants) {
-                Ok(set) => set,
-                Err(drt_caps::AttenuationError::NotHeldByParent { capability }) => {
-                    self.emit(parent_id, "denied", 0, Some(&capability));
-                    return;
-                }
-                Err(e) => {
-                    self.emit(parent_id, "denied", 0, Some(&e.to_string()));
-                    return;
-                }
-            };
+        let child_caps = match parent_caps.attenuate_held_by(
+            Some(Principal(child_path.to_string())),
+            Principal(self.slots[parent_index].path.to_string()),
+            grants,
+        ) {
+            Ok(set) => set,
+            Err(drt_caps::AttenuationError::NotHeldByParent { capability }) => {
+                self.emit(parent_id, "denied", 0, Some(&capability));
+                return;
+            }
+            Err(e) => {
+                self.emit(parent_id, "denied", 0, Some(&e.to_string()));
+                return;
+            }
+        };
         // Budgets attenuate, exactly as capabilities do, and for the same
         // reason: to a program a budget refusal and a capability refusal are
         // the same kind of event, so they arrive the same way -- `denied`,
@@ -1108,6 +1148,7 @@ impl<H: SwarmHost> Swarm<H> {
         {
             let slot = &mut self.slots[child_index];
             slot.parent = parent_id;
+            slot.path = child_path;
             slot.caps = child_caps;
             slot.budget = budget;
             slot.numeric = numeric;
@@ -1252,6 +1293,26 @@ fn field<'a>(request: &'a rmpv::Value, key: &str) -> Option<&'a rmpv::Value> {
         .iter()
         .find(|(k, _)| k.as_str() == Some(key))
         .map(|(_, v)| v)
+}
+
+/// A child's path: the parent's, plus the name the request asked for, or the
+/// instance id when it asked for none.
+///
+/// Two kinds of node, and the spawner chooses which by whether it names one.
+/// A **stateful** node wants a stable name so its directory survives a
+/// restart; an **ephemeral** one does not care and gets its id, which is
+/// unique for the life of the swarm because handles are never reused. Neither
+/// is declared as a kind anywhere -- the presence of a name is the whole
+/// distinction, which keeps it from becoming a third thing to configure.
+fn derive_path(
+    parent: &NodePath,
+    requested: Option<&str>,
+    id: u32,
+) -> Result<NodePath, BadNodePath> {
+    match requested {
+        Some(name) => parent.child(name),
+        None => parent.child(&id.to_string()),
+    }
 }
 
 fn field_str(request: &rmpv::Value, key: &str) -> Option<String> {
