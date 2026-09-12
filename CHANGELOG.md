@@ -958,6 +958,28 @@ entry has not moved the pin yet.
   backend exists anywhere to set it. Each is marked `TODO(A0)` or
   `TODO(A2)` at the one place it changes, and each has a test that
   fails if the pin moves and the code does not.
+- **Four readers for the four server-shaped blocks**, as
+  `stdlib:relay`, `stdlib:stun`, `stdlib:turn` and `stdlib:wg`. Each
+  is the program half of a block `drt start` already serves: the
+  block binds and measures, the program declares the block's report
+  queue, prints what lands, and never returns.
+
+  This is what the `relay`, `stun` and `turn` verbs existed for. They
+  were verbs because a deployment is config plus a program and those
+  blocks had no program to be the other half of -- so the verb was a
+  way to run a config with nothing in it. A reader is that half, and
+  it is nine lines because it reimplements nothing.
+
+  Each is gated on the feature carrying the block it reads: a name
+  that resolved to a reader with nothing to read would be worse than
+  a name that is absent.
+
+  **A reader reports and does not arbitrate.** A `relay` block naming
+  `reply_queue` is asking a program to decide whether each leg is
+  admitted, and silence inside `admit_timeout_ms` is itself a
+  refusal -- so a config that asks for arbitration and runs a reader
+  refuses every leg, visibly and failing closed. A deployment that
+  arbitrates wants its own program; `examples/rendezvous` is one.
 
 
 ## [0.5.0rc7] - 2026-09-07 (prerelease)
