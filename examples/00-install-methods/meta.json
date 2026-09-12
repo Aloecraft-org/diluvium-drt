@@ -5,6 +5,7 @@
   "needs_network": false,
   "needs_build": "full",
   "normalise": [
-    "s|^diluvium: [0-9a-f]\\{7,\\}$|diluvium: <revision>|"
+    "s|^diluvium: [0-9a-f]\\{7,\\}$|diluvium: <revision>|",
+    "/^tag: v/d"
   ]
 }

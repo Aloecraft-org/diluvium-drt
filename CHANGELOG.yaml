@@ -68,10 +68,10 @@ schema: 1
 repo: Aloecraft-org/diluvium-drt
 
 releases:
-  - version: 0.6.0
-    tag: v0.6.0
-    date: null
-    status: unreleased
+  - version: 0.6.0rc1
+    tag: v0.6.0rc1
+    date: 2026-09-12
+    status: released
     stable: false
     mirror: false
     dv_abi: 1
@@ -88,19 +88,48 @@ releases:
       wasi: [regex]
       web: [regex]
     summary: |
-      **In progress, not cut.** The numeric round (`doc/Plan-2026-09.md`):
-      DRT's half is a `features` compatibility fact, a raw-buffer lane in
-      the hostcall reply, a `data` connector for parquet and CSV, and the
-      config surface that bounds numeric work per instance.
+      The first candidate for 0.6.0: the numeric round
+      (`doc/Plan-2026-09.md`) --- a `features` compatibility fact, a
+      raw-buffer lane in the hostcall reply, a `data` connector for parquet
+      and CSV, and the config surface that bounds numeric work per instance
+      --- and the three things that landed while it was open.
+
+      **Configs are JSON, and a server is a deployment.** The `.host.lua`
+      dialect and the loader that read it are gone; every config in this
+      repository is JSON. The `relay`, `stun` and `turn` verbs and bare
+      `drt wg` are `drt start` with an `entry: stdlib:<name>`, the way every
+      other long-running thing already was.
+
+      **Modules.** `require`, for a guest that cannot open a file: every
+      `.dlua` or `.lua` beside the entry is a module, resolved by the host
+      before the program runs. No new hostcall, capability, format or ABI.
+
+      **diluvium 5.5.1_build14 is inside**, which carries
+      `DV_FLAG_TEXT_ONLY` through to the guest's own `load`; and a root's
+      `drt` pin is compared against the release tag rather than the crate
+      version, so `0.6.0rc1` is a version a root can name.
 
       Minor rather than patch, by the rule this file's header states: the
-      feature set is a new compatibility fact and `full`'s connector list
-      changes. Both are checked by name, so neither can move under a
-      version number that says nothing moved.
-
-      `dv_abi` stays 1 until the pin that raises it lands. `diluvium` and
-      `diluvium_build` name the same core v0.5.0rc8 carries, because this
-      entry has not moved the pin yet.
+      config and verb surface changed, and the feature set is a new
+      compatibility fact checked by name. The connector lists are rc9's.
+      `dv_abi` stays 1.
+    upgrading: |
+      - **A `.host.lua` config does not load.** Rewrite it as JSON: the
+        keys are the same words. `crates/drt-config/tests/corpus/` holds
+        every shape this repository deploys or ships. A relative `program`
+        resolves against the config's own directory now, not the working
+        directory.
+      - **`drt relay`, `drt stun`, `drt turn` and bare `drt wg` are gone.**
+        Serve with `drt start --config <file>` and an `entry` of
+        `stdlib:relay`, `stdlib:stun`, `stdlib:turn` or `stdlib:wg`; the
+        block the verb read stays under its key. The reader's report goes to
+        stdout. `drt wg keygen`, `pubkey` and `check` are unchanged, and
+        `drt wg` with no action is an error.
+      - **Pin the tag.** A root's `drt` pin is compared against the release
+        tag, so a root that wants this candidate pins `0.6.0rc1`; `0.6.0`
+        matches the release and not its candidates.
+      - **A `.lua` beside an entry is a module now**, and two files with one
+        stem (`enc.dlua` beside `enc.lua`) refuse the node. Rename one.
     added:
       - |
         **A corpus of every config shape that is deployed or shipped**, in
@@ -591,7 +620,79 @@ releases:
         `cargo test` of the slim profile for a test that compiles to nothing
         there; and not folded into `turn`, because a shipping feature must not
         carry crates only its tests use. The slim tree still carries neither.
+      - |
+        **Load-time modules: `require`, for a guest that cannot open a file.**
+        Every `.dlua` beside the entry is a module, and `require("db.claims")`
+        is `db/claims.dlua` in the node's own directory ---
+        `live/<name>/` for a deployed entry, the config's directory for a
+        `--config` run. No new hostcall, no new capability, no format change,
+        no ABI change. `doc/Modules.md` is the mechanism and
+        `examples/25-modules` is the shortest version of it.
+
+        **Not `package.preload`, which does not exist here.** A sealed guest is
+        opened without `LUA_LOADLIBK`, so there is no `package`, no
+        `package.preload` and no `require`; those arrive only with `--unsafe`,
+        where `require` is the filesystem one this exists to avoid. The ABI has
+        no preload call either --- `dv_register_code` is snapshot dedup, and
+        registering a chunk there does not make it reachable by name. What the
+        seal does keep is `load`, deliberately: *"It compiles bytes the program
+        already holds and reaches nothing."* So the host generates a chunk
+        holding the modules' source, compiles each with `load`, installs a
+        `require` over the result, and compiles and calls the entry.
+
+        Each module is its own `load`, so a traceback names the module's own
+        file and line, and Lua's 200-local ceiling --- which is per function ---
+        is spent per module rather than per node. The entry is loaded inside
+        the generated chunk rather than after it, under exactly the name it
+        would have had otherwise: adding a module to a node does not shift its
+        line numbers or change the shape of its errors. **A node with no
+        modules beside it generates nothing and is loaded exactly as before.**
+
+        Three corrections to the design note, recorded in `doc/Modules.md`:
+
+        - `.dluac` is deferred. `engine.rs` loads source with
+          `text_only(true)` --- "the verifier that does not exist yet" ---
+          and until 5.5.1_build14 the guest's own `load` accepted a binary
+          chunk under that flag. build14, embedded here, carries
+          `DV_FLAG_TEXT_ONLY` through to it, so "source only" is one rule
+          at both doors. What is still missing is the verifier, so a
+          `.dluac` beside the entry is refused by name rather than ignored.
+        - A bad name is refused at the **call**, not at load. The host never
+          sees a call site, so a name that reaches `require` cannot be refused
+          before the call that passes it.
+        - Every module is its own chunk, not its own budget: `dv_set_budget`
+          is per instance, so a node's chunks share one.
+
+        The name rule lives in `drt_config::modules` as pure functions ---
+        the charset, the reserved `stdlib` component, and the two directions
+        between a name and a file --- because dollup applies the same one when
+        it refuses a package at pull. One function rather than two copies, for
+        the reason `project::RESERVED` is one list. The generated Lua is the
+        copy that cannot be shared, since the host is not in the loop when a
+        guest calls `require`; it is held identical instead, and
+        `the_two_copies_of_the_name_rule_agree` fails if the two ever differ.
+
+        **`.lua` is a module extension too**, not only `.dlua`. Both are guest
+        source everywhere else in the format --- `RepoFormat.md` admits either
+        in a package, dollup's source-only check takes either --- so a loader
+        that walked only `.dlua` would leave `util.lua` in a node's directory
+        answering to nothing. Two files with one name (`enc.dlua` beside
+        `enc.lua`) are refused rather than one being preferred, which would
+        make the other dead code nobody could see was dead.
+
+        **A directory whose name is not a component is not entered.**
+        Nothing under `.git`, `25-modules` or `my-lib` can be reached by any
+        name, so nothing under it is a module; it is outside the namespace
+        the way a `.json` is. The release rehearsal's smoke found the rule
+        this replaces: `drt run smoke.lua` at the root of this checkout
+        walked the whole of it and refused at `examples/25-modules/app.dlua`,
+        which no `require` could ever have named.
     changed:
+      - |
+        **diluvium 5.5.1_build14 is the embedded core** (`2c2f920d`), up from
+        rc9's build13. What it brings this tree is `DV_FLAG_TEXT_ONLY`
+        reaching the guest's own `load`, which the modules entry above leans
+        on.
       - |
         **`drt-connector-fs` publishes its path jail.** `FsScope` and
         `FsScopeType` are public so the `data` connector can grant a
@@ -664,66 +765,29 @@ releases:
         refusal -- so a config that asks for arbitration and runs a reader
         refuses every leg, visibly and failing closed. A deployment that
         arbitrates wants its own program; `examples/rendezvous` is one.
-    added:
       - |
-        **Load-time modules: `require`, for a guest that cannot open a file.**
-        Every `.dlua` beside the entry is a module, and `require("db.claims")`
-        is `db/claims.dlua` in the node's own directory ---
-        `live/<name>/` for a deployed entry, the config's directory for a
-        `--config` run. No new hostcall, no new capability, no format change,
-        no ABI change. `doc/Modules.md` is the mechanism and
-        `examples/25-modules` is the shortest version of it.
-
-        **Not `package.preload`, which does not exist here.** A sealed guest is
-        opened without `LUA_LOADLIBK`, so there is no `package`, no
-        `package.preload` and no `require`; those arrive only with `--unsafe`,
-        where `require` is the filesystem one this exists to avoid. The ABI has
-        no preload call either --- `dv_register_code` is snapshot dedup, and
-        registering a chunk there does not make it reachable by name. What the
-        seal does keep is `load`, deliberately: *"It compiles bytes the program
-        already holds and reaches nothing."* So the host generates a chunk
-        holding the modules' source, compiles each with `load`, installs a
-        `require` over the result, and compiles and calls the entry.
-
-        Each module is its own `load`, so a traceback names the module's own
-        file and line, and Lua's 200-local ceiling --- which is per function ---
-        is spent per module rather than per node. The entry is loaded inside
-        the generated chunk rather than after it, under exactly the name it
-        would have had otherwise: adding a module to a node does not shift its
-        line numbers or change the shape of its errors. **A node with no
-        modules beside it generates nothing and is loaded exactly as before.**
-
-        Three corrections to the design note, recorded in `doc/Modules.md`:
-
-        - `.dluac` is deferred. `engine.rs` loads source with
-          `text_only(true)` --- "the verifier that does not exist yet" --- and
-          guest-side `load` accepts a binary chunk even under that flag, which
-          upstream records as a defect. Reaching bytecode modules through it
-          would put unverified bytecode inside the sandbox the entry is
-          protected from, so a `.dluac` beside the entry is refused by name
-          rather than ignored.
-        - A bad name is refused at the **call**, not at load. The host never
-          sees a call site, so a name that reaches `require` cannot be refused
-          before the call that passes it.
-        - Every module is its own chunk, not its own budget: `dv_set_budget`
-          is per instance, so a node's chunks share one.
-
-        The name rule lives in `drt_config::modules` as pure functions ---
-        the charset, the reserved `stdlib` component, and the two directions
-        between a name and a file --- because dollup applies the same one when
-        it refuses a package at pull. One function rather than two copies, for
-        the reason `project::RESERVED` is one list. The generated Lua is the
-        copy that cannot be shared, since the host is not in the loop when a
-        guest calls `require`; it is held identical instead, and
-        `the_two_copies_of_the_name_rule_agree` fails if the two ever differ.
-
-        **`.lua` is a module extension too**, not only `.dlua`. Both are guest
-        source everywhere else in the format --- `RepoFormat.md` admits either
-        in a package, dollup's source-only check takes either --- so a loader
-        that walked only `.dlua` would leave `util.lua` in a node's directory
-        answering to nothing. Two files with one name (`enc.dlua` beside
-        `enc.lua`) are refused rather than one being preferred, which would
-        make the other dead code nobody could see was dead.
+        **`wg.sh` still writes `.host.lua`**, and that script is in neither
+        repository. What it leaves on a customer machine does not load
+        until it writes JSON; `crates/drt-config/tests/corpus/wg.json` is
+        the shape.
+      - |
+        **An unknown key in a JSON config is ignored**, at every depth,
+        because `_`-prefixed keys are how a config carries a comment. A
+        misspelled bound is a bound that does not apply. Recorded as a
+        decision under `removed`, below.
+      - |
+        **Deploy copies one directory, not two.** `deploy::source_for`
+        reads `dlua_dir` when the profile sets one and `init/` when it does
+        not, so a `dollup pull` into `init/` reaches a released root and not
+        a development one. Until that is settled a development root vendors
+        its libraries into `dlua_dir` (`doc/Modules.md`, "Sharing across
+        repos").
+      - |
+        **`.dluac` modules are refused**, by name, until there is a bytecode
+        verifier.
+      - |
+        **`examples/22-wireguard-interface` never runs in CI.** It needs
+        `CAP_NET_ADMIN`, which no runner grants, so it is run by hand.
     removed:
       - |
         **`*.host.lua` configs, and the loader that read them.** Every
