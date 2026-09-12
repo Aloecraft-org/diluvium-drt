@@ -454,11 +454,14 @@ mod tests {
         seeded.fs.add_file(
             "/r/.drt_root/project.json",
             format!(
-                r#"{{"root_id":"{}","project_name":"r","project_version":"0.0.0","drt":"0.5.0",
+                r#"{{"root_id":"{}","project_name":"r","project_version":"0.0.0","drt":"{}",
                     "caps":[{{"effect":"grant","capability":"host:fs/*"}}],
                     "default_profile":"debug",
                     "profiles":["debug.config.json","preflight.config.json"]}}"#,
-                testfs::ROOT_ID
+                testfs::ROOT_ID,
+                // The binary's own version, so the pin matches whatever this
+                // was built as: a literal here broke at the first bump.
+                crate::drt_root::binary_version()
             ),
         );
 

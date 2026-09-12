@@ -87,9 +87,32 @@ MAPPINGS = {"connectors", "features"}
 KNOWN = SCALARS | MAPPINGS | {k for k, _ in SECTIONS}
 
 
+class OneOfEachKey(yaml.SafeLoader):
+    """`yaml.safe_load` keeps the last of two equal keys and says nothing.
+    An entry that grew a second `added:` block rendered one of them and
+    dropped twenty-nine bullets on the floor, and `validate` passed it.
+    A duplicate key is a lie the file tells about itself; refuse it."""
+
+    def construct_mapping(self, node, deep=False):
+        seen = {}
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if key in seen:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping", node.start_mark,
+                    "duplicate key %r (first at line %d)"
+                    % (key, seen[key] + 1),
+                    key_node.start_mark)
+            seen[key] = key_node.start_mark.line
+        return super().construct_mapping(node, deep)
+
+
 def load():
     with open(SOURCE) as f:
-        return yaml.safe_load(f)
+        try:
+            return yaml.load(f, Loader=OneOfEachKey)
+        except yaml.YAMLError as e:
+            sys.exit("CHANGELOG.yaml: %s" % e)
 
 
 def validate(doc):

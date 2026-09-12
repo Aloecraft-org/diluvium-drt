@@ -786,22 +786,30 @@ mod rooted {
         std::fs::write(dir.join("dlua/app.dlua"), "print('hello from app.dlua')\n").unwrap();
     }
 
-    const PROJECT: &str = r#"{
+    /// The root's `project.json`, pinned to the binary's own version: a
+    /// literal `0.5.0` here failed every test in this module at the first
+    /// bump, and `binary_version` is what the pin is compared against.
+    fn project() -> String {
+        format!(
+            r#"{{
         "root_id": "0192f0c1-8000-7000-8000-00000000abcd",
         "project_name": "my_drt_project",
         "project_version": "0.0.0",
-        "drt": "0.5.0",
-        "caps": [{"effect":"grant","capability":"host:time"}],
+        "drt": "{}",
+        "caps": [{{"effect":"grant","capability":"host:time"}}],
         "default_profile": "debug",
         "profiles": ["debug.config.json", "preflight.config.json"]
-    }"#;
+    }}"#,
+            drt::drt_root::binary_version()
+        )
+    }
 
     /// A first start accepts the ceiling with `-y`, writes `consent.json`, and
     /// resolves the entry to a real path on disk. A second start is silent.
     #[test]
     fn a_first_rooted_start_accepts_and_the_second_is_silent() {
         let tmp = tempfile::tempdir().unwrap();
-        lay_out(tmp.path(), PROJECT);
+        lay_out(tmp.path(), &project());
 
         let mut ask = Quiet::default();
         let booted = boot::boot(
@@ -844,7 +852,7 @@ mod rooted {
     #[test]
     fn widening_the_ceiling_is_not_covered_by_minus_y() {
         let tmp = tempfile::tempdir().unwrap();
-        lay_out(tmp.path(), PROJECT);
+        lay_out(tmp.path(), &project());
         let yes = Flags {
             yes: true,
             accept_changes: false,
@@ -853,7 +861,7 @@ mod rooted {
 
         std::fs::write(
             tmp.path().join(".drt_root/project.json"),
-            PROJECT.replace(
+            project().replace(
                 r#"[{"effect":"grant","capability":"host:time"}]"#,
                 r#"[{"effect":"grant","capability":"host:time"},
                     {"effect":"grant","capability":"host:fs/read"}]"#,
@@ -886,7 +894,7 @@ mod rooted {
     #[test]
     fn the_root_flag_reaches_a_root_from_outside_it() {
         let tmp = tempfile::tempdir().unwrap();
-        lay_out(tmp.path(), PROJECT);
+        lay_out(tmp.path(), &project());
         let elsewhere = tempfile::tempdir().unwrap();
 
         // Discovery does not walk up, and there is no root where we are.
@@ -925,7 +933,7 @@ mod rooted {
     #[test]
     fn the_deploy_edit_deploy_loop_behaves_as_documented() {
         let tmp = tempfile::tempdir().unwrap();
-        lay_out(tmp.path(), PROJECT);
+        lay_out(tmp.path(), &project());
         let yes = Flags {
             yes: true,
             accept_changes: false,
@@ -982,7 +990,7 @@ mod rooted {
     #[test]
     fn the_preflight_profile_reports_what_start_would_do() {
         let tmp = tempfile::tempdir().unwrap();
-        lay_out(tmp.path(), PROJECT);
+        lay_out(tmp.path(), &project());
         let booted = boot::boot(
             tmp.path(),
             None,
@@ -1001,7 +1009,7 @@ mod rooted {
         drt::stdlib::preflight(
             resolution,
             resolution.pin.as_ref().map(|p| p.value.as_str()),
-            "0.5.0",
+            &drt::drt_root::binary_version(),
             resolution.consent.as_ref(),
             &mut out,
         )
