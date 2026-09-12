@@ -315,6 +315,75 @@ fn buildinfo_names_the_release_tag_when_built_as_one() {
 /// the binary reports the profile that set is. A feature added to `full`
 /// in the manifest and forgotten in `main.rs` fails here as `custom`; a
 /// feature added to the manifest and unknown to this test fails by name.
+/// Every name a profile table carries must be one `enabled_features` probes.
+///
+/// It builds a `Vec<&str>` and compares it for equality against those tables,
+/// so a name in a table with no `feature!` line beside it can never appear in
+/// the vector and that profile can never match. It does not fail loudly: the
+/// build reports `profile: custom`, which reads as "an unusual feature set"
+/// rather than as a bug.
+///
+/// That happened. `turn-client` went into PROFILE_FULL without a probe, and
+/// for four commits every full build called itself `custom` -- which made the
+/// examples gate skip all fifteen `needs_build: full` examples, including two
+/// that were calling verbs which no longer existed. Nothing was red.
+///
+/// Both halves are scraped from the one source file rather than read as
+/// items, because the tables are private and making them `pub` to be tested
+/// would widen the crate's surface for a rule that is internal.
+#[test]
+fn every_profile_name_is_a_feature_the_binary_probes() {
+    let source =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/cli.rs")).unwrap();
+
+    let quoted = |text: &str| -> Vec<String> {
+        text.split('"')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_string)
+            .collect()
+    };
+
+    let probed: Vec<String> = source
+        .split("feature!(")
+        .skip(1)
+        .filter_map(|rest| rest.split(')').next().map(|arg| quoted(arg)))
+        .flatten()
+        .collect();
+    assert!(
+        probed.len() > 10,
+        "the scrape found {} probes, so it has stopped matching the source",
+        probed.len()
+    );
+
+    let mut checked = 0;
+    for table in [
+        "PROFILE_FULL",
+        "PROFILE_SLIM",
+        "PROFILE_WASI",
+        "PROFILE_WEB",
+    ] {
+        let head = format!("const {table}: &[&str] = &[");
+        let at = source
+            .find(&head)
+            .unwrap_or_else(|| panic!("{table} is not declared the way this test reads it"));
+        let body = &source[at + head.len()..];
+        let body = &body[..body.find("];").expect("a terminated table")];
+        for name in quoted(body) {
+            assert!(
+                probed.contains(&name),
+                "{table} lists `{name}` and `enabled_features` does not probe it, so no build \
+                 can ever report that profile"
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked > 20,
+        "only {checked} names checked across four tables"
+    );
+}
+
 #[test]
 fn profile_matches_its_manifest() {
     const PROFILES: [&str; 4] = ["full", "slim", "wasi", "web"];

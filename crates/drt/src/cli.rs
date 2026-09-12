@@ -696,6 +696,11 @@ fn enabled_features() -> Vec<&'static str> {
     feature!("stun");
     feature!("tunnel");
     feature!("turn");
+    // Probed even though no profile turns it on by itself: `wireguard` names
+    // it, so a full build has it, and PROFILE_FULL lists it. A name in a
+    // profile table that is not probed here makes that profile unreportable
+    // -- `profile_matches_its_manifest`'s sibling below is what says so.
+    feature!("turn-client");
     feature!("wireguard");
     on.sort_unstable();
     on

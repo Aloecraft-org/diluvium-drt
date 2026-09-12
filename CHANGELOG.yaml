@@ -1173,6 +1173,25 @@ releases:
         longer optional.
     fixed:
       - |
+        **No build could report `profile: full`, so the examples gate skipped
+        every example that needs one.** `PROFILE_FULL` gained `turn-client`
+        when that feature was split out, and `enabled_features` did not gain
+        the matching probe, so the vector it builds could never equal the
+        table it is compared against. The failure is silent by construction:
+        `profile_name` falls through to `custom`, which reads as "an unusual
+        feature set" rather than as a bug, and `run-all.sh` skips a
+        `needs_build: full` example on anything but `full`.
+
+        Fifteen examples were therefore gated on no target at all --- the
+        state the native gate step was added to end, four commits after it was
+        added. It is how `13-stun-server` and `24-wireguard-userspace` kept
+        calling removed verbs through three CI runs with nothing red.
+
+        `every_profile_name_is_a_feature_the_binary_probes` is the guard that
+        was missing: it scrapes the profile tables and the `feature!` probes
+        out of `cli.rs` and fails when a table names something unprobed.
+        Checked by deleting the fix.
+      - |
         **`13-stun-server` and `24-wireguard-userspace` still called the verbs
         that were removed** --- `drt stun --config` and a bare `drt wg
         --config`. Both are `drt start` now, and their configs carry the
