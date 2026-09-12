@@ -11,7 +11,8 @@
 //! - Configurable values: [`MAX_MODULES`], [`MAX_BYTES`], [`BOOTSTRAP_NAME`],
 //!   [`BRACKET_CAP`]. The name rule's own constants are
 //!   `drt_config::modules`', re-exported here.
-//! - Fan-out: [`discover`]'s walk, one arm per kind of file it meets.
+//! - Fan-out: [`discover`]'s walk, one arm per kind of file it meets, and
+//!   one for a directory it will not enter.
 //!
 //! ## Why a generated bootstrap and not `package.preload`
 //!
@@ -78,7 +79,7 @@ use std::path::{Path, PathBuf};
 /// `drt_config::modules`, because dollup applies the same one at pull. Only
 /// the walk and the generated chunk are here.
 pub use drt_config::modules::{
-    is_name_char, module_extension, name_for_path, refuse_name, BYTECODE_EXTENSION,
+    is_component, is_name_char, module_extension, name_for_path, refuse_name, BYTECODE_EXTENSION,
     RESERVED_COMPONENT, SOURCE_EXTENSIONS,
 };
 
@@ -171,6 +172,14 @@ pub fn program_load(program: &Path) -> Result<Loaded, String> {
 /// `require` of it would run it a second time — a footgun with no use, so the
 /// rule is stated instead: every `.dlua` beside the entry is a module except
 /// the entry.
+///
+/// A directory whose name is not a component ([`is_component`]) is not
+/// entered. Nothing under `.git`, `25-modules` or `my-lib` can be reached by
+/// any name, so nothing under it is a module — and a program run from a
+/// directory that holds unrelated trees (a checkout, a home directory) must
+/// still run. The release smoke found the other rule: `drt run smoke.lua` at
+/// the root of this repository refused at `examples/25-modules/app.dlua`,
+/// which no `require` could ever have named.
 pub fn discover(program: &Path) -> Result<Modules, String> {
     let dir = match program.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
@@ -205,7 +214,11 @@ pub fn discover(program: &Path) -> Result<Modules, String> {
             let child = relative.join(&entry);
             let full = dir.join(&child);
             if drt_platform::fs::is_dir(&full) {
-                stack.push(child);
+                // A directory no name can reach holds no modules. Not an
+                // error: it is outside the namespace, the way `.json` is.
+                if is_component(&entry) {
+                    stack.push(child);
+                }
                 continue;
             }
             if relative.as_os_str().is_empty() && Some(entry.as_str()) == entry_file {

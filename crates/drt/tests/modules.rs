@@ -516,3 +516,40 @@ fn the_two_copies_of_the_name_rule_agree() {
         }
     }
 }
+
+/// The release smoke, as a test: `drt run smoke.lua` at the root of a
+/// checkout. The walk treats the entry's directory as the node, so it met
+/// `examples/25-modules/app.dlua`, which no `require` could name, and refused
+/// the run. A directory that is not a component is not entered now; a file
+/// under one that is stays a module, and a badly named file there stays a
+/// refusal (`a_dot_inside_a_component_is_refused_because_it_would_be_ambiguous`
+/// in `drt_config::modules`).
+///
+/// This lived only in `release.yml` before, which runs on a rehearsal and not
+/// on a push -- every other test built its node in an empty directory.
+#[test]
+fn a_program_run_from_a_directory_holding_unrelated_trees_still_runs() {
+    let (_dir, entry) = node(
+        "print(require(\"util.enc\").ok)\n",
+        &[
+            ("util/enc.dlua", "return { ok = \"reached\" }\n"),
+            // Reachable by name, so a module, harmless and never required.
+            ("target/debug/build.lua", "return {}\n"),
+            // Not components, so not entered -- and the first would refuse,
+            // the second does not even parse.
+            (
+                "examples/25-modules/app.dlua",
+                "print(require(\"text.case\"))\n",
+            ),
+            (".git/hooks/pre-commit.lua", "this is not lua\n"),
+            ("my-lib/x.dlua", "error('never loaded')\n"),
+        ],
+    );
+    assert_eq!(
+        drt::modules::discover(&entry).unwrap().names(),
+        ["target.debug.build", "util.enc"]
+    );
+    let (stdout, stderr, ok) = run(&entry);
+    assert!(ok, "stderr: {stderr}");
+    assert!(stdout.contains("reached"), "{stdout}");
+}

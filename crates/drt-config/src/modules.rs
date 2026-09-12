@@ -15,7 +15,8 @@
 //!
 //! - Entry points: [`refuse_name`], the rule itself; [`name_for_path`] and
 //!   [`paths_for_name`], the two directions between a name and a file;
-//!   [`module_extension`], which says whether a file is a module at all.
+//!   [`module_extension`], which says whether a file is a module at all;
+//!   [`is_component`], which says whether a directory could hold one.
 //! - Configurable values: [`RESERVED_COMPONENT`], [`SOURCE_EXTENSIONS`],
 //!   [`BYTECODE_EXTENSION`].
 //! - Fan-out: [`refuse_name`]'s arms, one per way a name can be wrong.
@@ -52,6 +53,18 @@ pub const BYTECODE_EXTENSION: &str = "dluac";
 /// components and so is not one of these.
 pub fn is_name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// Whether `component` could be one component of a module name.
+///
+/// The walk asks this of every directory before entering it. A directory
+/// this refuses -- `.git`, `25-modules`, `my-lib` -- cannot be part of any
+/// name, so nothing under it is reachable by `require` and nothing under it
+/// is a module. It is outside the namespace the way a `.json` is, not a
+/// mistake inside it, which is why it is skipped where a badly named
+/// *file* in a directory that is a component is refused.
+pub fn is_component(component: &str) -> bool {
+    !component.is_empty() && component.chars().all(is_name_char)
 }
 
 /// Why this is not a module name, or `None` if it is.
@@ -111,7 +124,7 @@ pub fn name_for_path(relative: &str) -> Result<String, String> {
     let stem = &relative[..relative.len() - extension.len() - 1];
     let mut name = String::with_capacity(stem.len());
     for component in stem.split('/') {
-        if component.is_empty() || !component.chars().all(is_name_char) {
+        if !is_component(component) {
             return Err(format!(
                 "{relative}: `{component}` cannot be part of a module name, which holds \
                  letters, digits and `_` between the dots"
@@ -200,6 +213,17 @@ mod tests {
         assert!(e.contains("my.helper"), "{e}");
         let e = name_for_path("a-b.dlua").unwrap_err();
         assert!(e.contains("a-b"), "{e}");
+    }
+
+    /// The directories the walk must not enter, and the one it must.
+    #[test]
+    fn a_component_is_what_a_directory_must_be_named_to_hold_modules() {
+        for no in ["", ".git", "25-modules", "my-lib", "a.b", "has space"] {
+            assert!(!is_component(no), "{no:?} is not a component");
+        }
+        for yes in ["util", "node_modules", "v2", "_private", "Examples"] {
+            assert!(is_component(yes), "{yes:?} is a component");
+        }
     }
 
     #[test]

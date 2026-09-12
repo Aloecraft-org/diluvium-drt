@@ -79,6 +79,14 @@ errors.
 - **A component holds letters, digits and `_`.** The dot is the separator, so
   a component may not contain one: with `my.helper.dlua` allowed, `my.helper`
   would name both it and `my/helper.dlua` and one would win silently.
+- **A directory that is not a component is not entered.** Nothing under
+  `.git`, `25-modules` or `my-lib` can be reached by any name, so nothing
+  under it is a module; it is outside the namespace the way a `.json` is,
+  not a mistake inside it. A badly named *file* in a directory that is a
+  component is still refused, because it sits where modules live and
+  answers to nothing. This is what lets `drt run scratch.lua` work from a
+  checkout or a home directory, which hold trees no `require` was ever
+  going to name.
 - **No parent traversal, no absolute paths, no leading separators.** A name
   with `..`, one starting with `/`, or one holding anything outside
   `[A-Za-z0-9_.]` is refused.
