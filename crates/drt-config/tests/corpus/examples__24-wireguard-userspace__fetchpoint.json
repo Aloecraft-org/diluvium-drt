@@ -1,6 +1,9 @@
 {
   "_comment": "The other end: the machine being reached. A userspace stack has no sshd of its own, so `expose` says what answers on the tunnel address -- here the http listener device.json serves on 127.0.0.1:18522, dialed lazily on each connection from the tunnel. Same block, opposite direction.",
 
+  "_entry": "`drt start` runs this block; `stdlib:wg` is the program that reads what it reports. It was a bare `drt wg` until the block had a program to be a deployment's other half.",
+  "entry": "stdlib:wg",
+
   "wireguard": {
     "mode": "userspace",
     "listen_port": 18521,

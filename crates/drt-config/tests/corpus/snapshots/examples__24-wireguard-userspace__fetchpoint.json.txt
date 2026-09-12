@@ -66,6 +66,10 @@ RootConfig {
     },
     principals: [],
     dlua_dir: None,
-    entry: None,
+    entry: Some(
+        Stdlib(
+            "wg",
+        ),
+    ),
     args: {},
 }

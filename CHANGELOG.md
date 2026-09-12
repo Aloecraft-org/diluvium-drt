@@ -573,6 +573,17 @@ entry has not moved the pin yet.
   `stun`, `turn` or `wireguard` block with no program now backs this up;
   the three remaining in `21-wireguard` are inputs to `wg check`, which
   serves nothing and needs no program.
+- **Three tests in `crates/drt/tests/wireguard.rs` still wrote
+  `*.host.lua`**, so they failed against the loader that no longer reads
+  it. That file compiles only under `--features wireguard`, which needs
+  a newer rustc than this tree pins, so nothing local could run them ---
+  CI was the first to see it. Two of the three carried assertions that
+  went with the mapper: an unknown key at block level was refused by
+  name and is now silently ignored, which is asserted rather than
+  deleted, and a `mode` that is neither word is still refused but with
+  serde's wording. The third, a typo *inside* a `forward` entry, is
+  still refused, because the key it displaced is required and serde
+  names the one that is missing.
 - **A relative `program` path is resolved against the config**, not
   against the working directory. The `.host.lua` mapper did this for
   `supervisor` and said why --- the deployment directory is the unit
