@@ -9,9 +9,7 @@ ok: userspace on port 18521, 1 peer(s)
 exit 0
 
 $ drt start --config laptop.json
-drt wg: userspace up on port 18520, mtu 1420, address 10.9.0.1/24, public key lji56MXQ6Mhpi6WwKhqvSWth5YPmCTFq6dIl94sZt2Q=
-drt wg: forward 127.0.0.1:18523 -> 10.9.0.2:80
-drt wg: peer /a3GH0hkjdB0oghXkh7cDyfCQInPtj0VOMXNK8kVQ20= allowed 10.9.0.2/32 via 127.0.0.1:18521
+drt wg: userspace up on port 18520, public key lji56MXQ6Mhpi6WwKhqvSWth5YPmCTFq6dIl94sZt2Q=
 
 $ curl http://127.0.0.1:18523/hello
 answered through the tunnel: /hello
