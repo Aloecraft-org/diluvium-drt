@@ -30,18 +30,25 @@ is where the old suffix rule's blind spot became visible: twenty-two
 example configs it never reached, listed rather than left implicit.
 
 A filename with no `__` is a shape captured from a deployment *outside*
-this repository. There is one: `wg.json`, what `wg.sh` writes on a
-customer machine. `wg.sh` is on the customer side and in neither
-repository, so that one file is reconstructed rather than copied, from
-`doc/WireGuard.md` §1 and the field the plan names — `time = {}`, an
-empty map arriving where a list is read, which is the `as_array` edge rc6
-fixed for five fields. Its own header says so. Replace it with the real
-artifact the day one is available.
+this repository. There are two, both what `wg.sh` writes on a customer
+machine: `wg.json`, kernel mode, and `wg-userspace.json`, the
+`--userspace --forward` output, which is the no-root mode of #25 §3 and
+a shape no example here exercises. `wg.sh` is discofetch's
+(`deploy/cloud1/www/html/wg.sh`, served at `https://discofetch.net/wg.sh`)
+and in neither of the repositories this corpus is shared by, so both files
+were produced by *running* the script at `126b409` against the v0.6.0rc1
+binary, `wg check: ok` on that run, with only the `_this` path edited.
+Their own headers say so. Until 2026-09-12 `wg.json` was a
+reconstruction from `doc/WireGuard.md` §1, and the reconstruction got the
+`wireguard` block right and everything around it wrong: the real program
+is `wg_rendezvous.dlua`, the caps and connectors carry `rest` and `fs`,
+and there is no `peers` list, because the rendezvous room supplies the
+peer at run time. That is the argument for a captured corpus over a
+reconstructed one.
 
-**`wg.sh` writes Lua today.** It is the one place dropping `.host.lua`
-reaches outside this repository: until that script is changed to write
-JSON, the config it leaves on a customer machine does not load. This file
-is the shape it should write.
+**`wg.sh` writes JSON**, since discofetch `126b409`. Before that it wrote
+`.host.lua`, which stopped loading when that format was dropped, and
+0.6.0rc1 records it as a known issue; these two files close it.
 
 ## The two checks
 

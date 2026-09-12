@@ -1,11 +1,15 @@
 {
-  "_corpus": "The real artifact: what `wg.sh` writes on a customer machine, in kernel mode. Produced by running the script (Aloecraft-org/discofetch `deploy/cloud1/www/html/wg.sh` at `126b409`, served at https://discofetch.net/wg.sh) against the v0.6.0rc1 binary; `wg check: ok` on that run. Only the `_this` path was edited, to a plausible home directory. Recorded in Aloecraft-org/diluvium-drt#25. The peer is absent on purpose -- the rendezvous room supplies it at run time -- and `wg-userspace.json` beside this is the same script's `--userspace --forward` output.",
+  "_corpus": "The real artifact: what `wg.sh --userspace --forward 2222:10.9.0.2:22` writes on a customer machine -- the no-root mode of Aloecraft-org/diluvium-drt#25 §3, arriving in a customer-facing script. Same provenance as `wg.json` beside this (discofetch `126b409`, run against v0.6.0rc1, `wg check: ok`), and six lines different from it: no `interface`, and `mode`, `expose` and `forward` instead. `expose` defaults to this machine's sshd and is `--expose none`-able; `forward` is repeatable, and absent rather than `[]` when `--forward` is not given. No example in this repository exercises this shape, which is why it is here.",
   "_this": "/home/you/.config/discofetch/wg.json -- one end of a punched WireGuard tunnel. Written by https://discofetch.net/wg.sh. The peer is deliberately not named here: the rendezvous room supplies it at run time.",
   "program": { "path": "wg_rendezvous.dlua" },
   "wireguard": {
     "listen_port": 51821,
-    "interface": "drt0",
-    "address": "10.9.239.19/16",
+    "mode": "userspace",
+    "expose": [ { "tunnel": "10.9.116.113:22", "to": "127.0.0.1:22" } ],
+    "forward": [
+      { "bind": "127.0.0.1:2222", "to": "10.9.0.2:22" }
+    ],
+    "address": "10.9.116.113/16",
     "mtu": 1420,
     "private_key_env": "WG_KEY",
     "stun": [ "stun1.discofetch.link:3478", "stun2.discofetch.link:3478" ],

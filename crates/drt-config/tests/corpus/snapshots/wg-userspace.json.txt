@@ -269,7 +269,7 @@ RootConfig {
         WireguardConfig {
             listen_port: 51821,
             address: Some(
-                "10.9.239.19/16",
+                "10.9.116.113/16",
             ),
             mtu: 1420,
             turn_fallback: false,
@@ -278,9 +278,19 @@ RootConfig {
                 "stun2.discofetch.link:3478",
             ],
             interface: "drt0",
-            mode: Kernel,
-            forward: [],
-            expose: [],
+            mode: Userspace,
+            forward: [
+                WireguardForward {
+                    bind: "127.0.0.1:2222",
+                    to: "10.9.0.2:22",
+                },
+            ],
+            expose: [
+                WireguardExpose {
+                    tunnel: "10.9.116.113:22",
+                    to: "127.0.0.1:22",
+                },
+            ],
             private_key: None,
             private_key_file: None,
             private_key_env: Some(
