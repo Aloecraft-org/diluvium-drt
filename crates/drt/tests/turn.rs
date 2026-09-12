@@ -8,7 +8,12 @@
 //! one does not, and that an allocation's closing report reaches a
 //! supervisor with the principal on it, through the real drive loop.
 
-#![cfg(feature = "turn")]
+// `turn-client` and not `turn`: the server is what this crate ships and what
+// `turn` builds; allocating against it needs a client, which is a test
+// dependency expressed as a feature (see Cargo.toml). Gated on `turn` alone,
+// this file failed to compile under `--features turn` for want of crates that
+// only `wireguard` happened to pull in.
+#![cfg(all(feature = "turn", feature = "turn-client"))]
 
 use std::net::SocketAddr;
 use std::sync::Arc;

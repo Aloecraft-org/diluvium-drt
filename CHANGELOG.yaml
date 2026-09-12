@@ -970,6 +970,20 @@ releases:
         — and it lives in `canon` because the reason it exists is the boundary
         that module owns: a queue carries values, so anything the host renders as
         JSON and a program is meant to read has to cross as a value.
+      - |
+        **`--features turn` builds its own tests.** It did not, on any tree:
+        `tests/turn.rs` was gated on the `turn` feature while importing the
+        `turn` and `webrtc-util` *crates*, which only `wireguard` pulled in — so
+        the TURN test needed a TURN client its own feature did not carry, and the
+        combination failed to compile for anyone who tried it.
+
+        `turn-client` names the client, `wireguard` names `turn-client` (its TURN
+        fallback uses the same crates at runtime), and the test is gated on it. A
+        feature rather than a dev-dependency because dev-dependencies cannot be
+        optional and making these unconditional would build two crates on every
+        `cargo test` of the slim profile for a test that compiles to nothing
+        there; and not folded into `turn`, because a shipping feature must not
+        carry crates only its tests use. The slim tree still carries neither.
     changed:
       - |
         **`drt-connector-fs` publishes its path jail.** `FsScope` and

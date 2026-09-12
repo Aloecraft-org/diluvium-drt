@@ -71,6 +71,7 @@ const PROFILE_FULL: &[&str] = &[
     "stun",
     "tunnel",
     "turn",
+    "turn-client",
     "wireguard",
 ];
 

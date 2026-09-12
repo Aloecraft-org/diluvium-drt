@@ -318,7 +318,7 @@ fn buildinfo_names_the_release_tag_when_built_as_one() {
 #[test]
 fn profile_matches_its_manifest() {
     const PROFILES: [&str; 4] = ["full", "slim", "wasi", "web"];
-    const LEAVES: [&str; 18] = [
+    const LEAVES: [&str; 19] = [
         "cli",
         "connector-crypto",
         "connector-data",
@@ -331,6 +331,11 @@ fn profile_matches_its_manifest() {
         "connector-time",
         "listen",
         "netcheck",
+        // A test dependency expressed as a feature: dev-dependencies cannot be
+        // optional, and a shipping feature must not carry crates only its tests
+        // use. `wireguard` names it for a real runtime reason -- its TURN
+        // fallback -- so it is a leaf both callers reach by name.
+        "turn-client",
         "relay",
         "runtime",
         "stun",

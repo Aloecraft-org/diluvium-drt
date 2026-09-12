@@ -203,6 +203,18 @@ tunnel = ["dep:tokio", "dep:tokio-tungstenite", "dep:futures-util", "dep:tokio-r
 # with a bug in either is an open one, so it is the maintained
 # implementation and not a second copy.
 turn = ["dep:ego_transport", "dep:tokio"]
+# A TURN *client*, which nothing this crate ships needs and `tests/turn.rs`
+# does: it allocates through a real client to prove DRT's server admits a
+# credential this deployment minted and refuses a forged one.
+#
+# A feature rather than a dev-dependency because dev-dependencies cannot be
+# optional, and making them unconditional would build two crates on every
+# `cargo test` of the slim profile for a test that compiles to nothing there.
+# And not folded into `turn`, because a shipping feature must not carry crates
+# only its tests use. `wireguard` names it too -- its TURN fallback uses the
+# same client at runtime -- so the crates are declared once and both callers
+# say what they want by name.
+turn-client = ["dep:turn", "dep:webrtc-util"]
 # `drt wg`, and the `wireguard` block inside `drt start`: a WireGuard peer
 # in the process (src/wireguard.rs), on Mullvad's gotatun. In `full` beside
 # `stun` and `turn`, because it is the rung above both -- `netcheck` says
@@ -222,7 +234,7 @@ turn = ["dep:ego_transport", "dep:tokio"]
 # sub-feature of it: a `wireguard-userspace` nobody enables is the mode
 # nobody has, and the user who needs it is the one holding the release
 # binary.
-wireguard = ["dep:gotatun", "dep:ipnetwork", "dep:base64", "dep:tokio", "dep:turn", "dep:webrtc-util", "dep:smoltcp"]
+wireguard = ["dep:gotatun", "dep:ipnetwork", "dep:base64", "dep:tokio", "turn-client", "dep:smoltcp"]
 # `drt relay`: the rendezvous relay — parked WSS legs paired by label and
 # spliced. In `full` beside tunnel; a relay is server machinery.
 # Depends on `listen` because the relay's control plane rides the same
