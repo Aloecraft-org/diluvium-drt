@@ -12,7 +12,7 @@ not: spawning, plugins, connectors and verbs.
 
 | | native linux, macOS | native Windows | wasip2, under wasmtime | browser, `drt-web` |
 |---|---|---|---|---|
-| **status** | released: linux static x86_64, darwin arm64 and x86_64 (`doc/Release.md`) | `slim`, built and gated: cross-built from Linux with mingw-w64, run on a Windows runner through the examples gate (`drt_slim_windows_x86_64.exe`, first shipped in v0.5.0rc4); `full` blocked on `exec` (unix-only) and on cross-compiling `aws-lc-sys` through russh | released: `drt_wasip2.wasm`, gated through the examples in CI (M1, M6) | released: `drt_web.tar.gz`, gated in Chromium (M4) |
+| **status** | released: linux static x86_64, darwin arm64 and x86_64 (`doc/Release.md`) | `slim`, built and gated: cross-built from Linux with mingw-w64, run on a Windows runner through the examples gate (`drt_windows_x86_64_slim.exe`; `drt_slim_windows_x86_64.exe` from v0.5.0rc4 to v0.6.0-rc.2); `full` blocked on `exec` (unix-only) and on cross-compiling `aws-lc-sys` through russh | released: `drt_wasi.wasm` (`drt_wasip2.wasm` before v0.6.0-rc.2), gated through the examples in CI (M1, M6) | released: `drt_web.tar.gz`, gated in Chromium (M4) |
 | **threads** | yes | yes, measured (`listen`'s thread per connection, example 17) | **no**, measured: `thread::spawn` is `Unsupported` | no |
 | **blocking sleep** | `thread::sleep` | `thread::sleep`, measured | `thread::sleep` works, measured | **impossible** on the thread; the driver returns what it waits for and the page sleeps (D6) |
 | **wall clock, monotonic** | `std::time` | `std::time`, measured | `std::time` over wasi clocks, measured | `Date.now`, `performance.now` via `web-time` |

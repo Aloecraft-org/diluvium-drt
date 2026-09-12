@@ -148,8 +148,14 @@ jobs:
           # -- the second rehearsal proved that the way the first proved CC.
           # Binutils `ar` archives musl-gcc's ELF objects; the archiver does
           # not need to be target-specific.
+          #
+          # Names are doc/ALIGNMENT.md §4's, <os>_<arch>[_<libc>] with the
+          # profile last. `legacy` is the token the releases before
+          # v0.6.0-rc.2 used: rc.2 carries the old name beside the new one,
+          # and the release after it drops the step that copies it.
           linux = {
-              "name": "linux_static_x86_64",
+              "name": "linux_x86_64_musl",
+              "legacy": "linux_static_x86_64",
               "os": "ubuntu-latest",
               "target": "x86_64-unknown-linux-musl",
               "setup": "sudo apt-get update && sudo apt-get install -y musl-tools cmake"
@@ -157,8 +163,8 @@ jobs:
                        " && echo \"AR=ar\" >> \"$GITHUB_ENV\"",
           }
           darwin = [
-              {"name": "darwin_arm64", "os": "macos-latest", "target": "aarch64-apple-darwin", "setup": "true"},
-              {"name": "darwin_x86_64", "os": "macos-15-intel", "target": "x86_64-apple-darwin", "setup": "true"},
+              {"name": "darwin_arm64", "legacy": "darwin_arm64", "os": "macos-latest", "target": "aarch64-apple-darwin", "setup": "true"},
+              {"name": "darwin_x86_64", "legacy": "darwin_x86_64", "os": "macos-15-intel", "target": "x86_64-apple-darwin", "setup": "true"},
           ]
           # linux aarch64 is next, not promised: the full profile carries
           # aws-lc-sys through russh, and cross-compiling that is a job to
@@ -265,20 +271,31 @@ jobs:
           cargo build --profile release-small -p drt --no-default-features --features full --target ${{ matrix.target }}
           cp target/${{ matrix.target }}/release-small/drt drt_${{ matrix.name }}
           cargo build --profile release-small -p drt --target ${{ matrix.target }}
-          cp target/${{ matrix.target }}/release-small/drt drt_slim_${{ matrix.name }}
+          cp target/${{ matrix.target }}/release-small/drt drt_${{ matrix.name }}_slim
       - name: Smoke test
         run: |
           set -eu
           ./drt_${{ matrix.name }} --version
           echo 'local x = 1' > smoke.lua
           ./drt_${{ matrix.name }} run smoke.lua
-          ./drt_slim_${{ matrix.name }} run smoke.lua
+          ./drt_${{ matrix.name }}_slim run smoke.lua
           # A tagged build names its tag; a rehearsal has none and prints none.
           if [ -n "${DRT_RELEASE_TAG:-}" ]; then
             ./drt_${{ matrix.name }} buildinfo | grep -qx "tag: $DRT_RELEASE_TAG"
           else
             ! ./drt_${{ matrix.name }} buildinfo | grep -q '^tag:'
           fi
+      # One release with both names (doc/ALIGNMENT.md §4): a consumer that
+      # fetches by name breaks at its own runtime, not at anyone's build,
+      # so v0.6.0-rc.2 carries the names the release before it used and
+      # the release after it deletes this step. Not for a dev build, which
+      # nobody ever fetched by the old name.
+      - name: The names the previous release used
+        if: needs.preflight.outputs.dev != 'true'
+        run: |
+          set -eu
+          [ drt_${{ matrix.legacy }} = drt_${{ matrix.name }} ] || cp drt_${{ matrix.name }} drt_${{ matrix.legacy }}
+          cp drt_${{ matrix.name }}_slim drt_slim_${{ matrix.legacy }}
       - uses: actions/upload-artifact@v4
         with:
           name: drt-${{ matrix.name }}
@@ -344,11 +361,11 @@ jobs:
         run: |
           set -eu
           cargo build --profile release-small -p drt --no-default-features --features wasi --target wasm32-wasip2
-          cp target/wasm32-wasip2/release-small/drt.wasm drt_wasip2.wasm
+          cp target/wasm32-wasip2/release-small/drt.wasm drt_wasi.wasm
       - name: Smoke test
         run: |
           set -eu
-          export DRT_WASM="$PWD/drt_wasip2.wasm"
+          export DRT_WASM="$PWD/drt_wasi.wasm"
           script/drt-wasip2.sh --version
           echo 'local x = 1' > smoke.lua
           script/drt-wasip2.sh run smoke.lua
@@ -356,12 +373,18 @@ jobs:
       - name: The examples gate, through wasmtime
         run: |
           set -eu
-          export DRT_WASM="$PWD/drt_wasip2.wasm"
+          export DRT_WASM="$PWD/drt_wasi.wasm"
           cd examples && DRT="$GITHUB_WORKSPACE/script/drt-wasip2.sh" ./run-all.sh
+      # Both names for one release (doc/ALIGNMENT.md §4); the release after
+      # v0.6.0-rc.2 deletes this step.
+      - name: The name the previous release used
+        run: cp drt_wasi.wasm drt_wasip2.wasm
       - uses: actions/upload-artifact@v4
         with:
           name: drt-wasip2
-          path: drt_wasip2.wasm
+          path: |
+            drt_wasi.wasm
+            drt_wasip2.wasm
           if-no-files-found: error
           retention-days: 30
 
@@ -465,7 +488,7 @@ jobs:
     # linux_static leg does not also need. `full` is not built: `exec` is
     # unix-only by `compile_error!`, and `full` carries aws-lc-sys through
     # russh, which is the linux aarch64 problem again. So the artifact is
-    # `drt_slim_windows_x86_64.exe` and there is no unprefixed one -- a
+    # `drt_windows_x86_64_slim.exe` and there is no unprefixed one -- a
     # Windows box gets the distribution-size profile, which spawns, serves
     # and reads files, and the connectors that need a runtime stay on the
     # platforms that build them.
@@ -496,12 +519,18 @@ jobs:
         run: |
           set -eu
           cargo build --profile release-small -p drt --target x86_64-pc-windows-gnu
-          cp target/x86_64-pc-windows-gnu/release-small/drt.exe drt_slim_windows_x86_64.exe
-          file drt_slim_windows_x86_64.exe | grep -q 'PE32+ executable'
+          cp target/x86_64-pc-windows-gnu/release-small/drt.exe drt_windows_x86_64_slim.exe
+          file drt_windows_x86_64_slim.exe | grep -q 'PE32+ executable'
+      # Both names for one release (doc/ALIGNMENT.md §4); the release after
+      # v0.6.0-rc.2 deletes this step.
+      - name: The name the previous release used
+        run: cp drt_windows_x86_64_slim.exe drt_slim_windows_x86_64.exe
       - uses: actions/upload-artifact@v4
         with:
           name: drt-windows_x86_64
-          path: drt_slim_windows_x86_64.exe
+          path: |
+            drt_windows_x86_64_slim.exe
+            drt_slim_windows_x86_64.exe
           if-no-files-found: error
           retention-days: 30
 
@@ -534,20 +563,20 @@ jobs:
       - name: Smoke test
         run: |
           set -eu
-          ./drt_slim_windows_x86_64.exe --version
+          ./drt_windows_x86_64_slim.exe --version
           echo 'local x = 1' > smoke.lua
-          ./drt_slim_windows_x86_64.exe run smoke.lua
-          ./drt_slim_windows_x86_64.exe buildinfo | grep -qx 'profile: slim'
+          ./drt_windows_x86_64_slim.exe run smoke.lua
+          ./drt_windows_x86_64_slim.exe buildinfo | grep -qx 'profile: slim'
           # A tagged build names its tag; a rehearsal has none and prints none.
           if [ -n "${DRT_RELEASE_TAG:-}" ]; then
-            ./drt_slim_windows_x86_64.exe buildinfo | grep -qx "tag: $DRT_RELEASE_TAG"
+            ./drt_windows_x86_64_slim.exe buildinfo | grep -qx "tag: $DRT_RELEASE_TAG"
           else
-            ! ./drt_slim_windows_x86_64.exe buildinfo | grep -q '^tag:'
+            ! ./drt_windows_x86_64_slim.exe buildinfo | grep -q '^tag:'
           fi
       - name: The examples gate, on Windows
         run: |
           set -eu
-          cd examples && DRT="$GITHUB_WORKSPACE/drt_slim_windows_x86_64.exe" ./run-all.sh
+          cd examples && DRT="$GITHUB_WORKSPACE/drt_windows_x86_64_slim.exe" ./run-all.sh
 
   publish:
     name: Publish release
@@ -608,7 +637,7 @@ jobs:
           # actually speak and the connectors actually compiled in; a
           # cross-built darwin binary cannot be run, but both are the same
           # cargo feature set, so the profile lines describe both.
-          chmod +x drt_linux_static_x86_64 drt_slim_linux_static_x86_64 || true
+          chmod +x drt_linux_x86_64_musl drt_linux_x86_64_musl_slim || true
           # Read the plain form, not the JSON: `connectors` is a list, and a
           # sed that stops at the first comma silently reports only its
           # first element — which is exactly what a dry run of the JSON
@@ -623,26 +652,26 @@ jobs:
           # This has to sit BELOW the chmod above -- above it the binary is
           # not executable yet, the read fails silently, and the fallback
           # takes every time while looking like it never does.
-          DILUVIUM_REV=$(bi drt_linux_static_x86_64 diluvium)
+          DILUVIUM_REV=$(bi drt_linux_x86_64_musl diluvium)
           if [ -z "${DILUVIUM_REV:-}" ] || [ "$DILUVIUM_REV" = unknown ]; then
             DILUVIUM_REV=$( (grep -A2 'name = "diluvium"' ../Cargo.lock || true) | sed -n 's/.*#\([0-9a-f]*\)".*/\1/p' | head -1)
           fi
-          DV_ABI=$(bi drt_linux_static_x86_64 dv_abi)
+          DV_ABI=$(bi drt_linux_x86_64_musl dv_abi)
           # The build number beside the revision: the revision is exact but
           # unordered, and a `requires.diluvium_build` range needs a number.
           # Read off the artifact for the same reason the revision is.
-          DILUVIUM_BUILD=$(bi drt_linux_static_x86_64 diluvium_build)
-          FULL_CONNECTORS=$(bi drt_linux_static_x86_64 connectors)
-          SLIM_CONNECTORS=$(bi drt_slim_linux_static_x86_64 connectors)
+          DILUVIUM_BUILD=$(bi drt_linux_x86_64_musl diluvium_build)
+          FULL_CONNECTORS=$(bi drt_linux_x86_64_musl connectors)
+          SLIM_CONNECTORS=$(bi drt_linux_x86_64_musl_slim connectors)
           # What the core inside each profile carries. Same question as the
           # connector list, one level down: `dv_abi` says which ABI the core
           # speaks, this says what is reachable through it.
-          FULL_FEATURES=$(bi drt_linux_static_x86_64 features)
-          SLIM_FEATURES=$(bi drt_slim_linux_static_x86_64 features)
+          FULL_FEATURES=$(bi drt_linux_x86_64_musl features)
+          SLIM_FEATURES=$(bi drt_linux_x86_64_musl_slim features)
           # The wasip2 component runs under wasmtime; same question, same
           # answer format, read off the artifact (doc/Wasm.md D2).
-          WASI_CONNECTORS=$(wasmtime run -W exceptions=y ./drt_wasip2.wasm buildinfo 2>/dev/null | sed -n 's/^connectors: //p')
-          WASI_FEATURES=$(wasmtime run -W exceptions=y ./drt_wasip2.wasm buildinfo 2>/dev/null | sed -n 's/^features: //p')
+          WASI_CONNECTORS=$(wasmtime run -W exceptions=y ./drt_wasi.wasm buildinfo 2>/dev/null | sed -n 's/^connectors: //p')
+          WASI_FEATURES=$(wasmtime run -W exceptions=y ./drt_wasi.wasm buildinfo 2>/dev/null | sed -n 's/^features: //p')
           # The browser module answered `buildinfo` inside Chromium in the
           # build-web job, which wrote the answer beside the tarball; that
           # is as close to "read off the artifact" as a page gets.
@@ -670,12 +699,12 @@ jobs:
             # instead of by guessing from the artifact filename.
             echo "profile.full.connectors: ${FULL_CONNECTORS:-unknown}"
             echo "profile.slim.connectors: ${SLIM_CONNECTORS:-unknown}"
-            # `drt_slim_windows_x86_64.exe` is the slim feature set too, and
+            # `drt_windows_x86_64_slim.exe` is the slim feature set too, and
             # the one profile Windows gets (see build-windows); the line
             # above describes it. It answered `buildinfo` on a Windows
             # runner in smoke-windows before it was allowed here.
-            # `drt_wasip2.wasm`: run it with
-            #   wasmtime run -W exceptions=y --dir . drt_wasip2.wasm run app.dlua
+            # `drt_wasi.wasm`: run it with
+            #   wasmtime run -W exceptions=y --dir . drt_wasi.wasm run app.dlua
             echo "profile.wasi.connectors: ${WASI_CONNECTORS:-unknown}"
             # `drt_web.tar.gz`: drt_web_bg.wasm, drt_web.js, drt-term.js and
             # shell.js -- attach it to a terminal per doc/Browser.md.

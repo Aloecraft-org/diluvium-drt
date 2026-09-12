@@ -334,7 +334,7 @@ md` marks the native-Windows column the same way. Each is the kind of thing
 that costs an afternoon, so they are written down rather than rediscovered.
 
 - **WSL is Linux, so the released binary is the binary.**
-  `drt_linux_static_x86_64` from the release page runs as-is; there is no
+  `drt_linux_x86_64_musl` from the release page runs as-is; there is no
   Windows build (`doc/Platforms.md`: not built, `full` blocked on
   cross-compiling `aws-lc-sys` through russh). `exec` in particular refuses
   to compile off unix — it is process groups and pipes — so WSL is not a

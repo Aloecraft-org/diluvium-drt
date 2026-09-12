@@ -24,7 +24,7 @@ GITHUB="https://github.com/Aloecraft-org/diluvium-drt/releases"
 VERSION="${DRT_VERSION:-latest}"
 
 case "$(uname -s)" in
-  Linux)  OS=linux_static ;;
+  Linux)  OS=linux ;;
   Darwin) OS=darwin ;;
   *) echo "install.sh: $(uname -s) has no prebuilt DRT yet; build it with 'cargo build --release --features full -p drt'" >&2; exit 1 ;;
 esac
@@ -40,14 +40,25 @@ esac
 # this, an aarch64 Linux box downloaded the x86_64 static musl binary and
 # failed the --version guard below with "does not run here" — which is true
 # and tells you nothing about why.
-if [ "$OS" = linux_static ] && [ "$ARCH" != x86_64 ]; then
+if [ "$OS" = linux ] && [ "$ARCH" != x86_64 ]; then
   echo "install.sh: linux $ARCH has no prebuilt DRT yet — only x86_64." >&2
   echo "  build it: cargo build --release --features full -p drt" >&2
   exit 1
 fi
 
-ASSET="drt_${OS}_${ARCH}"
-[ "${DRT_SLIM:-}" = 1 ] && ASSET="drt_slim_${OS}_${ARCH}"
+# The name a release uses (doc/ALIGNMENT.md §4): <os>_<arch>[_<libc>], the
+# profile last. Releases before v0.6.0-rc.2 spelled it the older way, rc.2
+# carries both, and a pinned older tag has only the old one -- so the old
+# name is the fallback at every source. OLD goes away when no release
+# anyone pins lacks the new name.
+LIBC=""; OLD_OS="$OS"
+if [ "$OS" = linux ]; then LIBC=_musl; OLD_OS=linux_static; fi
+ASSET="drt_${OS}_${ARCH}${LIBC}"
+OLD="drt_${OLD_OS}_${ARCH}"
+if [ "${DRT_SLIM:-}" = 1 ]; then
+  ASSET="${ASSET}_slim"
+  OLD="drt_slim_${OLD_OS}_${ARCH}"
+fi
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -61,35 +72,40 @@ sha256_of() {
   (sha256sum "$1" 2>/dev/null || shasum -a 256 "$1") | cut -d' ' -f1
 }
 
-# Resolve a base URL that has the asset, mirror first.
-BASE=""
-if fetch "$MIRROR/$VERSION/$ASSET" "$TMP/drt"; then
-  BASE="$MIRROR/$VERSION"
+# Resolve a source that has the asset: the mirror first, and at each source
+# the new name before the old one.
+if [ "$VERSION" = latest ]; then
+  GH_BASE="$GITHUB/latest/download"
 else
-  if [ "$VERSION" = latest ]; then
-    BASE="$GITHUB/latest/download"
-  else
-    BASE="$GITHUB/download/$VERSION"
-  fi
-  fetch "$BASE/$ASSET" "$TMP/drt" || {
-    echo "install.sh: no $ASSET at $MIRROR/$VERSION or $BASE" >&2
-    echo "  the published assets are listed at $GITHUB" >&2
-    exit 1
-  }
+  GH_BASE="$GITHUB/download/$VERSION"
 fi
+BASE=""; NAME=""
+for base in "$MIRROR/$VERSION" "$GH_BASE"; do
+  for name in "$ASSET" "$OLD"; do
+    if fetch "$base/$name" "$TMP/drt"; then
+      BASE="$base"; NAME="$name"
+      break 2
+    fi
+  done
+done
+[ -n "$BASE" ] || {
+  echo "install.sh: no $ASSET (or $OLD) at $MIRROR/$VERSION or $GH_BASE" >&2
+  echo "  the published assets are listed at $GITHUB" >&2
+  exit 1
+}
 
 # Verify against the sums file that sits beside whichever source answered.
 # A missing sums file is a warning rather than a refusal: it means the
 # source is older than the sums-publishing workflow, and refusing would
 # strand exactly the people trying to install a pinned older release.
 if fetch "$BASE/SHA256SUMS.txt" "$TMP/sums"; then
-  WANT=$(grep " $ASSET\$" "$TMP/sums" | cut -d' ' -f1)
+  WANT=$(grep " $NAME\$" "$TMP/sums" | cut -d' ' -f1)
   HAVE=$(sha256_of "$TMP/drt")
   if [ -z "$WANT" ]; then
-    echo "install.sh: $BASE/SHA256SUMS.txt does not list $ASSET; skipping verification" >&2
+    echo "install.sh: $BASE/SHA256SUMS.txt does not list $NAME; skipping verification" >&2
     VERIFIED="unverified (asset not listed in SHA256SUMS.txt)"
   elif [ "$WANT" != "$HAVE" ]; then
-    echo "install.sh: checksum mismatch for $ASSET" >&2
+    echo "install.sh: checksum mismatch for $NAME" >&2
     echo "  expected $WANT" >&2
     echo "  got      $HAVE" >&2
     echo "  from     $BASE" >&2
@@ -105,7 +121,7 @@ fi
 chmod +x "$TMP/drt"
 "$TMP/drt" --version >/dev/null 2>&1 || {
   echo "install.sh: the downloaded binary does not run here" >&2
-  echo "  $ASSET from $BASE" >&2
+  echo "  $NAME from $BASE" >&2
   exit 1
 }
 
@@ -117,7 +133,7 @@ mkdir -p "$DEST"
 mv "$TMP/drt" "$DEST/drt"
 
 echo "installed $("$DEST/drt" --version) to $DEST/drt"
-echo "  source:  $BASE/$ASSET"
+echo "  source:  $BASE/$NAME"
 echo "  checked: $VERIFIED"
 # What this binary carries, asked of the binary rather than inferred from
 # its filename: the diluvium revision inside it, the dv ABI it speaks, and
