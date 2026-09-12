@@ -114,7 +114,7 @@ const CORE_FEATURES_CUSTOM: &[&str] = &[];
 /// in `tests/cli.rs` is what stops it going stale when the pin moves: the
 /// changelog records the pin, the pin is checked against `Cargo.lock` by
 /// `script/changelog.py check`, and this is checked against the changelog.
-const DILUVIUM_BUILD: u32 = 13;
+const DILUVIUM_BUILD: u32 = 14;
 
 /// What `drt wg` does. All three are diagnostics or key handling, and the
 /// serving that used to sit beside them is `drt start` now.

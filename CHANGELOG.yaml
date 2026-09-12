@@ -68,399 +68,6 @@ schema: 1
 repo: Aloecraft-org/diluvium-drt
 
 releases:
-  - version: 0.5.0rc9
-    tag: v0.5.0rc9
-    date: 2026-09-10
-    status: released
-    stable: false
-    mirror: false
-    dv_abi: 1
-    diluvium: 850e00d73220427be68ae8f909f83b06cb2095bd
-    diluvium_build: 13
-    connectors:
-      full: [time, fs, crypto, sql, ssh, rest, ssmtp, exec, data, listen]
-      slim: [time, fs, crypto, listen]
-      wasi: [time, fs, crypto, sql, listen]
-      web: [time, fs, crypto]
-    features:
-      full: [regex]
-      slim: [regex]
-      wasi: [regex]
-      web: [regex]
-    summary: |
-      The candidate after rc8, cut from the same `main` plus issue #27, so
-      it carries everything rc8 carries: the no-root mode, and the tunnel
-      verb from a file.
-
-      Everything in the punch path was unprivileged all along -- STUN, the
-      rendezvous, the punch, the WireGuard protocol -- and `CAP_NET_ADMIN`
-      bought exactly one thing: an adapter in the kernel's stack. A tool
-      that demonstrably moves bytes *before* it asks for a privilege is a
-      different trust proposition from one that asks first, and on macOS
-      and Windows "asks first" means most users say no. So the device's
-      IP side, which was always a trait, is handed a TCP/IP stack inside
-      the process instead of an interface, and "ssh through the hole"
-      becomes a port on localhost: no interface, no `sudo`, no
-      `wintun.dll`. Two such peers cross a real tunnel on one machine,
-      which two kernel interfaces cannot, and the gate runs that example
-      without `--privileged`.
-
-      A consumer sitting on rc8 who does nothing keeps working byte for
-      byte; the mode is reached only by a config that asks for it, which
-      is the gap-release criterion as `doc/Gap-Release.md` §7 now states
-      it. The compatibility facts are rc8's: no connector moved, no
-      feature moved, the same core inside.
-    added:
-      - |
-        **`mode = "userspace"` on the `wireguard` block**, with `forward`
-        and `expose`. A forward is a port on localhost that reaches an
-        address inside the tunnel -- `ssh -p 2222 127.0.0.1` with nothing
-        configured on the client -- and an expose is an address inside
-        the tunnel that reaches a local port, which is the device half
-        without which the mode would be half a product: in kernel mode
-        the kernel delivers `10.9.0.2:22` to the box's own sshd, but
-        nothing listens inside a userspace stack unless the config says
-        what does. Same pump, opposite ends; the local address is `bind`,
-        as every other block spells it.
-
-        The stack is smoltcp, pure Rust, inside the `wireguard` feature
-        and not a sub-feature of it: a mode nobody enables is the mode
-        nobody has, and the user who needs it is the one holding the
-        release binary. It owns one interface with the block's address
-        and a default route, a socket per connection, and one driver
-        task. The device does not know -- `drive`, `remap`, `apply`, the
-        reports and the relay fallback are generic over exactly the seam
-        this uses -- so a rendezvous program cannot tell the modes apart
-        from the queue. `mode` is explicit and defaults to `kernel`: a
-        config that did not ask is not steered into the other mode by a
-        missing privilege.
-
-        Refused at startup, by name: userspace with neither list, or no
-        `address`; a forward in kernel mode; two forwards on one port; a
-        `to` that is the prefix's network address, or a name (there is no
-        resolver inside a tunnel); an `expose.tunnel` off the block's own
-        address; a `bind` already held. A forward to an address no peer
-        is allowed is a warning naming it and the fifteen seconds it will
-        take to time out. `drt wg check` says `userspace`, lists what the
-        mode reaches from the config alone, binds nothing, and prints no
-        `here:` lines about a node and a capability the mode never
-        touches.
-
-        Proven without privilege: two userspace devices in one process, a
-        forward on one reaching an expose on the other through a real
-        handshake and a real smoltcp connection at each end -- the first
-        wireguard test that moves TCP in CI at all -- plus half-close in
-        both directions, the re-armed one-shot listener, a refused dial
-        closing the local socket at once, an unexposed port answered with
-        a RST rather than black-holed, and the dead tunnel timing out at
-        its stated value. `examples/24-wireguard-userspace` carries a
-        request end to end in the gate. TCP only: ssh needs nothing else,
-        and UDP forwards arrive as their own ask.
-
-        What it costs, measured the way `doc/WireGuard.md` §3 measured
-        gotatun: `release-small` of `full` grows by 225,312 bytes, +2.8%,
-        for four pure-Rust crates (`smoltcp`, `heapless`, `hash32`,
-        `managed`). No new C toolchain, so every cross-build that carries
-        `wireguard` carries the mode.
-      - |
-        **`wireguard_forward`**, one per `forward` and `expose` at startup,
-        with the address actually bound. `bind = "127.0.0.1:0"` asks for
-        an ephemeral port and the report is the only way a program learns
-        which; held with the other one-shots for a queue the program has
-        not declared yet. A forward whose dial inside the tunnel fails is
-        a `wireguard_error` naming the entry, in words that tell "no peer
-        is allowed it, or its tunnel is down" from "a peer answered, and
-        nothing listens there".
-      - |
-        **The `tunnel` block: `drt --config device.json tunnel`.** One key
-        per flag the verb takes, under the block's names -- the URL is
-        `claim`, because that is what the relay already calls the act;
-        `--local` is `bind`, as every other block spells the address it
-        listens on; `park`, `to`, `listen` and `extra_roots` as they are.
-        The `.host.lua` loader maps the same keys. The `?k=` in a park or
-        claim URL is a credential, and on a command line it is in `ps`,
-        in shell history, and in every "run this" someone pastes; in a
-        0600 file it is in none of them, and a device's tunnel becomes
-        one file a setup script writes and a unit runs.
-
-        Flags win per key, and the merged set is judged as one: a flag
-        naming a different mode than the file is the conflict two flags
-        naming two modes would be, refused by name and by source. A key
-        from another mode is refused rather than ignored, since in a file
-        a silently ignored key is exactly the failure a loader exists to
-        catch. Both halves of a real SSH session run from two files and
-        no flags in `crates/drt/tests/tunnel.rs`; example 19 runs both
-        halves from files, and 11 and 14 show the form.
-    changed:
-      - |
-        **`drt tunnel`'s flag constraints moved off the flags.** clap's
-        `requires` and `conflicts_with` judged the command line alone, and
-        a `--local` typed beside a `claim` the file supplies would have
-        been refused for lacking the URL it had. `tunnel::resolve` judges
-        the file and the flags together, so the refusals are one list in
-        one vocabulary; the bare `drt tunnel` sentence now names the file
-        as well as the three flag shapes.
-      - |
-        **The kernel-mode route warning is silent in userspace mode.** The
-        stack carries a default route, so "add the route yourself" would
-        be wrong advice there; what can go unreached in that mode is a
-        `forward.to`, and that is what is named instead.
-
-  - version: 0.5.0rc8
-    tag: v0.5.0rc8
-    date: 2026-09-10
-    status: released
-    stable: false
-    mirror: false
-    dv_abi: 1
-    diluvium: 850e00d73220427be68ae8f909f83b06cb2095bd
-    diluvium_build: 13
-    connectors:
-      full: [time, fs, crypto, sql, ssh, rest, ssmtp, exec, data, listen]
-      slim: [time, fs, crypto, listen]
-      wasi: [time, fs, crypto, sql, listen]
-      web: [time, fs, crypto]
-    features:
-      full: [regex]
-      slim: [regex]
-      wasi: [regex]
-      web: [regex]
-    summary: |
-      **The gap release.** The gate rc7 should have had and the client
-      change that makes such a gate testable at all, plus the small,
-      no-adoption changes discofetch and vera asked for during the
-      architecture sprint -- `doc/Gap-Release.md` is the scoping record,
-      including the test that decided what rode and what waited.
-
-      First tagged at `f9e5dfc` while this entry still said `unreleased`,
-      and preflight refused it in two seconds -- `still status:
-      unreleased`, `has no date` -- publishing nothing, which is the gate
-      doing exactly what `doc/Release.md` says it is for. This is that
-      tree with the entry saying what it is; the rehearsal (run 39 on
-      `f9e5dfc`) was green on every platform, including the musl static
-      build, both darwin targets, and the examples gate on a real Windows
-      runner.
-
-      **Cut from `main` after the numeric round's first half merged**
-      (#23), so this candidate also carries what the `0.6.0` entry beneath
-      it describes -- the `data` connector, the numeric config block, the
-      blob lane in the hostcall reply, and the `features` fact -- and its
-      compatibility facts above say so: `data` is in `full`, and
-      `features` and `diluvium_build` are recorded because `buildinfo`
-      reports them. The gap release was scoped as rc7 plus small,
-      no-adoption changes; as cut, it is that plus #23, and the connector
-      set is the field that keeps a version number honest about it.
-
-      rc7 fixed `wss://` and admitted the reason nobody caught it: every
-      test and example reaches its relay on loopback over plain `ws://`.
-      A fix with no test is the same bug with a shorter fuse, so this is
-      the test -- a real SSH session, modern kex and pinned host key and
-      pubkey auth, through a TLS terminator standing in for the nginx a
-      deployment puts in front of the relay. Every byte through rustls.
-
-      Testing it needed something real rather than a mock: no public CA
-      will sign a loopback gate, and the client trusted only Mozilla's
-      roots. So `drt tunnel` grows `--extra-root`, which is the same
-      thing an operator behind an internal CA has needed all along and
-      could not have.
-
-      One unplanned result, better than the test: with `--extra-root` in
-      place, a build with the TLS feature removed **no longer compiles**.
-      `connect_async_tls_with_config` and `Connector::Rustls` are gated
-      behind it, so rc7's bug is now a build error rather than a runtime
-      surprise, caught before any test runs.
-
-      Beside that, the same lesson from the other end of the stack. Every
-      way of failing to create a WireGuard interface was reported as a
-      missing privilege, so a container with no `/dev/net/tun` and a
-      process that already held `CAP_NET_ADMIN` were both sent to go and
-      get the capability. `drt wg check` said `ok` on both. Four errnos
-      now get four answers and an unmeasured one gets none, and `check`
-      names what it can establish about the machine it is on without
-      creating anything.
-    added:
-      - |
-        **`drt tunnel --extra-root <PEM>`**, repeatable, on both halves of
-        the bridge. Certificates named there are trusted **in addition
-        to** the public roots and never instead of them -- the rule
-        `connectors.rest`'s `extra_roots` already states, kept word for
-        word because a client that could narrow its trust to a single
-        certificate is a footgun and the case that exists in the field is
-        a CA that must be trusted beside the public ones. Read and parsed
-        before anything is dialed, so a wrong path or a key file handed
-        over by mistake is a refusal by name rather than a TLS error on
-        the first connection.
-      - |
-        **`drt netcheck --extra-root <PEM>`**, the same flag, the same
-        rule, on the verb that needs it most. `netcheck` is what a person
-        is told to run when they do not know their own network, and a
-        corporate network -- where an egress proxy re-signs every TLS
-        connection with a CA no public root vouches for -- is exactly
-        where that question is hardest to answer and where the answer was
-        `address    not measured`. Honest, and useless.
-
-        It needed none of the scope machinery `doc/Ask-Discofetch-Reply.md`
-        expected it to wait for: the reflect fetch builds its own trust
-        store, so a flag was enough. `crates/drt/tests/reflect.rs` stands
-        a TLS terminator in front of the test edge and asserts both halves
-        in one run -- unreachable without the flag, measured with it --
-        because only the pair proves the flag did the work.
-      - |
-        **`drt netcheck --reflect <url>` is the whole invocation** against
-        an edge that describes itself. The run asks the first edge, before
-        anything is measured, how to measure against it -- the STUN pair
-        and the vantage addresses -- and configures itself from a
-        `measure` block in the answer; `--stun` and `--reflect-at` become
-        overrides that win when typed. Six flags, two of them edge
-        addresses copied out of a document, were the shape that goes stale
-        the day a third edge exists (issue #25). Nothing is compiled in: a
-        bare run says it has nothing to measure against rather than
-        inventing somebody's infrastructure, and anyone's own reflect
-        endpoint gets the same one-flag behaviour.
-
-        Its own request, not a reordering. The UDP half runs before the
-        reflect fetches on purpose, so an edge that disagrees with STUN's
-        address is recorded as a disagreement; taking the STUN pair from a
-        measurement fetch would invert that, so the configuration fetch is
-        a separate unpinned one and its answer is not kept as a view. The
-        rules the flags live under bind the answer too -- one server is
-        still "1 given", and an answer's vantages still may not host the
-        probe -- because the values are merged before either rule looks.
-        The evidence block's first line says where each came from.
-      - |
-        **Two vantages are pinned and compared by default.**
-        `--pin-source-port` used to be what turned two reflect fetches into
-        a TCP mapping comparison, and a caller who did not know the flag
-        got two unrelated observations from a run that could plainly have
-        compared them. Pinning happens whenever more than one fetch is
-        planned, which is the only time it measures anything; the flag is
-        kept and changes nothing. Not "measure both": that doubles the
-        requests against edges that rate-limit, and a 429 renders as "not
-        measured" -- a correct cheap outcome traded for a possibly-empty
-        expensive one.
-
-        Two things pinning by default made visible. A pinned port can be
-        lost between the two sequential fetches -- released by the first,
-        taken by any other process as its own ephemeral port before the
-        second binds it -- which is a fact about the machine and not the
-        network, so the run measures again from a fresh port, once, with
-        the loss recorded; CI found it, running twenty of these at once.
-        And an edge that failed beside one that answered was recorded and
-        never shown, rendered only when no edge answered at all; it is
-        named on the `tcp map` line now, so a comparison that became one
-        vantage says why.
-      - |
-        **`wireguard_mapping` carries `local`**, this machine's own
-        addresses, one per family. The mapped address is one candidate --
-        server-reflexive -- and two machines behind one router publishing
-        only that have to hairpin through it, which plenty of routers
-        refuse: two machines on one LAN could not punch to each other from
-        the report alone (issue #25). A guest cannot learn its own
-        addresses -- no sockets, no `net`, an `fs` scope of one directory
-        -- so the report is the only place a roaming laptop can get them,
-        and `remap` refreshes them with the rest. The address the routing
-        table picks toward the internet, per family, not an interface
-        enumeration: no new dependency, and a multi-homed machine gets its
-        primary until there is evidence it needs more. Raw, and always a
-        list; publishing a LAN address is the program's decision, since it
-        discloses topology.
-    changed:
-      - |
-        **One loader and one trust store for every verb that dials TLS.**
-        `--extra-root`'s loader moved out of `tunnel` into `roots`, which
-        `tunnel` and `netcheck` now share, so "added, never substituted"
-        is a property of one function rather than of every caller
-        remembering it. Moved rather than duplicated while it is still
-        unreleased, which is the only cheap moment to move a `pub` item.
-
-        The shared loader also took `rest`'s stricter check, which the
-        tunnel's own copy did not have: a certificate that parses but
-        cannot serve as a trust anchor is refused at load, by name,
-        instead of being accepted there and rejected at dial. That is the
-        promise the flag's first sentence already made.
-      - |
-        **One WebSocket client, not two.** The caller half went through
-        ego-transport's `WebSocketNative` while the device half used
-        tokio-tungstenite directly: two error vocabularies, two sets of
-        frame handling, and -- the reason this changed --
-        `WebSocketNative::connect` calls `connect_async` with no
-        connector hook, so only one of the two could ever be handed a
-        trust store. Both are tokio-tungstenite now, which `tunnel.rs`
-        had already named as the migration it was waiting for.
-
-        It is a smaller file for it, and two things that were broken are
-        not. The splice is a real split rather than a `select!` over a
-        `&mut self` transport, which the old code's own comment called
-        out as the constraint it wanted removed. And the caller half
-        **answers pings**: a gate pinging an idle `ProxyCommand` session
-        -- an hour into an ssh session with nothing typed -- used to be
-        answered with silence.
-    fixed:
-      - |
-        **Every way of failing to create the tunnel interface was
-        reported as a missing privilege.** The `CAP_NET_ADMIN` paragraph
-        was attached to every error `create_as_async` can return, not to
-        the one it describes, and the errno it followed could not be read
-        past it. Two failures it is false for arrived dressed as
-        privilege problems while integrating rc7 into discofetch (issue
-        #21): a container with no `/dev/net/tun`, **already uid 0**, told
-        to go and get a capability it held; and `/dev/net/tun` at mode
-        `0600` with `cap_net_admin=ep` on the binary, where a file mode
-        does not care what capabilities you hold. The second cost about
-        an hour and produced the conclusion "the capability isn't taking
-        effect", which nearly got a working design abandoned.
-
-        It is a lookup table now, and an errno outside it gets **no**
-        sentence rather than a guess -- an errno printed bare is a thing
-        to look up, an errno printed under a confident wrong cause is an
-        hour lost. Four entries, each measured by making it happen:
-        `ENOENT` (no device node -- and it says so, including that root
-        fails here identically), `EACCES` (the node will not open, which
-        is a file mode and not a capability), `EPERM` (the node opened
-        and the kernel refused -- the one case the old paragraph was
-        right about), and `EBUSY` (the interface name is taken, which
-        nothing named before).
-      - |
-        **`drt wg check` said `ok` where the tunnel could not come up.**
-        It called `validate`, which reads the config and nothing else, so
-        on both machines above it printed `ok: drt0 on port 51821` and
-        `drt start` then failed on the interface. `check` is the verb
-        whose job is "will this work", and the two cheapest environment
-        facts were exactly the ones it did not look at.
-
-        It now prints them, as `here:` lines beside the config's `ok:`,
-        covering the two errnos that can be established without creating
-        anything: whether `/dev/net/tun` opens, and whether `CapEff`
-        carries `CAP_NET_ADMIN`. The `TUNSETIFF` that returns `EPERM` is
-        also the call that would create an interface, which is the one
-        thing `check` promises not to do, so the capability is read from
-        the mask rather than tried.
-
-        **The exit code still follows the config alone**, deliberately:
-        `check` exists so a config can be written on a laptop and
-        deployed where the privilege is, and a laptop with no tun node is
-        not a bad config. Failing over one would break the workflow the
-        verb is for; the finding is printed loudly instead, and the line
-        under it says which half the exit code answers.
-      - |
-        **`doc/Release.md` said the thing that works cannot work.** It
-        recorded, in the strongest terms on the page, that a publishing
-        `workflow_dispatch` could not create a tag, and called it the one
-        operational rule. Both rc6 and rc7 were published exactly that
-        way: run 37 created `v0.5.0rc6` at `105d895`, run 38 created
-        `v0.5.0rc7` at `780071d`, artifacts and rendered body attached.
-        The restriction was lifted upstream sometime between 2026-09-01
-        and 2026-09-06 and nothing here noticed.
-
-        It cost a version number the night it was found -- `v0.5.0rc5`
-        was tagged at `main` before the branch merged, preflight
-        correctly refused it, and the recovery chosen was a fresh rc6
-        rather than a dispatch, because the page said a dispatch could
-        not work. The correction is at the top with today's evidence and
-        the old diagnosis kept underneath, the way that page already
-        keeps v0.3.1's: a rule nobody can reproduce is worse than a rule
-        with its history attached.
-
   - version: 0.6.0
     tag: v0.6.0
     date: null
@@ -468,8 +75,8 @@ releases:
     stable: false
     mirror: false
     dv_abi: 1
-    diluvium: 850e00d73220427be68ae8f909f83b06cb2095bd
-    diluvium_build: 13
+    diluvium: 2c2f920d7fcfacd72e396e13b8ece5cd11f6d60d
+    diluvium_build: 14
     connectors:
       full: [time, fs, crypto, sql, ssh, rest, ssmtp, exec, data, listen]
       slim: [time, fs, crypto, listen]
@@ -1258,6 +865,399 @@ releases:
         only the STUN server would pick -- had been uncompilable without
         anything noticing. The reflect half now carries the `netcheck`
         gate its dependencies do, and the verb's arm matches its variant.
+
+  - version: 0.5.0rc9
+    tag: v0.5.0rc9
+    date: 2026-09-10
+    status: released
+    stable: false
+    mirror: false
+    dv_abi: 1
+    diluvium: 850e00d73220427be68ae8f909f83b06cb2095bd
+    diluvium_build: 13
+    connectors:
+      full: [time, fs, crypto, sql, ssh, rest, ssmtp, exec, data, listen]
+      slim: [time, fs, crypto, listen]
+      wasi: [time, fs, crypto, sql, listen]
+      web: [time, fs, crypto]
+    features:
+      full: [regex]
+      slim: [regex]
+      wasi: [regex]
+      web: [regex]
+    summary: |
+      The candidate after rc8, cut from the same `main` plus issue #27, so
+      it carries everything rc8 carries: the no-root mode, and the tunnel
+      verb from a file.
+
+      Everything in the punch path was unprivileged all along -- STUN, the
+      rendezvous, the punch, the WireGuard protocol -- and `CAP_NET_ADMIN`
+      bought exactly one thing: an adapter in the kernel's stack. A tool
+      that demonstrably moves bytes *before* it asks for a privilege is a
+      different trust proposition from one that asks first, and on macOS
+      and Windows "asks first" means most users say no. So the device's
+      IP side, which was always a trait, is handed a TCP/IP stack inside
+      the process instead of an interface, and "ssh through the hole"
+      becomes a port on localhost: no interface, no `sudo`, no
+      `wintun.dll`. Two such peers cross a real tunnel on one machine,
+      which two kernel interfaces cannot, and the gate runs that example
+      without `--privileged`.
+
+      A consumer sitting on rc8 who does nothing keeps working byte for
+      byte; the mode is reached only by a config that asks for it, which
+      is the gap-release criterion as `doc/Gap-Release.md` §7 now states
+      it. The compatibility facts are rc8's: no connector moved, no
+      feature moved, the same core inside.
+    added:
+      - |
+        **`mode = "userspace"` on the `wireguard` block**, with `forward`
+        and `expose`. A forward is a port on localhost that reaches an
+        address inside the tunnel -- `ssh -p 2222 127.0.0.1` with nothing
+        configured on the client -- and an expose is an address inside
+        the tunnel that reaches a local port, which is the device half
+        without which the mode would be half a product: in kernel mode
+        the kernel delivers `10.9.0.2:22` to the box's own sshd, but
+        nothing listens inside a userspace stack unless the config says
+        what does. Same pump, opposite ends; the local address is `bind`,
+        as every other block spells it.
+
+        The stack is smoltcp, pure Rust, inside the `wireguard` feature
+        and not a sub-feature of it: a mode nobody enables is the mode
+        nobody has, and the user who needs it is the one holding the
+        release binary. It owns one interface with the block's address
+        and a default route, a socket per connection, and one driver
+        task. The device does not know -- `drive`, `remap`, `apply`, the
+        reports and the relay fallback are generic over exactly the seam
+        this uses -- so a rendezvous program cannot tell the modes apart
+        from the queue. `mode` is explicit and defaults to `kernel`: a
+        config that did not ask is not steered into the other mode by a
+        missing privilege.
+
+        Refused at startup, by name: userspace with neither list, or no
+        `address`; a forward in kernel mode; two forwards on one port; a
+        `to` that is the prefix's network address, or a name (there is no
+        resolver inside a tunnel); an `expose.tunnel` off the block's own
+        address; a `bind` already held. A forward to an address no peer
+        is allowed is a warning naming it and the fifteen seconds it will
+        take to time out. `drt wg check` says `userspace`, lists what the
+        mode reaches from the config alone, binds nothing, and prints no
+        `here:` lines about a node and a capability the mode never
+        touches.
+
+        Proven without privilege: two userspace devices in one process, a
+        forward on one reaching an expose on the other through a real
+        handshake and a real smoltcp connection at each end -- the first
+        wireguard test that moves TCP in CI at all -- plus half-close in
+        both directions, the re-armed one-shot listener, a refused dial
+        closing the local socket at once, an unexposed port answered with
+        a RST rather than black-holed, and the dead tunnel timing out at
+        its stated value. `examples/24-wireguard-userspace` carries a
+        request end to end in the gate. TCP only: ssh needs nothing else,
+        and UDP forwards arrive as their own ask.
+
+        What it costs, measured the way `doc/WireGuard.md` §3 measured
+        gotatun: `release-small` of `full` grows by 225,312 bytes, +2.8%,
+        for four pure-Rust crates (`smoltcp`, `heapless`, `hash32`,
+        `managed`). No new C toolchain, so every cross-build that carries
+        `wireguard` carries the mode.
+      - |
+        **`wireguard_forward`**, one per `forward` and `expose` at startup,
+        with the address actually bound. `bind = "127.0.0.1:0"` asks for
+        an ephemeral port and the report is the only way a program learns
+        which; held with the other one-shots for a queue the program has
+        not declared yet. A forward whose dial inside the tunnel fails is
+        a `wireguard_error` naming the entry, in words that tell "no peer
+        is allowed it, or its tunnel is down" from "a peer answered, and
+        nothing listens there".
+      - |
+        **The `tunnel` block: `drt --config device.json tunnel`.** One key
+        per flag the verb takes, under the block's names -- the URL is
+        `claim`, because that is what the relay already calls the act;
+        `--local` is `bind`, as every other block spells the address it
+        listens on; `park`, `to`, `listen` and `extra_roots` as they are.
+        The `.host.lua` loader maps the same keys. The `?k=` in a park or
+        claim URL is a credential, and on a command line it is in `ps`,
+        in shell history, and in every "run this" someone pastes; in a
+        0600 file it is in none of them, and a device's tunnel becomes
+        one file a setup script writes and a unit runs.
+
+        Flags win per key, and the merged set is judged as one: a flag
+        naming a different mode than the file is the conflict two flags
+        naming two modes would be, refused by name and by source. A key
+        from another mode is refused rather than ignored, since in a file
+        a silently ignored key is exactly the failure a loader exists to
+        catch. Both halves of a real SSH session run from two files and
+        no flags in `crates/drt/tests/tunnel.rs`; example 19 runs both
+        halves from files, and 11 and 14 show the form.
+    changed:
+      - |
+        **`drt tunnel`'s flag constraints moved off the flags.** clap's
+        `requires` and `conflicts_with` judged the command line alone, and
+        a `--local` typed beside a `claim` the file supplies would have
+        been refused for lacking the URL it had. `tunnel::resolve` judges
+        the file and the flags together, so the refusals are one list in
+        one vocabulary; the bare `drt tunnel` sentence now names the file
+        as well as the three flag shapes.
+      - |
+        **The kernel-mode route warning is silent in userspace mode.** The
+        stack carries a default route, so "add the route yourself" would
+        be wrong advice there; what can go unreached in that mode is a
+        `forward.to`, and that is what is named instead.
+
+  - version: 0.5.0rc8
+    tag: v0.5.0rc8
+    date: 2026-09-10
+    status: released
+    stable: false
+    mirror: false
+    dv_abi: 1
+    diluvium: 850e00d73220427be68ae8f909f83b06cb2095bd
+    diluvium_build: 13
+    connectors:
+      full: [time, fs, crypto, sql, ssh, rest, ssmtp, exec, data, listen]
+      slim: [time, fs, crypto, listen]
+      wasi: [time, fs, crypto, sql, listen]
+      web: [time, fs, crypto]
+    features:
+      full: [regex]
+      slim: [regex]
+      wasi: [regex]
+      web: [regex]
+    summary: |
+      **The gap release.** The gate rc7 should have had and the client
+      change that makes such a gate testable at all, plus the small,
+      no-adoption changes discofetch and vera asked for during the
+      architecture sprint -- `doc/Gap-Release.md` is the scoping record,
+      including the test that decided what rode and what waited.
+
+      First tagged at `f9e5dfc` while this entry still said `unreleased`,
+      and preflight refused it in two seconds -- `still status:
+      unreleased`, `has no date` -- publishing nothing, which is the gate
+      doing exactly what `doc/Release.md` says it is for. This is that
+      tree with the entry saying what it is; the rehearsal (run 39 on
+      `f9e5dfc`) was green on every platform, including the musl static
+      build, both darwin targets, and the examples gate on a real Windows
+      runner.
+
+      **Cut from `main` after the numeric round's first half merged**
+      (#23), so this candidate also carries what the `0.6.0` entry beneath
+      it describes -- the `data` connector, the numeric config block, the
+      blob lane in the hostcall reply, and the `features` fact -- and its
+      compatibility facts above say so: `data` is in `full`, and
+      `features` and `diluvium_build` are recorded because `buildinfo`
+      reports them. The gap release was scoped as rc7 plus small,
+      no-adoption changes; as cut, it is that plus #23, and the connector
+      set is the field that keeps a version number honest about it.
+
+      rc7 fixed `wss://` and admitted the reason nobody caught it: every
+      test and example reaches its relay on loopback over plain `ws://`.
+      A fix with no test is the same bug with a shorter fuse, so this is
+      the test -- a real SSH session, modern kex and pinned host key and
+      pubkey auth, through a TLS terminator standing in for the nginx a
+      deployment puts in front of the relay. Every byte through rustls.
+
+      Testing it needed something real rather than a mock: no public CA
+      will sign a loopback gate, and the client trusted only Mozilla's
+      roots. So `drt tunnel` grows `--extra-root`, which is the same
+      thing an operator behind an internal CA has needed all along and
+      could not have.
+
+      One unplanned result, better than the test: with `--extra-root` in
+      place, a build with the TLS feature removed **no longer compiles**.
+      `connect_async_tls_with_config` and `Connector::Rustls` are gated
+      behind it, so rc7's bug is now a build error rather than a runtime
+      surprise, caught before any test runs.
+
+      Beside that, the same lesson from the other end of the stack. Every
+      way of failing to create a WireGuard interface was reported as a
+      missing privilege, so a container with no `/dev/net/tun` and a
+      process that already held `CAP_NET_ADMIN` were both sent to go and
+      get the capability. `drt wg check` said `ok` on both. Four errnos
+      now get four answers and an unmeasured one gets none, and `check`
+      names what it can establish about the machine it is on without
+      creating anything.
+    added:
+      - |
+        **`drt tunnel --extra-root <PEM>`**, repeatable, on both halves of
+        the bridge. Certificates named there are trusted **in addition
+        to** the public roots and never instead of them -- the rule
+        `connectors.rest`'s `extra_roots` already states, kept word for
+        word because a client that could narrow its trust to a single
+        certificate is a footgun and the case that exists in the field is
+        a CA that must be trusted beside the public ones. Read and parsed
+        before anything is dialed, so a wrong path or a key file handed
+        over by mistake is a refusal by name rather than a TLS error on
+        the first connection.
+      - |
+        **`drt netcheck --extra-root <PEM>`**, the same flag, the same
+        rule, on the verb that needs it most. `netcheck` is what a person
+        is told to run when they do not know their own network, and a
+        corporate network -- where an egress proxy re-signs every TLS
+        connection with a CA no public root vouches for -- is exactly
+        where that question is hardest to answer and where the answer was
+        `address    not measured`. Honest, and useless.
+
+        It needed none of the scope machinery `doc/Ask-Discofetch-Reply.md`
+        expected it to wait for: the reflect fetch builds its own trust
+        store, so a flag was enough. `crates/drt/tests/reflect.rs` stands
+        a TLS terminator in front of the test edge and asserts both halves
+        in one run -- unreachable without the flag, measured with it --
+        because only the pair proves the flag did the work.
+      - |
+        **`drt netcheck --reflect <url>` is the whole invocation** against
+        an edge that describes itself. The run asks the first edge, before
+        anything is measured, how to measure against it -- the STUN pair
+        and the vantage addresses -- and configures itself from a
+        `measure` block in the answer; `--stun` and `--reflect-at` become
+        overrides that win when typed. Six flags, two of them edge
+        addresses copied out of a document, were the shape that goes stale
+        the day a third edge exists (issue #25). Nothing is compiled in: a
+        bare run says it has nothing to measure against rather than
+        inventing somebody's infrastructure, and anyone's own reflect
+        endpoint gets the same one-flag behaviour.
+
+        Its own request, not a reordering. The UDP half runs before the
+        reflect fetches on purpose, so an edge that disagrees with STUN's
+        address is recorded as a disagreement; taking the STUN pair from a
+        measurement fetch would invert that, so the configuration fetch is
+        a separate unpinned one and its answer is not kept as a view. The
+        rules the flags live under bind the answer too -- one server is
+        still "1 given", and an answer's vantages still may not host the
+        probe -- because the values are merged before either rule looks.
+        The evidence block's first line says where each came from.
+      - |
+        **Two vantages are pinned and compared by default.**
+        `--pin-source-port` used to be what turned two reflect fetches into
+        a TCP mapping comparison, and a caller who did not know the flag
+        got two unrelated observations from a run that could plainly have
+        compared them. Pinning happens whenever more than one fetch is
+        planned, which is the only time it measures anything; the flag is
+        kept and changes nothing. Not "measure both": that doubles the
+        requests against edges that rate-limit, and a 429 renders as "not
+        measured" -- a correct cheap outcome traded for a possibly-empty
+        expensive one.
+
+        Two things pinning by default made visible. A pinned port can be
+        lost between the two sequential fetches -- released by the first,
+        taken by any other process as its own ephemeral port before the
+        second binds it -- which is a fact about the machine and not the
+        network, so the run measures again from a fresh port, once, with
+        the loss recorded; CI found it, running twenty of these at once.
+        And an edge that failed beside one that answered was recorded and
+        never shown, rendered only when no edge answered at all; it is
+        named on the `tcp map` line now, so a comparison that became one
+        vantage says why.
+      - |
+        **`wireguard_mapping` carries `local`**, this machine's own
+        addresses, one per family. The mapped address is one candidate --
+        server-reflexive -- and two machines behind one router publishing
+        only that have to hairpin through it, which plenty of routers
+        refuse: two machines on one LAN could not punch to each other from
+        the report alone (issue #25). A guest cannot learn its own
+        addresses -- no sockets, no `net`, an `fs` scope of one directory
+        -- so the report is the only place a roaming laptop can get them,
+        and `remap` refreshes them with the rest. The address the routing
+        table picks toward the internet, per family, not an interface
+        enumeration: no new dependency, and a multi-homed machine gets its
+        primary until there is evidence it needs more. Raw, and always a
+        list; publishing a LAN address is the program's decision, since it
+        discloses topology.
+    changed:
+      - |
+        **One loader and one trust store for every verb that dials TLS.**
+        `--extra-root`'s loader moved out of `tunnel` into `roots`, which
+        `tunnel` and `netcheck` now share, so "added, never substituted"
+        is a property of one function rather than of every caller
+        remembering it. Moved rather than duplicated while it is still
+        unreleased, which is the only cheap moment to move a `pub` item.
+
+        The shared loader also took `rest`'s stricter check, which the
+        tunnel's own copy did not have: a certificate that parses but
+        cannot serve as a trust anchor is refused at load, by name,
+        instead of being accepted there and rejected at dial. That is the
+        promise the flag's first sentence already made.
+      - |
+        **One WebSocket client, not two.** The caller half went through
+        ego-transport's `WebSocketNative` while the device half used
+        tokio-tungstenite directly: two error vocabularies, two sets of
+        frame handling, and -- the reason this changed --
+        `WebSocketNative::connect` calls `connect_async` with no
+        connector hook, so only one of the two could ever be handed a
+        trust store. Both are tokio-tungstenite now, which `tunnel.rs`
+        had already named as the migration it was waiting for.
+
+        It is a smaller file for it, and two things that were broken are
+        not. The splice is a real split rather than a `select!` over a
+        `&mut self` transport, which the old code's own comment called
+        out as the constraint it wanted removed. And the caller half
+        **answers pings**: a gate pinging an idle `ProxyCommand` session
+        -- an hour into an ssh session with nothing typed -- used to be
+        answered with silence.
+    fixed:
+      - |
+        **Every way of failing to create the tunnel interface was
+        reported as a missing privilege.** The `CAP_NET_ADMIN` paragraph
+        was attached to every error `create_as_async` can return, not to
+        the one it describes, and the errno it followed could not be read
+        past it. Two failures it is false for arrived dressed as
+        privilege problems while integrating rc7 into discofetch (issue
+        #21): a container with no `/dev/net/tun`, **already uid 0**, told
+        to go and get a capability it held; and `/dev/net/tun` at mode
+        `0600` with `cap_net_admin=ep` on the binary, where a file mode
+        does not care what capabilities you hold. The second cost about
+        an hour and produced the conclusion "the capability isn't taking
+        effect", which nearly got a working design abandoned.
+
+        It is a lookup table now, and an errno outside it gets **no**
+        sentence rather than a guess -- an errno printed bare is a thing
+        to look up, an errno printed under a confident wrong cause is an
+        hour lost. Four entries, each measured by making it happen:
+        `ENOENT` (no device node -- and it says so, including that root
+        fails here identically), `EACCES` (the node will not open, which
+        is a file mode and not a capability), `EPERM` (the node opened
+        and the kernel refused -- the one case the old paragraph was
+        right about), and `EBUSY` (the interface name is taken, which
+        nothing named before).
+      - |
+        **`drt wg check` said `ok` where the tunnel could not come up.**
+        It called `validate`, which reads the config and nothing else, so
+        on both machines above it printed `ok: drt0 on port 51821` and
+        `drt start` then failed on the interface. `check` is the verb
+        whose job is "will this work", and the two cheapest environment
+        facts were exactly the ones it did not look at.
+
+        It now prints them, as `here:` lines beside the config's `ok:`,
+        covering the two errnos that can be established without creating
+        anything: whether `/dev/net/tun` opens, and whether `CapEff`
+        carries `CAP_NET_ADMIN`. The `TUNSETIFF` that returns `EPERM` is
+        also the call that would create an interface, which is the one
+        thing `check` promises not to do, so the capability is read from
+        the mask rather than tried.
+
+        **The exit code still follows the config alone**, deliberately:
+        `check` exists so a config can be written on a laptop and
+        deployed where the privilege is, and a laptop with no tun node is
+        not a bad config. Failing over one would break the workflow the
+        verb is for; the finding is printed loudly instead, and the line
+        under it says which half the exit code answers.
+      - |
+        **`doc/Release.md` said the thing that works cannot work.** It
+        recorded, in the strongest terms on the page, that a publishing
+        `workflow_dispatch` could not create a tag, and called it the one
+        operational rule. Both rc6 and rc7 were published exactly that
+        way: run 37 created `v0.5.0rc6` at `105d895`, run 38 created
+        `v0.5.0rc7` at `780071d`, artifacts and rendered body attached.
+        The restriction was lifted upstream sometime between 2026-09-01
+        and 2026-09-06 and nothing here noticed.
+
+        It cost a version number the night it was found -- `v0.5.0rc5`
+        was tagged at `main` before the branch merged, preflight
+        correctly refused it, and the recovery chosen was a fresh rc6
+        rather than a dispatch, because the page said a dispatch could
+        not work. The correction is at the top with today's evidence and
+        the old diagnosis kept underneath, the way that page already
+        keeps v0.3.1's: a rule nobody can reproduce is worse than a rule
+        with its history attached.
 
   - version: 0.5.0rc7
     tag: v0.5.0rc7
