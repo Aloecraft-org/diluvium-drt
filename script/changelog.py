@@ -125,7 +125,7 @@ def validate(doc):
         bad.append("no releases")
 
     seen_v, seen_t, latest = set(), set(), []
-    for r in releases:
+    for i, r in enumerate(releases):
         v = r.get("version", "<unnamed>")
         where = "release %s" % v
 
@@ -155,6 +155,15 @@ def validate(doc):
         if status not in STATUSES:
             bad.append("%s: status %r not one of %s"
                        % (where, status, ", ".join(sorted(STATUSES))))
+        # The newest entry describes the tree and may be unreleased; one
+        # below it is a version that was never cut and never will be. The
+        # 0.5.0 line shipped nine candidates and no stable, and its planned
+        # entry sat under 0.6.0rc1 for a day, claiming a release that was
+        # not going to happen.
+        if status == "unreleased" and i != 0:
+            bad.append("%s: unreleased but not the newest entry -- a version "
+                       "that was never cut is not history; fold it into the "
+                       "entry that shipped its changes, or drop it" % where)
 
         date = r.get("date")
         if status == "unreleased":
