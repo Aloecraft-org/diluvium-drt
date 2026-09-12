@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install DRT — the Diluvium RunTime.
 #
-#   curl -fsSL https://diluvium.aloecraft.org/drt/latest/install.sh | sh
+#   curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/latest/install.sh | sh
 #
 # Two sources, and the script says which one it used. The mirror is
 # preferred — it is ours, Lab and the deploy scripts read it, and it
@@ -19,7 +19,7 @@
 # a different mirror (an internal one, or a directory you serve yourself).
 set -eu
 
-MIRROR="${DRT_MIRROR:-https://diluvium.aloecraft.org/drt}"
+MIRROR="${DRT_MIRROR:-https://software.aloecraft.org/releases/diluvium-drt}"
 GITHUB="https://github.com/Aloecraft-org/diluvium-drt/releases"
 VERSION="${DRT_VERSION:-latest}"
 

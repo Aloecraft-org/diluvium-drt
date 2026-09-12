@@ -36,8 +36,18 @@ commit list. The `prerelease` flag is derived from the entry's `stable`
 field, which is the truth.
 
 **Publishing checklist**, since the gate will refuse until it is done: set
-`status: released` and a `date`, move `latest: true` onto the entry, set
-`mirror: true`, re-run `generate`, and commit — then tag.
+`status: released` and a `date`, move `latest: true` onto the entry (a
+stable release only), set `mirror: true` — on a candidate too, clearing it
+on the candidate this one supersedes, since the mirror's
+`latest-prerelease/` resolves to the newest candidate and its ten slots are
+for releases (`doc/ALIGNMENT.md` §7) — re-run `generate`, and commit — then
+tag.
+
+`.technoproj` holds the version a human edits and the changelog engine's
+declaration (`doc/ALIGNMENT.md` §2, §3). Today `script/dev-tag.sh` reads
+the version from it; nothing reads the declaration until the shared engine
+lands, and its `stamps` spelling is `base` until the crates carry the
+prerelease (§1, at the next cut).
 
 ### The connector set is why a version number is honest
 
@@ -535,6 +545,19 @@ first second of life.
 - **Actions → Release → Run workflow** → a full rehearsal by default:
   tests and all platforms, artifacts left on the run, nothing published
   until `publish=true`.
+- **A `v*-dev.*` tag**, pushed or dispatched with `publish=true` → the dev
+  fast path (`doc/ALIGNMENT.md` §7): the suite, the Linux build only, no
+  changelog entry, always a prerelease, and the ten newest dev releases
+  kept. `script/dev-tag.sh` prints the next free tag; the number is
+  allocated from the tags that exist and never reused, so `dev.5` names
+  one build forever. There is no nightly yet; `script/dev-tag.sh
+  --if-changed` is the skip rule one would use.
+
+`BUILDINFO.txt` opens with the five lines every Aloecraft release carries
+— `tag`, `version` (the tag body), `commit`, `branch` (derived, since a
+tag push carries none), `built` — and then this project's own facts.
+`SHA256SUMS.txt` lists every other asset, `install.sh` and `BUILDINFO.txt`
+included.
 
 Artifacts use the mirror's flat naming, with `full` as the unprefixed
 default — DRT installs as *the runtime*, and a runtime that cannot serve
@@ -562,19 +585,22 @@ cargo-culted in on day one.
 
 ## The mirror (the server-side half)
 
-One ask outside this repo: run the existing mirror generator a second
-time, pointed at `Aloecraft-org/diluvium-drt`, into a sibling namespace —
+Done, as of 2026-09: the mirror generator runs against
+`Aloecraft-org/diluvium-drt` as a sibling namespace —
 
 ```
-https://diluvium.aloecraft.org/release/drt/<tag>/…
-https://diluvium.aloecraft.org/release/drt/latest/…
-https://diluvium.aloecraft.org/release/drt/releases.json
+https://software.aloecraft.org/releases/diluvium-drt/<tag>/…
+https://software.aloecraft.org/releases/diluvium-drt/latest/…
+https://software.aloecraft.org/releases/diluvium-drt/latest-prerelease/…
+https://software.aloecraft.org/releases/diluvium-drt/releases.json
 ```
 
 Same per-tag directories, same `latest/` stable path, same
-`releases.json` shape (plus a `diluvium` field per release carrying the
-embedded revision from `BUILDINFO.txt`). Lab and every deploy script then
-learn one new path segment and nothing else.
+`releases.json` shape. `source: changelog`: which tags it carries is
+`mirror_tags` in this repository's `changelog.json`, which is why the
+publishing checklist flags the entry and why the generated files are
+committed. `latest-prerelease/` is the newest non-stable tag it carries,
+so the current candidate is flagged and its predecessors are not.
 
 ## Building for wasm
 
@@ -616,16 +642,21 @@ without the C core, for a host that brings its own engine.
 `install.sh` at the repo root, published two ways:
 
 ```
-curl -fsSL https://diluvium.aloecraft.org/release/drt/install.sh | sh   # the mirror
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/latest/install.sh | sh   # the mirror
 curl -fsSL https://github.com/Aloecraft-org/diluvium-drt/releases/latest/download/install.sh | sh
 ```
 
 The mirror is the intended front door and the one the script itself
-prefers when resolving binaries. **It does not carry the `drt` namespace
-yet** — `/release/drt/install.sh`, `/release/drt/latest/…` and
-`/release/drt/releases.json` all 404 as of 2026-08-31, which for a while
-made the README's headline command the first thing a newcomer ran and the
-first thing that failed. So `install.sh` now ships as a **release asset**
+prefers when resolving binaries. Its layout is `doc/ALIGNMENT.md` §4's,
+`software.aloecraft.org/releases/<repo>/`, which replaced the
+`diluvium.aloecraft.org/release/` namespace this doc first asked for.
+**It carries `diluvium-drt`** — `source: changelog`, so it reads this
+repository's committed `changelog.json` and carries the tags marked
+`mirror: true`; as of 2026-09-12 `latest/` is v0.4.1 and the candidates
+are not there yet, which they will be on its next run now that the newest
+candidate is flagged. For the two weeks before it existed the README's
+headline command was the first thing a newcomer ran and the first thing
+that failed. So `install.sh` now ships as a **release asset**
 too: one line in the publish job, no server-side work, and a URL that
 resolves the day a release lands. The mirror ask below still stands and
 still wins once it is done.
