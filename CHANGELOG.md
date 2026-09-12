@@ -813,6 +813,32 @@ entry has not moved the pin yet.
   `dlua_dir` deploys from there, one that does not deploys from `init/` —
   and checking `dlua_dir` either way reported every released root's entry
   as missing. Two listings, and the profile picks.
+- **A profile's `args` reach the root program**, as a message on a queue —
+  the one way anything reaches a program here. The merged table lands on
+  `drt_config::resolve::ARGS_QUEUE`, held until the program declares it by
+  the same reasoning the listener's requests are held: a program that does
+  real work before its first park has declared nothing yet, and refusing a
+  delivery for arriving early would be refusing it for the program's shape.
+
+  Everything after the profile name on the command line belongs to the
+  entry: `drt start --rm debug --verbose --port 9000 --stun a --stun b
+  --label=gate`. drt's own flags come *before* the profile, which is what
+  lets a profile declare its own command line without drt reserving names
+  against it. The declared default's type does the parsing, so `--verbose`
+  is a flag, `--port` takes an integer, a key whose default is `[]`
+  accumulates, an undeclared key is a named failure listing what *is*
+  declared, and a bare token with no key before it is refused rather than
+  silently dropped.
+
+  The delivery lives on `DeployDriver` and not in the two native loops,
+  which is where a test caught it: the browser tier and any test drive the
+  driver directly, so a page would never have received its arguments. One
+  place, and every host gets it.
+
+  A profile with no `args` delivers nothing and expects no queue — a
+  program that takes no arguments must not have to declare one — and a
+  profile that declares arguments nothing ever read says so once at drain,
+  because that profile is describing a command line it does not have.
 
 ### Changed
 

@@ -251,6 +251,21 @@ pub enum Command {
         /// restarts in, so overwriting it is destructive enough to be asked for.
         #[arg(long)]
         rm: bool,
+        /// Arguments for the entry, overriding the profile's declared defaults
+        /// by key: `--verbose`, `--port 9000`, `--label=gate`, and a repeated
+        /// `--stun a --stun b` for a key whose default is a list.
+        ///
+        /// **Everything after the profile name belongs to the entry.** drt's own
+        /// flags therefore come *before* it — `drt start --rm debug --verbose`,
+        /// not `drt start debug --rm`. That is the documented rule and it is
+        /// what lets a profile declare its own command line without drt having
+        /// to reserve names against it.
+        ///
+        /// How each is parsed comes from the declared default's type, so a
+        /// profile is the whole declaration of its own command line and an
+        /// undeclared key is a named failure rather than a silent addition.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
     /// Copy this profile's source into `live/`, and nothing else.
     ///
@@ -1337,14 +1352,22 @@ fn commit_verb(cli: &Cli) -> ExitCode {
     }
 }
 
-fn start_verb(cli: &Cli, profile: Option<&str>, rm: bool) -> ExitCode {
+fn start_verb(cli: &Cli, profile: Option<&str>, rm: bool, args: &[String]) -> ExitCode {
+    let overrides = match drt_config::resolve::parse_overrides(args) {
+        Ok(overrides) => overrides,
+        Err(e) => {
+            eprintln!("drt start: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut ask = crate::consent_gate::Terminal;
-    let booted = match crate::boot::boot(
+    let booted = match crate::boot::boot_with(
         &cwd,
         cli.root.as_deref(),
         cli.config.as_deref(),
         profile,
+        overrides,
         crate::consent_gate::Flags {
             yes: cli.yes,
             accept_changes: cli.accept_changes,
@@ -1436,7 +1459,11 @@ pub fn main(cli: Cli) -> ExitCode {
     // going through `assemble` first would wire one set of connectors to throw
     // away and announce `exec` twice on a config that names it.
     match cli.command {
-        Command::Start { ref profile, rm } => return start_verb(&cli, profile.as_deref(), rm),
+        Command::Start {
+            ref profile,
+            rm,
+            ref args,
+        } => return start_verb(&cli, profile.as_deref(), rm, args),
         Command::Deploy => return deploy_verb(&cli),
         Command::Rm => return rm_verb(&cli),
         Command::Commit => return commit_verb(&cli),

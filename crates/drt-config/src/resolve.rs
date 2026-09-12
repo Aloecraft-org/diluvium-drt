@@ -27,8 +27,9 @@
 //!
 //! - Entry points: [`resolve`]; [`classify`], one typed argument to what it
 //!   means; [`merge_args`], the command-line override rule; [`Entry::parse`].
-//! - Configurable values: none here. The fallback order and the profile
-//!   filename rule live in [`crate::project`], beside the reserved names.
+//! - Configurable values: [`ARGS_QUEUE`], where a root program reads its
+//!   arguments. The fallback order and the profile filename rule live in
+//!   [`crate::project`], beside the reserved names.
 //! - Fan-out: [`Requested`] is what the command line asked for, one arm per
 //!   spelling; [`Rule`] is every reason a field was decided the way it was;
 //!   [`Finding`] is every problem resolution can report.
@@ -134,6 +135,23 @@ pub enum ArgValue {
 }
 
 impl ArgValue {
+    /// The value as a program receives it. One conversion, here, so the table
+    /// pushed onto [`ARGS_QUEUE`] and the table a profile declared are the same
+    /// shapes rather than two renderings that agree by habit.
+    pub fn to_msgpack(&self) -> rmpv::Value {
+        match self {
+            ArgValue::Bool(b) => rmpv::Value::Boolean(*b),
+            ArgValue::Int(n) => rmpv::Value::from(*n),
+            ArgValue::Str(s) => rmpv::Value::from(s.as_str()),
+            ArgValue::List(items) => rmpv::Value::Array(
+                items
+                    .iter()
+                    .map(|i| rmpv::Value::from(i.as_str()))
+                    .collect(),
+            ),
+        }
+    }
+
     pub fn type_name(&self) -> &'static str {
         match self {
             ArgValue::Bool(_) => "a boolean",
@@ -144,9 +162,63 @@ impl ArgValue {
     }
 }
 
+/// The queue a root program reads its arguments from.
+///
+/// Fixed by the runtime and not configurable, which is what makes a typo
+/// impossible on the host side: a program that wants its arguments declares
+/// this name, and one that does not declares nothing. Here rather than in the
+/// binary because it is part of the contract a profile's `args` block implies —
+/// a profile declaring arguments is promising that something reads them here.
+pub const ARGS_QUEUE: &str = "args";
+
 /// Command-line overrides, as `(key, occurrences)` in the order they were
 /// typed. The caller has already stripped `--`.
 pub type Overrides = Vec<(String, Option<String>)>;
+
+/// A merged args table as a program receives it: one msgpack map, keys sorted
+/// because a `BTreeMap` is what they came from.
+pub fn args_to_msgpack(args: &BTreeMap<String, ArgValue>) -> rmpv::Value {
+    rmpv::Value::Map(
+        args.iter()
+            .map(|(k, v)| (rmpv::Value::from(k.as_str()), v.to_msgpack()))
+            .collect(),
+    )
+}
+
+/// Command-line tokens to overrides.
+///
+/// `--key value`, `--key=value`, or `--key` alone for a flag. The shape of what
+/// follows a key is not decided here: whether `--port` needs a value is the
+/// *declared default's* business ([`merge_args`]), so this only says where one
+/// key ends and the next begins.
+///
+/// A bare token with no key before it is a named failure rather than a silent
+/// drop. It is the shape of a typo -- `drt start debug verbose` -- and swallowing
+/// it would leave an operator watching a flag do nothing.
+pub fn parse_overrides(tokens: &[String]) -> Result<Overrides, ArgError> {
+    let mut out: Overrides = Vec::new();
+    let mut cursor = tokens.iter().peekable();
+    while let Some(token) = cursor.next() {
+        let Some(rest) = token.strip_prefix("--") else {
+            return Err(ArgError::NotAnArgument {
+                token: token.clone(),
+            });
+        };
+        if let Some((key, value)) = rest.split_once('=') {
+            out.push((key.to_string(), Some(value.to_string())));
+            continue;
+        }
+        // The next token is this key's value unless it is the next key. A value
+        // that really does begin with `--` is reachable as `--key=--value`,
+        // which is why the `=` form exists.
+        let value = match cursor.peek() {
+            Some(next) if !next.starts_with("--") => cursor.next().cloned(),
+            _ => None,
+        };
+        out.push((rest.to_string(), value));
+    }
+    Ok(out)
+}
 
 /// Merge command-line overrides onto a profile's declared defaults.
 ///
@@ -220,6 +292,8 @@ pub fn merge_args(
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ArgError {
+    #[error("'{token}' is not an argument; arguments to the entry are written '--key value' or '--key=value'")]
+    NotAnArgument { token: String },
     #[error("'--{key}' is not an argument this profile declares; it declares {}", if known.is_empty() { "none".to_string() } else { known.join(", ") })]
     UndeclaredKey { key: String, known: Vec<String> },
     #[error("'--{key}' wants {wanted}")]
@@ -1208,6 +1282,42 @@ mod tests {
 
     /// A typo cannot silently add a field. Same posture as the `.host.lua`
     /// loader's unknown-key refusal.
+    /// The table a program receives is one map, and every declared shape
+    /// survives the crossing.
+    #[test]
+    fn the_merged_table_crosses_as_one_msgpack_map() {
+        let merged = BTreeMap::from([
+            ("verbose".to_string(), ArgValue::Bool(true)),
+            ("port".to_string(), ArgValue::Int(8092)),
+            ("label".to_string(), ArgValue::Str("fp".into())),
+            (
+                "stun".to_string(),
+                ArgValue::List(vec!["a".into(), "b".into()]),
+            ),
+        ]);
+        let value = args_to_msgpack(&merged);
+        let map = value.as_map().expect("a map");
+
+        let field = |name: &str| {
+            map.iter()
+                .find(|(k, _)| k.as_str() == Some(name))
+                .map(|(_, v)| v)
+                .unwrap_or_else(|| panic!("{name} is there"))
+        };
+        assert_eq!(field("verbose"), &rmpv::Value::Boolean(true));
+        assert_eq!(field("port").as_i64(), Some(8092));
+        assert_eq!(field("label").as_str(), Some("fp"));
+        assert_eq!(
+            field("stun").as_array().map(|a| a.len()),
+            Some(2),
+            "a list crosses as an array, so repeated flags arrive as one"
+        );
+        // Sorted, because a BTreeMap is what they came from: a program that
+        // iterates the table sees the same order on every host.
+        let keys: Vec<&str> = map.iter().filter_map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["label", "port", "stun", "verbose"]);
+    }
+
     #[test]
     fn an_undeclared_key_is_a_named_failure() {
         let declared = BTreeMap::from([("verbose".to_string(), ArgValue::Bool(false))]);
@@ -1217,6 +1327,51 @@ mod tests {
             e.to_string().contains("verbose"),
             "it names what is known: {e}"
         );
+    }
+
+    /// Where one key ends and the next begins. What follows a key is the
+    /// declared default's business, not this function's.
+    #[test]
+    fn tokens_split_into_keys_and_values() {
+        let tokens: Vec<String> = [
+            "--verbose",
+            "--port",
+            "9000",
+            "--label=gate",
+            "--stun",
+            "a",
+            "--stun",
+            "b",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            parse_overrides(&tokens).unwrap(),
+            vec![
+                ("verbose".to_string(), None),
+                ("port".to_string(), Some("9000".to_string())),
+                ("label".to_string(), Some("gate".to_string())),
+                ("stun".to_string(), Some("a".to_string())),
+                ("stun".to_string(), Some("b".to_string())),
+            ]
+        );
+
+        // A value that really begins with `--` is reachable through `=`.
+        assert_eq!(
+            parse_overrides(&["--label=--dashed".to_string()]).unwrap(),
+            vec![("label".to_string(), Some("--dashed".to_string()))]
+        );
+        assert!(parse_overrides(&[]).unwrap().is_empty());
+    }
+
+    /// A bare token is a typo's shape, and swallowing it would leave an operator
+    /// watching a flag do nothing.
+    #[test]
+    fn a_token_with_no_key_before_it_is_a_named_failure() {
+        let e = parse_overrides(&["verbose".to_string()]).unwrap_err();
+        assert!(matches!(e, ArgError::NotAnArgument { .. }), "{e}");
+        assert!(e.to_string().contains("--key value"), "{e}");
     }
 
     #[test]

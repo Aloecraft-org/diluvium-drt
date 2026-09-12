@@ -1020,3 +1020,90 @@ mod rooted {
         );
     }
 }
+
+// depth: the root program's arguments, delivered as a message
+
+/// A profile's merged `args` reach the root program, typed, on the queue the
+/// runtime fixes. This is the delivery half of the args rule -- `merge_args`
+/// decides *what* the table holds and has its own tests; this is that table
+/// arriving somewhere a program can read it.
+#[test]
+fn the_merged_args_table_reaches_the_root_program() {
+    // Parks at the end rather than returning: a slot is released the moment its
+    // program exits, and a test reading an exported queue afterwards finds no
+    // instance at all -- the same reason `drt-swarm`'s tests spawn a child that
+    // parks forever.
+    let program = "local q = queue.declare('args', {capacity = 1})\n\
+                   local _, a = queue.wait({q})\n\
+                   local out = queue.declare('seen', {capacity = 4, exported = true})\n\
+                   queue.push(out, {v = a.verbose, p = a.port, n = #a.stun})\n\
+                   local idle = queue.declare('idle', {capacity = 1})\n\
+                   queue.wait({idle})\n";
+    let mut config = config_with_source(program, "");
+    config.args = [
+        (
+            "verbose".to_string(),
+            drt_config::resolve::ArgValue::Bool(true),
+        ),
+        ("port".to_string(), drt_config::resolve::ArgValue::Int(9000)),
+        (
+            "stun".to_string(),
+            drt_config::resolve::ArgValue::List(vec!["a".into(), "b".into()]),
+        ),
+    ]
+    .into_iter()
+    .collect();
+
+    let mut driver = start::prepare(&config, Dispatcher::new(Registry::new())).unwrap();
+    let root = driver.root();
+
+    // Drive until the program has read the table and answered. Generous: the
+    // delivery lands on the pass after the one that declared the queue, which
+    // is the held-request shape and the whole reason it retries.
+    let mut seen = None;
+    for _ in 0..64 {
+        driver.step();
+        let sw = driver.deployment_mut();
+        let Some(inst) = sw.instance_mut(root) else {
+            break;
+        };
+        if let Some(q) = inst.queue("seen") {
+            if let Ok(Some(raw)) = inst.pop(q) {
+                seen = Some(rmpv::decode::read_value(&mut raw.as_slice()).unwrap());
+                break;
+            }
+        }
+    }
+
+    let seen = seen.expect("the program read its arguments and answered");
+    let field = |name: &str| {
+        seen.as_map()
+            .unwrap()
+            .iter()
+            .find(|(k, _)| k.as_str() == Some(name))
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| panic!("{name} is in the answer"))
+    };
+    assert_eq!(
+        field("v"),
+        rmpv::Value::Boolean(true),
+        "a bool stays a bool"
+    );
+    assert_eq!(field("p").as_i64(), Some(9000), "an int stays an int");
+    assert_eq!(
+        field("n").as_i64(),
+        Some(2),
+        "a list arrives as one array, so repeated flags are one key"
+    );
+}
+
+/// A profile with no `args` delivers nothing and expects no queue: a program
+/// that takes no arguments must not have to declare one.
+#[test]
+fn a_profile_with_no_args_expects_no_queue() {
+    let config = config_with_source("return 1", "");
+    assert!(config.args.is_empty());
+    // It drains, which it would not if the delivery were waiting on a queue
+    // nobody declared.
+    start_guarded(config, Duration::from_secs(5)).unwrap();
+}

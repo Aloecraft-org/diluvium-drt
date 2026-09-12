@@ -14,6 +14,13 @@
 //! Listeners are served (`crate::listen`, the C host's queue-bridge
 //! contract), and the residency policy is real: a config naming
 //! `residency.max_resident` gets [`enforce_residency`]'s LRU each pass.
+//!
+//! The root program's **arguments** arrive the one way anything arrives here: a
+//! message on a queue. The merged table is pushed onto
+//! `drt_config::resolve::ARGS_QUEUE` once the program declares it, held until
+//! then by the same reasoning the listener's requests are held -- a program that
+//! does real work before its first park has declared nothing yet, and refusing
+//! a delivery for arriving early would be refusing it for the program's shape.
 //! What `start` does not do yet, stated rather than implied: **the control
 //! endpoint** — `ps`/`pause`/`stop` reach a running deployment over the
 //! sshd subsystem (SPEC.md §13a), and until that lands the only controls
@@ -227,6 +234,14 @@ pub struct DeployDriver {
     sw: Deployment,
     root: InstanceId,
     max_resident: Option<usize>,
+    /// The root program's arguments, on their way in.
+    ///
+    /// On the **driver** and not on the two loops in this file, because the
+    /// driver is what a page drives (doc/Wasm.md D6) and a test drives
+    /// directly. Putting the delivery in the loops meant a page never got its
+    /// arguments and a test that drove `step` never saw them -- found by a test
+    /// that drove `step`, which is the only reason it was found at all.
+    args: ArgsDelivery,
 }
 
 impl DeployDriver {
@@ -236,6 +251,7 @@ impl DeployDriver {
             sw,
             root,
             max_resident: config.residency.map(|r| r.max_resident),
+            args: ArgsDelivery::new(config),
         })
     }
 
@@ -244,10 +260,21 @@ impl DeployDriver {
     /// condition.
     pub fn step(&mut self) -> usize {
         let alive = self.sw.step();
+        // After the step, because the step is the only thing that can have
+        // declared the queue -- the held-request shape, for the held-request
+        // reason.
+        self.args.deliver(&mut self.sw, self.root);
         if let Some(max_resident) = self.max_resident {
             enforce_residency(&mut self.sw, self.root, max_resident);
         }
         alive
+    }
+
+    /// One line, if this profile declared arguments and the root program never
+    /// declared a queue to read them from. Called by whoever owns the loop,
+    /// when the swarm drains.
+    pub fn note_undelivered_args(&self) {
+        self.args.note_if_undelivered();
     }
 
     /// How long the host may sleep before the next step is due: until the
@@ -505,6 +532,7 @@ pub fn serve_with_observer<B: Acceptor>(
                     crate::listen::Outcome::refused(503, "the root instance is not resident\n"),
                 );
             }
+            driver.note_undelivered_args();
             return crate::run::finish(driver.dispatcher());
         }
         // Don't sleep past a held request's grace: this loop is what
@@ -547,7 +575,10 @@ fn serve_swarm_only(config: &RootConfig, dispatcher: Dispatcher) -> Result<(), S
                     std::thread::sleep(sleep);
                 }
             }
-            Next::Done(_) => return crate::run::finish(driver.dispatcher()),
+            Next::Done(_) => {
+                driver.note_undelivered_args();
+                return crate::run::finish(driver.dispatcher());
+            }
             Next::Input | Next::Stuck { .. } => unreachable!("a deployment asks only for time"),
             Next::Failed(why) => return Err(why),
         }
@@ -557,6 +588,82 @@ fn serve_swarm_only(config: &RootConfig, dispatcher: Dispatcher) -> Result<(), S
 /// The deployment's concrete swarm: the pump answering hostcalls, the
 /// clocked host underneath.
 pub type Deployment = Swarm<PumpHost<DeployHost>>;
+
+// depth: the root program's arguments, delivered as a message
+
+/// The merged `args` table, on its way to the root program.
+///
+/// Held rather than pushed once, for the listener's reason: a program that does
+/// real work before its first park has declared nothing yet, so the first
+/// attempt usually finds no queue and refusing the delivery for arriving early
+/// would be refusing it for the program's own shape.
+///
+/// A profile with no `args` has nothing to deliver and this does nothing at all
+/// — no queue is expected and none is missed.
+struct ArgsDelivery {
+    /// The encoded table, taken when it lands. `None` means delivered, or
+    /// nothing to deliver.
+    pending: Option<Vec<u8>>,
+    /// How many keys were in it, for the one line at drain.
+    keys: usize,
+}
+
+impl ArgsDelivery {
+    fn new(config: &RootConfig) -> ArgsDelivery {
+        if config.args.is_empty() {
+            return ArgsDelivery {
+                pending: None,
+                keys: 0,
+            };
+        }
+        let value = drt_config::resolve::args_to_msgpack(&config.args);
+        let mut bytes = Vec::new();
+        // An encode failure here cannot happen -- every `ArgValue` renders to a
+        // value rmpv can write -- and if it somehow did, the deployment should
+        // still run rather than refuse over an argument table. So it degrades to
+        // "nothing to deliver", and the line at drain is what says so.
+        let pending = rmpv::encode::write_value(&mut bytes, &value)
+            .ok()
+            .map(|()| bytes);
+        ArgsDelivery {
+            pending,
+            keys: config.args.len(),
+        }
+    }
+
+    /// One attempt. Cheap enough to run every pass: when the queue is absent
+    /// this is a table lookup.
+    fn deliver(&mut self, sw: &mut Deployment, root: InstanceId) {
+        let Some(bytes) = &self.pending else { return };
+        match sw.push(root, drt_config::resolve::ARGS_QUEUE, bytes) {
+            Ok(()) => self.pending = None,
+            // Not declared yet, or declared and momentarily full. Either way,
+            // try again next pass.
+            Err(drt_swarm::swarm::SwarmError::UnknownQueue)
+            | Err(drt_swarm::swarm::SwarmError::Limit(_)) => {}
+            // Gone or unknown: the root is over, and there is nobody to tell.
+            Err(_) => self.pending = None,
+        }
+    }
+
+    /// One line, at drain, if a table was declared and never collected.
+    ///
+    /// Worth saying: a profile declaring `args` is promising that something
+    /// reads them, so a program that never declares the queue means the profile
+    /// is describing a command line it does not have -- and an operator who
+    /// typed `--verbose` watched it do nothing.
+    fn note_if_undelivered(&self) {
+        if self.pending.is_some() {
+            let _ = writeln!(
+                std::io::stderr(),
+                "drt start: this profile declares {} argument(s) and the root program never \
+                 declared a `{}` queue to read them from",
+                self.keys,
+                drt_config::resolve::ARGS_QUEUE
+            );
+        }
+    }
+}
 
 fn deployment(
     config: &RootConfig,

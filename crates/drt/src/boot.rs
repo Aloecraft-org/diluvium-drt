@@ -93,12 +93,35 @@ impl std::fmt::Debug for Booted {
     }
 }
 
-/// Everything before the first step.
+/// Everything before the first step, with no command-line arguments for the
+/// entry. The shape every verb but `start` wants.
 pub fn boot(
     cwd: &std::path::Path,
     root_flag: Option<&std::path::Path>,
     config_flag: Option<&std::path::Path>,
     profile: Option<&str>,
+    consent: consent_gate::Flags,
+    ask: &mut dyn Ask,
+) -> Result<Booted, String> {
+    boot_with(
+        cwd,
+        root_flag,
+        config_flag,
+        profile,
+        Vec::new(),
+        consent,
+        ask,
+    )
+}
+
+/// [`boot`] with arguments for the entry, which only `start` has.
+#[allow(clippy::too_many_arguments)]
+pub fn boot_with(
+    cwd: &std::path::Path,
+    root_flag: Option<&std::path::Path>,
+    config_flag: Option<&std::path::Path>,
+    profile: Option<&str>,
+    overrides: drt_config::resolve::Overrides,
     consent: consent_gate::Flags,
     ask: &mut dyn Ask,
 ) -> Result<Booted, String> {
@@ -113,6 +136,16 @@ pub fn boot(
                 "there is no root here, so '{name}' names no profile; \
                  `--config <path>` is the self-contained form"
             ));
+        }
+        if !overrides.is_empty() {
+            // A config's `args` block is merged by resolution, and there is no
+            // resolution on this path. Saying so beats accepting flags and
+            // dropping them.
+            return Err(
+                "arguments for the entry come from a profile's declared `args`, and there is no \
+                 root here to resolve one"
+                    .to_string(),
+            );
         }
         let dispatcher = wire(&config)?;
         return Ok(Booted {
@@ -129,7 +162,7 @@ pub fn boot(
         Some(name) => Requested::Profile(name.to_string()),
         None => Requested::Default,
     };
-    let (mut inputs, soft) = root.read(requested, Vec::new());
+    let (mut inputs, soft) = root.read(requested, overrides);
     for line in &soft {
         ask.say(&format!("drt start: {line}"));
     }
@@ -270,6 +303,9 @@ fn profile_config(
         deployed: crate::deploy::is_deployed(root, &deployment.name),
         ..deployment
     };
+    // The config handed on is the *resolved* one, so `start` delivers what the
+    // command line actually merged rather than the profile's declared defaults.
+    config.args = resolution.args.clone();
     let runnable = entry_runnable(root, &deployment, &entry.value)?;
     // A native program is not loaded, so the config names none. `start` would
     // otherwise refuse a deployment with no program, which is the right
