@@ -6,7 +6,7 @@ Copy the directory, replace the keys, run it. See
 
 ```
 openssl rand -hex 24        # once per key; park and caller are different secrets
-drt --config rendezvous.host.lua start
+drt --config rendezvous.json start
 ```
 
 On the machine you want to reach, one long-running process:

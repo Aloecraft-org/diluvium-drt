@@ -106,16 +106,19 @@ costs two lines.
 
 ---
 
-## When `.host.lua` goes away
+## `.host.lua` is gone
 
-It is only still here because code written for `diluvium-host` depends on
-it, and it is meant to be removed rather than kept. Nothing above blocks
-that, and only two things will need touching when it happens:
+It was only here because code written for `diluvium-host` depended on it,
+and it was meant to be removed rather than kept. It has been: every config
+in this repository is JSON, and `drt` no longer reads the dialect at all.
 
-- the extension's `filenamePatterns: ["*.host.lua"]` in
-  `editors/vscode/package.json`, which claims it as Diluvium;
-- the note in this repo's `.gitattributes` explaining why `*.host.lua` gets
-  no rule.
+The two things this section said would need touching:
 
-Neither is load-bearing. On GitHub the file has always been highlighted as
-Lua simply because it ends in `.lua`, so its removal changes nothing there.
+- the `.gitattributes` note explaining why `*.host.lua` got no rule —
+  updated to say it is gone;
+- the extension's `filenamePatterns: ["*.host.lua"]`, which claimed it as
+  Diluvium. There is no `editors/vscode/package.json` in this repository
+  today; if the extension is carried elsewhere, drop that pattern there.
+
+Neither was load-bearing. On GitHub the file was always highlighted as Lua
+simply because it ended in `.lua`, so its removal changed nothing there.

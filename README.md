@@ -106,30 +106,37 @@ curl -fsSL https://diluvium.aloecraft.org/drt/latest/install.sh | sh
 drt run prog.dlua                    # one program, to completion
 drt repl                             # a REPL, which is an instance
 drt repl --unsafe                    # ... with os, io and require in scope
-drt --config app.host.lua start      # the deployment: swarm + listeners + relay
-drt --config rv.host.lua relay       # the rendezvous relay, standalone
+drt --config app.json start          # the deployment: swarm + listeners + relay
+drt --config rv.json start           # the rendezvous relay, on its own
 drt tunnel --park wss://…/park/xps?k=… --to 127.0.0.1:22   # the device half
 ssh -o ProxyCommand="drt tunnel wss://…/s/xps?k=…" user@xps # the caller half
 drt tunnel wss://…/s/xps?k=… --local 127.0.0.1:2222       # the caller half, for a program
 drt --config tn.json tunnel          # either half, with the key in a 0600 file
-drt --config nc.host.lua netcheck    # what can this network do, with the evidence
-drt --config st.host.lua stun        # a STUN server: what address did that come from
-drt --config tn.host.lua turn        # a TURN relay, for what cannot be punched
-drt --config wg.host.lua wg          # a WireGuard peer, in the process
-drt --config wg.json wg              # ... in userspace: no interface, no privilege, a port on localhost
+drt --config nc.json netcheck        # what can this network do, with the evidence
+drt --config st.json start           # a STUN server: what address did that come from
+drt --config tn.json start           # a TURN relay, for what cannot be punched
+drt --config wg.json start           # a WireGuard peer, in the process or in userspace
 drt wg keygen                        # a key pair, so wireguard-tools is not needed
+drt wg check --config wg.json        # what is wrong with that block, binding nothing
 ```
 
-`drt start` reads a diluvium-host `.host.lua` unchanged — a deployment moves
-to DRT by swapping the binary and editing no files.
+**A server is a config block plus a program, and `start` runs both.** The
+four blocks that serve — `relay`, `stun`, `turn`, `wireguard` — each used to
+have a verb of its own, because a block with no program had no other way to
+run. Each has one now: `stdlib:<name>` is a reader that prints what its
+block reports, carried inside the binary, so `"entry": "stdlib:relay"` is
+the whole difference between a config and a deployment. A deployment that
+does more than report — a relay that is *asked* before it admits a leg —
+names its own program instead, which is what `examples/rendezvous` is.
+
 [`doc/Relay.md`](doc/Relay.md) is the SSH-to-anything-from-anywhere recipe,
 including the control plane a supervisor uses for presence, metering and
 arbitration.
 
-**Reaching a machine that has no address** is a ladder, and every rung is a
-verb above: `netcheck` says what the network can do, `stun` measures the NAT
+**Reaching a machine that has no address** is a ladder, and every rung is
+above: `netcheck` says what the network can do, `stun` measures the NAT
 mapping that decides it, the relay carries what cannot be reached directly,
-`turn` carries what a browser needs — and `wg` is what runs *over* a path
+`turn` carries what a browser needs — and `wireguard` is what runs *over* a path
 once there is one, so `ssh/exec` and `rest` reach a fetchpoint with no new
 plumbing, because it is just an IP address.
 [`doc/WireGuard.md`](doc/WireGuard.md) sizes that last rung honestly,
@@ -165,6 +172,21 @@ host.fs.try_read("note.txt")         -- value, status, detail — a denial is an
 host.call("sql/exec", {sql = "..."}) -- any connector by name
 host.try("sql/exec", {sql = "..."})  -- the same, without the raise
 ```
+
+**A program can be more than one file.** Every `.dlua` or `.lua` beside the
+entry is a module, and `require("text.case")` is `text/case.dlua` in the
+node's own directory:
+
+```lua
+local case = require("text.case")   -- text/case.dlua, beside the entry
+```
+
+The guest still cannot open a file. The host walks the node's directory
+before the program starts and compiles what it finds, so `require` is a
+lookup in a table that already exists — no search path, no filesystem, no
+capability, and nothing reachable outside the directory the node ships as.
+[`examples/25-modules`](examples/25-modules) is the shortest version and
+[`doc/Modules.md`](doc/Modules.md) is the mechanism.
 
 **`time.now()` does not exist, and the error is misleading.** `time` *is* a
 library — the pure calendar one, `time.iso` / `time.parse` / `time.fields` —

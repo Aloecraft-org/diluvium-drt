@@ -14,6 +14,13 @@
 //! Listeners are served (`crate::listen`, the C host's queue-bridge
 //! contract), and the residency policy is real: a config naming
 //! `residency.max_resident` gets [`enforce_residency`]'s LRU each pass.
+//!
+//! The root program's **arguments** arrive the one way anything arrives here: a
+//! message on a queue. The merged table is pushed onto
+//! `drt_config::resolve::ARGS_QUEUE` once the program declares it, held until
+//! then by the same reasoning the listener's requests are held -- a program that
+//! does real work before its first park has declared nothing yet, and refusing
+//! a delivery for arriving early would be refusing it for the program's shape.
 //! What `start` does not do yet, stated rather than implied: **the control
 //! endpoint** — `ps`/`pause`/`stop` reach a running deployment over the
 //! sshd subsystem (SPEC.md §13a), and until that lands the only controls
@@ -227,6 +234,14 @@ pub struct DeployDriver {
     sw: Deployment,
     root: InstanceId,
     max_resident: Option<usize>,
+    /// The root program's arguments, on their way in.
+    ///
+    /// On the **driver** and not on the two loops in this file, because the
+    /// driver is what a page drives (doc/Wasm.md D6) and a test drives
+    /// directly. Putting the delivery in the loops meant a page never got its
+    /// arguments and a test that drove `step` never saw them -- found by a test
+    /// that drove `step`, which is the only reason it was found at all.
+    args: ArgsDelivery,
 }
 
 impl DeployDriver {
@@ -236,6 +251,7 @@ impl DeployDriver {
             sw,
             root,
             max_resident: config.residency.map(|r| r.max_resident),
+            args: ArgsDelivery::new(config),
         })
     }
 
@@ -244,10 +260,21 @@ impl DeployDriver {
     /// condition.
     pub fn step(&mut self) -> usize {
         let alive = self.sw.step();
+        // After the step, because the step is the only thing that can have
+        // declared the queue -- the held-request shape, for the held-request
+        // reason.
+        self.args.deliver(&mut self.sw, self.root);
         if let Some(max_resident) = self.max_resident {
             enforce_residency(&mut self.sw, self.root, max_resident);
         }
         alive
+    }
+
+    /// One line, if this profile declared arguments and the root program never
+    /// declared a queue to read them from. Called by whoever owns the loop,
+    /// when the swarm drains.
+    pub fn note_undelivered_args(&self) {
+        self.args.note_if_undelivered();
     }
 
     /// How long the host may sleep before the next step is due: until the
@@ -421,6 +448,34 @@ pub fn serve_with_observer<B: Acceptor>(
         None => None,
     };
 
+    // The NAT diagnostic, if the config names one. Its own runtime, its
+    // verdict on the same queue bridge: a rendezvous program deciding whether
+    // to offer a direct path or a relay is asking exactly what this answers,
+    // and asking it from inside the deployment asks it about the deployment's
+    // own network rather than about whatever shell ran the verb.
+    #[cfg(feature = "netcheck")]
+    let mut netcheck = match &config.netcheck {
+        Some(cfg) => {
+            let bridge = crate::netcheck::NetcheckBridge::start(cfg)?;
+            eprintln!("drt start: netcheck measuring, verdict on `{}`", cfg.queue);
+            Some(bridge)
+        }
+        None => None,
+    };
+
+    // The tunnel, if the config names one. Last of the six because it is
+    // the one that only carries: it has no counters to report and no
+    // questions to ask, so there is nothing below for it to take part in.
+    #[cfg(feature = "tunnel")]
+    let _tunnel = match &config.tunnel {
+        Some(cfg) => {
+            let bridge = crate::tunnel::TunnelBridge::start(cfg)?;
+            eprintln!("drt start: tunnel serving the `tunnel` block");
+            Some(bridge)
+        }
+        None => None,
+    };
+
     // Requests whose queue the program has not declared yet, oldest
     // first. Stepping before delivering (below) covers a program that
     // declares before its first park, and nothing more: a program that
@@ -479,6 +534,12 @@ pub fn serve_with_observer<B: Acceptor>(
             });
             wg.report(&mut |queue, msg| sw.push(root, queue, msg).is_ok());
         }
+        #[cfg(feature = "netcheck")]
+        if let Some(netcheck) = netcheck.as_mut() {
+            // A dropped verdict is superseded by the next measurement, which is
+            // why this drops rather than holds -- see `NetcheckBridge::report`.
+            netcheck.report(&mut |queue, msg| sw.push(root, queue, msg).is_ok());
+        }
         observe(sw, root);
         if alive == 0 {
             // The program chose to exit; ports serving a drained swarm
@@ -492,6 +553,7 @@ pub fn serve_with_observer<B: Acceptor>(
                     crate::listen::Outcome::refused(503, "the root instance is not resident\n"),
                 );
             }
+            driver.note_undelivered_args();
             return crate::run::finish(driver.dispatcher());
         }
         // Don't sleep past a held request's grace: this loop is what
@@ -534,7 +596,10 @@ fn serve_swarm_only(config: &RootConfig, dispatcher: Dispatcher) -> Result<(), S
                     std::thread::sleep(sleep);
                 }
             }
-            Next::Done(_) => return crate::run::finish(driver.dispatcher()),
+            Next::Done(_) => {
+                driver.note_undelivered_args();
+                return crate::run::finish(driver.dispatcher());
+            }
             Next::Input | Next::Stuck { .. } => unreachable!("a deployment asks only for time"),
             Next::Failed(why) => return Err(why),
         }
@@ -544,6 +609,82 @@ fn serve_swarm_only(config: &RootConfig, dispatcher: Dispatcher) -> Result<(), S
 /// The deployment's concrete swarm: the pump answering hostcalls, the
 /// clocked host underneath.
 pub type Deployment = Swarm<PumpHost<DeployHost>>;
+
+// depth: the root program's arguments, delivered as a message
+
+/// The merged `args` table, on its way to the root program.
+///
+/// Held rather than pushed once, for the listener's reason: a program that does
+/// real work before its first park has declared nothing yet, so the first
+/// attempt usually finds no queue and refusing the delivery for arriving early
+/// would be refusing it for the program's own shape.
+///
+/// A profile with no `args` has nothing to deliver and this does nothing at all
+/// — no queue is expected and none is missed.
+struct ArgsDelivery {
+    /// The encoded table, taken when it lands. `None` means delivered, or
+    /// nothing to deliver.
+    pending: Option<Vec<u8>>,
+    /// How many keys were in it, for the one line at drain.
+    keys: usize,
+}
+
+impl ArgsDelivery {
+    fn new(config: &RootConfig) -> ArgsDelivery {
+        if config.args.is_empty() {
+            return ArgsDelivery {
+                pending: None,
+                keys: 0,
+            };
+        }
+        let value = drt_config::resolve::args_to_msgpack(&config.args);
+        let mut bytes = Vec::new();
+        // An encode failure here cannot happen -- every `ArgValue` renders to a
+        // value rmpv can write -- and if it somehow did, the deployment should
+        // still run rather than refuse over an argument table. So it degrades to
+        // "nothing to deliver", and the line at drain is what says so.
+        let pending = rmpv::encode::write_value(&mut bytes, &value)
+            .ok()
+            .map(|()| bytes);
+        ArgsDelivery {
+            pending,
+            keys: config.args.len(),
+        }
+    }
+
+    /// One attempt. Cheap enough to run every pass: when the queue is absent
+    /// this is a table lookup.
+    fn deliver(&mut self, sw: &mut Deployment, root: InstanceId) {
+        let Some(bytes) = &self.pending else { return };
+        match sw.push(root, drt_config::resolve::ARGS_QUEUE, bytes) {
+            Ok(()) => self.pending = None,
+            // Not declared yet, or declared and momentarily full. Either way,
+            // try again next pass.
+            Err(drt_swarm::swarm::SwarmError::UnknownQueue)
+            | Err(drt_swarm::swarm::SwarmError::Limit(_)) => {}
+            // Gone or unknown: the root is over, and there is nobody to tell.
+            Err(_) => self.pending = None,
+        }
+    }
+
+    /// One line, at drain, if a table was declared and never collected.
+    ///
+    /// Worth saying: a profile declaring `args` is promising that something
+    /// reads them, so a program that never declares the queue means the profile
+    /// is describing a command line it does not have -- and an operator who
+    /// typed `--verbose` watched it do nothing.
+    fn note_if_undelivered(&self) {
+        if self.pending.is_some() {
+            let _ = writeln!(
+                std::io::stderr(),
+                "drt start: this profile declares {} argument(s) and the root program never \
+                 declared a `{}` queue to read them from",
+                self.keys,
+                drt_config::resolve::ARGS_QUEUE
+            );
+        }
+    }
+}
 
 fn deployment(
     config: &RootConfig,
@@ -716,10 +857,31 @@ fn pump_replies<B: Acceptor>(sw: &mut Deployment, root: InstanceId, bound: &mut 
     }
 }
 
+/// The root program's source, from whichever of the three spellings the
+/// config used.
+///
+/// `program` is the instance-level field and answers first. `entry` is the
+/// root-level one -- a file under `dlua_dir`, or `stdlib:<name>` -- and a
+/// `--config` run with no root has no `dlua_dir`, so only the stdlib half
+/// can be answered here. That half is the one that matters: `stdlib:relay`
+/// and its three siblings are what a `relay`, `stun`, `turn` or `wireguard`
+/// block names now that those verbs are gone, and a verb replaced by a
+/// program nothing could reach would not have been replaced.
 fn root_source(config: &RootConfig) -> Result<String, String> {
+    if config.root.program.is_none() {
+        if let Some(entry) = &config.entry {
+            return entry_source(entry);
+        }
+    }
     match &config.root.program {
-        Some(drt_config::Program::Path(path)) => drt_platform::fs::read_to_string(path)
-            .map_err(|e| format!("cannot read {}: {e}", path.display())),
+        // Through `modules`, so a program with modules beside it gets the
+        // chunk that carries them. A program without any is read and loaded
+        // exactly as it was before modules existed.
+        Some(drt_config::Program::Path(path)) => {
+            crate::modules::program_load(path).map(|loaded| loaded.source)
+        }
+        // Inline source has no directory, so it has no modules. Same for a
+        // stdlib program, which arrives here as source for that reason.
         Some(drt_config::Program::Source(src)) => Ok(src.clone()),
         // The one place a pointer to dollup belongs: the user has
         // nothing to run, which is the only moment "where do programs come
@@ -734,6 +896,35 @@ fn root_source(config: &RootConfig) -> Result<String, String> {
              https://dollup.aloecraft.org"
                 .to_string(),
         ),
+    }
+}
+
+/// `entry`, for a run with no root.
+///
+/// A file entry is a path under the profile's `dlua_dir`, and there is no
+/// profile here -- so it is refused by name rather than guessed at against
+/// the working directory, which would find the wrong file as readily as the
+/// right one.
+fn entry_source(entry: &drt_config::resolve::Entry) -> Result<String, String> {
+    use drt_config::resolve::Entry;
+    match entry {
+        Entry::Stdlib(name) => match crate::stdlib::lookup(name) {
+            Some(crate::stdlib::Kind::Source(source)) => Ok(source.to_string()),
+            // Native programs are the host's to run; `preflight` is one, and
+            // `drt run -p preflight` is how it is reached.
+            Some(crate::stdlib::Kind::Native(_)) => Err(format!(
+                "`stdlib:{name}` is run by drt itself and cannot be a deployment's program"
+            )),
+            None => Err(format!(
+                "this build carries no stdlib program called `{name}`; it carries {}",
+                crate::stdlib::names().join(", ")
+            )),
+        },
+        Entry::File(path) => Err(format!(
+            "`entry` names `{path}`, which is a path under a profile's \
+             `dlua_dir`, and a --config run has no profile. Name the program \
+             directly:  \"program\": {{\"path\": \"{path}\"}}"
+        )),
     }
 }
 

@@ -1,0 +1,13 @@
+{
+  "created_uuid7": "0192f0c1-8000-7000-8000-0000000012ef",
+  "root_id": "0192f0c1-8000-7000-8000-00000000abcd",
+  "node": "root/intake",
+  "realm": "operator.rest.get",
+  "ask": {
+    "add": [
+      "example.com"
+    ]
+  },
+  "valid_until": "2026-09-19T00:00:00Z",
+  "reason": "the intake node needs the upstream"
+}

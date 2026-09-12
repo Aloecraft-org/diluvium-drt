@@ -69,7 +69,7 @@
 //!
 //! ## surface block
 //!
-//! - Entry points: [`serve`] (`drt wg`), [`bind`] and [`bind_userspace`]
+//! - Entry points: [`WireguardBridge`] (`drt start`), [`bind`] and [`bind_userspace`]
 //!   (one per `mode`), [`WireguardBridge::start`],
 //!   [`WireguardBridge::report`] and [`WireguardBridge::collect`]
 //!   (`drt start`), and [`drive`], the task both run.
@@ -1134,105 +1134,6 @@ pub async fn bind(
     Ok((device, allocation))
 }
 
-/// `drt wg`: bring the device up and hold it up, foreground.
-///
-/// Prints the public key, because a peer cannot be configured without it
-/// and deriving it by hand means running `wg pubkey` against a secret on
-/// a terminal — the tool this block exists to not need.
-pub async fn serve(config: &WireguardConfig) -> Result<(), String> {
-    validate(config)?;
-    let secret = private_key(config)?;
-    #[cfg(feature = "netcheck")]
-    if !config.stun.is_empty() {
-        match measure(config).await {
-            Ok(m) => eprintln!(
-                "drt wg: mapping {} on port {} -- {}{}",
-                m.kind,
-                config.listen_port,
-                m.why,
-                m.address
-                    .map(|a| format!("; publish {a}"))
-                    .unwrap_or_default()
-            ),
-            // A measurement that fails is a measurement, not a tunnel: the
-            // device still comes up, and a peer with a configured endpoint
-            // still works. Refusing to start over it would trade a working
-            // tunnel for an unanswered question.
-            Err(e) => eprintln!("drt wg: could not measure the mapping: {e}"),
-        }
-    }
-    let up = |what: &str| {
-        eprintln!(
-            "drt wg: {what} up on port {}, mtu {}{}, public key {}",
-            config.listen_port,
-            config.mtu,
-            config
-                .address
-                .as_deref()
-                .map(|a| format!(", address {a}"))
-                .unwrap_or_else(|| ", no address (set `address`, or ip addr add)".into()),
-            public_key(&secret)
-        );
-    };
-    // The one branch on the mode: which `bind`, and whether a stack sits
-    // on the IP side. `wait` is the same either way.
-    let mut device = match config.mode {
-        WireguardMode::Kernel => {
-            let (device, _allocation) = bind(config).await?;
-            up(&config.interface);
-            Wait::Kernel(device)
-        }
-        WireguardMode::Userspace => {
-            let (device, _allocation, end) = bind_userspace(config).await?;
-            // The foreground verb takes no commands and keeps no queue, so
-            // the stack's reports -- which forward bound where, and a dial
-            // that failed -- are printed instead. What was bound is known
-            // the moment the stack is up and is printed here, in order,
-            // ahead of the peers; what fails later is printed as it comes.
-            let (reports, mut said) = mpsc::unbounded_channel();
-            up("userspace");
-            let _stack = crate::userspace::Stack::start(config, end, reports).await?;
-            let say = |report: Report| match report {
-                Report::Forward { kind, from, to } => eprintln!("drt wg: {kind} {from} -> {to}"),
-                Report::Refused { command, reason } => eprintln!("drt wg: {command}: {reason}"),
-                _ => {}
-            };
-            while let Ok(report) = said.try_recv() {
-                say(report);
-            }
-            tokio::spawn(async move {
-                while let Some(report) = said.recv().await {
-                    say(report);
-                }
-            });
-            Wait::Userspace(device)
-        }
-    };
-    for spec in &config.peers {
-        eprintln!(
-            "drt wg: peer {} allowed {}{}",
-            spec.public_key,
-            spec.allowed_ips.join(","),
-            spec.endpoint
-                .as_deref()
-                .map(|e| format!(" via {e}"))
-                .unwrap_or_else(|| " (no endpoint yet)".into()),
-        );
-    }
-    match &mut device {
-        Wait::Kernel(device) => device.wait().await,
-        Wait::Userspace(device) => device.wait().await,
-    }
-    Ok(())
-}
-
-/// The foreground verb's device, one variant per mode, so `serve` can
-/// bring either up and then wait on it with one line.
-enum Wait {
-    Kernel(Device<Kernel>),
-    Userspace(Device<Userspace>),
-}
-
 // ---------------------------------------------------------------------------
 // What crosses between the device and the drive loop
 // ---------------------------------------------------------------------------
@@ -1935,7 +1836,7 @@ where
         // dropped, so unlike `stun`'s server this thread reaches the
         // end of its runtime's life -- straight into FM-1
         // (doc/Failure-Modes.md), the tokio 1.53.1 use-after-free in
-        // runtime teardown that every foreground verb here leaks
+        // runtime teardown that every bridge, and `drt tunnel`, leaks
         // around. The deployment is on its way down; the OS reclaims
         // what drop would have.
         std::mem::forget(rt);

@@ -3,7 +3,7 @@ RootConfig {
     root: InstanceConfig {
         program: Some(
             Path(
-                "examples/hello.dlua",
+                "<corpus>/hello.dlua",
             ),
         ),
         caps: [
@@ -99,8 +99,12 @@ RootConfig {
     turn: None,
     wireguard: None,
     tunnel: None,
+    netcheck: None,
     identity: Identity {
         host_key_path: None,
     },
     principals: [],
+    dlua_dir: None,
+    entry: None,
+    args: {},
 }

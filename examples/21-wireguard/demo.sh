@@ -12,8 +12,12 @@ echo '$ drt wg keygen'
 "$DRT" wg keygen
 
 echo
-echo '$ drt wg --config wrong.host.lua'
-"$DRT" wg --config wrong.host.lua
+# `check` rather than bare `drt wg`, which no longer exists: serving is
+# `drt start` with a `wireguard` block now, and the three things that need
+# no privilege are what `wg` kept. The refusal is the same one, from the
+# same `validate`.
+echo '$ drt wg check --config wrong.json'
+"$DRT" wg check --config wrong.json
 echo "exit $?"
 
 
@@ -22,11 +26,11 @@ echo "exit $?"
 # they say something different on every machine, so meta.json normalises them
 # away; crates/drt/tests/wireguard.rs is where they are held.
 echo
-echo '$ drt wg check --config hub-unroutable.host.lua'
-"$DRT" wg check --config hub-unroutable.host.lua
+echo '$ drt wg check --config hub-unroutable.json'
+"$DRT" wg check --config hub-unroutable.json
 echo "exit $?"
 
 echo
-echo '$ drt wg check --config rendezvous.host.lua'
-"$DRT" wg check --config rendezvous.host.lua
+echo '$ drt wg check --config rendezvous.json'
+"$DRT" wg check --config rendezvous.json
 echo "exit $?"

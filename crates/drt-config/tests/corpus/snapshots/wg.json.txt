@@ -1,0 +1,86 @@
+parsed to:
+RootConfig {
+    root: InstanceConfig {
+        program: Some(
+            Path(
+                "<corpus>/sup.lua",
+            ),
+        ),
+        caps: [
+            Grant {
+                effect: Grant,
+                capability: "host:time",
+                scope: None,
+            },
+        ],
+        budget: Budget {
+            instructions: None,
+            memory_kb: None,
+        },
+        numeric: Numeric {
+            max_elements: None,
+            max_tier: None,
+        },
+    },
+    connectors: {
+        "time": ConnectorWiring {
+            backing: None,
+            scope: None,
+        },
+    },
+    listeners: [],
+    residency: None,
+    relay: None,
+    stun: None,
+    turn: None,
+    wireguard: Some(
+        WireguardConfig {
+            listen_port: 51820,
+            address: Some(
+                "10.9.0.1/24",
+            ),
+            mtu: 1420,
+            turn_fallback: true,
+            stun: [
+                "stun1.example:3478",
+                "stun2.example:3478",
+            ],
+            interface: "drt0",
+            mode: Kernel,
+            forward: [],
+            expose: [],
+            private_key: None,
+            private_key_file: None,
+            private_key_env: Some(
+                "WG_KEY",
+            ),
+            peers: [
+                WireguardPeer {
+                    public_key: "p6VqzzX91j0TRajLGT9Dlkn0TEvvk+j4m9E38LlXhSQ=",
+                    allowed_ips: [
+                        "10.9.0.2/32",
+                    ],
+                    endpoint: Some(
+                        "203.0.113.7:51820",
+                    ),
+                    keepalive: Some(
+                        25,
+                    ),
+                    preshared_key_env: None,
+                },
+            ],
+            queue: "wg_in",
+            reply_queue: "wg_out",
+            report_ms: 10000,
+        },
+    ),
+    tunnel: None,
+    netcheck: None,
+    identity: Identity {
+        host_key_path: None,
+    },
+    principals: [],
+    dlua_dir: None,
+    entry: None,
+    args: {},
+}

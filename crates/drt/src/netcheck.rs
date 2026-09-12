@@ -725,9 +725,19 @@ pub fn render_json(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
 /// Gated on `stun` because the decisive measurement is
 /// `ego_transport::stun::detect_mapping`. The verdict table above compiles
 /// and is tested without it.
+///
+/// Two tiers inside, and the inner one is not decoration. The UDP half
+/// needs only STUN; the reflect half (`probe`, `reflect`, `one_edge`,
+/// `configure`) reaches an HTTPS edge through [`crate::reflect`] and names
+/// `tokio_rustls` in its signatures, and both of those live behind
+/// `netcheck`. Gating that half on `stun` is what made `--features stun`
+/// -- a profile this crate advertises, and the one a small deployment
+/// running only the STUN server would pick -- fail to compile at all.
 #[cfg(feature = "stun")]
 pub mod gather {
-    use super::{EdgeView, Inbound, Measurements, UdpMapping, MAX_PROBE_PORTS};
+    #[cfg(feature = "netcheck")]
+    use super::{EdgeView, Inbound, MAX_PROBE_PORTS};
+    use super::{Measurements, UdpMapping};
     use ego_transport::stun::{detect_mapping, NatMapping, ProbeConfig};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
@@ -908,6 +918,7 @@ pub mod gather {
     /// The token is carried and never parsed. No minting exists yet; when it
     /// does it is one more opaque query parameter and the response shape is
     /// unchanged, so nothing here has to know what it says.
+    #[cfg(feature = "netcheck")]
     pub async fn probe(
         m: &mut Measurements,
         reflect_url: &str,
@@ -993,6 +1004,7 @@ pub mod gather {
     ///
     /// The `<label>--probe` shape is the prober's, and the same one the zone
     /// and mail pullers use (`deploy/probe/README.md`).
+    #[cfg(feature = "netcheck")]
     fn probe_url(reflect_url: &str) -> Option<String> {
         let (scheme, rest) = reflect_url.split_once("://")?;
         let (authority, _) = rest.split_once('/').unwrap_or((rest, ""));
@@ -1009,6 +1021,7 @@ pub mod gather {
         Some(format!("{scheme}://{label}--probe.{domain}{port}/"))
     }
 
+    #[cfg(feature = "netcheck")]
     fn parse_probe(body: &str) -> Result<Inbound, String> {
         let json: serde_json::Value =
             serde_json::from_str(body).map_err(|_| "the prober did not answer JSON".to_string())?;
@@ -1038,6 +1051,7 @@ pub mod gather {
     /// rendering it as a closed port would be a confidently wrong answer
     /// about the user's network, which is the one thing this module exists
     /// not to do.
+    #[cfg(feature = "netcheck")]
     pub async fn reflect(
         m: &mut Measurements,
         edges: &[&str],
@@ -1179,6 +1193,7 @@ pub mod gather {
     }
 
     /// What one edge answered.
+    #[cfg(feature = "netcheck")]
     struct EdgeAnswer {
         edge: String,
         port: Option<u16>,
@@ -1186,6 +1201,7 @@ pub mod gather {
         token: Option<String>,
     }
 
+    #[cfg(feature = "netcheck")]
     async fn one_edge(
         url: &str,
         dest: std::net::SocketAddr,
@@ -1249,6 +1265,7 @@ pub mod gather {
     ///
     /// `at` is honoured when given, since a name may deliberately not
     /// resolve to the vantage an operator is pointing at.
+    #[cfg(feature = "netcheck")]
     pub async fn configure(
         url: &str,
         at: &[&str],
@@ -1285,6 +1302,311 @@ pub mod gather {
             // exactly like a run with no servers named.
             Err(why) => m.udp_why = Some(why),
         }
+    }
+}
+
+// depth: one measurement run, for the verb and for the config block
+
+/// What a measurement run needs, from wherever it came.
+///
+/// The verb fills this from flags and the `netcheck` config block fills it from
+/// keys; [`run`] is then the only implementation of the order those things
+/// happen in. The order matters and is not obvious -- the configuration fetch
+/// before the measurements, UDP before reflect so STUN's address wins, the
+/// inbound probe last because it needs the reflect views -- so having it twice
+/// would mean having it wrong once.
+#[cfg(feature = "netcheck")]
+#[derive(Debug, Clone, Default)]
+pub struct Inputs {
+    pub stun: Vec<String>,
+    pub reflect: Vec<String>,
+    pub reflect_at: Vec<String>,
+    /// The ports an inbound probe should try. `u16` because that is what the
+    /// probe takes; the verb parses its flag into these, and a config block
+    /// deserializes straight into them.
+    pub port: Vec<u16>,
+    pub probe_at: Option<String>,
+    pub pin_source_port: bool,
+    pub udp_port: Option<u16>,
+}
+
+/// One measurement run.
+#[cfg(feature = "netcheck")]
+pub async fn run(
+    inputs: &Inputs,
+    roots: &[tokio_rustls::rustls::pki_types::CertificateDer<'static>],
+) -> Measurements {
+    let mut m = Measurements::default();
+    let edges: Vec<&str> = inputs.reflect.iter().map(String::as_str).collect();
+    let typed_at: Vec<&str> = inputs.reflect_at.iter().map(String::as_str).collect();
+
+    // The configuration fetch first, and only when an edge is named: what to
+    // measure against comes from the thing being measured against, never from
+    // this binary (issue #25). Merged per key, the typed value winning, and the
+    // caller's own rules apply to the result -- so an answer naming one server
+    // is still "1 given", and an answer's vantages still may not host the probe.
+    let mut servers: Vec<String> = inputs.stun.clone();
+    let mut at: Vec<String> = inputs.reflect_at.clone();
+    let from = |what: &str, typed: bool, answered: usize| {
+        if typed {
+            format!(
+                "{what} from --{}",
+                if what == "stun" { "stun" } else { "reflect-at" }
+            )
+        } else if answered > 0 {
+            format!("{what} from the answer ({answered})")
+        } else {
+            format!("no {what}")
+        }
+    };
+    m.config = match edges.first() {
+        Some(first) => match gather::configure(first, &typed_at, roots).await {
+            Ok(answer) => {
+                if servers.is_empty() {
+                    servers = answer.stun.clone();
+                }
+                if at.is_empty() {
+                    at = answer.vantages.clone();
+                }
+                Some(format!(
+                    "{first}: {}, {}",
+                    from("stun", !inputs.stun.is_empty(), answer.stun.len()),
+                    from(
+                        "vantages",
+                        !inputs.reflect_at.is_empty(),
+                        answer.vantages.len()
+                    )
+                ))
+            }
+            Err(why) => Some(format!("{first}: not read ({why}); flags only")),
+        },
+        None if inputs.stun.is_empty() => Some(
+            "nothing named to measure against: --reflect <url> supplies the rest, or --stun twice"
+                .into(),
+        ),
+        None => None,
+    };
+
+    let servers: Vec<&str> = servers.iter().map(String::as_str).collect();
+    let at: Vec<&str> = at.iter().map(String::as_str).collect();
+    gather::local_and_udp(&mut m, &servers, inputs.udp_port).await;
+    // After the UDP half on purpose: STUN's address is the one the decisive
+    // measurement saw, and an edge that disagrees with it is recorded as a
+    // disagreement rather than overwriting it.
+    gather::reflect(&mut m, &edges, &at, inputs.pin_source_port, roots).await;
+    // Last: it needs the reflect views to know which vantages this run has
+    // already contacted.
+    if let Some(first) = edges.first() {
+        gather::probe(
+            &mut m,
+            first,
+            inputs.probe_at.as_deref(),
+            &inputs.port,
+            roots,
+        )
+        .await;
+    } else if !inputs.port.is_empty() {
+        m.inbound_why = Some("--port needs a --reflect edge to derive the probe host from".into());
+    }
+    m
+}
+
+// depth: the netcheck block inside `drt start`
+
+/// [`render_json`]'s object, as msgpack bytes for a queue.
+///
+/// Through JSON rather than built twice, so the shape a program reads and the
+/// shape an operator reads cannot drift: there is one renderer, and this is it
+/// crossing a boundary that carries values instead of text.
+#[cfg(feature = "netcheck")]
+fn encode_verdict(m: &Measurements, verdict: Verdict, why: &'static str) -> Vec<u8> {
+    let text = render_json(m, verdict, why);
+    let value = match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(value) => drt_config::canon::to_msgpack(&value),
+        // `render_json` emits JSON by construction, so this is unreachable; a
+        // string is a worse answer than a table and a better one than nothing.
+        Err(_) => rmpv::Value::from(text.as_str()),
+    };
+    let mut bytes = Vec::new();
+    let _ = rmpv::encode::write_value(&mut bytes, &value);
+    bytes
+}
+
+/// The diagnostic, measured beside the drive loop and reported on a queue.
+///
+/// The arrangement `stun` and `turn` already have, and for their reason: the
+/// measurement owns a runtime, the drive loop owns the swarm, and what crosses
+/// between them is a message. What this pushes is [`render_json`]'s object --
+/// the same bytes `drt netcheck --json` prints -- so a program reading the queue
+/// and an operator reading a terminal are looking at one answer, not two
+/// renderings of one measurement.
+#[cfg(feature = "netcheck")]
+pub struct NetcheckBridge {
+    /// Verdicts the measurement thread has produced and the loop has not yet
+    /// pushed. Bounded by the channel, which is what keeps a fast `report_ms`
+    /// from growing a queue nobody drains.
+    rx: std::sync::mpsc::Receiver<Vec<u8>>,
+    queue: String,
+    /// Held so the thread is not detached; dropped when the deployment ends.
+    _runtime: std::thread::JoinHandle<()>,
+}
+
+#[cfg(feature = "netcheck")]
+impl NetcheckBridge {
+    /// Resolve the block, load its trust anchors, and start measuring.
+    ///
+    /// Everything that can be refused is refused here, before a socket is
+    /// opened: an unusable PEM, and a block naming nothing to measure against.
+    /// The second is a refusal rather than a verdict of "unknown", because a
+    /// deployment that asked for a diagnostic and got an empty one would read
+    /// the empty one as an answer.
+    pub fn start(config: &drt_config::NetcheckConfig) -> Result<NetcheckBridge, String> {
+        if config.stun.is_empty() && config.reflect.is_empty() {
+            return Err(
+                "the `netcheck` block names nothing to measure against: `reflect` supplies the \
+                 rest from an edge, or name `stun` twice"
+                    .to_string(),
+            );
+        }
+        let inputs = Inputs {
+            stun: config.stun.clone(),
+            reflect: config.reflect.clone(),
+            reflect_at: config.reflect_at.clone(),
+            port: config.port.clone(),
+            probe_at: config.probe_at.clone(),
+            pin_source_port: config.pin_source_port,
+            udp_port: config.udp_port,
+        };
+        let every = config.report_ms;
+        // One slot. A measurement takes seconds and a verdict is a snapshot, so
+        // a backlog of them is a backlog of stale answers: the thread blocks on
+        // a full channel instead, which is the right backpressure for a
+        // diagnostic.
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
+        let rt =
+            tokio::runtime::Runtime::new().map_err(|e| format!("netcheck needs a runtime: {e}"))?;
+        let runtime = std::thread::spawn(move || {
+            // Inside the thread, because loading them is the one thing that can
+            // fail per measurement and a failure should stop this thread rather
+            // than the deployment.
+            let roots = Vec::new();
+            loop {
+                let m = rt.block_on(run(&inputs, &roots));
+                let (verdict, why) = decide(&m);
+                // A queue carries msgpack, so the verdict crosses as a *value* a
+                // program indexes -- `answer.verdict` -- and not as a line of
+                // JSON text it would have to parse. Same object either way:
+                // `render_json` is what `drt netcheck --json` prints, so a
+                // program and an operator read one answer.
+                if tx.send(encode_verdict(&m, verdict, why)).is_err() {
+                    // The deployment is over.
+                    break;
+                }
+                if every == 0 {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(every));
+            }
+            // Leaked for the reason every verb here leaks one: tokio 1.53.1's
+            // use-after-free in runtime teardown, and `detect_mapping` resolves
+            // through `lookup_host`, so there is always a parked blocking worker
+            // to race. See doc/Failure-Modes.md.
+            std::mem::forget(rt);
+        });
+        Ok(NetcheckBridge {
+            rx,
+            queue: config.queue.clone(),
+            _runtime: runtime,
+        })
+    }
+
+    /// Push whatever the measurement has produced. Non-blocking, and silent
+    /// when there is nothing: the drive loop must not wait on a network.
+    ///
+    /// A verdict whose queue the program has not declared is **dropped**, not
+    /// held. That is the opposite of the listener's choice and deliberately so:
+    /// a request is somebody waiting on an answer, and a verdict is a snapshot
+    /// that the next one supersedes. Holding stale verdicts for a program that
+    /// may never declare the queue would be holding them forever.
+    pub fn report(&mut self, push: &mut dyn FnMut(&str, &[u8]) -> bool) {
+        while let Ok(bytes) = self.rx.try_recv() {
+            if !push(&self.queue, &bytes) {
+                return;
+            }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "netcheck"))]
+mod block {
+    use super::*;
+
+    /// A block naming nothing is refused at start, not answered with an empty
+    /// verdict. A deployment that asked for a diagnostic and got "unknown" would
+    /// read the "unknown" as the answer.
+    #[test]
+    fn a_block_naming_nothing_is_refused_by_name() {
+        // No `unwrap_err`: a bridge owns a thread and a channel and has no
+        // business being `Debug`.
+        let Err(e) = NetcheckBridge::start(&drt_config::NetcheckConfig::default()) else {
+            panic!("a block naming nothing cannot measure anything")
+        };
+        assert!(e.contains("names nothing to measure against"), "{e}");
+        assert!(
+            e.contains("reflect") && e.contains("stun"),
+            "it names both ways out: {e}"
+        );
+    }
+
+    /// The block's keys are the verb's flags, so a runbook written for one reads
+    /// for the other, and the queue has the default every reporting block here
+    /// has.
+    #[test]
+    fn the_block_reads_the_verbs_flags_as_keys() {
+        let config: drt_config::NetcheckConfig = serde_json::from_str(
+            r#"{"stun":["a:3478","b:3478"],"reflect":["https://edge/x"],
+                "port":[443,8443],"pin_source_port":true,"udp_port":51820,
+                "queue":"topology","report_ms":60000}"#,
+        )
+        .unwrap();
+        assert_eq!(config.stun.len(), 2);
+        assert_eq!(config.port, [443, 8443]);
+        assert!(config.pin_source_port);
+        assert_eq!(config.udp_port, Some(51820));
+        assert_eq!(config.queue, "topology");
+
+        // And the queue defaults rather than being required.
+        let bare: drt_config::NetcheckConfig =
+            serde_json::from_str(r#"{"stun":["a:3478"]}"#).unwrap();
+        assert_eq!(bare.queue, "netcheck");
+        assert_eq!(bare.report_ms, 0, "once, at start, unless asked otherwise");
+    }
+
+    /// The verdict crosses as a value a program indexes, not as a line of JSON
+    /// text it would have to parse -- and it is `render_json`'s object, so a
+    /// program and an operator read one answer.
+    #[test]
+    fn the_verdict_crosses_as_a_table() {
+        let m = Measurements::default();
+        let (verdict, why) = decide(&m);
+        let bytes = encode_verdict(&m, verdict, why);
+        let value = rmpv::decode::read_value(&mut bytes.as_slice()).expect("msgpack");
+
+        let map = value.as_map().expect("a map, not a string of text");
+        let field = |name: &str| {
+            map.iter()
+                .find(|(k, _)| k.as_str() == Some(name))
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(
+            field("verdict").and_then(|v| v.as_str().map(str::to_string)),
+            Some(verdict.name().to_string()),
+            "the key the stdlib reader indexes"
+        );
+        // The same object the verb prints.
+        let printed: serde_json::Value =
+            serde_json::from_str(&render_json(&m, verdict, why)).unwrap();
+        assert_eq!(drt_config::canon::from_msgpack(&value).unwrap(), printed);
     }
 }
 

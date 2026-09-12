@@ -22,6 +22,83 @@ jobs:
       - name: GUARANTEES.md is present and non-empty
         run: test -s GUARANTEES.md
 
+  canonical-json:
+    # consent.md acceptance 6, and it cannot be satisfied by one job.
+    # `serde_json`'s `preserve_order` feature swaps `Map`'s backing store from
+    # `BTreeMap` to `IndexMap`, and cargo unifies features across a workspace:
+    # dollup's workspace enables it, drt's does not. So the same canonicalizer,
+    # shared by both, sees two key orders, and each repository's suite passes
+    # in isolation while signatures fail between them. The canonicalizer sorts
+    # structurally for exactly that reason; these two runs are what prove it,
+    # and `_preserve-order-test` exists only to put this job in dollup's state.
+    #
+    # Cheap on purpose: one crate, no C core, so it answers in seconds and
+    # fails loudly rather than riding along in a twenty-minute matrix.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Canonical JSON, preserve_order off (drt's workspace)
+        run: cargo test -p drt-config
+      - name: Canonical JSON, preserve_order on (dollup's workspace)
+        run: cargo test -p drt-config --features _preserve-order-test
+      # The browser tier builds without the consent feature, because a page is
+      # always on the no-root path. Checked here so "slim keeps it, web drops
+      # it" stays a fact rather than an intention.
+      - name: Builds without the consent feature (the web carve-out)
+        run: cargo check -p drt-config --no-default-features
+
+  features:
+    # Every shipping feature, alone. The gap this closes had been open the
+    # whole time: CI built `default` and `--all-features` and nothing
+    # between, so `--features stun` -- a profile Cargo.toml advertises, and
+    # the one a deployment running only the STUN server would pick -- did
+    # not compile at all and no job was in a position to notice. The same
+    # slip had already been found twice by hand (`turn-client`, then this).
+    #
+    # One feature at a time, not a full power set: the defect is always a
+    # gate naming a feature that does not imply what the code behind it
+    # needs, and a lone feature is where that shows. Combinations are
+    # covered by `--all-features` above.
+    #
+    # `wireguard` is absent on purpose -- gotatun needs a newer rustc than
+    # the rest of this matrix pins, and `--all-features` in the release
+    # workflow is where it is built.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        feature:
+          - slim
+          - cli
+          - listen
+          - runtime
+          - connector-time
+          - connector-fs
+          - connector-sql
+          - connector-crypto
+          - connector-rest
+          - connector-ssmtp
+          - connector-ssh
+          - connector-exec
+          - connector-data
+          - tunnel
+          - relay
+          - stun
+          - netcheck
+          - turn
+          - turn-client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # `--no-default-features` so the feature under test is the only thing
+      # on beyond what it pulls in itself. With defaults left on, `slim`
+      # would satisfy half of these gates and the job would prove nothing.
+      - name: cargo check -p drt --features ${{ matrix.feature }}
+        run: cargo check -p drt --all-targets --no-default-features --features ${{ matrix.feature }}
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -81,10 +158,22 @@ jobs:
       # prints and neither of which any job could see. The gate is the
       # conformance oracle on every other target; this is the target it
       # was written for.
+      #
+      # `--features full` rather than `--all-features`: the same set as far as
+      # `enabled_features` can see -- it probes neither `wasi` nor `web` -- and
+      # it is what a release ships, so the gate runs the binary a user gets.
+      #
+      # What actually made this step skip the fifteen examples it exists to
+      # run was a missing probe: PROFILE_FULL gained `turn-client` and
+      # `enabled_features` did not, so no build could report `profile: full`
+      # and `run-all.sh` skipped every `needs_build: full` example. It said
+      # `custom` and nothing was red, which is how two examples calling
+      # removed verbs survived three CI runs.
+      # `every_profile_name_is_a_feature_the_binary_probes` is the guard.
       - name: The examples gate, natively
         run: |
           set -eu
-          cargo build --release --all-features
+          cargo build --release --features full
           cd examples && DRT="$GITHUB_WORKSPACE/target/release/drt" ./run-all.sh
       - name: Build without default features
         run: cargo build --workspace --no-default-features

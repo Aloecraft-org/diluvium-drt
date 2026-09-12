@@ -11,8 +11,14 @@ DRT="${DRT:-drt}"
 FP_PRIVATE_KEY=$("$DRT" wg keygen | head -1)
 export FP_PRIVATE_KEY
 
-echo '$ drt wg --config fp.host.lua'
-"$DRT" wg --config fp.host.lua &
+# `drt start`, not bare `drt wg`: the block is served by a deployment now,
+# and `fp.json` names `stdlib:wg` as the program that reads its reports.
+#
+# `1>/dev/null` keeps those reports out of this transcript. They go to
+# stdout because `print` does, and what this example is about is what the
+# KERNEL made -- the two `drt wg:` lines below are stderr and stay.
+echo '$ drt start --config fp.json'
+"$DRT" start --config fp.json 1>/dev/null &
 sleep 2
 
 echo

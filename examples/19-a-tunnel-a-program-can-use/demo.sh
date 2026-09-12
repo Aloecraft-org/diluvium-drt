@@ -5,7 +5,9 @@
 set -u
 DRT="${DRT:-drt}"
 
-"$DRT" relay --config rendezvous.host.lua 2>/dev/null &
+# `>/dev/null` as well as `2>`: this is a program now, and a program's
+# `print` goes to stdout. The `drt relay` verb it replaced logged to stderr.
+"$DRT" start --config rendezvous.json >/dev/null 2>&1 &
 "$DRT" start --config device.json 2>/dev/null &
 for _ in $(seq 1 50); do curl -s -o /dev/null "http://127.0.0.1:18491/" && break; sleep 0.1; done
 

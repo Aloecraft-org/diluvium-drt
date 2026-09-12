@@ -340,11 +340,23 @@ def consistency(doc):
         return bad
     version = m.group(1)
 
+    # An unreleased entry is compared on its pin and not on its version.
+    # The next minor is opened as `unreleased` when its first change lands
+    # (doc/Plan-2026-09.md), while the crates stay at the shipped version
+    # until it ships (doc/Gap-Release.md: "0.6.0 re-bumps when it is next
+    # to ship") -- so for the whole of a minor cycle the entry describing
+    # the tree names a version the manifests do not carry yet, and that is
+    # by design rather than drift. What the entry must still agree with is
+    # the embedded core, below: a pin moved in Cargo.lock without the
+    # changelog following is exactly the drift this exists to catch, and
+    # an unreleased entry sitting first is where that pin is recorded.
+    unreleased = r.get("status") == "unreleased"
+
     # Every `version = "..."` in a workspace manifest, not just the first:
     # the path dependencies carry it too, and cargo will not build if they
     # disagree -- but it *will* build if they agree with each other and
     # disagree with the changelog, which is the drift this catches.
-    for path in ("Cargo.toml", "crates/drt-web/Cargo.toml"):
+    for path in () if unreleased else ("Cargo.toml", "crates/drt-web/Cargo.toml"):
         try:
             text = read(path)
         except OSError as e:

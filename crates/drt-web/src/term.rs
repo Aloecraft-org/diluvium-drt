@@ -16,6 +16,7 @@
 //! - [`Step`]: what a tick asks of the page.
 
 use std::io::Write;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -104,29 +105,70 @@ impl Term {
             }
         };
         match cli.command {
-            Command::Run { ref program } => {
-                // The CLI argument names the program; a config may name one
-                // too, and the argument wins because it is the more specific
-                // thing the operator just typed.
-                let path = program.clone().or_else(|| match &config.root.program {
-                    Some(drt_config::Program::Path(p)) => Some(p.clone()),
+            Command::Run {
+                ref target,
+                file,
+                command,
+                profile,
+            } => {
+                use drt_config::resolve::{classify, Explicit, Requested};
+                // Same classifier as the shell, so `drt run "print('hi')"` in a
+                // page means what it means in a terminal. A page declares no
+                // profiles -- it has no root -- so the bare-token rule falls
+                // through to a file, which is the right answer here.
+                let explicit = match (file, command, profile) {
+                    (true, _, _) => Some(Explicit::File),
+                    (_, true, _) => Some(Explicit::Code),
+                    (_, _, true) => Some(Explicit::Profile),
                     _ => None,
-                });
-                let Some(path) = path else {
-                    say(
-                        Fd::Stderr,
-                        "drt run: name a program, as an argument or as `program` in the config\n",
-                    );
-                    return Session::exited(1);
+                };
+                let requested = match target {
+                    Some(token) => classify(token, explicit, &[]),
+                    // No argument: the config's own program, as before.
+                    None => match &config.root.program {
+                        Some(drt_config::Program::Path(p)) => {
+                            Requested::File(p.display().to_string())
+                        }
+                        Some(drt_config::Program::Source(src)) => Requested::Code(src.clone()),
+                        None => {
+                            say(
+                                Fd::Stderr,
+                                "drt run: name a program, as an argument or as `program` in the config\n",
+                            );
+                            return Session::exited(1);
+                        }
+                    },
                 };
                 let dispatcher = Arc::new(dispatcher);
-                match drt::run::prepare(
-                    &path,
-                    dispatcher.clone(),
-                    config::ceiling(&config),
-                    config.root.budget,
-                    config.root.numeric,
-                ) {
+                let prepared = match requested {
+                    Requested::File(path) => drt::run::prepare(
+                        Path::new(&path),
+                        dispatcher.clone(),
+                        config::ceiling(&config),
+                        config.root.budget,
+                        config.root.numeric,
+                    ),
+                    Requested::Code(source) => drt::run::prepare_source(
+                        &source,
+                        "=command",
+                        dispatcher.clone(),
+                        config::ceiling(&config),
+                        config.root.budget,
+                        config.root.numeric,
+                    ),
+                    // A page has no stdin to pipe and no root to hold a
+                    // profile, and a stdlib program is a root's report. Each is
+                    // refused by name rather than silently reading as a file.
+                    Requested::Stdin => Err("a page has no standard input to read".to_string()),
+                    Requested::Profile(name) => Err(format!(
+                        "there is no root here, so '{name}' names no profile"
+                    )),
+                    Requested::Stdlib(name) => {
+                        Err(format!("a page carries no stdlib program '{name}'"))
+                    }
+                    Requested::Default => unreachable!("classify never answers Default"),
+                };
+                match prepared {
                     Ok(solo) => Session {
                         kind: Kind::Run { solo, dispatcher },
                     },
@@ -136,15 +178,45 @@ impl Term {
                     }
                 }
             }
-            Command::Start => match drt::start::prepare(&config, dispatcher) {
-                Ok(driver) => Session {
-                    kind: Kind::Start(driver),
-                },
-                Err(e) => {
-                    say(Fd::Stderr, &format!("drt start: {e}\n"));
-                    Session::exited(1)
+            // A page is always on the no-root path: there is no `.drt_root/`
+            // in a memory filesystem a page seeded, and consent bounds a root
+            // rather than a config. So a profile name here has nothing to name,
+            // and saying so beats silently starting something else.
+            Command::Start {
+                profile: Some(name),
+                ..
+            } => {
+                say(
+                    Fd::Stderr,
+                    &format!(
+                        "drt start: there is no root here, so '{name}' names no profile; \
+                         a page runs the config it was given\n"
+                    ),
+                );
+                Session::exited(1)
+            }
+            Command::Start { profile: None, .. } => {
+                match drt::start::prepare(&config, dispatcher) {
+                    Ok(driver) => Session {
+                        kind: Kind::Start(driver),
+                    },
+                    Err(e) => {
+                        say(Fd::Stderr, &format!("drt start: {e}\n"));
+                        Session::exited(1)
+                    }
                 }
-            },
+            }
+            // The root verbs. A page has no `.drt_root/` -- there is no disk to
+            // put one on and no `live/` to copy into -- so each says so rather
+            // than appearing to work. `key` is absent for a different reason:
+            // a page has nowhere to keep a private key that a page should keep.
+            Command::Deploy | Command::Rm | Command::Commit | Command::Key { .. } => {
+                say(
+                    Fd::Stderr,
+                    "drt: that verb acts on a root, and a page has none\n",
+                );
+                Session::exited(1)
+            }
             Command::Repl { unsafe_stdlib } => {
                 let build = if unsafe_stdlib {
                     Repl::unsealed
@@ -180,10 +252,12 @@ impl Term {
                 );
                 Session::exited(1)
             }
-            // The verbs behind native-only features (`relay`, `stun`,
-            // `tunnel`, `netcheck`): absent from a browser build of `drt`,
-            // and present when this crate is compiled natively against a
-            // fuller one, where they still have no loop to run in here.
+            // The verbs behind native-only features (`tunnel`, `netcheck`,
+            // `wg`): absent from a browser build of `drt`, and present when
+            // this crate is compiled natively against a fuller one, where
+            // they still have no loop to run in here. `relay`, `stun` and
+            // `turn` are no longer among them -- they are `start` with a
+            // block now, and `start` is refused above, by name.
             #[allow(unreachable_patterns)]
             _ => {
                 say(

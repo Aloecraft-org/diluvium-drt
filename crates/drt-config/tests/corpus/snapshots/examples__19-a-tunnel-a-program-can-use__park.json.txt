@@ -33,8 +33,12 @@ RootConfig {
             extra_roots: [],
         },
     ),
+    netcheck: None,
     identity: Identity {
         host_key_path: None,
     },
     principals: [],
+    dlua_dir: None,
+    entry: None,
+    args: {},
 }

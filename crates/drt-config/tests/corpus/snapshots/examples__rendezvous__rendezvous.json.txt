@@ -1,0 +1,48 @@
+parsed to:
+RootConfig {
+    root: InstanceConfig {
+        program: Some(
+            Path(
+                "<corpus>/supervisor.lua",
+            ),
+        ),
+        caps: [],
+        budget: Budget {
+            instructions: None,
+            memory_kb: None,
+        },
+        numeric: Numeric {
+            max_elements: None,
+            max_tier: None,
+        },
+    },
+    connectors: {},
+    listeners: [],
+    residency: None,
+    relay: Some(
+        RelayConfig {
+            bind: "0.0.0.0:8443",
+            labels: {
+                "xps": RelayLabel {
+                    park_key: "REPLACE-ME-park-0000000000000000",
+                    caller_key: "REPLACE-ME-call-0000000000000000",
+                },
+            },
+            queue: "relay_in",
+            reply_queue: "relay_out",
+            admit_timeout_ms: 2000,
+        },
+    ),
+    stun: None,
+    turn: None,
+    wireguard: None,
+    tunnel: None,
+    netcheck: None,
+    identity: Identity {
+        host_key_path: None,
+    },
+    principals: [],
+    dlua_dir: None,
+    entry: None,
+    args: {},
+}

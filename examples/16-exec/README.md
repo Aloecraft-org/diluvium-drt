@@ -48,7 +48,7 @@ everything it started are killed. `max_output_bytes` caps each stream and
 stdin, and past it the output is refused rather than truncated. `allow`
 names the programs a call may start, by absolute path, and anything else is
 refused by name. Leave `allow` out and any program on `PATH` may run, which
-is what the C host does; a `.host.lua` saying `exec = true` loads unchanged.
+is what the C host does, spelled `"exec": {}` here.
 
 **It leaves the sandbox, and drt says so.** The connector is in the `full`
 build only, off until a config names it, and announced on stderr when one

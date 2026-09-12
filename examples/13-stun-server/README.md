@@ -8,8 +8,8 @@ and a client that classifies this machine's NAT from what they answer.
 Two servers, each in its own terminal:
 
 ```
-drt stun --config stun1.json
-drt stun --config stun2.json
+drt start --config stun1.json
+drt start --config stun2.json
 ```
 
 Then, in a third:

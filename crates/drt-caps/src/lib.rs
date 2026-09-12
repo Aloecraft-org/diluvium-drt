@@ -134,10 +134,19 @@ pub enum AttenuationError {
 /// An instance's capability set with its provenance: who granted it,
 /// attenuated from what, back to the process root. Inspectable means
 /// provable (SPEC.md §6).
+///
+/// [`CapSet::holder`] is the other half of [`Principal`]'s stated meaning --
+/// "who a capability set belongs to *or* was granted by". Provenance has
+/// always recorded the granter; the holder is who the set *is*, which is what
+/// lets a hostcall answered by the dispatcher know which node is asking
+/// without a second identity channel threaded through every connector. It is
+/// optional because a set built for a single-program run has no tree to have
+/// a position in.
 #[derive(Debug, Clone)]
 pub struct CapSet {
     grants: Vec<Grant>,
     provenance: Provenance,
+    holder: Option<Principal>,
 }
 
 #[derive(Debug, Clone)]
@@ -156,11 +165,28 @@ impl CapSet {
         Arc::new(CapSet {
             grants,
             provenance: Provenance::Root,
+            holder: None,
+        })
+    }
+
+    /// [`CapSet::root`] for a set that belongs to a named node. `drt run` has
+    /// no tree and uses `root`; a swarm's root node has a position and says
+    /// so.
+    pub fn root_held_by(holder: Principal, grants: Vec<Grant>) -> Arc<Self> {
+        Arc::new(CapSet {
+            grants,
+            provenance: Provenance::Root,
+            holder: Some(holder),
         })
     }
 
     pub fn grants(&self) -> &[Grant] {
         &self.grants
+    }
+
+    /// Whose set this is, when it belongs to something nameable.
+    pub fn holder(&self) -> Option<&Principal> {
+        self.holder.as_ref()
     }
 
     /// Does this set hold `want`? At least one grant implies it and no deny
@@ -195,6 +221,18 @@ impl CapSet {
         by: Principal,
         grants: Vec<Grant>,
     ) -> Result<Arc<CapSet>, AttenuationError> {
+        self.attenuate_held_by(None, by, grants)
+    }
+
+    /// [`CapSet::attenuate`] recording who the child set belongs to. Same
+    /// rule, same refusals; the holder is carried rather than checked, because
+    /// a name is not an authority.
+    pub fn attenuate_held_by(
+        self: &Arc<Self>,
+        holder: Option<Principal>,
+        by: Principal,
+        grants: Vec<Grant>,
+    ) -> Result<Arc<CapSet>, AttenuationError> {
         for g in grants.iter().filter(|g| g.effect == Effect::Grant) {
             if !self.may_grant(&g.capability) {
                 return Err(AttenuationError::NotHeldByParent {
@@ -219,6 +257,7 @@ impl CapSet {
                 by,
                 from: Arc::clone(self),
             },
+            holder,
         }))
     }
 
@@ -324,6 +363,39 @@ impl ScopeRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A holder is carried, never checked. Naming a node does not grant it
+    /// anything, and the attenuation refusals are the same either way.
+    #[test]
+    fn a_holder_travels_with_the_set_and_changes_no_rule() {
+        let root = CapSet::root_held_by(Principal("root".into()), vec![Grant::grant("host:fs/*")]);
+        assert_eq!(root.holder().unwrap().0, "root");
+
+        let child = root
+            .attenuate_held_by(
+                Some(Principal("root/intake".into())),
+                Principal("root".into()),
+                vec![Grant::grant("host:fs/read")],
+            )
+            .expect("narrowing is allowed");
+        assert_eq!(child.holder().unwrap().0, "root/intake");
+        assert!(child.holds("host:fs/read"));
+        assert!(!child.holds("host:exec/run"));
+
+        // And a name buys nothing: the same attenuation is refused the same
+        // way whatever the child is called.
+        let e = root
+            .attenuate_held_by(
+                Some(Principal("root/privileged".into())),
+                Principal("root".into()),
+                vec![Grant::grant("host:exec/run")],
+            )
+            .unwrap_err();
+        assert!(matches!(e, AttenuationError::NotHeldByParent { .. }), "{e}");
+
+        // A set with no tree to sit in has no holder, which `drt run` is.
+        assert!(CapSet::root(vec![]).holder().is_none());
+    }
 
     /// The cases `implies()` in dvs.c is written around; keep in lockstep.
     #[test]

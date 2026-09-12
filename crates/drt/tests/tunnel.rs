@@ -453,8 +453,8 @@ async fn until_listening(addr: &str) {
 /// read through `config::load` the way `drt --config <file> tunnel` reads
 /// it, resolved with an empty command line, and run. Then a stock SSH
 /// client dials the caller's port: kex, pinned host key, pubkey auth, one
-/// exec. The JSON and the `.host.lua` spellings of the same block load to
-/// the same object, which is what "one name for both loaders" means.
+/// exec. One spelling now -- the `.host.lua` half of this test went with
+/// the loader that read it.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_tunnel_from_two_files_and_no_flags_carries_a_real_ssh_session() {
     let host_key = generate_ed25519();
@@ -498,16 +498,7 @@ async fn a_tunnel_from_two_files_and_no_flags_carries_a_real_ssh_session() {
         format!(r#"{{ "tunnel": {{ "claim": "ws://{listen}", "bind": "{bind}" }} }}"#),
     )
     .unwrap();
-    // The same caller block in the C host's dialect, loaded by extension.
-    let caller_lua = dir.path().join("caller.host.lua");
-    std::fs::write(
-        &caller_lua,
-        format!(r#"return {{ tunnel = {{ claim = "ws://{listen}", bind = "{bind}" }} }}"#),
-    )
-    .unwrap();
     let from_json = drt::config::load(Some(&caller)).unwrap();
-    let from_lua = drt::config::load(Some(&caller_lua)).unwrap();
-    assert_eq!(from_json.tunnel, from_lua.tunnel);
     assert!(from_json.tunnel.is_some());
 
     let none = drt::tunnel::Flags::default();

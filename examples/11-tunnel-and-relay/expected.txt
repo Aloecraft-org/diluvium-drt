@@ -2,6 +2,6 @@ $ drt tunnel
 drt tunnel: name a URL to bridge stdio to (with --local to serve a local port instead), --listen with --to, or --park with --to; or `tunnel` in the --config file, which takes the same keys
 exit 1
 
-$ drt relay --config rendezvous.host.lua
-drt: rendezvous.host.lua: relay.labels.xps needs both park_key and caller_key; an absent key refuses every leg
+$ drt start --config rendezvous.json
+drt start: rendezvous.json: relay.labels.xps needs both park_key and caller_key; an absent key refuses every leg
 exit 1

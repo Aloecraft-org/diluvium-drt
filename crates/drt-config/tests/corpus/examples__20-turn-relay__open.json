@@ -1,0 +1,11 @@
+{
+  "_comment": "The same relay with no key. A TURN server with nothing to verify against is an open relay -- bandwidth for anyone who finds it -- so it refuses to bind rather than starting and hoping.",
+
+  "entry": "stdlib:turn",
+
+  "turn": {
+    "bind": "127.0.0.1:18493",
+    "relay_address": "127.0.0.1",
+    "realm": "example"
+  }
+}

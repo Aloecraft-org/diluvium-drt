@@ -1,0 +1,33 @@
+{
+  "_comment": "One end of a WireGuard tunnel: the hub. `wg-quick`'s field names, so an [Interface]/[Peer] stanza transcribes rather than translates, and a key pasted from one works in the other.",
+
+  "entry": "stdlib:wg",
+
+  "wireguard": {
+    "_listen_port": "The port a peer dials and a NAT mapping belongs to. Required, never zero: an ephemeral port cannot be named to a peer or measured.",
+    "listen_port": 51821,
+
+    "interface": "drt-hub",
+
+    "_address": "The interface comes up holding this.",
+    "address": "10.9.0.2/24",
+
+    "_mtu": "Not 1500: WireGuard's overhead is 60-80.",
+    "mtu": 1420,
+
+    "_private_key_env": "`drt wg keygen` prints a pair. Read from the environment so the config carries the shape and never the value.",
+    "private_key_env": "HUB_PRIVATE_KEY",
+
+    "_stun": "example: omits `stun` -- name two servers and the device measures its own mapping on listen_port before binding it, and reports the address a rendezvous should publish (doc/WireGuard.md §2)",
+
+    "peers": [
+      {
+        "public_key": "HzHu0poKQwY2l7Nqvmtcec3y9NlqgmVCnPEhmf+TGiI=",
+        "allowed_ips": ["10.9.0.1/32"],
+        "endpoint": "127.0.0.1:51820",
+        "_keepalive": "What holds a punched mapping open.",
+        "keepalive": 25
+      }
+    ]
+  }
+}

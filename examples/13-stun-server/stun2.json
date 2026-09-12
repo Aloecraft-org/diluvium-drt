@@ -1,5 +1,7 @@
 {
-  "_comment": "A STUN binding server, alone in its own app. `drt stun` reads this block and nothing else.",
+  "_comment": "A STUN binding server, alone in its own app. `drt start` reads this block and runs `stdlib:stun` over it; there was a `drt stun` verb until the block had a program.",
+
+  "entry": "stdlib:stun",
 
   "stun": {
     "_bind": "Unlike the relay and the http listener, this is MEANT to face the world — reporting the address the world sees is the whole service — so there is no loopback default to inherit. The config says where. Here it is loopback because this example probes itself.",

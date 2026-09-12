@@ -9,6 +9,49 @@ repository.workspace = true
 [dependencies]
 serde = { workspace = true }
 drt-caps = { workspace = true }
+thiserror = { workspace = true }
+# The `ask` a guest supplies arrives as msgpack and is refused at that
+# boundary if it cannot be canonicalized (`canon::from_msgpack`), so this is
+# a normal dependency rather than a dev one. Already here transitively:
+# `drt_caps::Scope` is an `rmpv::Value`.
+rmpv = { workspace = true }
+# Canonical JSON (consent.md §9) and every authored file this crate reads.
+# `preserve_order` is deliberately NOT enabled and must not be: see the
+# header of `canon.rs` for what it would do to signatures across the two
+# workspaces that share this crate.
+serde_json = "1"
+# `sha2` 0.11 rather than 0.10 because that is what `ed25519-dalek` 3 links;
+# one hashing implementation beside the signature code. `connectors/crypto`
+# still pins 0.10 and both versions are already in this tree via russh, so
+# this adds no duplication that was not there; migrating that connector is a
+# separate change with its own KDF tests to re-prove.
+sha2 = "0.11"
+# Consent and GSR signatures. Pure Rust, no C toolchain, which is what lets
+# dollup depend on this crate at all (dollup builds with nothing beyond
+# cargo; drt needs a C toolchain for the Diluvium core, dollup must not).
+# `default-features = false` drops `fast`, whose precomputed tables cost
+# binary size that the slim and web profiles exist to not spend. `zeroize`
+# stays: a signing key sits in this process's memory and should not outlive
+# its use any longer than it must.
+ed25519-dalek = { version = "3", optional = true, default-features = false, features = ["zeroize"] }
+# `public_key` and `signature` are base64 in the JSON.
+base64 = { version = "0.22", optional = true }
+
+[features]
+# Consent and GSR: the types, the ceiling hash, and signing. On for every
+# native build including slim -- "slim" never comes to mean "no consent
+# check". Off for the browser tier alone, which is always on the no-root
+# path where consent does not apply (consent.md §9).
+default = ["consent"]
+consent = ["dep:ed25519-dalek", "dep:base64"]
+# Test-only, and the mechanism behind consent.md acceptance 6. Enabling it
+# puts `serde_json::Map` on `IndexMap`, which is the state dollup's
+# workspace builds this crate in; the canonicalizer must produce identical
+# bytes either way. CI runs the suite twice, once with this on.
+#
+# Underscore-prefixed because it is not a consumer-facing feature: nothing
+# but CI should ever turn it on.
+_preserve-order-test = ["serde_json/preserve_order"]
 
 [dev-dependencies]
 rmp-serde = { workspace = true }

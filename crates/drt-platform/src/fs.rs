@@ -30,7 +30,15 @@ impl Metadata {
     }
 }
 
-/// The six operations the fs connector and the loader need, and no more.
+/// The operations the fs connector, the loader, and a root's own layout
+/// need, and no more.
+///
+/// It was six until a root had to be *written* rather than only read:
+/// `dollup init`, `drt deploy`, `drt rm` and the GSR directories all make
+/// and remove directory trees, and a comment promising six while the list
+/// grew would be the kind of lie this file's style exists to prevent. The
+/// rule is unchanged — nothing goes in here that one of those three callers
+/// does not need.
 pub trait Backend: Send + Sync {
     /// The path with `.`/`..` folded and symlinks followed, or an error
     /// when it does not exist -- `std::fs::canonicalize`'s contract.
@@ -43,6 +51,18 @@ pub trait Backend: Send + Sync {
     /// The names in a directory, sorted.
     fn read_dir(&self, path: &Path) -> io::Result<Vec<String>>;
     fn remove_file(&self, path: &Path) -> io::Result<()>;
+    /// Make a directory and every directory above it. Already existing is
+    /// success, as `std::fs::create_dir_all` has it: a root's layout is
+    /// created idempotently and every caller would otherwise carry the same
+    /// "unless it is already there" branch.
+    fn create_dir_all(&self, path: &Path) -> io::Result<()>;
+    /// Remove a directory and everything under it.
+    ///
+    /// The one destructive operation here, and the one `drt rm` is. A
+    /// missing directory is success for the same reason as above: `rm` of a
+    /// deployment that is not deployed has already achieved what it was
+    /// asked for.
+    fn remove_dir_all(&self, path: &Path) -> io::Result<()>;
 }
 
 // depth: the std backend, which is the trait with the names filled in
@@ -93,6 +113,17 @@ impl Backend for StdFs {
 
     fn remove_file(&self, path: &Path) -> io::Result<()> {
         std::fs::remove_file(path)
+    }
+
+    fn create_dir_all(&self, path: &Path) -> io::Result<()> {
+        std::fs::create_dir_all(path)
+    }
+
+    fn remove_dir_all(&self, path: &Path) -> io::Result<()> {
+        match std::fs::remove_dir_all(path) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        }
     }
 }
 
@@ -329,6 +360,33 @@ impl Backend for MemFs {
             .map(|_| ())
             .ok_or_else(|| not_found(path))
     }
+    fn create_dir_all(&self, path: &Path) -> io::Result<()> {
+        let mut st = self.lock();
+        let abs = st.absolute(path);
+        if st.files.contains_key(&abs) {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("Not a directory: {}", path.display()),
+            ));
+        }
+        st.mkdir_p(&abs);
+        Ok(())
+    }
+
+    fn remove_dir_all(&self, path: &Path) -> io::Result<()> {
+        let mut st = self.lock();
+        let abs = st.absolute(path);
+        // Everything at or beneath it. `Path::starts_with` compares whole
+        // components, not bytes, which is what makes it the right test here:
+        // removing `/work` must not take `/workshop` with it, and a byte
+        // prefix would. Named because the byte-prefix version is the obvious
+        // one to reach for and is wrong.
+        let under = |candidate: &Path| candidate.starts_with(&abs);
+        st.files.retain(|candidate, _| !under(candidate));
+        st.dirs
+            .retain(|candidate| !under(candidate) || candidate == Path::new("/"));
+        Ok(())
+    }
 }
 
 // depth: the process-wide backend
@@ -383,12 +441,109 @@ pub fn read_to_string(path: impl AsRef<Path>) -> io::Result<String> {
     String::from_utf8(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
 }
 
+/// `std::fs::write`, through [`host`]. Creating or truncating.
+pub fn write(path: impl AsRef<Path>, data: impl AsRef<[u8]>) -> io::Result<()> {
+    host().write(path.as_ref(), data.as_ref(), false)
+}
+
+/// `std::fs::create_dir_all`, through [`host`].
+pub fn create_dir_all(path: impl AsRef<Path>) -> io::Result<()> {
+    host().create_dir_all(path.as_ref())
+}
+
+/// `std::fs::remove_dir_all`, through [`host`]. A missing directory is
+/// success.
+pub fn remove_dir_all(path: impl AsRef<Path>) -> io::Result<()> {
+    host().remove_dir_all(path.as_ref())
+}
+
+/// `std::fs::remove_file`, through [`host`].
+pub fn remove_file(path: impl AsRef<Path>) -> io::Result<()> {
+    host().remove_file(path.as_ref())
+}
+
+/// The names in a directory, sorted, through [`host`].
+pub fn read_dir(path: impl AsRef<Path>) -> io::Result<Vec<String>> {
+    host().read_dir(path.as_ref())
+}
+
+/// Does this path exist at all? The question a root's layout asks of every
+/// one of its directories, and the one a `metadata` call answers awkwardly.
+pub fn exists(path: impl AsRef<Path>) -> bool {
+    host().metadata(path.as_ref()).is_ok()
+}
+
+/// Is this path a directory? `false` for a file and for nothing at all,
+/// because the callers here are asking "may I descend", not "what is it".
+pub fn is_dir(path: impl AsRef<Path>) -> bool {
+    host()
+        .metadata(path.as_ref())
+        .map(|m| m.is_dir)
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Removing a tree takes what is under it and nothing that merely
+    /// shares a name prefix.
     #[test]
-    fn a_memory_filesystem_behaves_like_a_disk_for_the_six_calls() {
+    fn removing_a_directory_tree_is_component_wise() {
+        let fs = MemFs::new();
+        fs.add_file("/work/a.txt", "a");
+        fs.add_file("/work/deep/b.txt", "b");
+        fs.add_file("/workshop/c.txt", "c");
+
+        fs.remove_dir_all(Path::new("/work")).unwrap();
+
+        assert!(fs.read(Path::new("/work/a.txt")).is_err());
+        assert!(fs.read(Path::new("/work/deep/b.txt")).is_err());
+        assert!(
+            fs.read_dir(Path::new("/work")).is_err(),
+            "the directory is gone too"
+        );
+        assert_eq!(
+            fs.read(Path::new("/workshop/c.txt")).unwrap(),
+            b"c",
+            "a name prefix is not a parent"
+        );
+
+        // Removing what is not there is success: `rm` of an undeployed
+        // deployment has already achieved what it was asked for.
+        assert!(fs.remove_dir_all(Path::new("/work")).is_ok());
+    }
+
+    /// `create_dir_all` makes the whole chain and is idempotent, so a root's
+    /// layout can be created without every caller branching on existence.
+    #[test]
+    fn creating_a_directory_chain_is_idempotent() {
+        let fs = MemFs::new();
+        fs.create_dir_all(Path::new("/r/.drt_root/state/gsr/pending"))
+            .unwrap();
+        fs.create_dir_all(Path::new("/r/.drt_root/state/gsr/pending"))
+            .unwrap();
+
+        assert!(fs.metadata(Path::new("/r/.drt_root/state")).unwrap().is_dir);
+        fs.write(
+            Path::new("/r/.drt_root/state/gsr/pending/x.json"),
+            b"{}",
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            fs.read_dir(Path::new("/r/.drt_root/state/gsr/pending"))
+                .unwrap(),
+            ["x.json"]
+        );
+
+        // A file is not a directory, and saying so beats making one.
+        fs.add_file("/r/note.txt", "n");
+        assert!(fs.create_dir_all(Path::new("/r/note.txt")).is_err());
+    }
+
+    #[test]
+    fn a_memory_filesystem_behaves_like_a_disk_for_every_call() {
         let fs = MemFs::new();
         fs.add_file("/work/note.txt", "hello");
         fs.set_cwd("/work");

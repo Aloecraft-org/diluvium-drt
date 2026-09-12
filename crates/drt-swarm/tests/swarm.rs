@@ -1076,3 +1076,115 @@ fn a_half_stated_budget_inherits_the_other_half() {
         })
     );
 }
+
+// depth: node paths, derived at spawn
+
+/// A spawn request that names the child. The presence of `name` is the whole
+/// stateful-versus-ephemeral distinction, so a test for it is a test for both.
+fn named_spawn(code: &str, caps: &[&str], name: &str) -> rmpv::Value {
+    let mut map = spawn_request(code, caps, None).as_map().unwrap().to_vec();
+    map.push(("name".into(), name.into()));
+    rmpv::Value::Map(map)
+}
+
+/// Spawn one child through the supervisor and return its handle. The child
+/// parks, so its slot is still there to be read.
+fn spawn_child(
+    sw: &mut Swarm<StepHost>,
+    root: InstanceId,
+    request: &rmpv::Value,
+) -> Option<InstanceId> {
+    sw.step();
+    push_value(sw, root, "requests", request);
+    settle(sw, 10);
+    sw.ids().into_iter().find(|id| *id != root)
+}
+
+/// The root node is `root`, and a child's path is derived from its parent's.
+/// This is the identity consent.md §6 makes the subject of a grant request, so
+/// it has to come from the tree rather than from the asking program.
+#[test]
+fn a_child_s_node_path_is_derived_from_its_parent_s() {
+    let mut sw = swarm();
+    let root = sw
+        .root(SUPERVISOR.as_bytes(), lifecycle_caps(), Budget::default())
+        .unwrap();
+    assert_eq!(sw.path(root).unwrap().as_str(), "root");
+
+    let child = spawn_child(&mut sw, root, &named_spawn(PARKS, &["queue:*"], "intake"))
+        .expect("a child was spawned");
+    assert_eq!(
+        sw.path(child).unwrap().as_str(),
+        "root/intake",
+        "the name the request asked for, under the parent's path"
+    );
+    assert_eq!(sw.path(child).unwrap().parent().unwrap().as_str(), "root");
+}
+
+/// An unnamed child gets its instance id, which is unique for the life of the
+/// swarm because handles are never reused. The spawner not caring is the
+/// ephemeral case, and it needs no declaration of its own.
+#[test]
+fn an_unnamed_child_gets_its_id_as_its_last_segment() {
+    let mut sw = swarm();
+    let root = sw
+        .root(SUPERVISOR.as_bytes(), lifecycle_caps(), Budget::default())
+        .unwrap();
+    let child = spawn_child(&mut sw, root, &spawn_request(PARKS, &["queue:*"], None))
+        .expect("a child was spawned");
+    assert_eq!(
+        sw.path(child).unwrap().as_str(),
+        format!("root/{}", child.0)
+    );
+}
+
+/// What "`drt` is a privileged name" means in practice: a node cannot claim
+/// one, and the refusal arrives on the channel every other spawn refusal does.
+#[test]
+fn a_node_cannot_name_itself_after_the_runtime_or_a_root_directory() {
+    for reserved in ["drt", "state", "live", "init", "log", "profile", "DRT"] {
+        let mut sw = swarm();
+        let root = sw
+            .root(SUPERVISOR.as_bytes(), lifecycle_caps(), Budget::default())
+            .unwrap();
+        let denied = spawn_child(&mut sw, root, &named_spawn(PARKS, &["queue:*"], reserved));
+        assert!(
+            denied.is_none(),
+            "'{reserved}' must spawn nothing, got {denied:?}"
+        );
+
+        let log = drain_out(&mut sw, root, "log");
+        let names: Vec<_> = log.iter().map(event_name).collect();
+        assert_eq!(names, ["denied"], "'{reserved}': {log:?}");
+        let detail = field(&log[0], "detail")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(
+            detail.contains(reserved) && detail.contains("reserved"),
+            "'{reserved}': the refusal names it and says why -- {detail}"
+        );
+    }
+}
+
+/// A node's capability set records whose it is, so a hostcall answered by the
+/// dispatcher knows which node asked without a second identity channel
+/// threaded through every connector.
+#[test]
+fn a_node_s_capability_set_records_the_node_it_belongs_to() {
+    let mut sw = swarm();
+    let root = sw
+        .root(SUPERVISOR.as_bytes(), lifecycle_caps(), Budget::default())
+        .unwrap();
+    assert_eq!(
+        sw.caps(root).unwrap().holder().map(|p| p.0.clone()),
+        Some("root".to_string())
+    );
+
+    let child = spawn_child(&mut sw, root, &named_spawn(PARKS, &["queue:*"], "intake"))
+        .expect("a child was spawned");
+    assert_eq!(
+        sw.caps(child).unwrap().holder().map(|p| p.0.clone()),
+        Some("root/intake".to_string()),
+        "and a child's set says it is the child's"
+    );
+}

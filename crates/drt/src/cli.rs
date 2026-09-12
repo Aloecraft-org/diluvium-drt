@@ -71,6 +71,7 @@ const PROFILE_FULL: &[&str] = &[
     "stun",
     "tunnel",
     "turn",
+    "turn-client",
     "wireguard",
 ];
 
@@ -113,9 +114,10 @@ const CORE_FEATURES_CUSTOM: &[&str] = &[];
 /// in `tests/cli.rs` is what stops it going stale when the pin moves: the
 /// changelog records the pin, the pin is checked against `Cargo.lock` by
 /// `script/changelog.py check`, and this is checked against the changelog.
-const DILUVIUM_BUILD: u32 = 13;
+const DILUVIUM_BUILD: u32 = 14;
 
-/// What `drt wg` can do besides serve.
+/// What `drt wg` does. All three are diagnostics or key handling, and the
+/// serving that used to sit beside them is `drt start` now.
 #[cfg(feature = "wireguard")]
 #[derive(clap::Subcommand)]
 pub enum WgAction {
@@ -139,12 +141,73 @@ pub enum WgAction {
     Check,
 }
 
+/// What `drt key` can do.
+#[derive(clap::Subcommand)]
+pub enum KeyAction {
+    /// Generate a key: write its private seed to `path`, print its public key
+    /// on stdout.
+    ///
+    /// The public half is what goes into a root's `consent.json` `signers`
+    /// list, so it is the only thing on stdout -- `drt key new k > k.pub`
+    /// leaves a file with one key in it.
+    New {
+        /// Where the private seed goes. Never overwritten.
+        path: PathBuf,
+    },
+    /// Sign a decision about a pending grant request.
+    ///
+    /// This is what makes consent.md §8's "a human with a text editor" a real
+    /// approval path: the runtime cannot tell a portal from a person, but only
+    /// if a person can actually produce a valid signature.
+    Sign {
+        /// The key file, as written by `drt key new`.
+        key: PathBuf,
+        /// A request from `state/gsr/pending/`.
+        request: PathBuf,
+        /// The `key_id` this signs as. Must match a `signers` entry in the
+        /// root's `consent.json`, or verification stops at step 1.
+        #[arg(long = "key-id")]
+        key_id: String,
+        /// Deny instead of approving. A signed deny is an answer, which is why
+        /// the directory is `decided/` and not `approved/`.
+        #[arg(long)]
+        deny: bool,
+        /// When this decision stops being valid, as `YYYY-MM-DDTHH:MM:SSZ`.
+        /// Defaults to an hour out, because revocation is out of scope and a
+        /// forgotten approval is the failure mode.
+        #[arg(long = "not-after", value_name = "INSTANT")]
+        not_after: Option<String>,
+    },
+}
+
 #[derive(Parser)]
 #[command(name = "drt", version, about = "The Diluvium RunTime")]
 pub struct Cli {
     /// Root config file. Flags and env merge over it into one root object.
     #[arg(long, global = true)]
     pub config: Option<PathBuf>,
+    /// The root to act on, instead of looking for `.drt_root/` in the
+    /// working directory.
+    ///
+    /// Discovery deliberately does not walk up, so a systemd unit should use
+    /// this rather than `WorkingDirectory=`: systemd's default working
+    /// directory is `/`, and a unit relying on discovery would find no root
+    /// and run the no-root path without saying so.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub root: Option<PathBuf>,
+    /// Accept a **first** consent acceptance without asking.
+    ///
+    /// Deliberately not enough for a ceiling that has widened. A `-y` that
+    /// also accepted a widening would mean every unit file and CI job carried
+    /// permanent pre-consent to every future ceiling a root might declare,
+    /// which defeats the approval chain's invariant in practice while leaving
+    /// it true on paper. `--accept-changes` is that, separately.
+    #[arg(short = 'y', long, global = true)]
+    pub yes: bool,
+    /// Accept a ceiling that has widened since it was consented to. The
+    /// deliberate act, and the one `-y` does not cover.
+    #[arg(long, global = true)]
+    pub accept_changes: bool,
     #[command(subcommand)]
     pub command: Command,
 }
@@ -154,13 +217,72 @@ pub enum Command {
     /// Run one program to completion: config + one program is a complete
     /// deployment.
     Run {
-        /// A `.dlua` or `.lua` file. Optional when the config names one.
-        program: Option<PathBuf>,
+        /// A file, a declared profile, Diluvium code, `-` for stdin, or
+        /// `stdlib:<name>`. Optional when the config names a program.
+        ///
+        /// Which it is, is decided in this order: an explicit flag below,
+        /// then `-`, then a `stdlib:` prefix, then a leading `/` or `./`, then
+        /// evidence of code (a newline, parens, quotes, `=` or `;` — not
+        /// whitespace, which is path-legal), then a declared profile name, and
+        /// a file otherwise. The last rule is what lets the error name the
+        /// flags instead of guessing.
+        target: Option<String>,
+        /// Read the argument as a file, whatever it looks like.
+        #[arg(short = 'f', long, conflicts_with_all = ["command", "profile"])]
+        file: bool,
+        /// Read the argument as Diluvium code.
+        #[arg(short = 'c', long, conflicts_with_all = ["file", "profile"])]
+        command: bool,
+        /// Read the argument as a declared profile name.
+        #[arg(short = 'p', long, conflicts_with_all = ["file", "command"])]
+        profile: bool,
     },
     /// Run the deployment: the root program, its swarm, and whatever
     /// listeners the config names. Foreground; a process supervisor
     /// backgrounds it, and there is deliberately no --detach.
-    Start,
+    Start {
+        /// Which profile, by name (`debug`, not `debug.config.json`).
+        /// Without one, `project.json`'s `default_profile` decides, and
+        /// without a `project.json` the pre-recognized fallback order does.
+        profile: Option<String>,
+        /// Replace what is already deployed, then start.
+        ///
+        /// Without it, `start` on an already-deployed root says so and stops
+        /// rather than overwriting `live/`. A deploy replaces rather than
+        /// merges, and `live/` is what a stateful node's directory survives
+        /// restarts in, so overwriting it is destructive enough to be asked for.
+        #[arg(long)]
+        rm: bool,
+        /// Arguments for the entry, overriding the profile's declared defaults
+        /// by key: `--verbose`, `--port 9000`, `--label=gate`, and a repeated
+        /// `--stun a --stun b` for a key whose default is a list.
+        ///
+        /// **Everything after the profile name belongs to the entry.** drt's own
+        /// flags therefore come *before* it — `drt start --rm debug --verbose`,
+        /// not `drt start debug --rm`. That is the documented rule and it is
+        /// what lets a profile declare its own command line without drt having
+        /// to reserve names against it.
+        ///
+        /// How each is parsed comes from the declared default's type, so a
+        /// profile is the whole declaration of its own command line and an
+        /// undeclared key is a named failure rather than a silent addition.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Copy this profile's source into `live/`, and nothing else.
+    ///
+    /// From `dlua_dir` when the profile sets one, else from `init/`. What runs
+    /// is always `live/`, so this is the step that makes an edit take effect.
+    Deploy,
+    /// Delete this deployment from `live/`.
+    Rm,
+    /// Capture what is running, from `live/` into `init/`, and write the
+    /// envelope.
+    ///
+    /// From `live/` and never from an editor's buffer: nothing reaches `init/`
+    /// without having been visible in what runs, so a supervisor can review a
+    /// commit by looking at the deployment.
+    Commit,
     /// A REPL is an instance, not a mode: a sealed guest with a generous
     /// local grant, bridged to this terminal.
     Repl {
@@ -173,6 +295,15 @@ pub enum Command {
         /// says why.
         #[arg(long = "unsafe")]
         unsafe_stdlib: bool,
+    },
+    /// Keys: generate one, or sign a decision about a pending grant request.
+    ///
+    /// drt does the cryptography and never needs dollup installed. dollup
+    /// stores keys and copies public halves into a root's `consent.json`;
+    /// anything it can do to a key, this does to the same key with a path.
+    Key {
+        #[command(subcommand)]
+        action: KeyAction,
     },
     /// The introspection surface: instances, caps, budgets, usage, health.
     Ps,
@@ -189,51 +320,21 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// The rendezvous relay: parked WSS legs paired by label and spliced.
-    /// Reads the `relay` block of the config; runs foreground. Inside
-    /// `drt start` the same relay also reports presence and bytes to the
-    /// root program, and can be asked before it admits a leg.
-    #[cfg(feature = "relay")]
-    Relay,
-    /// The STUN binding server: answer "what address did this datagram
-    /// come from?", so a peer can learn its own reflexive address and try
-    /// a direct path before falling back to the relay. Reads the `stun`
-    /// block of the config; runs foreground. Inside `drt start` the same
-    /// server also reports its counters to the root program.
+    /// The WireGuard toolbox: make a key, read a public key off one, and
+    /// say what is wrong with a `wireguard` block. None of the three needs
+    /// a privilege, and none of them serves.
     ///
-    /// Run two on separate addresses (the `stun1`/`stun2.discofetch.link` pair): one
-    /// server reports an address, two report whether it *changed* between
-    /// vantage points, which is the fact that decides whether hole
-    /// punching can work at all.
-    #[cfg(feature = "stun")]
-    Stun,
-    /// The TURN relay: carry traffic for the peers `stun` says cannot
-    /// reach each other directly -- the last rung of the ladder, and the
-    /// one that costs bandwidth. Reads the `turn` block of the config;
-    /// runs foreground. Credentials are coturn's `use-auth-secret` scheme
-    /// under the block's shared secret, which is what
-    /// `crypto/turn_credential` mints, so the same secret in both blocks
-    /// is the whole deployment. Inside `drt start` the same server also
-    /// reports its counters, and every allocation's closing byte count
-    /// with its principal, to the root program.
-    #[cfg(feature = "turn")]
-    Turn,
-    /// The WireGuard peer this deployment is: bring up the tunnel
-    /// interface the `wireguard` block names, hold it up, and print the
-    /// public key a peer needs. Runs foreground.
-    ///
-    /// This is the rung above `netcheck`, `stun` and `turn`: they answer
-    /// whether two hosts can exchange packets, and this is what carries
-    /// traffic once they can. A peer needs no endpoint at startup -- inside
-    /// `drt start` the root program sets one over the reply queue when a
-    /// rendezvous learns it, which is the hole punch, end to end.
+    /// Serving is `drt start` with a `wireguard` block, whose program is
+    /// `stdlib:wg` when it only reports. This used to be bare `drt wg`,
+    /// back when a block with no program had no other way to run.
     ///
     /// Creating the interface needs CAP_NET_ADMIN or root on Linux, root
-    /// on macOS, and wintun.dll on Windows. Nothing else here does.
+    /// on macOS, and wintun.dll on Windows -- so it is `start` that needs
+    /// them, and nothing here does.
     #[cfg(feature = "wireguard")]
     Wg {
         #[command(subcommand)]
-        action: Option<WgAction>,
+        action: WgAction,
     },
     /// SSH over WSS, as a dumb pipe. With a URL: bridge this process's
     /// stdio to it — the OpenSSH ProxyCommand contract, so
@@ -458,22 +559,26 @@ pub fn buildinfo(json: bool) -> String {
         connectors.push("listen");
     }
 
-    let mut verbs: Vec<&str> = vec!["run", "start", "repl", "ps", "buildinfo"];
-    if cfg!(feature = "relay") {
-        verbs.push("relay");
-    }
+    let mut verbs: Vec<&str> = vec![
+        "buildinfo",
+        "commit",
+        "deploy",
+        "key",
+        "ps",
+        "repl",
+        "rm",
+        "run",
+        "start",
+    ];
     if cfg!(feature = "netcheck") {
         verbs.push("netcheck");
-    }
-    if cfg!(feature = "stun") {
-        verbs.push("stun");
     }
     if cfg!(feature = "tunnel") {
         verbs.push("tunnel");
     }
-    if cfg!(feature = "turn") {
-        verbs.push("turn");
-    }
+    // `relay`, `stun` and `turn` were verbs here and are not any more: each
+    // is a config block plus `stdlib:<name>` under `start`. `wg` stays,
+    // carrying keygen/pubkey/check -- the three things that are not serving.
     if cfg!(feature = "wireguard") {
         verbs.push("wg");
     }
@@ -591,6 +696,11 @@ fn enabled_features() -> Vec<&'static str> {
     feature!("stun");
     feature!("tunnel");
     feature!("turn");
+    // Probed even though no profile turns it on by itself: `wireguard` names
+    // it, so a full build has it, and PROFILE_FULL lists it. A name in a
+    // profile table that is not probed here makes that profile unreportable
+    // -- `profile_matches_its_manifest`'s sibling below is what says so.
+    feature!("turn-client");
     feature!("wireguard");
     on.sort_unstable();
     on
@@ -778,9 +888,536 @@ pub fn assemble(cli: &Cli) -> Result<(RootConfig, drt_connector::Dispatcher), St
         local_defaults(&mut config);
     }
     let registry = wire_connectors(&config)?;
-    // By name, at startup: never a mystifying `denied` at first call.
+    // By name, at startup: never a mystifying `denied` at first call, and
+    // never a server that binds and then refuses everything in silence.
+    config::validate(&config)?;
     config::validate_grants(&config, &registry)?;
     Ok((config, drt_connector::Dispatcher::new(registry)))
+}
+
+/// Print the setup report. One place, so `drt start preflight` and
+/// `drt run -p preflight` say the same thing.
+fn preflight_report(resolution: &drt_config::resolve::Resolution) -> ExitCode {
+    let pin = resolution.pin.as_ref().map(|p| p.value.as_str());
+    match crate::stdlib::preflight(
+        resolution,
+        pin,
+        env!("CARGO_PKG_VERSION"),
+        resolution.consent.as_ref(),
+        &mut std::io::stdout(),
+    ) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("drt: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `drt key`: generate, or sign.
+fn key_verb(cli: &Cli, action: &KeyAction) -> ExitCode {
+    match action {
+        KeyAction::New { path } => match crate::key::new(path, &mut std::io::stdout()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("drt key new: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        KeyAction::Sign {
+            key,
+            request,
+            key_id,
+            deny,
+            not_after,
+        } => {
+            let not_after = match not_after {
+                Some(text) => match drt_config::time::Timestamp::parse(text) {
+                    Ok(instant) => Some(instant),
+                    Err(e) => {
+                        eprintln!("drt key sign: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                },
+                None => None,
+            };
+            // Where the decision goes: this root's `decided/`, because that is
+            // the directory the runtime reads. Outside a root there is nothing
+            // to approve, and saying so beats writing a signature into the
+            // working directory for nobody to find.
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let Some(root) = crate::drt_root::discover(&cwd, cli.root.as_deref()) else {
+                eprintln!(
+                    "drt key sign: there is no root here to record a decision in; \
+                     run it inside one, or name one with --root"
+                );
+                return ExitCode::FAILURE;
+            };
+            let verdict = if *deny {
+                drt_config::gsr::Verdict::Deny
+            } else {
+                drt_config::gsr::Verdict::Approve
+            };
+            match crate::key::sign(
+                key,
+                request,
+                &root.gsr_decided(),
+                key_id,
+                verdict,
+                not_after,
+                crate::drt_root::now(),
+            ) {
+                Ok(path) => {
+                    eprintln!("wrote {}", path.display());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("drt key sign: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+    }
+}
+
+/// Which reading the flags forced, if any. Clap's `conflicts_with_all` has
+/// already refused two at once, so this cannot lose information.
+fn explicit(file: bool, command: bool, profile: bool) -> Option<drt_config::resolve::Explicit> {
+    use drt_config::resolve::Explicit;
+    match (file, command, profile) {
+        (true, _, _) => Some(Explicit::File),
+        (_, true, _) => Some(Explicit::Code),
+        (_, _, true) => Some(Explicit::Profile),
+        _ => None,
+    }
+}
+
+/// `drt run`: one program to completion, from whichever of the five things the
+/// argument turned out to be.
+///
+/// The classification is `drt_config::resolve::classify`'s, not this file's, so
+/// the rules are stated once and are testable without a process. What is here
+/// is the IO each answer needs: opening a file, reading stdin, looking a
+/// profile up in a root.
+fn run_verb(
+    cli: &Cli,
+    target: Option<&str>,
+    explicit: Option<drt_config::resolve::Explicit>,
+    config: &RootConfig,
+    dispatcher: drt_connector::Dispatcher,
+) -> ExitCode {
+    use drt_config::resolve::Requested;
+
+    let Some(target) = target else {
+        // No argument inside a root: run what is deployed. `drt run` is the
+        // verb that does *not* deploy -- the already-deployed message points
+        // here for exactly that -- so it reads `live/` as it stands and says so
+        // when there is nothing there.
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        if crate::drt_root::discover(&cwd, cli.root.as_deref()).is_some() {
+            return run_profile(cli, None);
+        }
+        // Outside a root: the config's own program, as it always was.
+        let Some(drt_config::Program::Path(path)) = config.root.program.clone() else {
+            eprintln!("drt run: name a program, as an argument or as `program` in the config");
+            return ExitCode::FAILURE;
+        };
+        return drive_run(&path, config, dispatcher);
+    };
+
+    // A profile name is only a profile if a root declares it, so the root is
+    // read before the argument is classified. That ordering is what makes
+    // "a listed profile wins over a file of the same name" true rather than
+    // aspirational.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let root = crate::drt_root::discover(&cwd, cli.root.as_deref());
+    let declared: Vec<drt_config::project::ProfileName> = root
+        .as_ref()
+        .map(|root| {
+            let (inputs, _) = root.read(Requested::Default, Vec::new());
+            inputs
+                .root
+                .as_ref()
+                .and_then(|r| r.project.as_ref())
+                .map(|p| p.declared_profiles().0.into_keys().collect())
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+
+    match drt_config::resolve::classify(target, explicit, &declared) {
+        Requested::File(path) => {
+            let path = PathBuf::from(&path);
+            if !drt_platform::fs::exists(&path) {
+                // The one place the disambiguators get named.
+                eprintln!("drt run: {}", drt_config::resolve::no_such_file(target));
+                return ExitCode::FAILURE;
+            }
+            drive_run(&path, config, dispatcher)
+        }
+        Requested::Code(source) => drive_source(&source, "=command", config, dispatcher),
+        Requested::Stdin => match read_stdin() {
+            Ok(source) => drive_source(&source, "=stdin", config, dispatcher),
+            Err(e) => {
+                eprintln!("drt run: cannot read stdin: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Requested::Stdlib(name) => match crate::stdlib::lookup(&name) {
+            Some(crate::stdlib::Kind::Source(src)) => {
+                drive_source(src, &format!("=stdlib:{name}"), config, dispatcher)
+            }
+            // A native program reports on a root; `drt run` has no resolution
+            // to hand it, so it says which verb does rather than printing an
+            // empty report.
+            Some(crate::stdlib::Kind::Native(name)) => {
+                eprintln!(
+                    "drt run: '{name}' reports on a root, so it is `drt start {name}` -- \
+                     `run` has no resolution to report on"
+                );
+                ExitCode::FAILURE
+            }
+            None => {
+                eprintln!(
+                    "drt run: this build carries no stdlib program called '{name}'; it carries {}",
+                    crate::stdlib::names().join(", ")
+                );
+                ExitCode::FAILURE
+            }
+        },
+        // `drt run -p <profile>` runs `live/` as it stands; `drt start
+        // <profile>` deploys first. The already-deployed message is what teaches
+        // the difference, so this arm must not quietly deploy.
+        Requested::Profile(name) => {
+            if root.is_none() {
+                eprintln!(
+                    "drt run: there is no root here, so '{name}' names no profile; \
+                     `--config <path>` is the self-contained form"
+                );
+                return ExitCode::FAILURE;
+            }
+            run_profile(cli, Some(&name))
+        }
+        Requested::Default => unreachable!("classify never answers Default"),
+    }
+}
+
+/// Run a profile from `live/` as it stands, deploying nothing.
+///
+/// Through the same `boot` that `start` uses, so the two agree about which
+/// profile is current, where its entry is, and what consent says — and then
+/// stops short of the one step that makes them different.
+fn run_profile(cli: &Cli, profile: Option<&str>) -> ExitCode {
+    let booted = match booted_with(cli, "run", profile) {
+        Ok(booted) => booted,
+        Err(code) => return code,
+    };
+    if let Some(deployment) = &booted.deployment {
+        if !deployment.deployed {
+            eprintln!(
+                "drt run: '{}' is not deployed; `drt deploy` copies {} into live/, \
+                 or `drt start` does both",
+                deployment.name,
+                deployment.source.describe()
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+    // A native stdlib entry reports rather than running, here as in `start`.
+    if let (Some(crate::boot::Runnable::Native(name)), Some(resolution)) =
+        (&booted.runnable, &booted.resolution)
+    {
+        if *name == crate::stdlib::PREFLIGHT {
+            return preflight_report(resolution);
+        }
+    }
+    let Some(drt_config::Program::Path(path)) = booted.config.root.program.clone() else {
+        eprintln!("drt run: this profile names no program to run");
+        return ExitCode::FAILURE;
+    };
+    drive_run(&path, &booted.config, booted.dispatcher)
+}
+
+/// Read every byte of stdin. The piped-code case, and the reason `-` is
+/// implemented rather than reserved: `drt run - <<'EOF'` is how a shell hands
+/// over a program without a file.
+fn read_stdin() -> std::io::Result<String> {
+    use std::io::Read;
+    let mut source = String::new();
+    std::io::stdin().read_to_string(&mut source)?;
+    Ok(source)
+}
+
+fn drive_run(
+    path: &std::path::Path,
+    config: &RootConfig,
+    dispatcher: drt_connector::Dispatcher,
+) -> ExitCode {
+    match run::run(
+        path,
+        std::sync::Arc::new(dispatcher),
+        config::ceiling(config),
+        config.root.budget,
+        config.root.numeric,
+    ) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("drt run: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Run source that never was a file. `name` is what a traceback says, which is
+/// why it is the one thing that differs between a command, stdin and a stdlib
+/// program: `[string "=command"]:1:` tells a reader where their code came from.
+fn drive_source(
+    source: &str,
+    name: &str,
+    config: &RootConfig,
+    dispatcher: drt_connector::Dispatcher,
+) -> ExitCode {
+    match run::run_source(
+        source,
+        name,
+        std::sync::Arc::new(dispatcher),
+        config::ceiling(config),
+        config.root.budget,
+        config.root.numeric,
+    ) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("drt run: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `drt start`: find the root, resolve, gate on consent, then run the
+/// deployment — or, for a native stdlib entry, print its report and stop.
+///
+/// Separate from [`main`] because it is the one verb that does not take
+/// [`assemble`]'s config: `crate::boot` produces its own, and the order there
+/// is load-bearing (consent before connectors).
+/// Find the root for a verb that needs one, or say why there is none.
+fn rooted(cli: &Cli, verb: &str) -> Result<crate::drt_root::Root, ExitCode> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    crate::drt_root::discover(&cwd, cli.root.as_deref()).ok_or_else(|| {
+        eprintln!(
+            "drt {verb}: there is no root here; run it inside one, name one with --root, \
+             or `dollup init` to make one"
+        );
+        ExitCode::FAILURE
+    })
+}
+
+/// `boot`, for a verb that only needs the resolution and not a dispatcher.
+///
+/// Through the same function `start` uses, so a `deploy` and the `start` that
+/// would follow it cannot disagree about which profile is current or where its
+/// source is. `-y` is passed through because a verb that writes into a root is
+/// a verb an operator ran deliberately; it does not widen anything, since
+/// `--accept-changes` is still separate.
+fn booted_with(
+    cli: &Cli,
+    verb: &str,
+    profile: Option<&str>,
+) -> Result<crate::boot::Booted, ExitCode> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut ask = crate::consent_gate::Terminal;
+    crate::boot::boot(
+        &cwd,
+        cli.root.as_deref(),
+        cli.config.as_deref(),
+        profile,
+        crate::consent_gate::Flags {
+            yes: cli.yes,
+            accept_changes: cli.accept_changes,
+        },
+        &mut ask,
+    )
+    .map_err(|e| {
+        eprintln!("drt {verb}: {e}");
+        ExitCode::FAILURE
+    })
+}
+
+/// `drt deploy`: source into `live/`, and nothing else.
+fn deploy_verb(cli: &Cli) -> ExitCode {
+    let booted = match booted_with(cli, "deploy", None) {
+        Ok(booted) => booted,
+        Err(code) => return code,
+    };
+    let (Some(root), Some(deployment)) = (&booted.root, &booted.deployment) else {
+        eprintln!("drt deploy: there is no root here to deploy into");
+        return ExitCode::FAILURE;
+    };
+    match crate::deploy::deploy(root, &deployment.name, &deployment.source) {
+        Ok(report) => {
+            eprintln!(
+                "deployed {} from {} ({} file(s))",
+                deployment.name,
+                deployment.source.describe(),
+                report.files
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("drt deploy: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `drt rm`: this deployment gone from `live/`.
+fn rm_verb(cli: &Cli) -> ExitCode {
+    let root = match rooted(cli, "rm") {
+        Ok(root) => root,
+        Err(code) => return code,
+    };
+    // Deliberately not through `boot`: `rm` is how an operator gets out of a
+    // root that will not start, so it must not need the root to resolve. The
+    // name comes from `project.json` if it is readable and from the directory
+    // otherwise, which is what `deployment_name` already does.
+    let (inputs, _) = root.read(drt_config::resolve::Requested::Default, Vec::new());
+    let project = inputs.root.as_ref().and_then(|r| r.project.as_ref());
+    let name = crate::deploy::deployment_name(&root, project);
+    match crate::deploy::remove(&root, &name) {
+        Ok(()) => {
+            eprintln!("removed {name} from live/");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("drt rm: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `drt commit`: what is running, captured into `init/`, with an envelope.
+fn commit_verb(cli: &Cli) -> ExitCode {
+    let booted = match booted_with(cli, "commit", None) {
+        Ok(booted) => booted,
+        Err(code) => return code,
+    };
+    let (Some(root), Some(deployment)) = (&booted.root, &booted.deployment) else {
+        eprintln!("drt commit: there is no root here to commit in");
+        return ExitCode::FAILURE;
+    };
+    let (inputs, _) = root.read(drt_config::resolve::Requested::Default, Vec::new());
+    let Some(project) = inputs.root.as_ref().and_then(|r| r.project.clone()) else {
+        eprintln!(
+            "drt commit: this root has no project.json, so a commit has no root_id to record"
+        );
+        return ExitCode::FAILURE;
+    };
+    match crate::deploy::commit(root, &deployment.name, &project) {
+        Ok(committed) => {
+            eprintln!(
+                "committed {} file(s) into init/\nenvelope: {}",
+                committed.report.files, committed.hash
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("drt commit: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn start_verb(cli: &Cli, profile: Option<&str>, rm: bool, args: &[String]) -> ExitCode {
+    let overrides = match drt_config::resolve::parse_overrides(args) {
+        Ok(overrides) => overrides,
+        Err(e) => {
+            eprintln!("drt start: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut ask = crate::consent_gate::Terminal;
+    let booted = match crate::boot::boot_with(
+        &cwd,
+        cli.root.as_deref(),
+        cli.config.as_deref(),
+        profile,
+        overrides,
+        crate::consent_gate::Flags {
+            yes: cli.yes,
+            accept_changes: cli.accept_changes,
+        },
+        &mut ask,
+    ) {
+        Ok(booted) => booted,
+        Err(e) => {
+            eprintln!("drt start: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // A native stdlib program is the host's to run, not an instance's. `boot`
+    // has already decided which it is, so this reads the answer rather than
+    // re-deriving it from the entry -- one place that knows.
+    if let (Some(crate::boot::Runnable::Native(name)), Some(resolution)) =
+        (&booted.runnable, &booted.resolution)
+    {
+        if *name == crate::stdlib::PREFLIGHT {
+            let pin = resolution.pin.as_ref().map(|p| p.value.as_str());
+            return match crate::stdlib::preflight(
+                resolution,
+                pin,
+                env!("CARGO_PKG_VERSION"),
+                resolution.consent.as_ref(),
+                &mut std::io::stdout(),
+            ) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("drt start: {e}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+    }
+
+    // Deploy, then run. `live/` is what runs, so this is the step that makes
+    // `start` different from `run` -- and the already-deployed message is where
+    // a reader learns that difference.
+    if let (Some(root), Some(deployment)) = (&booted.root, &booted.deployment) {
+        if deployment.deployed && !rm {
+            let name = &deployment.name;
+            eprintln!("'{name}' is already deployed");
+            eprintln!();
+            eprintln!("   drt run         # run {name} from live");
+            eprintln!("   drt rm          # delete {name} from live");
+            // Relative to the root, which is how the profile wrote it: an
+            // absolute path here is four lines of noise in the message an
+            // operator sees most often.
+            let from = deployment
+                .source
+                .path()
+                .strip_prefix(&root.dir)
+                .unwrap_or(deployment.source.path());
+            eprintln!(
+                "   drt start --rm  # start {name} from {} (overwrites live/{name})",
+                from.display()
+            );
+            return ExitCode::FAILURE;
+        }
+        if let Err(e) = crate::deploy::deploy(root, &deployment.name, &deployment.source) {
+            eprintln!("drt start: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
+
+    match start::start(&booted.config, booted.dispatcher) {
+        // Ok means the swarm drained: every instance exited. For a
+        // server-shaped deployment that never happens and foreground-forever
+        // is the contract; for a batch-shaped one this is the finish line.
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("drt start: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// The native binary: assemble, then run the verb to completion, sleeping
@@ -790,6 +1427,21 @@ pub fn main(cli: Cli) -> ExitCode {
     // core's `print` and this file's `eprintln!` on the same line ending.
     // A no-op everywhere else.
     drt_platform::stdio::bytes_as_written();
+    // `start` assembles its own, before anything else here runs. A rooted
+    // deployment's config is the *resolved profile's* and not `--config`'s, so
+    // going through `assemble` first would wire one set of connectors to throw
+    // away and announce `exec` twice on a config that names it.
+    match cli.command {
+        Command::Start {
+            ref profile,
+            rm,
+            ref args,
+        } => return start_verb(&cli, profile.as_deref(), rm, args),
+        Command::Deploy => return deploy_verb(&cli),
+        Command::Rm => return rm_verb(&cli),
+        Command::Commit => return commit_verb(&cli),
+        _ => {}
+    }
     let (config, dispatcher) = match assemble(&cli) {
         Ok(pair) => pair,
         Err(e) => {
@@ -798,120 +1450,28 @@ pub fn main(cli: Cli) -> ExitCode {
         }
     };
     match cli.command {
-        Command::Run { ref program } => {
-            // The CLI argument names the program; a config may name one
-            // too, and the argument wins because it is the more specific
-            // thing the operator just typed.
-            let path = program.clone().or_else(|| match &config.root.program {
-                Some(drt_config::Program::Path(p)) => Some(p.clone()),
-                _ => None,
-            });
-            let Some(path) = path else {
-                eprintln!("drt run: name a program, as an argument or as `program` in the config");
-                return ExitCode::FAILURE;
-            };
-            match run::run(
-                &path,
-                std::sync::Arc::new(dispatcher),
-                config::ceiling(&config),
-                config.root.budget,
-                config.root.numeric,
-            ) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("drt run: {e}");
-                    ExitCode::FAILURE
-                }
-            }
-        }
-        Command::Start => match start::start(&config, dispatcher) {
-            // Ok means the swarm drained: every instance exited. For a
-            // server-shaped deployment that never happens and foreground-
-            // forever is the contract; for a batch-shaped one this is the
-            // finish line.
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("drt start: {e}");
-                ExitCode::FAILURE
-            }
-        },
-        #[cfg(feature = "relay")]
-        Command::Relay => {
-            let Some(relay_config) = config.relay.clone() else {
-                eprintln!("drt relay: the config names no `relay` block");
-                return ExitCode::FAILURE;
-            };
-            let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
-            let outcome =
-                runtime.block_on(crate::relay::serve(crate::relay::Relay::new(relay_config)));
-            // Leak the runtime rather than drop it. tokio 1.53.1 has a
-            // use-after-free in runtime teardown — `BlockingPool::shutdown`
-            // racing a worker's `park::Inner::unpark` into a freed Condvar
-            // (backtrace in doc/Release.md) — and every one of these verbs
-            // resolves a hostname through `lookup_host`, which is a
-            // `spawn_blocking`, so there is always a parked blocking worker
-            // to race. The process is exiting; the OS reclaims everything
-            // drop would have. Leaking costs nothing and removes the whole
-            // class from shipped code.
-            std::mem::forget(runtime);
-            match outcome {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("drt relay: {e}");
-                    ExitCode::FAILURE
-                }
-            }
-        }
-        #[cfg(feature = "stun")]
-        Command::Stun => {
-            let Some(stun_config) = config.stun.clone() else {
-                eprintln!("drt stun: the config names no `stun` block");
-                return ExitCode::FAILURE;
-            };
-            let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
-            let outcome = runtime.block_on(crate::stun::serve(&stun_config));
-            // Leak the runtime rather than drop it. tokio 1.53.1 has a
-            // use-after-free in runtime teardown — `BlockingPool::shutdown`
-            // racing a worker's `park::Inner::unpark` into a freed Condvar
-            // (backtrace in doc/Release.md) — and every one of these verbs
-            // resolves a hostname through `lookup_host`, which is a
-            // `spawn_blocking`, so there is always a parked blocking worker
-            // to race. The process is exiting; the OS reclaims everything
-            // drop would have. Leaking costs nothing and removes the whole
-            // class from shipped code.
-            std::mem::forget(runtime);
-            match outcome {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("drt stun: {e}");
-                    ExitCode::FAILURE
-                }
-            }
-        }
-        #[cfg(feature = "turn")]
-        Command::Turn => {
-            let Some(turn_config) = config.turn.clone() else {
-                eprintln!("drt turn: the config names no `turn` block");
-                return ExitCode::FAILURE;
-            };
-            let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
-            let outcome = runtime.block_on(crate::turn::serve(&turn_config));
-            // Leaked, not dropped: the same tokio 1.53.1 teardown
-            // use-after-free `stun` and `relay` leak theirs for, and the
-            // same reason it is always armed here (`lookup_host` parks a
-            // blocking worker). The process is exiting anyway.
-            std::mem::forget(runtime);
-            match outcome {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("drt turn: {e}");
-                    ExitCode::FAILURE
-                }
-            }
+        Command::Run {
+            ref target,
+            file,
+            command,
+            profile,
+        } => run_verb(
+            &cli,
+            target.as_deref(),
+            explicit(file, command, profile),
+            &config,
+            dispatcher,
+        ),
+        // The root verbs are handled before `assemble` (see `main`), so these
+        // arms cannot be reached. Kept as named unreachables rather than
+        // deleted, because clap's `Command` must still be exhaustive here and a
+        // `_` arm would swallow the next verb somebody adds.
+        Command::Start { .. } | Command::Deploy | Command::Rm | Command::Commit => {
+            unreachable!("the root verbs are dispatched before assemble")
         }
         #[cfg(feature = "wireguard")]
         Command::Wg {
-            action: Some(WgAction::Keygen),
+            action: WgAction::Keygen,
         } => {
             // Two lines, in the order a config wants them, and on stdout
             // so `drt wg keygen | head -1` is a private key and nothing
@@ -924,7 +1484,7 @@ pub fn main(cli: Cli) -> ExitCode {
         }
         #[cfg(feature = "wireguard")]
         Command::Wg {
-            action: Some(WgAction::Pubkey),
+            action: WgAction::Pubkey,
         } => {
             let mut key = String::new();
             if let Err(e) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut key) {
@@ -950,7 +1510,7 @@ pub fn main(cli: Cli) -> ExitCode {
         }
         #[cfg(feature = "wireguard")]
         Command::Wg {
-            action: Some(WgAction::Check),
+            action: WgAction::Check,
         } => {
             let Some(wg_config) = config.wireguard.clone() else {
                 eprintln!("drt wg check: the config names no `wireguard` block");
@@ -1079,26 +1639,6 @@ pub fn main(cli: Cli) -> ExitCode {
                 }
             }
         }
-        #[cfg(feature = "wireguard")]
-        Command::Wg { action: None } => {
-            let Some(wg_config) = config.wireguard.clone() else {
-                eprintln!("drt wg: the config names no `wireguard` block");
-                return ExitCode::FAILURE;
-            };
-            let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
-            let outcome = runtime.block_on(crate::wireguard::serve(&wg_config));
-            // Leaked, not dropped: the tokio 1.53.1 teardown use-after-free
-            // every foreground verb here leaks its runtime for. The process
-            // is exiting; the OS reclaims what drop would have.
-            std::mem::forget(runtime);
-            match outcome {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("drt wg: {e}");
-                    ExitCode::FAILURE
-                }
-            }
-        }
         #[cfg(feature = "tunnel")]
         Command::Tunnel {
             url,
@@ -1180,7 +1720,7 @@ pub fn main(cli: Cli) -> ExitCode {
                 }
             }
         }
-        #[cfg(feature = "stun")]
+        #[cfg(feature = "netcheck")]
         Command::Netcheck {
             stun,
             reflect,
@@ -1202,83 +1742,24 @@ pub fn main(cli: Cli) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+            let ports: Vec<u16> = port.clone();
+            let inputs = crate::netcheck::Inputs {
+                stun,
+                reflect,
+                reflect_at,
+                port: ports,
+                probe_at,
+                pin_source_port,
+                udp_port,
+            };
             let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
-            let mut m = crate::netcheck::Measurements::default();
-            let edges: Vec<&str> = reflect.iter().map(String::as_str).collect();
-            let typed_at: Vec<&str> = reflect_at.iter().map(String::as_str).collect();
-            runtime.block_on(async {
-                // The configuration fetch first, and only when an edge is
-                // named: what to measure against comes from the thing being
-                // measured against, never from this binary (issue #25).
-                // Merged per key, the typed value winning, and the flags'
-                // own rules apply to the result -- so an answer naming one
-                // server is still "1 given", and an answer's vantages still
-                // may not host the probe.
-                let mut servers: Vec<String> = stun.clone();
-                let mut at: Vec<String> = reflect_at.clone();
-                let from = |what: &str, typed: bool, answered: usize| {
-                    if typed {
-                        format!(
-                            "{what} from --{}",
-                            if what == "stun" { "stun" } else { "reflect-at" }
-                        )
-                    } else if answered > 0 {
-                        format!("{what} from the answer ({answered})")
-                    } else {
-                        format!("no {what}")
-                    }
-                };
-                m.config = match edges.first() {
-                    Some(first) => {
-                        match crate::netcheck::gather::configure(first, &typed_at, &roots).await {
-                            Ok(answer) => {
-                                if servers.is_empty() {
-                                    servers = answer.stun.clone();
-                                }
-                                if at.is_empty() {
-                                    at = answer.vantages.clone();
-                                }
-                                Some(format!(
-                                    "{first}: {}, {}",
-                                    from("stun", !stun.is_empty(), answer.stun.len()),
-                                    from("vantages", !reflect_at.is_empty(), answer.vantages.len())
-                                ))
-                            }
-                            Err(why) => Some(format!("{first}: not read ({why}); flags only")),
-                        }
-                    }
-                    None if stun.is_empty() => Some(
-                        "nothing named to measure against: --reflect <url> supplies the rest, \
-                         or --stun twice"
-                            .into(),
-                    ),
-                    None => None,
-                };
-                let servers: Vec<&str> = servers.iter().map(String::as_str).collect();
-                let at: Vec<&str> = at.iter().map(String::as_str).collect();
-                crate::netcheck::gather::local_and_udp(&mut m, &servers, udp_port).await;
-                // After the UDP half on purpose: STUN's address is the one
-                // the decisive measurement saw, and an edge that disagrees
-                // with it is recorded as a disagreement rather than
-                // overwriting it.
-                crate::netcheck::gather::reflect(&mut m, &edges, &at, pin_source_port, &roots)
-                    .await;
-                // Last: it needs the reflect views to know which vantages
-                // this run has already contacted.
-                if let Some(first) = edges.first() {
-                    crate::netcheck::gather::probe(
-                        &mut m,
-                        first,
-                        probe_at.as_deref(),
-                        &port,
-                        &roots,
-                    )
-                    .await;
-                } else if !port.is_empty() {
-                    m.inbound_why =
-                        Some("--port needs a --reflect edge to derive the probe host from".into());
-                }
-            });
+            // One implementation of the measurement order, shared with the
+            // `netcheck` config block. The order is not obvious -- the
+            // configuration fetch before the measurements, UDP before reflect so
+            // STUN's address wins, the inbound probe last because it needs the
+            // reflect views -- so having it twice would mean having it wrong
+            // once.
+            let m = runtime.block_on(crate::netcheck::run(&inputs, &roots));
             // The same leak as `stun`/`relay`/`tunnel`, for the same reason:
             // FM-1, tokio 1.53.1's use-after-free in runtime teardown, and
             // `detect_mapping` resolves through `lookup_host`, so there is
@@ -1308,6 +1789,7 @@ pub fn main(cli: Cli) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        Command::Key { ref action } => key_verb(&cli, action),
         Command::Ps => {
             // Unlike the REPL, `ps` has nothing it can do standalone: its
             // whole subject is a deployment already running in another

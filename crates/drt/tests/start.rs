@@ -735,3 +735,375 @@ mod polled {
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 }
+
+// depth: a rooted start, against a real filesystem
+
+/// Everything above this point drives a config straight into `start`. This
+/// block drives the *root* path instead — `.drt_root/` on a real disk, a
+/// profile resolved, consent accepted, a program found — because the unit tests
+/// for it run against `MemFs` and `StdFs` is what ships. A path jail, a
+/// `create_dir_all`, and a relative `dlua_dir` all behave slightly differently
+/// on the two, and only one of them is what an operator has.
+mod rooted {
+    use std::path::Path;
+
+    use drt::boot;
+    use drt::consent_gate::{Ask, Flags};
+
+    /// Nobody to ask, and a record of what it was told.
+    #[derive(Default)]
+    struct Quiet {
+        said: Vec<String>,
+    }
+
+    impl Ask for Quiet {
+        fn interactive(&self) -> bool {
+            false
+        }
+        fn say(&mut self, line: &str) {
+            self.said.push(line.to_string());
+        }
+        fn confirm(&mut self, _: &str) -> std::io::Result<bool> {
+            unreachable!("no test here answers a prompt")
+        }
+    }
+
+    /// A root on a real disk.
+    fn lay_out(dir: &Path, project: &str) {
+        std::fs::create_dir_all(dir.join(".drt_root/profile")).unwrap();
+        std::fs::create_dir_all(dir.join("dlua")).unwrap();
+        std::fs::write(dir.join(".drt_root/project.json"), project).unwrap();
+        std::fs::write(
+            dir.join(".drt_root/profile/debug.config.json"),
+            r#"{"dlua_dir":"dlua/","entry":"app.dlua","args":{"verbose":false}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(".drt_root/profile/preflight.config.json"),
+            r#"{"entry":"stdlib:preflight"}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("dlua/app.dlua"), "print('hello from app.dlua')\n").unwrap();
+    }
+
+    const PROJECT: &str = r#"{
+        "root_id": "0192f0c1-8000-7000-8000-00000000abcd",
+        "project_name": "my_drt_project",
+        "project_version": "0.0.0",
+        "drt": "0.5.0",
+        "caps": [{"effect":"grant","capability":"host:time"}],
+        "default_profile": "debug",
+        "profiles": ["debug.config.json", "preflight.config.json"]
+    }"#;
+
+    /// A first start accepts the ceiling with `-y`, writes `consent.json`, and
+    /// resolves the entry to a real path on disk. A second start is silent.
+    #[test]
+    fn a_first_rooted_start_accepts_and_the_second_is_silent() {
+        let tmp = tempfile::tempdir().unwrap();
+        lay_out(tmp.path(), PROJECT);
+
+        let mut ask = Quiet::default();
+        let booted = boot::boot(
+            tmp.path(),
+            None,
+            None,
+            None,
+            Flags {
+                yes: true,
+                accept_changes: false,
+            },
+            &mut ask,
+        )
+        .expect("it boots");
+
+        assert_eq!(
+            booted.config.root.program,
+            Some(drt_config::Program::Path(
+                tmp.path().join(".drt_root/live/my_drt_project/app.dlua")
+            )),
+            "what runs is live/, and a deploy is what puts it there"
+        );
+        let deployment = booted.deployment.as_ref().unwrap();
+        assert_eq!(deployment.source.describe(), "dlua_dir");
+        assert!(!deployment.deployed, "boot deploys nothing; start does");
+        assert!(
+            tmp.path().join(".drt_root/consent.json").exists(),
+            "-y wrote the acceptance"
+        );
+
+        // Second start: the hash matches, so nothing is said and nothing asked.
+        let mut again = Quiet::default();
+        boot::boot(tmp.path(), None, None, None, Flags::default(), &mut again)
+            .expect("a matching ceiling needs no flag at all");
+        assert!(again.said.is_empty(), "{:?}", again.said);
+    }
+
+    /// consent.md acceptance 1's second half, on a real disk: widen the
+    /// declared ceiling and `-y` is not enough.
+    #[test]
+    fn widening_the_ceiling_is_not_covered_by_minus_y() {
+        let tmp = tempfile::tempdir().unwrap();
+        lay_out(tmp.path(), PROJECT);
+        let yes = Flags {
+            yes: true,
+            accept_changes: false,
+        };
+        boot::boot(tmp.path(), None, None, None, yes, &mut Quiet::default()).unwrap();
+
+        std::fs::write(
+            tmp.path().join(".drt_root/project.json"),
+            PROJECT.replace(
+                r#"[{"effect":"grant","capability":"host:time"}]"#,
+                r#"[{"effect":"grant","capability":"host:time"},
+                    {"effect":"grant","capability":"host:fs/read"}]"#,
+            ),
+        )
+        .unwrap();
+
+        let mut ask = Quiet::default();
+        let e = boot::boot(tmp.path(), None, None, None, yes, &mut ask).unwrap_err();
+        assert!(e.contains("--accept-changes"), "{e}");
+        assert!(e.contains("host:fs/read"), "the refusal names it: {e}");
+
+        // And `--accept-changes` is.
+        boot::boot(
+            tmp.path(),
+            None,
+            None,
+            None,
+            Flags {
+                yes: false,
+                accept_changes: true,
+            },
+            &mut Quiet::default(),
+        )
+        .expect("the deliberate act works");
+    }
+
+    /// `--root` reaches a root from somewhere else, which is what a systemd
+    /// unit needs because systemd's default working directory is `/`.
+    #[test]
+    fn the_root_flag_reaches_a_root_from_outside_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        lay_out(tmp.path(), PROJECT);
+        let elsewhere = tempfile::tempdir().unwrap();
+
+        // Discovery does not walk up, and there is no root where we are.
+        let mut ask = Quiet::default();
+        let booted = boot::boot(
+            elsewhere.path(),
+            None,
+            None,
+            None,
+            Flags::default(),
+            &mut ask,
+        )
+        .expect("no root is the no-root path");
+        assert!(booted.root.is_none());
+
+        // Named explicitly, it is found.
+        let booted = boot::boot(
+            elsewhere.path(),
+            Some(tmp.path()),
+            None,
+            None,
+            Flags {
+                yes: true,
+                accept_changes: false,
+            },
+            &mut Quiet::default(),
+        )
+        .expect("--root finds it");
+        assert_eq!(booted.root.as_ref().unwrap().dir, tmp.path());
+    }
+
+    /// The development loop from the doc's transcript, on a real disk: deploy,
+    /// run what was deployed, edit, see the old thing still running, deploy
+    /// again, see the edit. The lag is the whole reason `live/` is a directory
+    /// of its own rather than an implementation detail of `start`.
+    #[test]
+    fn the_deploy_edit_deploy_loop_behaves_as_documented() {
+        let tmp = tempfile::tempdir().unwrap();
+        lay_out(tmp.path(), PROJECT);
+        let yes = Flags {
+            yes: true,
+            accept_changes: false,
+        };
+        let booted = boot::boot(tmp.path(), None, None, None, yes, &mut Quiet::default()).unwrap();
+        let root = booted.root.as_ref().unwrap();
+        let deployment = booted.deployment.as_ref().unwrap();
+
+        drt::deploy::deploy(root, &deployment.name, &deployment.source).unwrap();
+        let live = drt::deploy::live_path(root, &deployment.name).join("app.dlua");
+        assert_eq!(
+            std::fs::read_to_string(&live).unwrap(),
+            "print('hello from app.dlua')\n"
+        );
+        assert!(drt::deploy::is_deployed(root, &deployment.name));
+
+        // An edit that has not been deployed is not what runs.
+        std::fs::write(tmp.path().join("dlua/app.dlua"), "print('edited')\n").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&live).unwrap(),
+            "print('hello from app.dlua')\n",
+            "an edit reaches live/ only through a deploy"
+        );
+        drt::deploy::deploy(root, &deployment.name, &deployment.source).unwrap();
+        assert_eq!(std::fs::read_to_string(&live).unwrap(), "print('edited')\n");
+
+        // Commit captures what runs, and the envelope describes exactly that.
+        let project: drt_config::project::ProjectJson = serde_json::from_str(
+            &std::fs::read_to_string(tmp.path().join(".drt_root/project.json")).unwrap(),
+        )
+        .unwrap();
+        let committed = drt::deploy::commit(root, &deployment.name, &project).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join(".drt_root/init/app.dlua")).unwrap(),
+            "print('edited')\n"
+        );
+        let envelope: drt_config::envelope::Envelope = serde_json::from_str(
+            &std::fs::read_to_string(tmp.path().join(".drt_root/state/envelope.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(envelope.hash().unwrap(), committed.hash);
+        assert!(envelope
+            .differences(&drt::deploy::hashes(&root.init()).unwrap())
+            .is_empty());
+
+        // And rm takes it away, idempotently.
+        drt::deploy::remove(root, &deployment.name).unwrap();
+        assert!(!drt::deploy::is_deployed(root, &deployment.name));
+        drt::deploy::remove(root, &deployment.name).unwrap();
+    }
+
+    /// `drt start preflight` resolves and reports, and the report is the
+    /// resolution -- the same value `start` would act on.
+    #[test]
+    fn the_preflight_profile_reports_what_start_would_do() {
+        let tmp = tempfile::tempdir().unwrap();
+        lay_out(tmp.path(), PROJECT);
+        let booted = boot::boot(
+            tmp.path(),
+            None,
+            None,
+            Some("preflight"),
+            Flags {
+                yes: true,
+                accept_changes: false,
+            },
+            &mut Quiet::default(),
+        )
+        .expect("it boots");
+
+        let resolution = booted.resolution.as_ref().unwrap();
+        let mut out = Vec::new();
+        drt::stdlib::preflight(
+            resolution,
+            resolution.pin.as_ref().map(|p| p.value.as_str()),
+            "0.5.0",
+            resolution.consent.as_ref(),
+            &mut out,
+        )
+        .unwrap();
+        let report = String::from_utf8(out).unwrap();
+
+        assert!(
+            report.contains("profile: preflight (named on the command line)"),
+            "{report}"
+        );
+        assert!(report.contains("ceiling: 1 caps"), "{report}");
+        assert!(report.contains("stdlib:preflight"), "{report}");
+        assert!(
+            report.ends_with("start would run. nothing started.\n"),
+            "{report}"
+        );
+    }
+}
+
+// depth: the root program's arguments, delivered as a message
+
+/// A profile's merged `args` reach the root program, typed, on the queue the
+/// runtime fixes. This is the delivery half of the args rule -- `merge_args`
+/// decides *what* the table holds and has its own tests; this is that table
+/// arriving somewhere a program can read it.
+#[test]
+fn the_merged_args_table_reaches_the_root_program() {
+    // Parks at the end rather than returning: a slot is released the moment its
+    // program exits, and a test reading an exported queue afterwards finds no
+    // instance at all -- the same reason `drt-swarm`'s tests spawn a child that
+    // parks forever.
+    let program = "local q = queue.declare('args', {capacity = 1})\n\
+                   local _, a = queue.wait({q})\n\
+                   local out = queue.declare('seen', {capacity = 4, exported = true})\n\
+                   queue.push(out, {v = a.verbose, p = a.port, n = #a.stun})\n\
+                   local idle = queue.declare('idle', {capacity = 1})\n\
+                   queue.wait({idle})\n";
+    let mut config = config_with_source(program, "");
+    config.args = [
+        (
+            "verbose".to_string(),
+            drt_config::resolve::ArgValue::Bool(true),
+        ),
+        ("port".to_string(), drt_config::resolve::ArgValue::Int(9000)),
+        (
+            "stun".to_string(),
+            drt_config::resolve::ArgValue::List(vec!["a".into(), "b".into()]),
+        ),
+    ]
+    .into_iter()
+    .collect();
+
+    let mut driver = start::prepare(&config, Dispatcher::new(Registry::new())).unwrap();
+    let root = driver.root();
+
+    // Drive until the program has read the table and answered. Generous: the
+    // delivery lands on the pass after the one that declared the queue, which
+    // is the held-request shape and the whole reason it retries.
+    let mut seen = None;
+    for _ in 0..64 {
+        driver.step();
+        let sw = driver.deployment_mut();
+        let Some(inst) = sw.instance_mut(root) else {
+            break;
+        };
+        if let Some(q) = inst.queue("seen") {
+            if let Ok(Some(raw)) = inst.pop(q) {
+                seen = Some(rmpv::decode::read_value(&mut raw.as_slice()).unwrap());
+                break;
+            }
+        }
+    }
+
+    let seen = seen.expect("the program read its arguments and answered");
+    let field = |name: &str| {
+        seen.as_map()
+            .unwrap()
+            .iter()
+            .find(|(k, _)| k.as_str() == Some(name))
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| panic!("{name} is in the answer"))
+    };
+    assert_eq!(
+        field("v"),
+        rmpv::Value::Boolean(true),
+        "a bool stays a bool"
+    );
+    assert_eq!(field("p").as_i64(), Some(9000), "an int stays an int");
+    assert_eq!(
+        field("n").as_i64(),
+        Some(2),
+        "a list arrives as one array, so repeated flags are one key"
+    );
+}
+
+/// A profile with no `args` delivers nothing and expects no queue: a program
+/// that takes no arguments must not have to declare one.
+#[test]
+fn a_profile_with_no_args_expects_no_queue() {
+    let config = config_with_source("return 1", "");
+    assert!(config.args.is_empty());
+    // It drains, which it would not if the delivery were waiting on a queue
+    // nobody declared.
+    start_guarded(config, Duration::from_secs(5)).unwrap();
+}

@@ -315,10 +315,98 @@ fn buildinfo_names_the_release_tag_when_built_as_one() {
 /// the binary reports the profile that set is. A feature added to `full`
 /// in the manifest and forgotten in `main.rs` fails here as `custom`; a
 /// feature added to the manifest and unknown to this test fails by name.
+/// Every name a profile table carries must be probed, in both the places
+/// that probe.
+///
+/// It builds a `Vec<&str>` and compares it for equality against those tables,
+/// so a name in a table with no `feature!` line beside it can never appear in
+/// the vector and that profile can never match. It does not fail loudly: the
+/// build reports `profile: custom`, which reads as "an unusual feature set"
+/// rather than as a bug.
+///
+/// That happened. `turn-client` went into PROFILE_FULL without a probe, and
+/// for four commits every full build called itself `custom` -- which made the
+/// examples gate skip all fifteen `needs_build: full` examples, including two
+/// that were calling verbs which no longer existed. Nothing was red.
+///
+/// Both halves are scraped from the one source file rather than read as
+/// items, because the tables are private and making them `pub` to be tested
+/// would widen the crate's surface for a rule that is internal.
+#[test]
+fn every_profile_name_is_a_feature_the_binary_probes() {
+    let read = |what: &str| std::fs::read_to_string(what).unwrap();
+    let source = read(concat!(env!("CARGO_MANIFEST_DIR"), "/src/cli.rs"));
+    let here = read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/cli.rs"));
+
+    let quoted = |text: &str| -> Vec<String> {
+        text.split('"')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_string)
+            .collect()
+    };
+
+    // Line-shaped, so the `"feature!("` written inside this very test is not
+    // itself scraped as a probe.
+    let probes = |text: &str| -> Vec<String> {
+        let mut out: Vec<String> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("feature!(\"") && l.ends_with("\");"))
+            .flat_map(&quoted)
+            .collect();
+        out.sort();
+        out
+    };
+
+    let probed = probes(&source);
+    let mirrored = probes(&here);
+    assert!(
+        probed.len() > 10,
+        "the scrape found {} probes, so it has stopped matching the source",
+        probed.len()
+    );
+    // Two lists of the same names in two crates. `profile_matches_its_manifest`
+    // compares what this file thinks was enabled against what the binary
+    // reports, so a name in one list and not the other makes that comparison
+    // disagree for a reason that has nothing to do with the binary.
+    assert_eq!(
+        probed, mirrored,
+        "src/cli.rs and tests/cli.rs probe different feature sets"
+    );
+
+    let mut checked = 0;
+    for table in [
+        "PROFILE_FULL",
+        "PROFILE_SLIM",
+        "PROFILE_WASI",
+        "PROFILE_WEB",
+    ] {
+        let head = format!("const {table}: &[&str] = &[");
+        let at = source
+            .find(&head)
+            .unwrap_or_else(|| panic!("{table} is not declared the way this test reads it"));
+        let body = &source[at + head.len()..];
+        let body = &body[..body.find("];").expect("a terminated table")];
+        for name in quoted(body) {
+            assert!(
+                probed.contains(&name),
+                "{table} lists `{name}` and `enabled_features` does not probe it, so no build \
+                 can ever report that profile"
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked > 20,
+        "only {checked} names checked across four tables"
+    );
+}
+
 #[test]
 fn profile_matches_its_manifest() {
     const PROFILES: [&str; 4] = ["full", "slim", "wasi", "web"];
-    const LEAVES: [&str; 18] = [
+    const LEAVES: [&str; 19] = [
         "cli",
         "connector-crypto",
         "connector-data",
@@ -331,6 +419,11 @@ fn profile_matches_its_manifest() {
         "connector-time",
         "listen",
         "netcheck",
+        // A test dependency expressed as a feature: dev-dependencies cannot be
+        // optional, and a shipping feature must not carry crates only its tests
+        // use. `wireguard` names it for a real runtime reason -- its TURN
+        // fallback -- so it is a leaf both callers reach by name.
+        "turn-client",
         "relay",
         "runtime",
         "stun",
@@ -425,6 +518,10 @@ fn profile_matches_its_manifest() {
     feature!("stun");
     feature!("tunnel");
     feature!("turn");
+    // `wireguard` names it, so a full build has it and PROFILE_FULL lists
+    // it. Omitted here, this list reports eighteen leaves where the manifest
+    // closure has nineteen and no profile can ever match.
+    feature!("turn-client");
     feature!("wireguard");
     enabled.sort();
 

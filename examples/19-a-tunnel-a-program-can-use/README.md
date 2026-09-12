@@ -10,7 +10,7 @@ Three terminals, or `./demo.sh` which is all of them:
 
 ```
 cd examples/19-a-tunnel-a-program-can-use
-drt relay --config rendezvous.host.lua
+drt start --config rendezvous.json
 drt start --config device.json
 drt --config park.json tunnel
 drt --config claim.json tunnel

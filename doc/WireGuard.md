@@ -554,7 +554,7 @@ answered and this one never heard. The allocation is a `watch` now, so
 installing one wakes the receiver.
 
 `wireguard_traffic_can_fall_back_through_a_turn_allocation` proves it end to
-end against DRT's own `drt turn` server: an allocation taken with a
+end against DRT's own TURN server: an allocation taken with a
 `crypto/turn_credential`-shaped credential, a real WireGuard handshake
 across it, and a real packet out the far side. Loopback and unprivileged, so
 — as everywhere else here — it proves the plumbing, not that it beats a real
@@ -575,7 +575,7 @@ a default-drop firewall. Recorded in issue #15, scoped in issue #17:
 - **Direct, through two NATs, no relay in the path.** Handshakes at 247 ms
   and 1747 ms, packets across both ways.
 - **Past a symmetric NAT** (`MASQUERADE --random-fully`), with
-  `turn_fallback = true` and a `drt turn` on the segment: mapping
+  `turn_fallback = true` and a `turn` block serving on the segment: mapping
   classified symmetric from two disagreeing STUN answers, allocation
   taken, handshake at 739 ms, packet across.
 

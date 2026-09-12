@@ -139,11 +139,33 @@ impl Registry {
 /// that cannot happen.
 pub struct Dispatcher {
     registry: Registry,
+    grants: Option<Arc<dyn GrantDesk>>,
 }
 
 impl Dispatcher {
     pub fn new(registry: Registry) -> Self {
-        Dispatcher { registry }
+        Dispatcher {
+            registry,
+            grants: None,
+        }
+    }
+
+    /// Give this dispatcher somewhere to put grant requests.
+    ///
+    /// Answered here rather than by a connector for the reason
+    /// `capabilities/list` is: only the dispatcher holds both halves. A
+    /// connector's `call` receives its wiring's scope and nothing about the
+    /// *instance* — deliberately, since a scope is a place and not an
+    /// identity — so a connector cannot know which node is asking. The
+    /// dispatcher has the caller's [`CapSet`], and a set knows whose it is.
+    ///
+    /// Optional because most processes have no root to write into: `drt run`
+    /// over a single file has no `state/gsr/`, and a call arriving with no desk
+    /// is answered `denied` by the same rule as a call arriving with no
+    /// connector — "this build does not carry that" is an honest answer.
+    pub fn with_grants(mut self, desk: Arc<dyn GrantDesk>) -> Self {
+        self.grants = Some(desk);
+        self
     }
 
     /// Tell every wired connector the process is ending, and collect what
@@ -202,6 +224,10 @@ impl Dispatcher {
         if req.call == CAPABILITIES_LIST {
             return Routed::Answered(Reply::ok(req.tok, self.capabilities(caps)));
         }
+        // The other half of consent.md §10, and here for the same reason.
+        if req.call == REQUEST_GRANT {
+            return Routed::Answered(self.request_grant(caps, req.tok, req.args.as_ref()));
+        }
         let Some(wired) = self.registry.resolve(&req.call) else {
             return Routed::Answered(Reply::denied(
                 req.tok,
@@ -218,8 +244,33 @@ impl Dispatcher {
     }
 }
 
-/// The one call the dispatcher answers with a value of its own.
+/// The calls the dispatcher answers with a value of its own.
 pub const CAPABILITIES_LIST: &str = "capabilities/list";
+/// `request_grant` (consent.md §10): a node asking for something beyond its
+/// current grant. Under the `capabilities` family, so `host:capabilities/list`
+/// alone reports without being able to ask — an auditor and a petitioner are
+/// different grants.
+pub const REQUEST_GRANT: &str = "capabilities/request_grant";
+
+/// Where a grant request goes, and what the root's ceiling is.
+///
+/// Deliberately untyped at this boundary: `drt-connector` knows nothing of
+/// realms, `project.json` or signatures, and a trait naming those types would
+/// drag `drt-config` in here for no gain. The implementation in `drt` does all
+/// the decoding and all the verifying; this is the seam, so that a dispatcher
+/// with no root answers honestly instead of pretending.
+pub trait GrantDesk: Send + Sync {
+    /// The capability names the root's declared ceiling allows. Reported by
+    /// `capabilities/list` so a node can tell "not granted, ask" from "not
+    /// granted, and this root will never allow it, reconfigure" — which is the
+    /// difference between a request worth making and a message worth printing.
+    fn ceiling(&self) -> Vec<String>;
+
+    /// Ask. `node` is the calling node's path, taken from the capability set
+    /// rather than from the request, because a request whose subject is a
+    /// string the asking node chose is not an audit record.
+    fn request(&self, node: &str, args: Option<&rmpv::Value>) -> Result<rmpv::Value, String>;
+}
 
 impl Dispatcher {
     /// `capabilities/list`: one entry per wired family, in the C host's
@@ -234,35 +285,129 @@ impl Dispatcher {
     /// the C host reads the same map (vera `DRT_ASKS.md` §14).
     fn capabilities(&self, caps: &CapSet) -> rmpv::Value {
         use drt_caps::Effect;
-        let granted = |family: &str| {
+        let under_family = |family: &str| {
             let cap = call_capability(family);
             let under = format!("{cap}/");
+            move |name: &str| name == cap || name.starts_with(&under)
+        };
+        let granted = |family: &str| {
+            let matches = under_family(family);
+            let cap = call_capability(family);
             caps.holds(&cap)
                 || caps
                     .grants()
                     .iter()
-                    .any(|g| matches!(g.effect, Effect::Grant) && g.capability.starts_with(&under))
+                    .any(|g| matches!(g.effect, Effect::Grant) && matches(&g.capability))
         };
-        let entry = |name: &str, granted: bool| {
+        // What this instance *holds* under a family, not merely whether it
+        // holds something. A program told `granted = false` cannot tell a
+        // missing grant from a denied one, and a program told `granted = true`
+        // for `fs` still does not know whether it may write.
+        let held = |family: &str| {
+            let matches = under_family(family);
+            rmpv::Value::Array(
+                caps.grants()
+                    .iter()
+                    .filter(|g| matches(&g.capability))
+                    .map(|g| {
+                        rmpv::Value::Map(vec![
+                            ("capability".into(), g.capability.as_str().into()),
+                            (
+                                "effect".into(),
+                                match g.effect {
+                                    Effect::Grant => "grant",
+                                    Effect::Deny => "deny",
+                                }
+                                .into(),
+                            ),
+                        ])
+                    })
+                    .collect(),
+            )
+        };
+        // Whether the root's ceiling could *ever* permit this family.
+        // consent.md §10's point: "not granted, ask" and "not granted, and
+        // this root's ceiling will never allow it, reconfigure" are different
+        // messages, and only the second is worth failing early on. `true` with
+        // no desk, because a process with no root has no ceiling to be outside
+        // of -- and claiming otherwise would make every family look closed.
+        let ceiling = self.grants.as_ref().map(|desk| desk.ceiling());
+        let within_ceiling = |family: &str| match &ceiling {
+            None => true,
+            Some(names) => {
+                let matches = under_family(family);
+                names
+                    .iter()
+                    .any(|name| matches(name) || drt_caps::implies(name, &call_capability(family)))
+            }
+        };
+        // `{name, kind, owner, granted, visibility}` is the C host's shape
+        // (vera `DRT_ASKS.md` §14) and stays exactly that. The new facts are
+        // *added* keys: a program written against the C host reads the same
+        // five and ignores these, which is why they are fields here rather
+        // than a reshaped reply.
+        let entry = |name: &str, family: &str, is_granted: bool| {
             rmpv::Value::Map(vec![
                 ("name".into(), name.into()),
                 ("kind".into(), "builtin".into()),
                 ("owner".into(), rmpv::Value::Nil),
-                ("granted".into(), rmpv::Value::Boolean(granted)),
+                ("granted".into(), rmpv::Value::Boolean(is_granted)),
                 ("visibility".into(), "public".into()),
+                ("held".into(), held(family)),
+                (
+                    "within_ceiling".into(),
+                    rmpv::Value::Boolean(within_ceiling(family)),
+                ),
             ])
         };
         let mut out: Vec<rmpv::Value> = self
             .registry
             .wired
             .keys()
-            .map(|family| entry(family, granted(family)))
+            .map(|family| entry(family, family, granted(family)))
             .collect();
         out.push(entry(
+            "capabilities",
             "capabilities",
             caps.holds(&call_capability(CAPABILITIES_LIST)),
         ));
         rmpv::Value::Array(out)
+    }
+
+    /// `request_grant`: hand the ask to the desk, or say there is none.
+    ///
+    /// The answer is always `Status::Ok` with a value; `pending`, `granted`
+    /// and `denied` are *values* and not statuses, because `doc/Hostcall.md`
+    /// has no pending status on purpose -- under the queue shape "the answer
+    /// has not arrived" is an empty queue. A realm outside the ceiling comes
+    /// back `ok` plus `denied`, never `Status::Denied`, which means "you do
+    /// not hold `host:...`" and would send a node looking for the wrong fix.
+    fn request_grant(
+        &self,
+        caps: &CapSet,
+        tok: drt_hostcall::Token,
+        args: Option<&rmpv::Value>,
+    ) -> Reply {
+        let Some(desk) = &self.grants else {
+            return Reply::denied(
+                tok,
+                "this process has no root to record a grant request in; \
+                 `request_grant` needs a deployment, not a single program",
+            );
+        };
+        let Some(node) = caps.holder() else {
+            // A desk exists, so there is a root, so the asking instance is in
+            // a tree and has a path. Named rather than unwrapped: the day that
+            // stops being true, this says so instead of panicking in a pump.
+            return Reply::error(
+                tok,
+                "this instance has no node path, so a grant request would have no subject",
+            );
+        };
+        match desk.request(&node.0, args) {
+            Ok(value) => Reply::ok(tok, value),
+            Err(why) => Reply::error(tok, why),
+        }
     }
 }
 

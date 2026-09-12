@@ -12,6 +12,53 @@
 //! shape lives here. The on-disk format is deliberately not fixed by this
 //! crate: everything is plain serde, so msgpack (the tests), JSON, TOML, or a
 //! `.dlua` surface all read into the same object.
+//!
+//! ## The root's own files, and who else reads them
+//!
+//! Beside the instance shape, this crate holds the formats a **root** is
+//! described by, and the logic that resolves them. Those are shared with
+//! `dollup`, which depends on this crate; nothing here depends on anything of
+//! dollup's, because drt must work where dollup is not installed.
+//!
+//! - [`project`] — `project.json`: the root descriptor and the declared
+//!   ceiling, plus the reserved names, the profile filename rule, and
+//!   [`project::NodePath`].
+//! - [`consent`] — `consent.json`: the operator acknowledging that ceiling,
+//!   and the one relation that decides whether a change prompts.
+//! - [`gsr`] — grant signing requests and the decisions about them.
+//! - [`envelope`] — the computed record of what a root has committed, written
+//!   by `commit` and signed by `push`. The only computed thing a root carries
+//!   that travels.
+//! - [`resolve`] — what `start` would do, as a pure function, so `dollup
+//!   audit` and `stdlib:preflight` report the runtime's answer rather than an
+//!   approximation of it.
+//! - [`canon`] — canonical JSON and the one hash type, [`canon::Hash`].
+//! - [`sign`] — ed25519 over canonical bytes.
+//! - [`id`], [`time`] — the two primitive wire values, each minted or read by
+//!   the caller rather than by this crate.
+//! - [`realm`] — the consent noun, which is emphatically not
+//!   [`drt_caps::Scope`].
+
+pub mod canon;
+pub mod envelope;
+pub mod id;
+/// The module-name rule `require` and `dollup pull` both apply.
+pub mod modules;
+pub mod project;
+pub mod realm;
+pub mod resolve;
+pub mod time;
+
+// Signatures, and the two formats that carry them. Off for the browser tier
+// alone: a page is always on the no-root path, where consent does not apply,
+// and `ed25519-dalek` is weight a page has no use for. On for every native
+// build including slim -- "slim" never comes to mean "no consent check".
+#[cfg(feature = "consent")]
+pub mod consent;
+#[cfg(feature = "consent")]
+pub mod gsr;
+#[cfg(feature = "consent")]
+pub mod sign;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -877,6 +924,50 @@ pub struct SshPrincipal {
 /// *instance* config is embedded flat — the same shape at depth zero — and
 /// the process-level rest is what only the OS process can own: connector
 /// wiring, listeners, identity, principals.
+/// `netcheck`: the NAT diagnostic, inside a deployment.
+///
+/// The verb's flags as keys, plus the two every other reporting block here has.
+/// A diagnostic a program can read is worth more than one a human reads once: a
+/// rendezvous program deciding whether to offer a direct path or a relay is
+/// asking exactly the question `netcheck` answers, and asking it from inside the
+/// deployment means asking it about the deployment's own network rather than
+/// about whatever shell ran the verb.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct NetcheckConfig {
+    /// STUN servers, `host:port`. The decisive measurement is the UDP mapping,
+    /// so two of these answer more than any number of anything else.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stun: Vec<String>,
+    /// Reflect edges. An edge supplies what to measure against -- its own STUN
+    /// list and vantages -- so one of these often replaces every other key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reflect: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reflect_at: Vec<String>,
+    /// Ports an inbound probe should try. Needs a `reflect` edge to derive the
+    /// probe host from.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub port: Vec<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_at: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pin_source_port: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub udp_port: Option<u16>,
+    /// Where the verdict lands, on the root program's queues.
+    #[serde(default = "default_netcheck_queue")]
+    pub queue: String,
+    /// How often to measure again, in milliseconds. `0` is once, at start,
+    /// which is what a deployment deciding its own topology wants; a number is
+    /// for one that expects the network to move under it.
+    #[serde(default)]
+    pub report_ms: u64,
+}
+
+fn default_netcheck_queue() -> String {
+    "netcheck".to_string()
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RootConfig {
     #[serde(flatten)]
@@ -897,10 +988,39 @@ pub struct RootConfig {
     pub wireguard: Option<WireguardConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tunnel: Option<TunnelConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub netcheck: Option<NetcheckConfig>,
     #[serde(default, skip_serializing_if = "Identity::is_default")]
     pub identity: Identity,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub principals: Vec<SshPrincipal>,
+    /// Where this profile's source lives, relative to the root. Local
+    /// authoring; `init/` is delivered content and `live/` is what runs.
+    ///
+    /// On `RootConfig` and **not** on [`InstanceConfig`], with `entry` and
+    /// `args`, because §5's keystone is one config shape at every depth and a
+    /// spawn request carries source rather than a path. Resolution turns
+    /// `dlua_dir` + `entry` into the [`Program::Source`] the root instance
+    /// loads; `program` stays the instance-level field it always was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dlua_dir: Option<String>,
+    /// The root program: a file under `dlua_dir`, or `stdlib:<name>`. What
+    /// the C host's config calls `supervisor`.
+    ///
+    /// **One file of a directory.** `dlua_dir` is a directory and this names
+    /// a file in it; the loader may resolve the file's siblings from the same
+    /// directory, which is what `require` reaches (`doc/Modules.md`). The
+    /// `stdlib:` spelling is why `stdlib` is not a module name: a stdlib
+    /// program is reached here and never by `require`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<resolve::Entry>,
+    /// Defaults for the entry, and the declaration of this profile's own
+    /// command line: the default's type is what parses an override
+    /// ([`resolve::merge_args`]). This is what makes a downloaded,
+    /// pre-populated profile a one-command setup with no second schema
+    /// shipped beside it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub args: BTreeMap<String, resolve::ArgValue>,
 }
 
 impl Identity {

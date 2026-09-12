@@ -1,0 +1,23 @@
+{
+  "_comment": "The deployment that mints credentials. It does not run the relay; it shares one secret with it.",
+
+  "program": { "path": "app.dlua" },
+
+  "caps": [
+    { "capability": "host:crypto/turn_credential" }
+  ],
+
+  "connectors": {
+    "crypto": {
+      "_scope": "`turn.key` below is turn.json's key, exactly: this connector mints what that server verifies, and one secret is the whole deployment. The comment lives out here because a connector's `scope` is passed through to the connector verbatim -- an underscore key inside it would be data, not commentary.",
+      "scope": {
+        "key": "a-master-key-for-this-example-000",
+        "turn": {
+          "key": "the-coturn-static-auth-secret-1",
+          "ttl": 3600,
+          "uris": ["turn:127.0.0.1:18493?transport=udp"]
+        }
+      }
+    }
+  }
+}

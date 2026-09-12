@@ -12,6 +12,307 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
+## [0.6.0] - unreleased (prerelease)
+
+`v0.6.0` &middot; dv ABI 1 &middot; diluvium `2c2f920d7fcf` (build14)
+
+**In progress, not cut.** The numeric round (`doc/Plan-2026-09.md`):
+DRT's half is a `features` compatibility fact, a raw-buffer lane in
+the hostcall reply, a `data` connector for parquet and CSV, and the
+config surface that bounds numeric work per instance.
+
+Minor rather than patch, by the rule this file's header states: the
+feature set is a new compatibility fact and `full`'s connector list
+changes. Both are checked by name, so neither can move under a
+version number that says nothing moved.
+
+`dv_abi` stays 1 until the pin that raises it lands. `diluvium` and
+`diluvium_build` name the same core v0.5.0rc8 carries, because this
+entry has not moved the pin yet.
+
+### Connectors
+
+- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `data`, `listen`
+- `slim`: `time`, `fs`, `crypto`, `listen`
+- `wasi`: `time`, `fs`, `crypto`, `sql`, `listen`
+- `web`: `time`, `fs`, `crypto`
+
+### Core features
+
+- `full`: `regex`
+- `slim`: `regex`
+- `wasi`: `regex`
+- `web`: `regex`
+
+### Added
+
+- **Load-time modules: `require`, for a guest that cannot open a file.**
+  Every `.dlua` beside the entry is a module, and `require("db.claims")`
+  is `db/claims.dlua` in the node's own directory ---
+  `live/<name>/` for a deployed entry, the config's directory for a
+  `--config` run. No new hostcall, no new capability, no format change,
+  no ABI change. `doc/Modules.md` is the mechanism and
+  `examples/25-modules` is the shortest version of it.
+
+  **Not `package.preload`, which does not exist here.** A sealed guest is
+  opened without `LUA_LOADLIBK`, so there is no `package`, no
+  `package.preload` and no `require`; those arrive only with `--unsafe`,
+  where `require` is the filesystem one this exists to avoid. The ABI has
+  no preload call either --- `dv_register_code` is snapshot dedup, and
+  registering a chunk there does not make it reachable by name. What the
+  seal does keep is `load`, deliberately: *"It compiles bytes the program
+  already holds and reaches nothing."* So the host generates a chunk
+  holding the modules' source, compiles each with `load`, installs a
+  `require` over the result, and compiles and calls the entry.
+
+  Each module is its own `load`, so a traceback names the module's own
+  file and line, and Lua's 200-local ceiling --- which is per function ---
+  is spent per module rather than per node. The entry is loaded inside
+  the generated chunk rather than after it, under exactly the name it
+  would have had otherwise: adding a module to a node does not shift its
+  line numbers or change the shape of its errors. **A node with no
+  modules beside it generates nothing and is loaded exactly as before.**
+
+  Three corrections to the design note, recorded in `doc/Modules.md`:
+
+  - `.dluac` is deferred. `engine.rs` loads source with
+    `text_only(true)` --- "the verifier that does not exist yet" --- and
+    guest-side `load` accepts a binary chunk even under that flag, which
+    upstream records as a defect. Reaching bytecode modules through it
+    would put unverified bytecode inside the sandbox the entry is
+    protected from, so a `.dluac` beside the entry is refused by name
+    rather than ignored.
+  - A bad name is refused at the **call**, not at load. The host never
+    sees a call site, so a name that reaches `require` cannot be refused
+    before the call that passes it.
+  - Every module is its own chunk, not its own budget: `dv_set_budget`
+    is per instance, so a node's chunks share one.
+
+  The name rule lives in `drt_config::modules` as pure functions ---
+  the charset, the reserved `stdlib` component, and the two directions
+  between a name and a file --- because dollup applies the same one when
+  it refuses a package at pull. One function rather than two copies, for
+  the reason `project::RESERVED` is one list. The generated Lua is the
+  copy that cannot be shared, since the host is not in the loop when a
+  guest calls `require`; it is held identical instead, and
+  `the_two_copies_of_the_name_rule_agree` fails if the two ever differ.
+
+  **`.lua` is a module extension too**, not only `.dlua`. Both are guest
+  source everywhere else in the format --- `RepoFormat.md` admits either
+  in a package, dollup's source-only check takes either --- so a loader
+  that walked only `.dlua` would leave `util.lua` in a node's directory
+  answering to nothing. Two files with one name (`enc.dlua` beside
+  `enc.lua`) are refused rather than one being preferred, which would
+  make the other dead code nobody could see was dead.
+
+### Changed
+
+- **`drt-connector-fs` publishes its path jail.** `FsScope` and
+  `FsScopeType` are public so the `data` connector can grant a
+  directory through the same code rather than a second copy of it. A
+  path jail that exists twice is a path jail that is wrong once. No
+  behaviour of the `fs` connector changes.
+- **The hostcall reply's encode goes through `to_wire`**, by value,
+  rather than `to_bytes` by reference. A reply carrying no column
+  encodes identically; one carrying a column has its bytes moved
+  rather than copied.
+- **The platform filesystem gains `create_dir_all` and `remove_dir_all`**,
+  and its header stops promising six operations. A root has to be
+  written, not only read, and a comment saying six while the list grows
+  is the kind of lie this codebase's style exists to prevent.
+
+  `remove_dir_all` is component-wise, because `Path::starts_with` is:
+  removing `/work` must not take `/workshop`, and the byte-prefix version
+  is the obvious one to reach for and is wrong. Both are idempotent, so a
+  root's layout is created and a deployment removed without every caller
+  carrying an "unless it is already there" branch.
+- **`Signature` carries raw bytes like `PublicKey` does**
+  (`from_bytes`/`as_bytes`), so a consumer holding a detached signature
+  that never passed through this crate's JSON does not have to base64 it
+  on the way in. Asked for by dollup; the two types were asymmetric for
+  no reason.
+
+### Removed
+
+- **`*.host.lua` configs, and the loader that read them.** Every
+  config in this repository is JSON. `crates/drt/src/config.rs` was
+  822 lines of `diluvium-host`'s config dialect mapped onto
+  `RootConfig` -- so a deployment moved from the C host to DRT by
+  swapping the binary and changing no files -- and that commitment
+  goes with it: a C-host deployment now rewrites its config as JSON.
+
+  Twelve example configs and their thirteen corpus copies converted.
+  Each was checked against the `.host.lua` it replaces by loading
+  both and comparing the parsed `RootConfig`; the six WireGuard ones
+  were compared field by field instead, because `--features
+  wireguard` needs a newer rustc than this tree pins.
+
+  JSON has no comments, so the explanatory prose moved to
+  `_`-prefixed sibling keys -- the convention `examples/deployment.json`
+  already used. Serde ignores them at every depth. **Not inside a
+  connector's `scope`**, which is passed through to the connector
+  verbatim: an underscore key there is data, not commentary.
+
+  Two things went with the mapper and one came back:
+
+  - Gone and rebuilt: the checks it made on values serde cannot
+    judge. `config::validate` carries over the two that matter --- a
+    relay label missing either key, and a `relay.bind` with no
+    usable port --- and runs on any config whatever format it
+    arrived in. `verify_key` already failed closed on an empty key,
+    so what this buys is being *told*: a relay refusing every leg
+    looks exactly like a relay nobody is using.
+
+  - **Gone for good: an unknown key was an error that named itself.**
+    Serde ignores one, and it cannot do otherwise while `_`-prefixed
+    keys are how a JSON config carries a comment. So a misspelled
+    `max_element` is a bound that silently does not apply. Recorded
+    as a decision rather than left as a discovery:
+    `a_misspelled_key_is_ignored_which_is_the_hole_left_by_the_lua_loader`
+    in `tests/numeric_bounds.rs` asserts it. The fix, when it is
+    worth making, is a deserializer that refuses an unknown key
+    **unless** it starts with `_`.
+
+  `wg.sh` writes `.host.lua` on customer machines, and that script is
+  in neither repository. It must be changed to write JSON; until it
+  is, what it leaves on a customer machine does not load.
+  `crates/drt-config/tests/corpus/wg.json` is the shape it should
+  write.
+- **The `relay`, `stun` and `turn` verbs, and bare `drt wg`.** Each
+  was a way to run a config block that had no program to be a
+  deployment's other half. `stdlib:relay` and its three siblings are
+  that half, so the four blocks are `drt start` with an `entry` now.
+  `drt wg` keeps `keygen`, `pubkey` and `check` --- the three things
+  that need no privilege and do not serve --- and its `action` is no
+  longer optional.
+
+### Fixed
+
+- **A `drt` pin is compared against the release tag, not the crate
+  version, so prerelease pins work.** By the version scheme a candidate
+  is tagged `X.Y.ZrcN` while its crates stay at `X.Y.Z`, and
+  `binary_version` reported `CARGO_PKG_VERSION` --- so every candidate
+  called itself `0.5.0`. A root pinned to `0.5.0rc9` could never start
+  against the rc9 binary, and a root pinned to `0.5.0` could not tell
+  rc8 from rc9.
+
+  The tag was already travelling with the bytes: `build.rs` re-exports
+  `DRT_RELEASE_TAG` and `drt buildinfo` prints it. Only the pin was not
+  reading it. It does now, minus the leading `v`, falling back to the
+  crate version when no tag was stamped --- so a development tree
+  behaves exactly as before, checked.
+
+  **One behaviour change to know about:** a root pinned to `X.Y.Z` now
+  *mismatches* a candidate binary where it used to match, which is the
+  second half of the same bug and the reason to want this. Pin the
+  candidate you mean to run.
+- **No build could report `profile: full`, so the examples gate skipped
+  every example that needs one.** `PROFILE_FULL` gained `turn-client`
+  when that feature was split out, and `enabled_features` did not gain
+  the matching probe, so the vector it builds could never equal the
+  table it is compared against. The failure is silent by construction:
+  `profile_name` falls through to `custom`, which reads as "an unusual
+  feature set" rather than as a bug, and `run-all.sh` skips a
+  `needs_build: full` example on anything but `full`.
+
+  Fifteen examples were therefore gated on no target at all --- the
+  state the native gate step was added to end, four commits after it was
+  added. It is how `13-stun-server` and `24-wireguard-userspace` kept
+  calling removed verbs through three CI runs with nothing red.
+
+  `every_profile_name_is_a_feature_the_binary_probes` is the guard that
+  was missing: it scrapes the profile tables and the `feature!` probes
+  out of `cli.rs` and fails when a table names something unprobed.
+  Checked by deleting the fix.
+- **`13-stun-server` and `24-wireguard-userspace` still called the verbs
+  that were removed** --- `drt stun --config` and a bare `drt wg
+  --config`. Both are `drt start` now, and their configs carry the
+  `entry` that makes a served block a deployment (`stdlib:stun`,
+  `stdlib:wg`); neither had one, because they were already JSON and so
+  were not in the set of files the `.host.lua` conversion touched. The
+  examples gate skips both on a build without `wireguard`, which is how
+  they were missed. A sweep of every example config for a `relay`,
+  `stun`, `turn` or `wireguard` block with no program now backs this up;
+  the three remaining in `21-wireguard` are inputs to `wg check`, which
+  serves nothing and needs no program.
+- **Three tests in `crates/drt/tests/wireguard.rs` still wrote
+  `*.host.lua`**, so they failed against the loader that no longer reads
+  it. That file compiles only under `--features wireguard`, which needs
+  a newer rustc than this tree pins, so nothing local could run them ---
+  CI was the first to see it. Two of the three carried assertions that
+  went with the mapper: an unknown key at block level was refused by
+  name and is now silently ignored, which is asserted rather than
+  deleted, and a `mode` that is neither word is still refused but with
+  serde's wording. The third, a typo *inside* a `forward` entry, is
+  still refused, because the key it displaced is required and serde
+  names the one that is missing.
+- **A relative `program` path is resolved against the config**, not
+  against the working directory. The `.host.lua` mapper did this for
+  `supervisor` and said why --- the deployment directory is the unit
+  that moves --- and the JSON path did not, so every config under
+  `examples/` named a bare filename and worked only from its own
+  directory. `examples/deployment.json` was the one written the other
+  way and is rebased.
+- **`--features stun` did not compile at all**, and nor did any
+  feature set carrying `stun` without `netcheck`. The `gather`
+  module's reflect half -- `probe`, `reflect`, `one_edge`,
+  `configure` -- reaches an HTTPS edge through `crate::reflect` and
+  names `tokio_rustls` in its signatures, but was gated on `stun`
+  while both of those live behind `netcheck`. `cli.rs` had the
+  mirror-image slip: the `Netcheck` match arm was gated on `stun`
+  while the `Command::Netcheck` variant it matched was gated on
+  `netcheck`.
+
+  Only `full` and the default profile were built anywhere, so a
+  profile the crate advertises -- and the one a deployment running
+  only the STUN server would pick -- had been uncompilable without
+  anything noticing. The reflect half now carries the `netcheck`
+  gate its dependencies do, and the verb's arm matches its variant.
+
+### Known issues
+
+- **A connector decode is work the instruction budget does not
+  bound** -- it is host work, not the guest's instructions, and not a
+  kernel either. The only bound is `max_bytes` on the `data` scope,
+  which is therefore the memory bound as well as the file bound.
+  Measured at roughly 4 ms per megabyte of parquet; the decode parks
+  on `spawn_blocking` so the deployment keeps running, and there is
+  no per-call timeout and no cancellation. `doc/Failure-Modes.md`
+  FM-5 has the numbers and how to size a scope.
+- **The numeric half of this entry is plumbed, not live.** The pin
+  does not carry a core with `numeric`, so: `features` and
+  `diluvium_build` in `buildinfo` are hard-coded from the profile
+  rather than read from the core, the blob lane delivers bytes inline
+  as a Lua string rather than through `dv_reply_blob`, the instance's
+  numeric bounds reach the instance but the core has nowhere to put
+  them, and `numeric_touched_fast` is `false` because no fast-tier
+  backend exists anywhere to set it. Each is marked `TODO(A0)` or
+  `TODO(A2)` at the one place it changes, and each has a test that
+  fails if the pin moves and the code does not.
+- **Four readers for the four server-shaped blocks**, as
+  `stdlib:relay`, `stdlib:stun`, `stdlib:turn` and `stdlib:wg`. Each
+  is the program half of a block `drt start` already serves: the
+  block binds and measures, the program declares the block's report
+  queue, prints what lands, and never returns.
+
+  This is what the `relay`, `stun` and `turn` verbs existed for. They
+  were verbs because a deployment is config plus a program and those
+  blocks had no program to be the other half of -- so the verb was a
+  way to run a config with nothing in it. A reader is that half, and
+  it is nine lines because it reimplements nothing.
+
+  Each is gated on the feature carrying the block it reads: a name
+  that resolved to a reader with nothing to read would be worse than
+  a name that is absent.
+
+  **A reader reports and does not arbitrate.** A `relay` block naming
+  `reply_queue` is asking a program to decide whether each leg is
+  admitted, and silence inside `admit_timeout_ms` is itself a
+  refusal -- so a config that asks for arbitration and runs a reader
+  refuses every leg, visibly and failing closed. A deployment that
+  arbitrates wants its own program; `examples/rendezvous` is one.
+
+
 ## [0.5.0rc9] - 2026-09-10 (prerelease)
 
 `v0.5.0rc9` &middot; dv ABI 1 &middot; diluvium `850e00d73220` (build13)
@@ -396,141 +697,6 @@ creating anything.
   the old diagnosis kept underneath, the way that page already
   keeps v0.3.1's: a rule nobody can reproduce is worse than a rule
   with its history attached.
-
-
-## [0.6.0] - unreleased (prerelease)
-
-`v0.6.0` &middot; dv ABI 1 &middot; diluvium `850e00d73220` (build13)
-
-**In progress, not cut.** The numeric round (`doc/Plan-2026-09.md`):
-DRT's half is a `features` compatibility fact, a raw-buffer lane in
-the hostcall reply, a `data` connector for parquet and CSV, and the
-config surface that bounds numeric work per instance.
-
-Minor rather than patch, by the rule this file's header states: the
-feature set is a new compatibility fact and `full`'s connector list
-changes. Both are checked by name, so neither can move under a
-version number that says nothing moved.
-
-`dv_abi` stays 1 until the pin that raises it lands. `diluvium` and
-`diluvium_build` name the same core v0.5.0rc8 carries, because this
-entry has not moved the pin yet.
-
-### Connectors
-
-- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `data`, `listen`
-- `slim`: `time`, `fs`, `crypto`, `listen`
-- `wasi`: `time`, `fs`, `crypto`, `sql`, `listen`
-- `web`: `time`, `fs`, `crypto`
-
-### Core features
-
-- `full`: `regex`
-- `slim`: `regex`
-- `wasi`: `regex`
-- `web`: `regex`
-
-### Added
-
-- **A corpus of every config shape that is deployed or shipped**, in
-  `crates/drt-config/tests/corpus/`, loaded through the real loader
-  and diffed against what it parsed to before.
-
-  `drt-config` is shared by everything, and this round adds fields to
-  it. Every shipped install runs a config this loader wrote, and a
-  regression there is caught by no other gate -- so the rule is that
-  any loader change failing a corpus file is wrong regardless of what
-  it enables. A refusal is snapshotted like any other outcome: three
-  of the shapes in there are refused on purpose, and "it still
-  refuses, for the same reason" is as much a fact about the loader as
-  "it still parses to this".
-- **`drt buildinfo` says which core is inside, not just which
-  revision**: `features` (what the embedded diluvium carries --
-  `regex` today, `numeric` when it lands) and `diluvium_build` (the N
-  in `5.5.1_buildN`, which is the ordered half of a fact the revision
-  states exactly). Both travel in `BUILDINFO.txt` and in this file,
-  which is `doc/Release.md`'s rule: the compatibility fact travels
-  with the bytes.
-- **A `data` connector**: `read_parquet`, `write_parquet`, `read_csv`
-  and `write_csv`, scoped to a granted directory exactly as `fs` is,
-  and using `fs`'s own path jail rather than a second one.
-
-  What it does not build is the point. A column crosses as raw bytes
-  on the reply's blob lane, so a million rows is a million bytes and
-  not a million Lua values; text crosses dictionary-encoded, `i64`
-  codes plus each distinct string once. Nulls follow the numeric
-  spec's Stage 4: an `f64` column says null with NaN, everything else
-  carries a `u8` validity mask, and a column with no null carries
-  nothing. Decoding runs on `spawn_blocking`, so the call parks the
-  way `rest` parks -- a synchronous decode is `exec`'s shape, and it
-  would stop every other instance in the deployment.
-
-  `full` only. Four codecs -- snappy, gzip, lz4, zstd -- and not
-  brotli, which this build does not carry, so a file using it is
-  refused by name at read rather than mis-decoded.
-- **A `numeric` block in the config**: `max_elements` and `max_tier`,
-  per instance, attenuating at spawn under the same rule as budgets.
-  A child may narrow either and raise neither, an unstated bound
-  inherits the parent's rather than becoming unlimited, and the
-  refusal names which of the two moved.
-
-  Beside `budget`, not inside it, because they bound different
-  things: instructions the guest executed, and elements a kernel
-  processed on its behalf. Added beside the existing config fields,
-  never through them -- the loader corpus is the proof, and it shows
-  52 added lines and no changed ones across all thirteen shapes.
-
-  `numeric_touched_fast` rides beside the fate on a stop event and is
-  a roster question next to `budget`. It is `false` everywhere today,
-  and that is a fact rather than a stub: no fast-tier backend exists
-  in this workspace or in the pinned core, so no fast kernel can have
-  run.
-- **`needs_features` in an example's `meta.json`**, beside
-  `needs_build`. A profile name says which connectors a binary has;
-  it does not say which core is inside it, and an example that needs
-  `numeric` is skipped by name on a build without it rather than
-  producing a diff whose real content is "this build does not carry
-  that". A core feature gets its own skip bucket and its own advice:
-  no cargo flag adds one, so "rebuild with `--all-features`" would be
-  a command that cannot help.
-- **`doc/Numeric.md`**, which states what the three determinism tiers
-  promise, the three different bounds on numeric work and which
-  failure each has, and how a column crosses the hostcall boundary.
-  Written for someone operating DRT rather than building the core.
-- `examples/23-reading-parquet`, and the size ledger the plan asks for: `full` at `release-small` grows 1,349,408 bytes (+20.1%) for the `data` connector.
-
-### Changed
-
-- **`drt-connector-fs` publishes its path jail.** `FsScope` and
-  `FsScopeType` are public so the `data` connector can grant a
-  directory through the same code rather than a second copy of it. A
-  path jail that exists twice is a path jail that is wrong once. No
-  behaviour of the `fs` connector changes.
-- **The hostcall reply's encode goes through `to_wire`**, by value,
-  rather than `to_bytes` by reference. A reply carrying no column
-  encodes identically; one carrying a column has its bytes moved
-  rather than copied.
-
-### Known issues
-
-- **A connector decode is work the instruction budget does not
-  bound** -- it is host work, not the guest's instructions, and not a
-  kernel either. The only bound is `max_bytes` on the `data` scope,
-  which is therefore the memory bound as well as the file bound.
-  Measured at roughly 4 ms per megabyte of parquet; the decode parks
-  on `spawn_blocking` so the deployment keeps running, and there is
-  no per-call timeout and no cancellation. `doc/Failure-Modes.md`
-  FM-5 has the numbers and how to size a scope.
-- **The numeric half of this entry is plumbed, not live.** The pin
-  does not carry a core with `numeric`, so: `features` and
-  `diluvium_build` in `buildinfo` are hard-coded from the profile
-  rather than read from the core, the blob lane delivers bytes inline
-  as a Lua string rather than through `dv_reply_blob`, the instance's
-  numeric bounds reach the instance but the core has nowhere to put
-  them, and `numeric_touched_fast` is `false` because no fast-tier
-  backend exists anywhere to set it. Each is marked `TODO(A0)` or
-  `TODO(A2)` at the one place it changes, and each has a test that
-  fails if the pin moves and the code does not.
 
 
 ## [0.5.0rc7] - 2026-09-07 (prerelease)

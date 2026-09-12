@@ -15,19 +15,33 @@ config this loader wrote; a regression here is caught by no other gate.
 
 A corpus filename containing `__` is a byte-for-byte copy of the
 repository file at the path you get by writing `__` as `/` —
-`examples__21-wireguard__hub.host.lua` is `examples/21-wireguard/hub.host.lua`.
+`examples__21-wireguard__hub.json` is `examples/21-wireguard/hub.json`.
 The name carries the provenance so the corpus needs no manifest, and
 `tests/corpus.rs` fails if a copy has drifted from its source or if a
 shipped shape has no copy at all.
 
+Everything here is JSON. It used to be `*.host.lua`, which doubled as the
+rule for what counted as a shape: a new one had a copy here or the
+completeness test failed. `.json` cannot do that job on its own — every
+example directory has a `meta.json` that is not a config — so membership
+is now two lists in `tests/corpus.rs`, `SHIPPED_EXACT` and `NOT_COVERED`,
+with a third test that fails when a config is in neither. `NOT_COVERED`
+is where the old suffix rule's blind spot became visible: twenty-two
+example configs it never reached, listed rather than left implicit.
+
 A filename with no `__` is a shape captured from a deployment *outside*
-this repository. There is one: `wg.host.lua`, what `wg.sh` writes on a
+this repository. There is one: `wg.json`, what `wg.sh` writes on a
 customer machine. `wg.sh` is on the customer side and in neither
 repository, so that one file is reconstructed rather than copied, from
-`doc/WireGuard.md` §1 and the field the plan names — `connectors = { time = {} }`,
-an empty map arriving where a list is read, which is the `as_array` edge
-rc6 fixed for five fields. Its own header says so. Replace it with the
-real artifact the day one is available.
+`doc/WireGuard.md` §1 and the field the plan names — `time = {}`, an
+empty map arriving where a list is read, which is the `as_array` edge rc6
+fixed for five fields. Its own header says so. Replace it with the real
+artifact the day one is available.
+
+**`wg.sh` writes Lua today.** It is the one place dropping `.host.lua`
+reaches outside this repository: until that script is changed to write
+JSON, the config it leaves on a customer machine does not load. This file
+is the shape it should write.
 
 ## The two checks
 
@@ -41,10 +55,13 @@ real artifact the day one is available.
 
 ## Adding to it
 
-Ship a new `.host.lua` under `examples/` and `corpus.rs` fails until you
-copy it here; that is the point. Regenerate a snapshot only when you meant
-to change what a config parses to:
+Ship a new config under `examples/` and `corpus.rs` fails until you name
+it — in `SHIPPED_EXACT` with a copy here, or in `NOT_COVERED`, which says
+out loud that no gate watches it. Prefer the copy. Regenerate a snapshot
+only when you meant to change what a config parses to:
 
-    DRT_CORPUS_UPDATE=1 cargo test --all-features -p drt --test config_corpus
+    DRT_CORPUS_UPDATE=1 cargo test -p drt --test config_corpus
 
-and read the diff before committing it.
+and read the diff before committing it. `--all-features` is no longer
+needed: nothing in the JSON path is feature-gated, so every file is read
+in every build and the snapshots mean the same thing everywhere.

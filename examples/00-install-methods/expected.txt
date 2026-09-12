@@ -3,7 +3,7 @@ profile: full
 dv_abi: 1
 dv_abi_expected: 1
 diluvium: <revision>
-diluvium_build: 13
+diluvium_build: 14
 features: regex
 connectors: time,fs,crypto,sql,ssh,rest,ssmtp,exec,data,listen
-verbs: buildinfo,netcheck,ps,relay,repl,run,start,stun,tunnel,turn,wg
+verbs: buildinfo,commit,deploy,key,netcheck,ps,repl,rm,run,start,tunnel,wg

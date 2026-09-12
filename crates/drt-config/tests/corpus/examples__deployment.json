@@ -1,7 +1,8 @@
 {
   "_comment": "A root config (SPEC.md §5). The same shape is a spawn request: host-config and spawn-request are one serde object, and attenuation is the only rule between them.",
 
-  "program": { "path": "examples/hello.dlua" },
+  "_program": "Relative to this file, like every other config here: a deployment directory is the unit that moves, so `drt --config` finds the program beside the config rather than beside the operator.",
+  "program": { "path": "hello.dlua" },
 
   "_caps": "The ceiling. Everything below is a subset of this, forever.",
   "caps": [

@@ -1,0 +1,12 @@
+-- A module is a file that returns something. Nothing declares it a module and
+-- nothing registers it; being a `.dlua` beside the entry is what makes it one.
+
+local M = {}
+
+function M.title(s)
+    return (s:gsub("(%a)([%w']*)", function(first, rest)
+        return first:upper() .. rest
+    end))
+end
+
+return M

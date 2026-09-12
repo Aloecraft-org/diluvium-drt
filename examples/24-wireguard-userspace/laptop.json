@@ -1,6 +1,9 @@
 {
   "_comment": "One end of the tunnel, on the machine you are sitting at: no interface, no CAP_NET_ADMIN, no sudo. `forward` turns a port on localhost into an address inside the tunnel, so `curl` -- or `ssh -p` -- reaches the fetchpoint with nothing configured on the client. Keys are fixed so the example is reproducible; real ones come from `drt wg keygen`.",
 
+  "_entry": "`drt start` runs this block; `stdlib:wg` is the program that reads what it reports. It was a bare `drt wg` until the block had a program to be a deployment's other half.",
+  "entry": "stdlib:wg",
+
   "wireguard": {
     "mode": "userspace",
     "listen_port": 18520,

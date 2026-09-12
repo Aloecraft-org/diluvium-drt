@@ -1,0 +1,17 @@
+-- A program in three files. `require` reads no filesystem: the host walked
+-- this directory before the program started and compiled what it found, so
+-- this is a lookup in a table that already exists.
+
+local case = require("text.case")
+local join = require("text.join")
+
+print(case.title("the unit that moves"))
+print(join.titled({ "one file", "then another", "then a third" }))
+
+-- A second require is the same value, not a second run.
+print("one table:", require("text.case") == case)
+
+-- A name that is not there is refused by name, and says where it looked.
+-- example: omits the ok branch — pcall's second return is the message
+local ok, why = pcall(require, "text.missing")
+print(why)

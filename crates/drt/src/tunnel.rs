@@ -633,3 +633,53 @@ async fn run_session(
     let _ = tcp_write.shutdown().await;
     Ok(())
 }
+
+// depth: the tunnel inside `drt start`
+
+/// A tunnel served beside the drive loop, on its own runtime.
+///
+/// The arrangement `relay`, `stun`, `turn` and `wireguard` already have: the
+/// block is in the config, `start` serves it, and the verb that used to be the
+/// only way to reach it is not the thing that makes it work. A `park` leg on a
+/// fetchpoint belongs in the deployment that fetchpoint *is*, not in a second
+/// process somebody has to remember to launch beside it.
+///
+/// It reports nothing, deliberately. `stun` and `turn` have counters a meter
+/// must not miss and `relay` has presence to announce; a tunnel's interesting
+/// events are the relay's, already on that bridge, and inventing a second
+/// stream of them here would mean two sources for one fact. Stated rather than
+/// left to be noticed.
+pub struct TunnelBridge {
+    /// The thread owning the runtime. Dropped when the deployment ends, which
+    /// is when the process is exiting anyway.
+    _runtime: std::thread::JoinHandle<()>,
+}
+
+impl TunnelBridge {
+    /// Resolve the block, load its trust anchors, and serve.
+    ///
+    /// Everything that can be refused is refused here, before a socket is
+    /// bound or a host is dialed: two modes in one tunnel, a missing `to`, an
+    /// unusable PEM. `resolve` is the verb's own, so a block that starts under
+    /// `drt start` is exactly a block that starts under `drt tunnel` — the
+    /// migration is a rename and not a second implementation.
+    pub fn start(config: &drt_config::TunnelConfig) -> Result<TunnelBridge, String> {
+        let resolved = resolve(Some(config), &Flags::default())?;
+        let roots =
+            crate::roots::load_roots_named(resolved.extra_roots_key, &resolved.extra_roots)?;
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| format!("the tunnel needs a runtime: {e}"))?;
+        let mode = resolved.mode;
+        let runtime = std::thread::spawn(move || {
+            if let Err(e) = rt.block_on(run(mode, &roots)) {
+                eprintln!("drt start: tunnel stopped: {e}");
+            }
+            // Leaked for the reason every other verb here leaks one: tokio
+            // 1.53.1 has a use-after-free in runtime teardown, and every mode
+            // resolves a hostname through `spawn_blocking`, so there is always
+            // a parked worker to race. See `cli.rs`'s note.
+            std::mem::forget(rt);
+        });
+        Ok(TunnelBridge { _runtime: runtime })
+    }
+}

@@ -11,7 +11,7 @@ A skip is never a pass — the summary names it.
 
 ```
 cd examples/22-wireguard-interface
-sudo -E drt wg --config fp.host.lua        # needs CAP_NET_ADMIN
+sudo -E drt start --config fp.json        # needs CAP_NET_ADMIN
 cat /sys/class/net/drt-fp/mtu
 ```
 
@@ -27,7 +27,7 @@ cd examples && ./run-all.sh --privileged 22
 ## What you should see
 
 ```
-$ drt wg --config fp.host.lua
+$ drt start --config fp.json
 drt wg: drt-fp up on port 51820, mtu 1420, address 10.9.0.1/24, public key <this run's>
 drt wg: peer p6Vqzz…= allowed 10.9.0.2/32 via 127.0.0.1:51821
 

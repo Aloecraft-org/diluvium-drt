@@ -60,8 +60,16 @@ RootConfig {
         },
     ),
     tunnel: None,
+    netcheck: None,
     identity: Identity {
         host_key_path: None,
     },
     principals: [],
+    dlua_dir: None,
+    entry: Some(
+        Stdlib(
+            "wg",
+        ),
+    ),
+    args: {},
 }

@@ -863,11 +863,10 @@ fn a_userspace_block_that_cannot_work_is_refused_before_anything_binds() {
     assert!(drt::wireguard::unroutable(&hub).is_empty());
 }
 
-/// `mode`, `forward` and `expose` load in both spellings to the same
-/// object, `forward = {}` is the empty list and not a type error, and a
-/// typo inside an entry names itself.
+/// `mode`, `forward` and `expose` load, `"forward": []` is the empty list
+/// and not a type error, and a typo inside an entry is still refused.
 #[test]
-fn the_userspace_keys_load_in_both_spellings() {
+fn the_userspace_keys_and_lists_load() {
     let dir = tempfile::tempdir().unwrap();
     let json = dir.path().join("laptop.json");
     std::fs::write(
@@ -881,51 +880,50 @@ fn the_userspace_keys_load_in_both_spellings() {
         } }"#,
     )
     .unwrap();
-    let lua = dir.path().join("laptop.host.lua");
-    std::fs::write(
-        &lua,
-        r#"return { wireguard = {
-            mode = "userspace",
-            address = "10.9.0.2/24",
-            private_key_env = "WG_KEY",
-            forward = { { bind = "127.0.0.1:2222", to = "10.9.0.1:22" } },
-            expose = { { tunnel = "10.9.0.2:22", to = "127.0.0.1:22" } },
-        } }"#,
-    )
-    .unwrap();
     let from_json = drt::config::load(Some(&json)).unwrap().wireguard.unwrap();
-    let from_lua = drt::config::load(Some(&lua)).unwrap().wireguard.unwrap();
-    assert_eq!(from_json, from_lua);
     assert_eq!(from_json.mode, WireguardMode::Userspace);
     assert_eq!(from_json.forward[0].bind, "127.0.0.1:2222");
     assert_eq!(from_json.expose[0].tunnel, "10.9.0.2:22");
 
-    // Lua's `{}` is a list here, as it is for `peers` (issue #15).
-    let empty = dir.path().join("empty.host.lua");
+    // An empty list is a list. This used to be the sharp case: Lua has one
+    // table type, so `{}` was both the empty list and the empty map, and the
+    // mapper read lists with `as_array` and refused the empty one (issue
+    // #15). JSON never had the ambiguity, and the assertion stays because the
+    // *field* still has to default to empty rather than to absent.
+    let empty = dir.path().join("empty.json");
     std::fs::write(
         &empty,
-        r#"return { wireguard = { forward = {}, expose = {} } }"#,
+        r#"{ "wireguard": { "forward": [], "expose": [] } }"#,
     )
     .unwrap();
     let wg = drt::config::load(Some(&empty)).unwrap().wireguard.unwrap();
     assert!(wg.forward.is_empty() && wg.expose.is_empty());
     assert_eq!(wg.mode, WireguardMode::Kernel);
 
-    // A typo inside an entry, and a mode that is neither word.
-    let typo = dir.path().join("typo.host.lua");
+    // A typo inside an entry is still refused, because the key it displaced
+    // is required: serde reports the field that is now missing rather than
+    // the one that is unknown. Different words, same refusal.
+    let typo = dir.path().join("typo.json");
     std::fs::write(
         &typo,
-        r#"return { wireguard = { forward = { { bnd = "127.0.0.1:2222", to = "10.9.0.1:22" } } } }"#,
+        r#"{ "wireguard": { "forward": [ { "bnd": "127.0.0.1:2222", "to": "10.9.0.1:22" } ] } }"#,
     )
     .unwrap();
     let err = drt::config::load(Some(&typo)).unwrap_err();
-    assert!(err.contains("bnd"), "{err}");
-    assert!(err.contains("known: bind, to"), "{err}");
-    let mode = dir.path().join("mode.host.lua");
-    std::fs::write(&mode, r#"return { wireguard = { mode = "user" } }"#).unwrap();
+    assert!(
+        err.contains("bind"),
+        "it names the key that is missing: {err}"
+    );
+
+    // A mode that is neither word is refused with both of the words.
+    let mode = dir.path().join("mode.json");
+    std::fs::write(&mode, r#"{ "wireguard": { "mode": "user" } }"#).unwrap();
     let err = drt::config::load(Some(&mode)).unwrap_err();
-    assert!(err.contains("wireguard.mode"), "{err}");
-    assert!(err.contains("\"userspace\""), "{err}");
+    assert!(err.contains("user"), "{err}");
+    assert!(
+        err.contains("kernel") && err.contains("userspace"),
+        "it names the two that exist: {err}"
+    );
 }
 
 /// An absent endpoint is nil on the wire and never the empty string: "not
@@ -1009,40 +1007,40 @@ fn a_report_says_nil_for_an_endpoint_it_does_not_have() {
     assert_eq!(field(&refused, "reason").as_str(), Some("no peer abc"));
 }
 
-/// The block loads from a `.host.lua` the way every other block does, with
-/// `wg-quick`'s field names.
+/// The block loads the way every other block does, with `wg-quick`'s field
+/// names.
 #[test]
 fn the_wireguard_block_loads_with_wg_quicks_field_names() {
     let dir = tempfile::tempdir().unwrap();
     let key = B64.encode([2u8; KEY_LEN]);
     std::fs::write(
-        dir.path().join("wg.host.lua"),
+        dir.path().join("wg.json"),
         format!(
-            r#"return {{
-  supervisor = "sup.lua",
-  wireguard = {{
-    listen_port = 51820,
-    interface = "drt0",
-    private_key_env = "WG_KEY",
-    address = "10.9.0.1/24",
-    mtu = 1420,
-    queue = "wg_in",
-    reply_queue = "wg_out",
-    report_ms = 5000,
-    peers = {{
+            r#"{{
+  "program": {{ "path": "sup.lua" }},
+  "wireguard": {{
+    "listen_port": 51820,
+    "interface": "drt0",
+    "private_key_env": "WG_KEY",
+    "address": "10.9.0.1/24",
+    "mtu": 1420,
+    "queue": "wg_in",
+    "reply_queue": "wg_out",
+    "report_ms": 5000,
+    "peers": [
       {{
-        public_key = "{key}",
-        allowed_ips = {{ "10.9.0.2/32", "fd00::2/128" }},
-        endpoint = "203.0.113.7:51820",
-        keepalive = 25,
-      }},
-    }},
-  }},
+        "public_key": "{key}",
+        "allowed_ips": [ "10.9.0.2/32", "fd00::2/128" ],
+        "endpoint": "203.0.113.7:51820",
+        "keepalive": 25
+      }}
+    ]
+  }}
 }}"#
         ),
     )
     .unwrap();
-    let config = drt::config::load(Some(&dir.path().join("wg.host.lua"))).unwrap();
+    let config = drt::config::load(Some(&dir.path().join("wg.json"))).unwrap();
     let wg = config.wireguard.expect("the wireguard block loaded");
     assert_eq!(wg.listen_port, 51820);
     assert_eq!(wg.interface, "drt0");
@@ -1056,23 +1054,36 @@ fn the_wireguard_block_loads_with_wg_quicks_field_names() {
     assert_eq!(wg.peers[0].endpoint.as_deref(), Some("203.0.113.7:51820"));
     assert_eq!(wg.peers[0].keepalive, Some(25));
 
-    // A typo is a typo, not a silent default -- the C loader's promise,
-    // kept for this block like every other.
+    // **A misspelled key at block level is a silent default now.** The
+    // `.host.lua` mapper matched every key and had an `other =>` arm, so
+    // `privatekey` was refused by name; serde ignores it, and cannot do
+    // otherwise while `_`-prefixed keys are how a JSON config carries a
+    // comment. Asserted so it stays a decision -- doc/Modules.md's sibling
+    // in `tests/numeric_bounds.rs` records the same hole and the fix worth
+    // making: refuse an unknown key unless it starts with `_`.
     std::fs::write(
-        dir.path().join("typo.host.lua"),
-        r#"return { supervisor = "s.lua", wireguard = { listen_port = 1, privatekey = "x" } }"#,
+        dir.path().join("typo.json"),
+        r#"{ "wireguard": { "listen_port": 1, "privatekey": "x" } }"#,
     )
     .unwrap();
-    let err = drt::config::load(Some(&dir.path().join("typo.host.lua"))).unwrap_err();
-    assert!(err.contains("privatekey"), "{err}");
+    let wg = drt::config::load(Some(&dir.path().join("typo.json")))
+        .expect("no longer refused")
+        .wireguard
+        .expect("the block still loads");
+    assert_eq!(
+        wg.private_key_env, None,
+        "the key the author meant to set is simply not set"
+    );
 
-    // A peer with no public key has no name at all.
+    // A peer with no public key has no name at all, and that one is still
+    // refused: `public_key` is required, so its absence is a missing field
+    // rather than an unknown one.
     std::fs::write(
-        dir.path().join("anon.host.lua"),
-        r#"return { supervisor = "s.lua", wireguard = { peers = { { allowed_ips = { "10.0.0.1/32" } } } } }"#,
+        dir.path().join("anon.json"),
+        r#"{ "wireguard": { "peers": [ { "allowed_ips": [ "10.0.0.1/32" ] } ] } }"#,
     )
     .unwrap();
-    let err = drt::config::load(Some(&dir.path().join("anon.host.lua"))).unwrap_err();
+    let err = drt::config::load(Some(&dir.path().join("anon.json"))).unwrap_err();
     assert!(err.contains("public_key"), "{err}");
 }
 
@@ -1733,33 +1744,37 @@ fn a_device_with_no_peers_still_reports_on_its_interval() {
     });
 }
 
-/// `peers = {}` is a config, not a mistake.
+/// `"peers": []` is a config, not a mistake.
 ///
-/// Lua has one table type, so `{}` is both the empty list and the empty
-/// map; the loader read lists with `as_array` and refused the empty case.
-/// The no-peer block is the one a rendezvous writes.
+/// The no-peer block is the one a rendezvous writes: it creates the
+/// interface, measures its mapping, and waits to be told who to talk to.
+/// This was the `as_array` edge rc6 fixed -- Lua had one table type, so
+/// `{}` was both the empty list and the empty map and the mapper refused
+/// the empty case. JSON never had that ambiguity; what the test holds now
+/// is that an empty list survives to the config rather than becoming an
+/// absence.
 #[test]
 fn a_wireguard_block_may_name_no_peers_at_all() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
-        dir.path().join("rendezvous.host.lua"),
-        r#"return {
-  supervisor = "sup.lua",
-  caps = {},
-  wireguard = {
-    listen_port = 51820,
-    interface = "drt-fp",
-    private_key_env = "WG_KEY",
-    address = "10.9.0.1/24",
-    queue = "wg_in",
-    reply_queue = "wg_out",
-    stun = {},
-    peers = {},
-  },
+        dir.path().join("rendezvous.json"),
+        r#"{
+  "program": { "path": "sup.lua" },
+  "caps": [],
+  "wireguard": {
+    "listen_port": 51820,
+    "interface": "drt-fp",
+    "private_key_env": "WG_KEY",
+    "address": "10.9.0.1/24",
+    "queue": "wg_in",
+    "reply_queue": "wg_out",
+    "stun": [],
+    "peers": []
+  }
 }"#,
     )
     .unwrap();
-    let config = drt::config::load(Some(&dir.path().join("rendezvous.host.lua")))
+    let config = drt::config::load(Some(&dir.path().join("rendezvous.json")))
         .expect("a block that learns its peers later still loads");
     let wg = config.wireguard.expect("the wireguard block loaded");
     assert!(wg.peers.is_empty());
@@ -1769,11 +1784,11 @@ fn a_wireguard_block_may_name_no_peers_at_all() {
     // An empty allowed_ips is still refused: a peer that owns no addresses
     // is a peer nothing will ever be routed to, which `validate` catches.
     std::fs::write(
-        dir.path().join("empty-ips.host.lua"),
-        r#"return { supervisor = "s.lua", wireguard = { peers = { { public_key = "x", allowed_ips = {} } } } }"#,
+        dir.path().join("empty-ips.json"),
+        r#"{ "wireguard": { "peers": [ { "public_key": "x", "allowed_ips": [] } ] } }"#,
     )
     .unwrap();
-    let config = drt::config::load(Some(&dir.path().join("empty-ips.host.lua")))
+    let config = drt::config::load(Some(&dir.path().join("empty-ips.json")))
         .expect("the loader takes it; validate is what refuses it");
     assert!(config.wireguard.unwrap().peers[0].allowed_ips.is_empty());
 }
