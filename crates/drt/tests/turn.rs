@@ -248,9 +248,9 @@ fn a_taken_port_fails_by_name() {
     });
 }
 
-/// The `turn` block loads from a `.host.lua`, binds what it names, and
-/// its bridge carries an allocation's closing report — principal and
-/// bytes — the way the drive loop will.
+/// The `turn` block loads from a config, binds what it names, and its
+/// bridge carries an allocation's closing report — principal and bytes —
+/// the way the drive loop will.
 #[test]
 fn the_turn_block_loads_and_binds_and_reports_a_close_with_its_principal() {
     let dir = tempfile::tempdir().unwrap();
@@ -260,20 +260,20 @@ fn the_turn_block_loads_and_binds_and_reports_a_close_with_its_principal() {
     )
     .unwrap();
     std::fs::write(
-        dir.path().join("turn.host.lua"),
+        dir.path().join("turn.json"),
         format!(
-            r#"return {{
-  supervisor = "sup.lua",
-  turn = {{ bind = "127.0.0.1", port = 0, relay_bind = "127.0.0.1",
-           key = "{SECRET}", report_ms = 0 }},
+            r#"{{
+  "program": {{ "path": "sup.lua" }},
+  "turn": {{ "bind": "127.0.0.1:0", "relay_bind": "127.0.0.1",
+             "key": "{SECRET}", "report_ms": 0 }}
 }}"#
         ),
     )
     .unwrap();
 
-    let config = drt::config::load(Some(&dir.path().join("turn.host.lua"))).unwrap();
+    let config = drt::config::load(Some(&dir.path().join("turn.json"))).unwrap();
     let turn = config.turn.clone().expect("the turn block loaded");
-    // bind and port composed into one address, the way stun's are; the
+    // One address rather than the host and port the C dialect split; the
     // defaults are the documented ones.
     assert_eq!(turn.bind, "127.0.0.1:0");
     assert_eq!(turn.relay_address, "");
@@ -390,22 +390,22 @@ end
     let port = free.local_addr().unwrap().port();
     drop(free);
     std::fs::write(
-        dir.path().join("d.host.lua"),
+        dir.path().join("d.json"),
         format!(
-            r#"return {{
-  supervisor = "sup.lua",
-  caps = {{ "host:fs/*" }},
-  connectors = {{
-    fs = {{ scope = "{}", access = "readwrite", max_bytes = 65536 }},
+            r#"{{
+  "program": {{ "path": "sup.lua" }},
+  "caps": [{{ "capability": "host:fs/*" }}],
+  "connectors": {{
+    "fs": {{ "scope": {{ "scope": "{}", "access": "readwrite", "max_bytes": 65536 }} }}
   }},
-  turn = {{ bind = "127.0.0.1", port = {port}, relay_bind = "127.0.0.1",
-           key = "{SECRET}", report_ms = 50 }},
+  "turn": {{ "bind": "127.0.0.1:{port}", "relay_bind": "127.0.0.1",
+             "key": "{SECRET}", "report_ms": 50 }}
 }}"#,
             dir.path().to_str().unwrap()
         ),
     )
     .unwrap();
-    let cfg = drt::config::load(Some(&dir.path().join("d.host.lua"))).unwrap();
+    let cfg = drt::config::load(Some(&dir.path().join("d.json"))).unwrap();
 
     // A client from the side, on its own runtime, once the deployment
     // answers: allocate, relay a few bytes, release.

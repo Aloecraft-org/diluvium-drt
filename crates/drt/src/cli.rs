@@ -116,7 +116,8 @@ const CORE_FEATURES_CUSTOM: &[&str] = &[];
 /// `script/changelog.py check`, and this is checked against the changelog.
 const DILUVIUM_BUILD: u32 = 13;
 
-/// What `drt wg` can do besides serve.
+/// What `drt wg` does. All three are diagnostics or key handling, and the
+/// serving that used to sit beside them is `drt start` now.
 #[cfg(feature = "wireguard")]
 #[derive(clap::Subcommand)]
 pub enum WgAction {
@@ -319,51 +320,21 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// The rendezvous relay: parked WSS legs paired by label and spliced.
-    /// Reads the `relay` block of the config; runs foreground. Inside
-    /// `drt start` the same relay also reports presence and bytes to the
-    /// root program, and can be asked before it admits a leg.
-    #[cfg(feature = "relay")]
-    Relay,
-    /// The STUN binding server: answer "what address did this datagram
-    /// come from?", so a peer can learn its own reflexive address and try
-    /// a direct path before falling back to the relay. Reads the `stun`
-    /// block of the config; runs foreground. Inside `drt start` the same
-    /// server also reports its counters to the root program.
+    /// The WireGuard toolbox: make a key, read a public key off one, and
+    /// say what is wrong with a `wireguard` block. None of the three needs
+    /// a privilege, and none of them serves.
     ///
-    /// Run two on separate addresses (the `stun1`/`stun2.discofetch.link` pair): one
-    /// server reports an address, two report whether it *changed* between
-    /// vantage points, which is the fact that decides whether hole
-    /// punching can work at all.
-    #[cfg(feature = "stun")]
-    Stun,
-    /// The TURN relay: carry traffic for the peers `stun` says cannot
-    /// reach each other directly -- the last rung of the ladder, and the
-    /// one that costs bandwidth. Reads the `turn` block of the config;
-    /// runs foreground. Credentials are coturn's `use-auth-secret` scheme
-    /// under the block's shared secret, which is what
-    /// `crypto/turn_credential` mints, so the same secret in both blocks
-    /// is the whole deployment. Inside `drt start` the same server also
-    /// reports its counters, and every allocation's closing byte count
-    /// with its principal, to the root program.
-    #[cfg(feature = "turn")]
-    Turn,
-    /// The WireGuard peer this deployment is: bring up the tunnel
-    /// interface the `wireguard` block names, hold it up, and print the
-    /// public key a peer needs. Runs foreground.
-    ///
-    /// This is the rung above `netcheck`, `stun` and `turn`: they answer
-    /// whether two hosts can exchange packets, and this is what carries
-    /// traffic once they can. A peer needs no endpoint at startup -- inside
-    /// `drt start` the root program sets one over the reply queue when a
-    /// rendezvous learns it, which is the hole punch, end to end.
+    /// Serving is `drt start` with a `wireguard` block, whose program is
+    /// `stdlib:wg` when it only reports. This used to be bare `drt wg`,
+    /// back when a block with no program had no other way to run.
     ///
     /// Creating the interface needs CAP_NET_ADMIN or root on Linux, root
-    /// on macOS, and wintun.dll on Windows. Nothing else here does.
+    /// on macOS, and wintun.dll on Windows -- so it is `start` that needs
+    /// them, and nothing here does.
     #[cfg(feature = "wireguard")]
     Wg {
         #[command(subcommand)]
-        action: Option<WgAction>,
+        action: WgAction,
     },
     /// SSH over WSS, as a dumb pipe. With a URL: bridge this process's
     /// stdio to it — the OpenSSH ProxyCommand contract, so
@@ -599,21 +570,15 @@ pub fn buildinfo(json: bool) -> String {
         "run",
         "start",
     ];
-    if cfg!(feature = "relay") {
-        verbs.push("relay");
-    }
     if cfg!(feature = "netcheck") {
         verbs.push("netcheck");
-    }
-    if cfg!(feature = "stun") {
-        verbs.push("stun");
     }
     if cfg!(feature = "tunnel") {
         verbs.push("tunnel");
     }
-    if cfg!(feature = "turn") {
-        verbs.push("turn");
-    }
+    // `relay`, `stun` and `turn` were verbs here and are not any more: each
+    // is a config block plus `stdlib:<name>` under `start`. `wg` stays,
+    // carrying keygen/pubkey/check -- the three things that are not serving.
     if cfg!(feature = "wireguard") {
         verbs.push("wg");
     }
@@ -918,7 +883,9 @@ pub fn assemble(cli: &Cli) -> Result<(RootConfig, drt_connector::Dispatcher), St
         local_defaults(&mut config);
     }
     let registry = wire_connectors(&config)?;
-    // By name, at startup: never a mystifying `denied` at first call.
+    // By name, at startup: never a mystifying `denied` at first call, and
+    // never a server that binds and then refuses everything in silence.
+    config::validate(&config)?;
     config::validate_grants(&config, &registry)?;
     Ok((config, drt_connector::Dispatcher::new(registry)))
 }
@@ -1497,83 +1464,9 @@ pub fn main(cli: Cli) -> ExitCode {
         Command::Start { .. } | Command::Deploy | Command::Rm | Command::Commit => {
             unreachable!("the root verbs are dispatched before assemble")
         }
-        #[cfg(feature = "relay")]
-        Command::Relay => {
-            let Some(relay_config) = config.relay.clone() else {
-                eprintln!("drt relay: the config names no `relay` block");
-                return ExitCode::FAILURE;
-            };
-            let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
-            let outcome =
-                runtime.block_on(crate::relay::serve(crate::relay::Relay::new(relay_config)));
-            // Leak the runtime rather than drop it. tokio 1.53.1 has a
-            // use-after-free in runtime teardown — `BlockingPool::shutdown`
-            // racing a worker's `park::Inner::unpark` into a freed Condvar
-            // (backtrace in doc/Release.md) — and every one of these verbs
-            // resolves a hostname through `lookup_host`, which is a
-            // `spawn_blocking`, so there is always a parked blocking worker
-            // to race. The process is exiting; the OS reclaims everything
-            // drop would have. Leaking costs nothing and removes the whole
-            // class from shipped code.
-            std::mem::forget(runtime);
-            match outcome {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("drt relay: {e}");
-                    ExitCode::FAILURE
-                }
-            }
-        }
-        #[cfg(feature = "stun")]
-        Command::Stun => {
-            let Some(stun_config) = config.stun.clone() else {
-                eprintln!("drt stun: the config names no `stun` block");
-                return ExitCode::FAILURE;
-            };
-            let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
-            let outcome = runtime.block_on(crate::stun::serve(&stun_config));
-            // Leak the runtime rather than drop it. tokio 1.53.1 has a
-            // use-after-free in runtime teardown — `BlockingPool::shutdown`
-            // racing a worker's `park::Inner::unpark` into a freed Condvar
-            // (backtrace in doc/Release.md) — and every one of these verbs
-            // resolves a hostname through `lookup_host`, which is a
-            // `spawn_blocking`, so there is always a parked blocking worker
-            // to race. The process is exiting; the OS reclaims everything
-            // drop would have. Leaking costs nothing and removes the whole
-            // class from shipped code.
-            std::mem::forget(runtime);
-            match outcome {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("drt stun: {e}");
-                    ExitCode::FAILURE
-                }
-            }
-        }
-        #[cfg(feature = "turn")]
-        Command::Turn => {
-            let Some(turn_config) = config.turn.clone() else {
-                eprintln!("drt turn: the config names no `turn` block");
-                return ExitCode::FAILURE;
-            };
-            let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
-            let outcome = runtime.block_on(crate::turn::serve(&turn_config));
-            // Leaked, not dropped: the same tokio 1.53.1 teardown
-            // use-after-free `stun` and `relay` leak theirs for, and the
-            // same reason it is always armed here (`lookup_host` parks a
-            // blocking worker). The process is exiting anyway.
-            std::mem::forget(runtime);
-            match outcome {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("drt turn: {e}");
-                    ExitCode::FAILURE
-                }
-            }
-        }
         #[cfg(feature = "wireguard")]
         Command::Wg {
-            action: Some(WgAction::Keygen),
+            action: WgAction::Keygen,
         } => {
             // Two lines, in the order a config wants them, and on stdout
             // so `drt wg keygen | head -1` is a private key and nothing
@@ -1586,7 +1479,7 @@ pub fn main(cli: Cli) -> ExitCode {
         }
         #[cfg(feature = "wireguard")]
         Command::Wg {
-            action: Some(WgAction::Pubkey),
+            action: WgAction::Pubkey,
         } => {
             let mut key = String::new();
             if let Err(e) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut key) {
@@ -1612,7 +1505,7 @@ pub fn main(cli: Cli) -> ExitCode {
         }
         #[cfg(feature = "wireguard")]
         Command::Wg {
-            action: Some(WgAction::Check),
+            action: WgAction::Check,
         } => {
             let Some(wg_config) = config.wireguard.clone() else {
                 eprintln!("drt wg check: the config names no `wireguard` block");
@@ -1737,26 +1630,6 @@ pub fn main(cli: Cli) -> ExitCode {
                 }
                 Err(e) => {
                     eprintln!("drt wg check: {e}");
-                    ExitCode::FAILURE
-                }
-            }
-        }
-        #[cfg(feature = "wireguard")]
-        Command::Wg { action: None } => {
-            let Some(wg_config) = config.wireguard.clone() else {
-                eprintln!("drt wg: the config names no `wireguard` block");
-                return ExitCode::FAILURE;
-            };
-            let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
-            let outcome = runtime.block_on(crate::wireguard::serve(&wg_config));
-            // Leaked, not dropped: the tokio 1.53.1 teardown use-after-free
-            // every foreground verb here leaks its runtime for. The process
-            // is exiting; the OS reclaims what drop would have.
-            std::mem::forget(runtime);
-            match outcome {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("drt wg: {e}");
                     ExitCode::FAILURE
                 }
             }

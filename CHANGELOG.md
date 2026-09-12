@@ -920,8 +920,69 @@ entry has not moved the pin yet.
   on the way in. Asked for by dollup; the two types were asymmetric for
   no reason.
 
+### Removed
+
+- **`*.host.lua` configs, and the loader that read them.** Every
+  config in this repository is JSON. `crates/drt/src/config.rs` was
+  822 lines of `diluvium-host`'s config dialect mapped onto
+  `RootConfig` -- so a deployment moved from the C host to DRT by
+  swapping the binary and changing no files -- and that commitment
+  goes with it: a C-host deployment now rewrites its config as JSON.
+
+  Twelve example configs and their thirteen corpus copies converted.
+  Each was checked against the `.host.lua` it replaces by loading
+  both and comparing the parsed `RootConfig`; the six WireGuard ones
+  were compared field by field instead, because `--features
+  wireguard` needs a newer rustc than this tree pins.
+
+  JSON has no comments, so the explanatory prose moved to
+  `_`-prefixed sibling keys -- the convention `examples/deployment.json`
+  already used. Serde ignores them at every depth. **Not inside a
+  connector's `scope`**, which is passed through to the connector
+  verbatim: an underscore key there is data, not commentary.
+
+  Two things went with the mapper and one came back:
+
+  - Gone and rebuilt: the checks it made on values serde cannot
+    judge. `config::validate` carries over the two that matter --- a
+    relay label missing either key, and a `relay.bind` with no
+    usable port --- and runs on any config whatever format it
+    arrived in. `verify_key` already failed closed on an empty key,
+    so what this buys is being *told*: a relay refusing every leg
+    looks exactly like a relay nobody is using.
+
+  - **Gone for good: an unknown key was an error that named itself.**
+    Serde ignores one, and it cannot do otherwise while `_`-prefixed
+    keys are how a JSON config carries a comment. So a misspelled
+    `max_element` is a bound that silently does not apply. Recorded
+    as a decision rather than left as a discovery:
+    `a_misspelled_key_is_ignored_which_is_the_hole_left_by_the_lua_loader`
+    in `tests/numeric_bounds.rs` asserts it. The fix, when it is
+    worth making, is a deserializer that refuses an unknown key
+    **unless** it starts with `_`.
+
+  `wg.sh` writes `.host.lua` on customer machines, and that script is
+  in neither repository. It must be changed to write JSON; until it
+  is, what it leaves on a customer machine does not load.
+  `crates/drt-config/tests/corpus/wg.json` is the shape it should
+  write.
+- **The `relay`, `stun` and `turn` verbs, and bare `drt wg`.** Each
+  was a way to run a config block that had no program to be a
+  deployment's other half. `stdlib:relay` and its three siblings are
+  that half, so the four blocks are `drt start` with an `entry` now.
+  `drt wg` keeps `keygen`, `pubkey` and `check` --- the three things
+  that need no privilege and do not serve --- and its `action` is no
+  longer optional.
+
 ### Fixed
 
+- **A relative `program` path is resolved against the config**, not
+  against the working directory. The `.host.lua` mapper did this for
+  `supervisor` and said why --- the deployment directory is the unit
+  that moves --- and the JSON path did not, so every config under
+  `examples/` named a bare filename and worked only from its own
+  directory. `examples/deployment.json` was the one written the other
+  way and is rebased.
 - **`--features stun` did not compile at all**, and nor did any
   feature set carrying `stun` without `netcheck`. The `gather`
   module's reflect half -- `probe`, `reflect`, `one_edge`,

@@ -6,4 +6,4 @@ diluvium: <revision>
 diluvium_build: 13
 features: regex
 connectors: time,fs,crypto,sql,ssh,rest,ssmtp,exec,data,listen
-verbs: buildinfo,commit,deploy,key,netcheck,ps,relay,repl,rm,run,start,stun,tunnel,turn,wg
+verbs: buildinfo,commit,deploy,key,netcheck,ps,repl,rm,run,start,tunnel,wg

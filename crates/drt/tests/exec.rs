@@ -59,24 +59,29 @@ fn a_config_that_wires_exec_is_announced_and_answers() {
     );
 }
 
+/// A connector wired with nothing to say about it.
+///
+/// This was `the_c_hosts_exec_true_loads_unchanged`: the C host spelled a
+/// scopeless connector `exec = true`, and the `.host.lua` mapper took that
+/// spelling so a config written for that host loaded here without an edit.
+/// The mapper is gone and so is the spelling; `{}` is what JSON writes, and
+/// wiring `exec` at all is still what opens the door.
 #[test]
-fn the_c_hosts_exec_true_loads_unchanged() {
+fn exec_wired_with_an_empty_object_is_wired() {
     let dir = tempfile::tempdir().unwrap();
     write(&dir.path().join("prog.dlua"), CALLER);
     write(
-        &dir.path().join("app.host.lua"),
-        r#"
-        return {
-          supervisor = "prog.dlua",
-          caps = { "host:exec/run" },
-          connectors = { exec = true },
-        }
-        "#,
+        &dir.path().join("app.json"),
+        r#"{
+          "program": { "path": "prog.dlua" },
+          "caps": [{ "capability": "host:exec/run" }],
+          "connectors": { "exec": {} }
+        }"#,
     );
     let out = drt()
         .arg("run")
         .arg("--config")
-        .arg(dir.path().join("app.host.lua"))
+        .arg(dir.path().join("app.json"))
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);

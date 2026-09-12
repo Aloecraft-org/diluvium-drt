@@ -1,4 +1,4 @@
-# Diluvium source: `.dlua`, and the host-config dialect in `*.host.lua`.
+# Diluvium source: `.dlua`.
 #
 # GitHub highlights by *language*, and its language list has no Diluvium in
 # it, so the best available answer is to say these are Lua. Diluvium is Lua
@@ -6,8 +6,8 @@
 # `defer`, `with`, safe navigation), and Lua's grammar renders all of it
 # legibly — the additions come out unhighlighted rather than wrong.
 #
-# `*.host.lua` needs no rule: it already ends in `.lua`. It is on its way
-# out anyway (doc/Editors.md), and its removal changes nothing here.
+# `*.host.lua` used to need a note here saying it needed no rule. It is
+# gone: every config is JSON (doc/Editors.md).
 *.dlua linguist-language=Lua
 
 # On the language bar: these are counted, deliberately. They are six small

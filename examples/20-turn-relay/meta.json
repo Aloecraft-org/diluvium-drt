@@ -1,6 +1,6 @@
 {
   "name": "20-turn-relay",
-  "teaches": "The TURN relay and the credential a program mints for it: coturn's use-auth-secret scheme, one shared secret in two blocks, and the guest never holding it. A relay with no secret is an open relay and refuses to bind.",
+  "teaches": "The TURN relay and the credential a program mints for it: coturn's use-auth-secret scheme, one shared secret in two blocks, and the guest never holding it. A relay with no secret is an open relay and refuses to bind. The relay is a `turn` block under `drt start`, with `stdlib:turn` as its program -- the counter line is that program, printing what the block reports. It was a `drt turn` verb until the block had a program to be a deployment's other half.",
   "cmd": "./demo.sh",
   "needs_network": false,
   "needs_build": "full",

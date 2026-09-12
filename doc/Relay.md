@@ -16,7 +16,7 @@ ciphertext.
 
 ```text
    device (behind CGNAT)          relay (public)            caller
-   drt tunnel --park … --to  ──►  drt relay          ◄──  drt tunnel wss://…
+   drt tunnel --park … --to  ──►  drt start          ◄──  drt tunnel wss://…
         │                          splice, by label            │
      127.0.0.1:22                                          ssh/rsync/sftp
 ```
@@ -25,27 +25,32 @@ ciphertext.
 
 ### 1. The relay
 
-A `relay` block in the config, then `drt relay` (standalone) or `drt start`
-(inside a deployment — see *The control plane* below).
+A `relay` block in the config, and a program to be the deployment's other
+half. `stdlib:relay` is that program when the relay only reports; a
+deployment that is *asked* before it admits a leg names its own, which is
+*The control plane* below.
 
-```lua
--- rendezvous.host.lua
-return {
-  supervisor = "supervisor.lua",
-  relay = {
-    bind = "0.0.0.0",
-    port = 8443,
-    labels = {
-      xps = { park_key   = "…32+ random bytes…",
-              caller_key = "…different 32+ random bytes…" },
-    },
-  },
+```json
+{
+  "entry": "stdlib:relay",
+  "relay": {
+    "bind": "0.0.0.0:8443",
+    "labels": {
+      "xps": { "park_key": "…32+ random bytes…",
+               "caller_key": "…different 32+ random bytes…" }
+    }
+  }
 }
 ```
 
 ```
-drt --config rendezvous.host.lua relay
+drt --config rendezvous.json start
 ```
+
+There was a `drt relay` verb here until the block had a program: a verb was
+how a config with nothing in it ran. `stdlib:relay` is nine lines that
+declare the block's report queue and print what lands, carried inside the
+binary, so it needs no root, no cache and no dollup.
 
 Two keys per label, deliberately: the device's key admits a leg to be
 *parked*, the caller's key admits one to *claim*. They are different
@@ -146,20 +151,27 @@ the claim.
 
 ## The control plane
 
-Standalone, the relay tells nobody anything and the static per-label key is
-the only gate. Run inside `drt start`, it gets a channel to the root
-program, and three things become true at once — they were never three
-features, only one missing channel:
+Under `stdlib:relay` the relay only reports, and the static per-label key
+is the only gate. Give the deployment its own program and it gets a channel
+to that program, and three things become true at once — they were never
+three features, only one missing channel:
 
-```lua
-relay = {
-  bind = "0.0.0.0", port = 8443,
-  queue = "relay_in",        -- events land here (default)
-  reply_queue = "relay_out", -- answers read here; ABSENT MEANS NO ARBITRATION
-  admit_timeout_ms = 2000,
-  labels = { … },
+```json
+"relay": {
+  "bind": "0.0.0.0:8443",
+  "queue": "relay_in",
+  "reply_queue": "relay_out",
+  "admit_timeout_ms": 2000,
+  "labels": { }
 }
 ```
+
+`queue` is where events land and has a default; `reply_queue` is where
+answers are read, and **its absence means no arbitration**. Naming it is
+what opts the deployment in to being asked — and having opted in, a
+question it fails to answer inside `admit_timeout_ms` is a refusal. So
+`reply_queue` with `stdlib:relay` refuses every leg: the reader prints, it
+does not answer.
 
 **Presence.** `parked` and `claimed` arrive on `relay_in` as ordinary
 msgpack messages. A panel can say *the laptop is home* without asking

@@ -1,0 +1,20 @@
+{
+  "_comment": "The rendezvous relay: a public address that holds parked WebSocket legs and splices the two carrying the same label into one byte pipe. Run it with `drt --config rendezvous.json start` and `stdlib:relay` as the entry.",
+
+  "entry": "stdlib:relay",
+
+  "relay": {
+    "_bind": "Host and port in one string. Faces the world: this is the address a parked leg and a caller both dial.",
+    "bind": "0.0.0.0:8443",
+
+    "_queue": "example: omits queue/reply_queue -- name them and `drt start` asks the deployment before it admits a leg, where a quota or a revoked device can say no, and silence inside admit_timeout_ms is itself a refusal. A deployment that answers wants its own program; `stdlib:relay` only reports.",
+
+    "_labels": "Two keys per label, because two parties hold them: the park key lives on the device forever, the caller key is what you hand out. Both are blank below, and a blank key is refused when this file loads -- generate real ones with `openssl rand -hex 24`, one per leg, never the same value for both.",
+    "labels": {
+      "xps": {
+        "park_key": "",
+        "caller_key": ""
+      }
+    }
+  }
+}

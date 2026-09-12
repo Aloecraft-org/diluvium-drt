@@ -14,24 +14,25 @@ Two terminals, or `./demo.sh` which is both:
 
 ```
 cd examples/20-turn-relay
-drt turn --config turn.host.lua
-drt run --config app.host.lua
+drt start --config turn.json
+drt run --config app.json
 ```
 
 ## What you should see
 
 ```
-$ drt turn --config turn.host.lua
+$ drt start --config turn.json
 drt turn: listening on 127.0.0.1:18493, relaying via 127.0.0.1
+turn addr=127.0.0.1:18493 allocations_closed=0 allocations_granted=0 …
 
-$ drt run --config app.host.lua
+$ drt run --config app.json
 username <expiry>:fp-7
 password <hmac-sha1 of the username, base64>
 expires  <now + ttl>
 uri      turn:127.0.0.1:18493?transport=udp
 
-$ drt turn --config open.host.lua
-drt turn: turn: the key is missing or shorter than 16 bytes …; a relay with
+$ drt start --config open.json
+drt start: turn: the key is missing or shorter than 16 bytes …; a relay with
 nothing to verify against is an open relay, and is refused
 ```
 
@@ -50,7 +51,7 @@ credential, and the two refusals.
 ## What it teaches
 
 **One secret, two blocks, and that is the whole deployment.**
-`turn.host.lua` verifies what `app.host.lua`'s `connectors.crypto.turn`
+`turn.json` verifies what `app.json`'s `connectors.crypto.turn`
 mints. Nothing is registered anywhere first, and no database sits between
 them: the username carries its own expiry in cleartext and the password is
 that username's HMAC-SHA1 under the shared secret, so any server holding the
@@ -64,7 +65,7 @@ also cannot choose the expiry — it passes a `ttl` and the host adds it to
 its own clock, because the expiry is one field of a cleartext username and a
 guest that chose it would be one edit from a credential that never expires.
 
-**An open relay is refused, not warned about.** `open.host.lua` is the same
+**An open relay is refused, not warned about.** `open.json` is the same
 block with the key removed. A TURN server with nothing to verify against
 relays for anyone who finds it, so it refuses to bind rather than starting
 and hoping nobody scans it.

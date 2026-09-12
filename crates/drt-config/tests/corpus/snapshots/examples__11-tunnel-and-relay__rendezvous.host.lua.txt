@@ -1,2 +1,0 @@
-refused with:
-<corpus>/examples__11-tunnel-and-relay__rendezvous.host.lua: relay.labels.xps needs both park_key and caller_key; an absent key refuses every leg

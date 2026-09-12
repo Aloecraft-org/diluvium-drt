@@ -252,10 +252,12 @@ impl Term {
                 );
                 Session::exited(1)
             }
-            // The verbs behind native-only features (`relay`, `stun`,
-            // `tunnel`, `netcheck`): absent from a browser build of `drt`,
-            // and present when this crate is compiled natively against a
-            // fuller one, where they still have no loop to run in here.
+            // The verbs behind native-only features (`tunnel`, `netcheck`,
+            // `wg`): absent from a browser build of `drt`, and present when
+            // this crate is compiled natively against a fuller one, where
+            // they still have no loop to run in here. `relay`, `stun` and
+            // `turn` are no longer among them -- they are `start` with a
+            // block now, and `start` is refused above, by name.
             #[allow(unreachable_patterns)]
             _ => {
                 say(

@@ -11,9 +11,9 @@ needs `CAP_NET_ADMIN`.
 ```
 cd examples/21-wireguard
 drt wg keygen
-drt wg --config wrong.host.lua
-drt wg check --config hub-unroutable.host.lua
-drt wg check --config rendezvous.host.lua
+drt wg check --config wrong.json
+drt wg check --config hub-unroutable.json
+drt wg check --config rendezvous.json
 ```
 
 ## What you should see
@@ -23,18 +23,18 @@ $ drt wg keygen
 <a key, 32 bytes base64>          # the private key
 <a key, 32 bytes base64>          # its public key, to give a peer
 
-$ drt wg --config wrong.host.lua
-drt wg: wireguard.address: '10.9.0.0/24' is the network address, not a host
+$ drt wg check --config wrong.json
+drt wg check: wireguard.address: '10.9.0.0/24' is the network address, not a host
 address on it. Give the address this device holds, like 10.9.0.1/24.
 
-$ drt wg check --config hub-unroutable.host.lua
+$ drt wg check --config hub-unroutable.json
 drt wg check: peer p6Vqzz…= is allowed 192.168.1.0/24, and nothing will reach
 it: outside 10.9.0.1/24, the only prefix the interface routes. It will
 handshake and carry nothing. Add the route yourself (`ip route add
 192.168.1.0/24 dev drt0`), or narrow allowed_ips.
 ok: drt0 on port 51820, 1 peer(s), 1 warning(s)
 
-$ drt wg check --config rendezvous.host.lua
+$ drt wg check --config rendezvous.json
 ok: drt-fp on port 51820, 0 peer(s)
     no peers named: it will create drt-fp, give it 10.9.0.1/24, measure its
     mapping, and wait for `add` on wg_out
@@ -48,7 +48,7 @@ Private key first, public key second, so `drt wg keygen | head -1` is a key
 and nothing else — a key printed among prose is a key someone pastes with the
 prose.
 
-**`fp.host.lua` and `hub.host.lua` are the two ends, and they mirror.** One
+**`fp.json` and `hub.json` are the two ends, and they mirror.** One
 peer's `address` is the other's `allowed_ips`; one's `listen_port` is the
 other's `endpoint` port; each names the other's *public* key and only ever
 its own private one, by environment variable. Read them side by side — the
@@ -61,13 +61,14 @@ other. What is not `wg-quick`'s is that the interface comes up *ready*: the
 no `ip addr add`.
 
 **A config that cannot work is refused before anything binds.**
-`wrong.host.lua` carries three mistakes and trips the first; uncomment the
-others one at a time:
+`wrong.json` carries three mistakes and trips the first. JSON has no
+comments, so the other two sit beside it as `_wrong_2` and `_wrong_3` --
+keys the loader ignores, saying what to write; swap one in at a time:
 
 - `10.9.0.0/24` — a route's network address where a host address belongs. The
   commonest transcription slip, and it would otherwise yield an interface
   that answers to nothing.
-- `listen_port = 0` — an ephemeral port cannot be named to a peer, and a NAT
+- `"listen_port": 0` — an ephemeral port cannot be named to a peer, and a NAT
   mapping belongs to a port, so it could never be measured either.
 - one `stun` server — one server can report an address; it takes two to say
   whether it *changed*, which is what decides whether a hole punch is
@@ -80,7 +81,7 @@ a config can be written and checked on a laptop and only deployed where it
 is allowed.
 
 **The failure it exists for is the silent one.**
-`hub-unroutable.host.lua` has nothing wrong with it and will not work: DRT
+`hub-unroutable.json` has nothing wrong with it and will not work: DRT
 gives the interface its `address` and the kernel derives exactly one route
 from that, the on-link `10.9.0.0/24`. The peer is also allowed
 `192.168.1.0/24` — everything behind the hub — and no route points there, so
@@ -94,7 +95,7 @@ non-zero exit would fail a deploy over a note. Route management is not DRT's
 (`doc/WireGuard.md` §4).
 
 **A block with no peers is a config, not an oversight.**
-`rendezvous.host.lua` names none, because a device that can only talk to
+`rendezvous.json` names none, because a device that can only talk to
 peers already written into its config is a device that never needed a
 rendezvous. It comes up knowing nobody, measures its own mapping against
 the two STUN servers, publishes what it finds, and waits to be told about a

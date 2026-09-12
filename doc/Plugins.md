@@ -51,10 +51,12 @@ a C API. Subprocess plus msgpack is the better design, not a workaround.
   over `postMessage` in a Worker).
 - **Config half-expects it.** `ConnectorWiring.backing`
   (`crates/drt-config/src/lib.rs`) is declared for a build carrying more
-  than one backing, and nothing reads it. The `.host.lua` loader refuses a
-  `plugins` key by name today (`crates/drt/src/config.rs`), so a C-host
-  deployment that wires plugins does not load on DRT: the one gap in the
-  "swap the binary, edit no files" commitment.
+  than one backing, and nothing reads it. A `plugins` key is not read
+  either -- and since the `.host.lua` loader went away it is no longer
+  *refused* by name, it is simply ignored, which is worse: a config that
+  wires plugins now loads and silently has none. The "swap the binary, edit
+  no files" commitment is gone with that loader anyway; a C-host deployment
+  moves to DRT by rewriting its config as JSON.
 - **The menu is designed and unbuilt.** SPEC.md §5 keeps
   `capabilities/list`; nothing in DRT's Rust answers it. The C host's entry
   shape is `{name, kind, owner, granted, visibility}`. That listing is
@@ -85,9 +87,8 @@ The distinction shows in three places and nowhere in behaviour:
 
 - **Config.** `plugins` beside `connectors`, not inside it, so a typo in a
   connector name still fails by name instead of becoming a plugin lookup.
-  A `.host.lua` `plugins` block maps field for field: `manifest` resolves
-  beside the config file, `max_inflight` and `call_timeout_ms` override
-  the manifest's.
+  `manifest` resolves beside the config file, the way `program` does;
+  `max_inflight` and `call_timeout_ms` override the manifest's.
 - **`capabilities/list`.** Kind and owner, per the C host's shape.
 - **`buildinfo`.** It keeps describing the binary: a line naming the
   plugin *transports* the build carries (`process` natively), never the
@@ -326,7 +327,7 @@ What stays impossible under wasmtime, so nobody plans around it:
 
 The order is unchanged and nothing in it waits any more: codec, manifest
 and `FrameStream` first, testable against `plugin_echo.c` over a
-socketpair with no drive-loop change; then config, the `.host.lua` key
+socketpair with no drive-loop change; then config, the `plugins` key
 and `capabilities/list`; then the in-flight integration and the `tcp`
 transport, whose code -- M3's pump and M6's polled acceptor -- is in this
 tree. The JS-host bridge files this assessment expected `drt-web` to

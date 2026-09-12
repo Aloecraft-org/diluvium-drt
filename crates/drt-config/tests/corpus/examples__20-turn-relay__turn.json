@@ -1,0 +1,20 @@
+{
+  "_comment": "The TURN relay: the last rung of the traversal ladder. `netcheck` says whether a direct path can exist and `stun` measures the mapping that decides it. When the answer is no -- a symmetric NAT, a browser with no UDP -- something has to carry the traffic, and this is it. It costs bandwidth, which is why it is the last rung and not the first.",
+
+  "entry": "stdlib:turn",
+
+  "turn": {
+    "_bind": "Loopback here; faces the world in a real deployment.",
+    "bind": "127.0.0.1:18493",
+
+    "_relay_address": "The address peers are told to send to.",
+    "relay_address": "127.0.0.1",
+
+    "_key": "The same secret as `connectors.crypto.turn` in app.json, and that is the whole deployment: this server verifies what that connector mints. Real ones come from `openssl rand -hex 32`; from a file or an environment variable in anything but an example (key_file, key_env).",
+    "key": "the-coturn-static-auth-secret-1",
+
+    "realm": "example",
+
+    "_queue": "example: omits queue/report_ms -- name them and `drt start` carries the counters and every allocation's closing byte count, with its principal, to the root program, which is what a meter reads"
+  }
+}

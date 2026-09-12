@@ -1,0 +1,37 @@
+{
+  "_comment": "The config `wg.sh` writes on a customer machine. NOT a copy: `wg.sh` lives on the customer side and is in neither repository, so this shape is reconstructed from the two records that are here -- doc/WireGuard.md §1, which is the block that script writes, and doc/Plan-2026-09.md §3.8, which names the one field the reconstruction exists for. Replace this file with the real artifact the day one is available; until then it is the only record of the shape in the corpus, and it is the shape every shipped install runs.",
+
+  "_format": "JSON since `.host.lua` support was removed. `wg.sh` writes Lua today and must be updated to write this; until it is, the config that script leaves on a customer machine does not load. That is the one place this removal reaches outside the repository, and this file is the target shape.",
+
+  "program": { "path": "sup.lua" },
+
+  "caps": [
+    { "capability": "host:time" }
+  ],
+
+  "_connectors": "The field this file is in the corpus for. Lua had one table type, so `{}` was both the empty list and the empty map, and `time = {}` -- the connector wired with no scope of its own -- was an empty MAP reaching the `as_array` path rc6 fixed for five fields. JSON distinguishes the two, so the edge is stated rather than inferred: an object here, and `[]` wherever a list is meant.",
+  "connectors": {
+    "time": {}
+  },
+
+  "wireguard": {
+    "listen_port": 51820,
+    "interface": "drt0",
+    "address": "10.9.0.1/24",
+    "mtu": 1420,
+    "private_key_env": "WG_KEY",
+    "stun": ["stun1.example:3478", "stun2.example:3478"],
+    "turn_fallback": true,
+    "queue": "wg_in",
+    "reply_queue": "wg_out",
+    "report_ms": 10000,
+    "peers": [
+      {
+        "public_key": "p6VqzzX91j0TRajLGT9Dlkn0TEvvk+j4m9E38LlXhSQ=",
+        "allowed_ips": ["10.9.0.2/32"],
+        "endpoint": "203.0.113.7:51820",
+        "keepalive": 25
+      }
+    ]
+  }
+}

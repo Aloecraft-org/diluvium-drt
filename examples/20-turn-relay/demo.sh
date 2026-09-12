@@ -8,17 +8,17 @@
 set -u
 DRT="${DRT:-drt}"
 
-echo '$ drt turn --config turn.host.lua'
-"$DRT" turn --config turn.host.lua &
+echo '$ drt start --config turn.json'
+"$DRT" start --config turn.json &
 sleep 1
 
 echo
-echo '$ drt run --config app.host.lua'
-"$DRT" run --config app.host.lua
+echo '$ drt run --config app.json'
+"$DRT" run --config app.json
 
 echo
-echo '$ drt turn --config open.host.lua'
-"$DRT" turn --config open.host.lua
+echo '$ drt start --config open.json'
+"$DRT" start --config open.json
 echo "exit $?"
 
 kill %1 2>/dev/null

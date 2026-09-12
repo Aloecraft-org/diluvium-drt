@@ -245,6 +245,7 @@ pub fn boot_with(
 
 fn wire(config: &RootConfig) -> Result<drt_connector::Dispatcher, String> {
     let registry = crate::cli::wire_connectors(config)?;
+    crate::config::validate(config)?;
     crate::config::validate_grants(config, &registry)?;
     Ok(drt_connector::Dispatcher::new(registry))
 }

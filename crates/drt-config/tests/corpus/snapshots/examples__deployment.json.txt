@@ -3,7 +3,7 @@ RootConfig {
     root: InstanceConfig {
         program: Some(
             Path(
-                "examples/hello.dlua",
+                "<corpus>/hello.dlua",
             ),
         ),
         caps: [

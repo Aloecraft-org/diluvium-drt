@@ -31,8 +31,10 @@ use drt_config::StunConfig;
 ///
 /// The shipped code is a separate question, recorded in doc/Release.md:
 /// the bridges hand their runtime to a thread that outlives the process,
-/// but the foreground verbs (`drt relay`, `drt stun`, `drt tunnel`) do
-/// drop a runtime when they return, which is this same path.
+/// but a foreground verb that returns drops a runtime, which is this same
+/// path. There is one left -- `drt tunnel` -- since `relay`, `stun` and
+/// `turn` became `start` with a block, and the bridges are what `start`
+/// runs.
 fn rt() -> &'static tokio::runtime::Runtime {
     static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RT.get_or_init(|| tokio::runtime::Runtime::new().expect("a tokio runtime"))
@@ -192,8 +194,8 @@ fn junk_is_dropped_and_counted_not_answered() {
     });
 }
 
-/// The `stun` block loads from a `.host.lua`, binds what it names, and
-/// its bridge encodes a snapshot the supervisor can read.
+/// The `stun` block loads from a config, binds what it names, and its
+/// bridge encodes a snapshot the supervisor can read.
 ///
 /// This checks the bridge in isolation — see
 /// `the_drive_loop_carries_the_counters_to_the_supervisor` for the same
@@ -224,19 +226,19 @@ end
     )
     .unwrap();
     std::fs::write(
-        dir.path().join("stun.host.lua"),
-        r#"return {
-  supervisor = "sup.lua",
-  stun = { bind = "127.0.0.1", port = 0, queue = "stun_in", report_ms = 0 },
+        dir.path().join("stun.json"),
+        r#"{
+  "program": { "path": "sup.lua" },
+  "stun": { "bind": "127.0.0.1:0", "queue": "stun_in", "report_ms": 0 }
 }"#,
     )
     .unwrap();
 
-    let config = drt::config::load(Some(&dir.path().join("stun.host.lua"))).unwrap();
+    let config = drt::config::load(Some(&dir.path().join("stun.json"))).unwrap();
     let stun = config.stun.clone().expect("the stun block loaded");
     assert_eq!(stun.queue, "stun_in");
     assert_eq!(stun.report_ms, 0);
-    // bind and port composed into one address, the way relay and listen do.
+    // One address, the way relay and listen write theirs.
     assert_eq!(stun.bind, "127.0.0.1:0");
 
     // The bridge binds for real, and a live client is answered by the
@@ -347,22 +349,22 @@ end
     )
     .unwrap();
     std::fs::write(
-        dir.path().join("d.host.lua"),
+        dir.path().join("d.json"),
         format!(
-            r#"return {{
-  supervisor = "sup.lua",
-  caps = {{ "host:fs/*" }},
-  connectors = {{
-    fs = {{ scope = "{}", access = "readwrite", max_bytes = 65536 }},
+            r#"{{
+  "program": {{ "path": "sup.lua" }},
+  "caps": [{{ "capability": "host:fs/*" }}],
+  "connectors": {{
+    "fs": {{ "scope": {{ "scope": "{}", "access": "readwrite", "max_bytes": 65536 }} }}
   }},
-  stun = {{ bind = "127.0.0.1", port = 0, report_ms = 50 }},
+  "stun": {{ "bind": "127.0.0.1:0", "report_ms": 50 }}
 }}"#,
             dir.path().to_str().unwrap()
         ),
     )
     .unwrap();
 
-    let cfg = drt::config::load(Some(&dir.path().join("d.host.lua"))).unwrap();
+    let cfg = drt::config::load(Some(&dir.path().join("d.json"))).unwrap();
     // Port 0 means the deployment picks; a prober has to learn it the same
     // way an operator would, so bind once here to find a free port and let
     // the deployment take it.

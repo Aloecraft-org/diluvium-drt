@@ -857,7 +857,22 @@ fn pump_replies<B: Acceptor>(sw: &mut Deployment, root: InstanceId, bound: &mut 
     }
 }
 
+/// The root program's source, from whichever of the three spellings the
+/// config used.
+///
+/// `program` is the instance-level field and answers first. `entry` is the
+/// root-level one -- a file under `dlua_dir`, or `stdlib:<name>` -- and a
+/// `--config` run with no root has no `dlua_dir`, so only the stdlib half
+/// can be answered here. That half is the one that matters: `stdlib:relay`
+/// and its three siblings are what a `relay`, `stun`, `turn` or `wireguard`
+/// block names now that those verbs are gone, and a verb replaced by a
+/// program nothing could reach would not have been replaced.
 fn root_source(config: &RootConfig) -> Result<String, String> {
+    if config.root.program.is_none() {
+        if let Some(entry) = &config.entry {
+            return entry_source(entry);
+        }
+    }
     match &config.root.program {
         Some(drt_config::Program::Path(path)) => drt_platform::fs::read_to_string(path)
             .map_err(|e| format!("cannot read {}: {e}", path.display())),
@@ -875,6 +890,35 @@ fn root_source(config: &RootConfig) -> Result<String, String> {
              https://dollup.aloecraft.org"
                 .to_string(),
         ),
+    }
+}
+
+/// `entry`, for a run with no root.
+///
+/// A file entry is a path under the profile's `dlua_dir`, and there is no
+/// profile here -- so it is refused by name rather than guessed at against
+/// the working directory, which would find the wrong file as readily as the
+/// right one.
+fn entry_source(entry: &drt_config::resolve::Entry) -> Result<String, String> {
+    use drt_config::resolve::Entry;
+    match entry {
+        Entry::Stdlib(name) => match crate::stdlib::lookup(name) {
+            Some(crate::stdlib::Kind::Source(source)) => Ok(source.to_string()),
+            // Native programs are the host's to run; `preflight` is one, and
+            // `drt run -p preflight` is how it is reached.
+            Some(crate::stdlib::Kind::Native(_)) => Err(format!(
+                "`stdlib:{name}` is run by drt itself and cannot be a deployment's program"
+            )),
+            None => Err(format!(
+                "this build carries no stdlib program called `{name}`; it carries {}",
+                crate::stdlib::names().join(", ")
+            )),
+        },
+        Entry::File(path) => Err(format!(
+            "`entry` names `{path}`, which is a path under a profile's \
+             `dlua_dir`, and a --config run has no profile. Name the program \
+             directly:  \"program\": {{\"path\": \"{path}\"}}"
+        )),
     }
 }
 

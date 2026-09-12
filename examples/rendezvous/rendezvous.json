@@ -1,0 +1,22 @@
+{
+  "_comment": "A rendezvous fetchpoint: `drt --config rendezvous.json start`, from this directory. Generate real keys before this reaches anything public -- `openssl rand -hex 24`, one per leg per label, and never the same value for both. The park key lives on the device forever; the caller key is what you hand out.",
+
+  "_program": "This deployment ARBITRATES, so it carries its own program rather than `stdlib:relay`. Resolved relative to the working directory, so run drt from here.",
+  "program": { "path": "supervisor.lua" },
+
+  "relay": {
+    "bind": "0.0.0.0:8443",
+
+    "_queue": "Where the supervisor hears about the relay. Naming `reply_queue` is what opts this deployment in to being ASKED before a leg proceeds -- and having opted in, a question it fails to answer within admit_timeout_ms is a refusal. Delete the two lines below and the static keys become the only gate again.",
+    "queue": "relay_in",
+    "reply_queue": "relay_out",
+    "admit_timeout_ms": 2000,
+
+    "labels": {
+      "xps": {
+        "park_key": "REPLACE-ME-park-0000000000000000",
+        "caller_key": "REPLACE-ME-call-0000000000000000"
+      }
+    }
+  }
+}

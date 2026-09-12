@@ -7,7 +7,7 @@ it unchanged, because the pipe never looks inside.
 
 ```text
   device (no inbound address)      relay (public)              you
-  drt tunnel --park … --to  ──►    drt relay    ◄──   drt tunnel wss://…
+  drt tunnel --park … --to  ──►    drt start    ◄──   drt tunnel wss://…
        │                        spliced by label               │
    127.0.0.1:22                                        ssh, rsync, sftp
 ```
@@ -17,7 +17,7 @@ it unchanged, because the pipe never looks inside.
 ```
 cd examples/11-tunnel-and-relay
 drt tunnel
-drt relay --config rendezvous.host.lua
+drt start --config rendezvous.json
 ```
 
 The rest wants two machines and a public name, so these are the two lines that
@@ -30,8 +30,8 @@ $ drt tunnel
 drt tunnel: name a URL to bridge stdio to (with --local to serve a local port instead), --listen with --to, or --park with --to; or `tunnel` in the --config file, which takes the same keys
 exit 1
 
-$ drt relay --config rendezvous.host.lua
-drt: rendezvous.host.lua: relay.labels.xps needs both park_key and caller_key; an absent key refuses every leg
+$ drt start --config rendezvous.json
+drt start: rendezvous.json: relay.labels.xps needs both park_key and caller_key; an absent key refuses every leg
 exit 1
 ```
 
@@ -77,7 +77,7 @@ answers 443 for you.
 The relay on a public machine, the device holding a leg open, and you:
 
 ```
-drt relay --config rendezvous.host.lua
+drt start --config rendezvous.json
 drt tunnel --park "wss://rendezvous.example/park/xps?k=$PARK_KEY" --to 127.0.0.1:22
 ssh -o ProxyCommand="drt tunnel wss://rendezvous.example/s/xps?k=$CALLER_KEY" user@xps
 ```

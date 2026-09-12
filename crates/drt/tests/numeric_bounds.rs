@@ -8,8 +8,8 @@
 //!
 //! ## surface block
 //!
-//! - [`load`]: write a `.host.lua` and load it, so every config assertion
-//!   goes through the real loader.
+//! - [`load`]: write a config and load it, so every config assertion goes
+//!   through the real loader.
 //! - [`SUPERVISOR`]: a program that spawns one child and reports what the
 //!   swarm said about it.
 //! - The four entry points, in the order the bound travels: the loader, the
@@ -32,13 +32,13 @@ fn a_numeric_block_loads_with_both_bounds() {
     let dir = tempfile::tempdir().unwrap();
     let config = load(
         dir.path(),
-        "app.host.lua",
-        r#"return {
-  supervisor = "sup.lua",
-  numeric = {
-    max_elements = 1000000,
-    max_tier = "reproducible",
-  },
+        "app.json",
+        r#"{
+  "program": { "path": "sup.lua" },
+  "numeric": {
+    "max_elements": 1000000,
+    "max_tier": "reproducible"
+  }
 }"#,
     )
     .expect("the numeric block loads");
@@ -53,8 +53,8 @@ fn either_bound_may_be_stated_alone() {
     let dir = tempfile::tempdir().unwrap();
     let only_tier = load(
         dir.path(),
-        "tier.host.lua",
-        r#"return { numeric = { max_tier = "exact" } }"#,
+        "tier.json",
+        r#"{ "numeric": { "max_tier": "exact" } }"#,
     )
     .unwrap();
     assert_eq!(only_tier.root.numeric.max_tier, Some(Tier::Exact));
@@ -62,39 +62,30 @@ fn either_bound_may_be_stated_alone() {
 
     let only_elements = load(
         dir.path(),
-        "elements.host.lua",
-        r#"return { numeric = { max_elements = 64 } }"#,
+        "elements.json",
+        r#"{ "numeric": { "max_elements": 64 } }"#,
     )
     .unwrap();
     assert_eq!(only_elements.root.numeric.max_elements, Some(64));
     assert_eq!(only_elements.root.numeric.max_tier, None);
 
-    // And an empty block is a block: `{}` is both the empty list and the
-    // empty map in Lua, and this one is a map that states nothing.
-    let empty = load(dir.path(), "empty.host.lua", r#"return { numeric = {} }"#).unwrap();
+    // And an empty block is a block: a `numeric` that states nothing is not
+    // the same as no `numeric` at all to a reader, even though both are
+    // unbounded. This used to be the sharper case -- `{}` was both the empty
+    // list and the empty map in Lua, and telling them apart was a bug class.
+    let empty = load(dir.path(), "empty.json", r#"{ "numeric": {} }"#).unwrap();
     assert!(empty.root.numeric.is_unbounded());
 }
 
-/// A typo is a typo, not a silent default — the C loader's promise, kept
-/// for this block like every other.
+/// A tier nobody defined is refused with the three that exist, rather than
+/// falling back to the loosest, which would be the worst default.
 #[test]
-fn a_misspelled_numeric_key_or_tier_is_refused_by_name() {
+fn a_tier_that_does_not_exist_is_refused_with_the_three_that_do() {
     let dir = tempfile::tempdir().unwrap();
     let err = load(
         dir.path(),
-        "typo.host.lua",
-        r#"return { numeric = { max_element = 10 } }"#,
-    )
-    .unwrap_err();
-    assert!(err.contains("max_element"), "got: {err}");
-    assert!(err.contains("max_elements"), "it names the real key: {err}");
-
-    // A tier nobody defined is refused with the three that exist, rather
-    // than falling back to the loosest, which would be the worst default.
-    let err = load(
-        dir.path(),
-        "tier.host.lua",
-        r#"return { numeric = { max_tier = "quick" } }"#,
+        "tier.json",
+        r#"{ "numeric": { "max_tier": "quick" } }"#,
     )
     .unwrap_err();
     assert!(err.contains("quick"), "got: {err}");
@@ -103,11 +94,48 @@ fn a_misspelled_numeric_key_or_tier_is_refused_by_name() {
         err.contains("reproducible") && err.contains("fast"),
         "got: {err}"
     );
+}
 
-    // And the top-level list of known keys names it, so a config with a
-    // block this build should have known is not told the key is unknown.
-    let err = load(dir.path(), "top.host.lua", r#"return { numerics = {} }"#).unwrap_err();
-    assert!(err.contains("numeric"), "got: {err}");
+/// **A misspelled key is a silent default now**, and this test records that
+/// rather than asserting the promise that used to be kept.
+///
+/// `max_element` was refused by name, and `numerics` at the top level was
+/// refused with the list of blocks that exist. Both were the `.host.lua`
+/// mapper's doing -- it matched every key and had an `other =>` arm -- and
+/// both went when it did. Serde reads these types without
+/// `deny_unknown_fields`, which it cannot have while `_`-prefixed keys are
+/// how a JSON config carries a comment.
+///
+/// So this is a real loss, recorded so it is a decision rather than a
+/// discovery: the bound silently does not apply, and nothing says so. The
+/// fix, when it is worth making, is a deserializer that refuses an unknown
+/// key **unless** it starts with `_`.
+#[test]
+fn a_misspelled_key_is_ignored_which_is_the_hole_left_by_the_lua_loader() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = load(
+        dir.path(),
+        "typo.json",
+        r#"{ "numeric": { "max_element": 10 } }"#,
+    )
+    .expect("no longer refused");
+    assert_eq!(
+        config.root.numeric.max_elements, None,
+        "the bound the author meant to set is simply not set"
+    );
+
+    let config = load(dir.path(), "top.json", r#"{ "numerics": {} }"#).expect("no longer refused");
+    assert!(config.root.numeric.is_unbounded());
+
+    // The other half of that trade, and the reason it is made: a comment
+    // key is ignored on purpose, at every depth.
+    let config = load(
+        dir.path(),
+        "commented.json",
+        r#"{ "_note": "why", "numeric": { "_note": "why", "max_elements": 64 } }"#,
+    )
+    .expect("a comment key is not a typo");
+    assert_eq!(config.root.numeric.max_elements, Some(64));
 }
 
 /// The block is not feature-gated, unlike `relay`, `stun`, `turn` and
@@ -118,8 +146,8 @@ fn the_block_loads_on_a_build_without_the_optional_servers() {
     let dir = tempfile::tempdir().unwrap();
     assert!(load(
         dir.path(),
-        "b.host.lua",
-        r#"return { numeric = { max_tier = "exact" } }"#,
+        "b.json",
+        r#"{ "numeric": { "max_tier": "exact" } }"#,
     )
     .is_ok());
 }

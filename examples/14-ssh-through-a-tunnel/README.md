@@ -31,7 +31,7 @@ Behind CGNAT nothing can dial in, so both ends dial out and meet at a relay.
 The client command does not change:
 
 ```
-drt relay --config rendezvous.host.lua                                    # public
+drt start --config rendezvous.json                                        # public
 drt tunnel --park "wss://relay.example/park/xps?k=$PARK_KEY" --to 127.0.0.1:22   # device
 ssh -o ProxyCommand="drt tunnel wss://relay.example/s/xps?k=$CALLER_KEY" user@xps
 ```

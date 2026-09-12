@@ -57,25 +57,75 @@ pub const WG: &str = "wg";
 /// One reader, four blocks.
 ///
 /// A deployment is config plus a program, and these four blocks used to be
-/// verbs precisely because they had no program to be the other half of. This is
-/// that half: declare the block's report queue, print whatever lands, and never
-/// return — a server-shaped deployment is foreground-forever, and the program
-/// that exits is the one that takes the ports with it.
+/// verbs precisely because they had no program to be the other half of. This
+/// is that half: declare the block's report queue, print whatever lands, and
+/// never return — a server-shaped deployment is foreground-forever, and the
+/// program that exits is the one that takes the ports with it.
 ///
 /// `capacity = 16` and not 1: these blocks report on a timer and a slow
 /// terminal must not be backpressure on a relay's accounting.
+///
+/// **A report is a flat map, not a string.** All four bridges push
+/// `{event = "...", ...}` with the fields that event carries — the same
+/// shape the http listener uses, so a program branches on a field and never
+/// on a message's position. `print(report)` on one of those prints
+/// `table: 0x...`, which is how this was first written and what running the
+/// examples caught. So the reader renders it: the tag, then every other key
+/// sorted, so two runs of the same traffic print the same lines.
+#[cfg(any(
+    feature = "relay",
+    feature = "stun",
+    feature = "turn",
+    feature = "wireguard"
+))]
 fn reader(queue: &str) -> String {
     format!(
         r#"
 -- The `{queue}` block's reports, printed. The block does the work; this keeps
 -- the deployment alive and says what it hears.
 local q = queue.declare("{queue}", {{ capacity = 16 }})
+
+-- A value, rendered. Recursive because not every report is flat: a
+-- `wireguard` one carries `peers` as an array of tables, and `tostring` on
+-- that prints an address.
+local function render(v)
+    if type(v) ~= "table" then return tostring(v) end
+    local n = #v
+    if n > 0 then
+        local parts = {{}}
+        for i = 1, n do parts[i] = render(v[i]) end
+        return "[" .. table.concat(parts, " ") .. "]"
+    end
+    local keys = {{}}
+    for k in pairs(v) do keys[#keys + 1] = k end
+    table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+    local parts = {{}}
+    for i, k in ipairs(keys) do parts[i] = tostring(k) .. "=" .. render(v[k]) end
+    return "{{" .. table.concat(parts, " ") .. "}}"
+end
+
+-- `event` first, then the rest by name: a report's fields are a map, and a
+-- map has no order to print them in until one is chosen.
+local function line(report)
+    if type(report) ~= "table" then return tostring(report) end
+    local keys = {{}}
+    for k in pairs(report) do
+        if k ~= "event" then keys[#keys + 1] = k end
+    end
+    table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+    local out = tostring(report.event)
+    for _, k in ipairs(keys) do
+        out = out .. " " .. tostring(k) .. "=" .. render(report[k])
+    end
+    return out
+end
+
 while true do
     local _, report = queue.wait({{q}})
-    print(report)
+    print(line(report))
     local more = queue.pop(q)
     while more ~= nil do
-        print(more)
+        print(line(more))
         more = queue.pop(q)
     end
 end
@@ -151,6 +201,12 @@ pub fn lookup(name: &str) -> Option<Kind> {
 // source outlives the process that loads it. Four `OnceLock`s rather than four
 // hand-written constants so the shape is written once: a fifth block is a
 // default queue name and one line here.
+#[cfg(any(
+    feature = "relay",
+    feature = "stun",
+    feature = "turn",
+    feature = "wireguard"
+))]
 macro_rules! reader_source {
     ($name:ident, $queue:expr) => {
         fn $name() -> &'static str {

@@ -22,21 +22,27 @@
 //! - [`UPDATE`]: the environment variable that rewrites a snapshot instead
 //!   of comparing it.
 //! - [`PLACEHOLDER`]: what the corpus directory is written as inside a
-//!   snapshot, since `supervisor` resolves to an absolute path and a
-//!   refusal names the file it refused.
+//!   snapshot, since a refusal names the file it refused.
 //!
 //! A refusal is snapshotted like any other outcome, and several corpus
 //! files are here *because* they are refused: `11-tunnel-and-relay`'s relay
 //! carries blank keys, and a blank key is a closed door. "It still refuses,
 //! for the same reason" is as much a fact about the loader as "it still
 //! parses to this", and the shape that stops being refused is the
-//! regression nobody would otherwise see.
-//! - [`NEEDS`]: corpus file -> the cargo feature whose block it carries.
-//!   The fan-out point: a build without that feature answers "unknown key"
-//!   for a block it was not compiled to know, which is correct behaviour
-//!   and not a regression, so the file is skipped by name rather than by
-//!   guessing from the error text. A new corpus file carrying a gated block
-//!   is added here, and nowhere else.
+//! regression nobody would otherwise see. The outcome recorded is therefore
+//! `load` **and** `validate`: `load` is serde, which cannot see a key that
+//! is present and empty, and that blank key is the whole reason that file
+//! is here.
+//!
+//! **Every file is read in every build**, and there is no skip list. There
+//! used to be one -- a `NEEDS` table naming the feature each file's block
+//! wanted -- because the `.host.lua` mapper was compiled per feature and
+//! answered "unknown key" for a block the build had not been compiled to
+//! know. Nothing in the JSON path is gated: `RootConfig` carries every
+//! block's field in every build, so a `--features slim` run reads the
+//! wireguard corpus and gets the same structure `--all-features` does. The
+//! snapshots are build-independent, which is strictly more than the old
+//! arrangement could say.
 
 use std::path::{Path, PathBuf};
 
@@ -45,45 +51,8 @@ const SNAPSHOTS: &str = "../drt-config/tests/corpus/snapshots";
 const UPDATE: &str = "DRT_CORPUS_UPDATE";
 const PLACEHOLDER: &str = "<corpus>";
 
-/// Which cargo feature each corpus file's blocks need. Absent means the
-/// file parses in every build.
-const NEEDS: &[(&str, &str)] = &[
-    (
-        "examples__11-tunnel-and-relay__rendezvous.host.lua",
-        "relay",
-    ),
-    (
-        "examples__19-a-tunnel-a-program-can-use__rendezvous.host.lua",
-        "relay",
-    ),
-    ("examples__rendezvous__rendezvous.host.lua", "relay"),
-    ("examples__20-turn-relay__open.host.lua", "turn"),
-    ("examples__20-turn-relay__turn.host.lua", "turn"),
-    ("examples__21-wireguard__fp.host.lua", "wireguard"),
-    (
-        "examples__21-wireguard__hub-unroutable.host.lua",
-        "wireguard",
-    ),
-    ("examples__21-wireguard__hub.host.lua", "wireguard"),
-    ("examples__21-wireguard__rendezvous.host.lua", "wireguard"),
-    ("examples__21-wireguard__wrong.host.lua", "wireguard"),
-    ("examples__22-wireguard-interface__fp.host.lua", "wireguard"),
-    ("wg.host.lua", "wireguard"),
-];
-
 fn here(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(rel)
-}
-
-/// Whether this build carries the feature a corpus file needs. Read through
-/// `cfg!` rather than from a list, so the answer is the build's own.
-fn built_with(feature: &str) -> bool {
-    match feature {
-        "relay" => cfg!(feature = "relay"),
-        "turn" => cfg!(feature = "turn"),
-        "wireguard" => cfg!(feature = "wireguard"),
-        other => panic!("{NEEDS:?} names a feature this test cannot ask about: {other}"),
-    }
 }
 
 /// The corpus files, sorted. `README.md` and `snapshots/` are not entries.
@@ -126,19 +95,13 @@ fn the_corpus_parses_to_what_it_parsed_to_before() {
     let updating = std::env::var_os(UPDATE).is_some();
 
     let mut loaded = 0;
-    let mut skipped: Vec<String> = Vec::new();
     let mut written: Vec<String> = Vec::new();
     let mut wrong: Vec<String> = Vec::new();
 
     for name in corpus_files() {
-        if let Some((_, feature)) = NEEDS.iter().find(|(f, _)| *f == name) {
-            if !built_with(feature) {
-                skipped.push(format!("{name} (needs the `{feature}` feature)"));
-                continue;
-            }
-        }
-
         let path = corpus_dir.join(&name);
+        // `load` validates, so a refusal is recorded like any other
+        // outcome -- several of these files are here to be refused.
         let outcome = drt::config::load(Some(&path));
         loaded += 1;
 
@@ -166,10 +129,11 @@ fn the_corpus_parses_to_what_it_parsed_to_before() {
         }
     }
 
-    assert!(loaded > 0, "the corpus loaded nothing");
-    for note in &skipped {
-        eprintln!("skipped {note}");
-    }
+    assert_eq!(
+        loaded,
+        corpus_files().len(),
+        "every corpus file is read in every build; none is skipped"
+    );
     for name in &written {
         eprintln!("snapshot written for {name}");
     }
