@@ -1,6 +1,6 @@
 {
   "name": "25-modules",
-  "teaches": "require, for a guest that cannot open a file. The host walks the node's own directory before the program starts and compiles what it finds, so `require` is a lookup in a table that already exists -- no search path, no filesystem, no capability. A module is any `.dlua` beside the entry; modules see each other; a second require is the same value; and a name that is not there is refused by name, saying where it looked.",
+  "teaches": "require, for a guest that cannot open a file. The host walks the node's own directory before the program starts and compiles what it finds, so `require` is a lookup in a table that already exists -- no search path, no filesystem, no capability. A module is any `.dlua` or `.lua` beside the entry; modules see each other; a second require is the same value; and a name that is not there is refused by name, saying where it looked.",
   "cmd": "drt run app.dlua",
   "needs_network": false,
   "normalise": []

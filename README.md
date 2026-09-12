@@ -173,9 +173,9 @@ host.call("sql/exec", {sql = "..."}) -- any connector by name
 host.try("sql/exec", {sql = "..."})  -- the same, without the raise
 ```
 
-**A program can be more than one file.** Every `.dlua` beside the entry is a
-module, and `require("text.case")` is `text/case.dlua` in the node's own
-directory:
+**A program can be more than one file.** Every `.dlua` or `.lua` beside the
+entry is a module, and `require("text.case")` is `text/case.dlua` in the
+node's own directory:
 
 ```lua
 local case = require("text.case")   -- text/case.dlua, beside the entry

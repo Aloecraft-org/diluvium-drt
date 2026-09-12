@@ -1,8 +1,8 @@
 # 25-modules
 
 A program in three files. `require` here opens nothing: before the program
-started, the host walked this directory, compiled every `.dlua` in it, and
-put `require` in scope over the result. The guest still cannot read a file —
+started, the host walked this directory, compiled every `.dlua` and `.lua` in
+it, and put `require` in scope over the result. The guest still cannot read a file —
 that is the whole point — and it can still have libraries.
 
 ## Run it
@@ -25,9 +25,9 @@ require(text.missing): no such module in .
 ## What it teaches
 
 **A module is a file that returns something.** Nothing declares it. Nothing
-registers it. `text/case.dlua` is the module `text.case` because it is a
-`.dlua` beside the entry — dots are the path separator, and the entry itself
-is not one of its own modules.
+registers it. `text/case.dlua` is the module `text.case` because it is guest
+source beside the entry — `.dlua` or `.lua`, dots are the path separator, and
+the entry itself is not one of its own modules.
 
 **The node's directory is the whole of the search path.** There is no
 parent traversal, no project `lib/`, no `DRT_PATH`, and nothing reachable

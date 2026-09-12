@@ -8,11 +8,10 @@
 //!   to load and the name to load it under back. [`discover`] and
 //!   [`Modules::bootstrap`] are its two halves, public for the tests that hold
 //!   each separately.
-//! - Configurable values: [`EXTENSION`], [`BYTECODE_EXTENSION`],
-//!   [`RESERVED_COMPONENT`], [`MAX_MODULES`], [`MAX_BYTES`], [`BOOTSTRAP_NAME`],
-//!   [`BRACKET_CAP`].
-//! - Fan-out: [`refuse_name`] is the name rule, one arm per refusal, and the
-//!   Rust half of a rule that exists twice — see *Two copies of one rule*.
+//! - Configurable values: [`MAX_MODULES`], [`MAX_BYTES`], [`BOOTSTRAP_NAME`],
+//!   [`BRACKET_CAP`]. The name rule's own constants are
+//!   `drt_config::modules`', re-exported here.
+//! - Fan-out: [`discover`]'s walk, one arm per kind of file it meets.
 //!
 //! ## Why a generated bootstrap and not `package.preload`
 //!
@@ -44,17 +43,22 @@
 //! separately, the entry keeps its own name and its own line numbers, and the
 //! bootstrap is invisible unless it is what failed.
 //!
-//! ## Two copies of one rule
+//! ## Where the name rule lives
 //!
-//! The name rule runs in two places: here, over the files found on disk, and
-//! in the generated Lua, over whatever string the guest hands `require`. The
-//! host cannot be in the loop for the second — that is the point of a preload
-//! table — so the rule is written twice and cannot be written once.
+//! Not here. `drt_config::modules` holds it — the charset, the reserved
+//! `stdlib` component, and the two directions between a name and a file — as
+//! pure functions, because dollup applies the same rule when it refuses a
+//! package at pull. One function rather than two copies, for the reason
+//! `project::RESERVED` is one list: a package one side accepts and the other
+//! cannot reach should not be constructible.
 //!
-//! What can be done is make the two testably identical, and that is done:
-//! [`RESERVED_COMPONENT`] and the character class are interpolated into the Lua
-//! from the constants above it, and `the_two_copies_of_the_name_rule_agree`
-//! runs the same table of cases through both and fails if they ever differ.
+//! The generated Lua is the copy that cannot be shared, since the host is not
+//! in the loop when a guest calls `require` — that is the point of a preload
+//! table. It is made testably identical instead: [`RESERVED_COMPONENT`] and
+//! the character class are interpolated into it from the same constants, the
+//! refusal strings match character for character, and
+//! `the_two_copies_of_the_name_rule_agree` runs one table of cases through
+//! both and fails if they ever differ.
 //!
 //! ## What is not here
 //!
@@ -70,20 +74,13 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// The extension a module file has. One, not a list: a `.lua` beside the
-/// entry is a program somebody runs directly, and promoting it to a module
-/// because it parses would make every existing node's directory mean
-/// something new.
-pub const EXTENSION: &str = "dlua";
-
-/// What a compiled module would be called. Refused, not ignored — see the
-/// module header.
-pub const BYTECODE_EXTENSION: &str = "dluac";
-
-/// The first component no module may have. `stdlib:` is how a stdlib program
-/// is named as an entry, and a module shadowing that spelling would make one
-/// name mean two things.
-pub const RESERVED_COMPONENT: &str = "stdlib";
+/// The rule for what `require` may name and which file answers to it lives in
+/// `drt_config::modules`, because dollup applies the same one at pull. Only
+/// the walk and the generated chunk are here.
+pub use drt_config::modules::{
+    is_name_char, module_extension, name_for_path, refuse_name, BYTECODE_EXTENSION,
+    RESERVED_COMPONENT, SOURCE_EXTENSIONS,
+};
 
 /// The most modules one node may carry. Generous, and a named refusal rather
 /// than a chunk so large the engine's own limits answer instead.
@@ -214,20 +211,22 @@ pub fn discover(program: &Path) -> Result<Modules, String> {
             if relative.as_os_str().is_empty() && Some(entry.as_str()) == entry_file {
                 continue;
             }
-            let extension = full.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if extension == BYTECODE_EXTENSION {
-                return Err(format!(
-                    "{}: bytecode modules are not built yet -- drt loads source only until \
-                     there is a verifier for them (GUARANTEES.md), and reaching one through \
-                     the guest's `load` would put unverified bytecode inside the sandbox. \
-                     Ship the `.{EXTENSION}` beside it, or remove this file.",
-                    display(&child)
-                ));
+            let shown = display(&child);
+            match module_extension(&shown) {
+                Some(BYTECODE_EXTENSION) => {
+                    return Err(format!(
+                        "{shown}: bytecode modules are not built yet -- drt loads source only \
+                         until there is a verifier for them (GUARANTEES.md), and reaching one \
+                         through the guest's `load` would put unverified bytecode inside the \
+                         sandbox. Ship the source beside it, or remove this file."
+                    ));
+                }
+                Some(_) => {}
+                // A `.json` is a config, a `.md` is prose. Neither is a module
+                // and neither is a mistake.
+                None => continue,
             }
-            if extension != EXTENSION {
-                continue;
-            }
-            let name = module_name(&child)?;
+            let name = name_for_path(&shown)?;
             let source = drt_platform::fs::read_to_string(&full)
                 .map_err(|e| format!("cannot read {}: {e}", full.display()))?;
             bytes += source.len() as u64;
@@ -249,18 +248,17 @@ pub fn discover(program: &Path) -> Result<Modules, String> {
                 name.clone(),
                 Module {
                     name: name.clone(),
-                    file: display(&child),
+                    file: shown.clone(),
                     source,
                 },
             ) {
-                // Unreachable while a component may not hold a `.`: path and
-                // name are one-to-one under that rule. Here so that loosening
-                // the rule is caught by a refusal rather than by one module
-                // silently becoming another.
+                // `enc.dlua` beside `enc.lua`: two files, one name. Preferring
+                // one would make the other dead code nobody could see was
+                // dead, so the node is refused until its author picks.
                 return Err(format!(
-                    "{} and {} are both the module `{name}`",
-                    clash.file,
-                    display(&child)
+                    "{} and {shown} are both the module `{name}`; a node may ship one file per \
+                     module name",
+                    clash.file
                 ));
             }
         }
@@ -434,82 +432,6 @@ end
 "#;
 
 // ---------------------------------------------------------------------------
-// The name rule
-// ---------------------------------------------------------------------------
-
-/// A module's name, from its path relative to the node's directory.
-///
-/// Dots are the separator, so a path component may not contain one: with
-/// `my.helper.dlua` allowed, `my.helper` would name both it and
-/// `my/helper.dlua`, and one of the two would win silently.
-fn module_name(relative: &Path) -> Result<String, String> {
-    let shown = display(relative);
-    let mut components = Vec::new();
-    for (index, part) in relative.components().enumerate() {
-        let std::path::Component::Normal(part) = part else {
-            return Err(format!(
-                "{shown}: a module path holds names and nothing else -- no `..`, no root"
-            ));
-        };
-        let part = part
-            .to_str()
-            .ok_or_else(|| format!("{shown}: not valid UTF-8, so it cannot be a module name"))?;
-        let last = index + 1 == relative.components().count();
-        let stem = if last {
-            part.strip_suffix(&format!(".{EXTENSION}")).unwrap_or(part)
-        } else {
-            part
-        };
-        if stem.is_empty() || !stem.chars().all(is_name_char) {
-            return Err(format!(
-                "{shown}: `{stem}` cannot be part of a module name, which holds letters, \
-                 digits and `_` between the dots"
-            ));
-        }
-        components.push(stem);
-    }
-    let name = components.join(".");
-    if let Some(why) = refuse_name(&name) {
-        return Err(format!("{shown}: {why}"));
-    }
-    Ok(name)
-}
-
-/// A character a single name component may hold. The dot is the separator and
-/// so is not one of these.
-fn is_name_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_'
-}
-
-/// Why this is not a module name, or `None` if it is.
-///
-/// The Rust half of the rule the generated Lua also carries; they are held
-/// identical by `the_two_copies_of_the_name_rule_agree`.
-pub fn refuse_name(name: &str) -> Option<String> {
-    if name.is_empty() {
-        return Some("a module name may not be empty".into());
-    }
-    if name.contains("..") {
-        return Some("`..` is not a module name component".into());
-    }
-    if name.starts_with('.') || name.ends_with('.') {
-        return Some("a module name may not begin or end with `.`".into());
-    }
-    if !name.chars().all(|c| is_name_char(c) || c == '.') {
-        return Some(
-            "a module name holds letters, digits, `_` and the `.` between components".into(),
-        );
-    }
-    if name.split('.').next() == Some(RESERVED_COMPONENT) {
-        return Some(format!(
-            "`{RESERVED_COMPONENT}` is reserved -- a stdlib program is reached by the \
-             `{RESERVED_COMPONENT}:` entry spelling, never by require"
-        ));
-    }
-    None
-}
-
-// ---------------------------------------------------------------------------
 // depth: embedding source in a chunk
 // ---------------------------------------------------------------------------
 
@@ -621,13 +543,59 @@ mod tests {
             ("/r/n/entry.dlua", "print('hi')\n"),
             ("/r/n/app.json", "{}"),
             ("/r/n/notes.md", "# not a module"),
-            // A `.lua` is a program somebody runs, not a module.
-            ("/r/n/supervisor.lua", "print('also not')\n"),
         ]);
         let loaded = program_load(&entry).unwrap();
         assert_eq!(loaded.modules, 0);
         assert_eq!(loaded.source, "print('hi')\n", "the file's own source");
         assert_eq!(loaded.name, "entry.dlua", "under its own name");
+    }
+
+    /// `.lua` is guest source everywhere else in the format -- `RepoFormat.md`
+    /// admits it in a package and dollup's source-only check takes it -- so a
+    /// loader that walked only `.dlua` would leave `util.lua` in the directory
+    /// answering to nothing.
+    #[test]
+    fn a_lua_beside_the_entry_is_a_module_too() {
+        let (_fs, entry) = node(&[
+            ("/r/n/entry.dlua", ""),
+            ("/r/n/util.lua", "return {}\n"),
+            ("/r/n/deep/helper.lua", "return {}\n"),
+        ]);
+        assert_eq!(
+            discover(&entry).unwrap().names(),
+            vec!["deep.helper", "util"]
+        );
+    }
+
+    /// And a `.lua` entry's siblings are modules, which is the same rule seen
+    /// from the other side: what makes a file the entry is being named as the
+    /// program, not its extension.
+    #[test]
+    fn a_lua_entry_is_not_a_module_of_its_own_either() {
+        let seeded = crate::testfs::seed(
+            true,
+            &[
+                ("/r/n/supervisor.lua", "print('hi')\n"),
+                ("/r/n/helper.lua", "return {}\n"),
+            ],
+        );
+        let found = discover(Path::new("/r/n/supervisor.lua")).unwrap();
+        assert_eq!(found.names(), vec!["helper"]);
+        drop(seeded);
+    }
+
+    /// Two files, one name. Preferring one silently would make the other dead
+    /// code nobody could see was dead.
+    #[test]
+    fn one_name_may_not_be_two_files() {
+        let (_fs, entry) = node(&[
+            ("/r/n/entry.dlua", ""),
+            ("/r/n/enc.dlua", "return {}\n"),
+            ("/r/n/enc.lua", "return {}\n"),
+        ]);
+        let e = discover(&entry).unwrap_err();
+        assert!(e.contains("enc.dlua") && e.contains("enc.lua"), "{e}");
+        assert!(e.contains("both the module `enc`"), "{e}");
     }
 
     #[test]

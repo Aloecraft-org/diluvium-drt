@@ -63,7 +63,11 @@ errors.
 ## Resolution
 
 - **Name to path.** Dots become separators, plus the extension:
-  `require("db.claims")` is `db/claims.dlua`.
+  `require("db.claims")` is `db/claims.dlua`. The rule is
+  `drt_config::modules` — a pure function, no filesystem — because dollup
+  applies the same one when it refuses a package at pull. A name one side
+  accepted and the other refused could not exist, which is why it is one
+  function and not two copies, exactly as `project::RESERVED` is one list.
 - **Scope is the node's own directory and nothing else.** Not `init/`, not a
   sibling node, not the project root. The node's directory is the program's
   own directory — `live/<name>/` for a deployed entry, and the config's
@@ -80,9 +84,16 @@ errors.
   `[A-Za-z0-9_.]` is refused.
 - **`stdlib` is reserved** as a first component. A stdlib program is reached
   by the `stdlib:` entry spelling and never by `require`.
-- **`.dlua` only.** A `.lua` beside the entry is a program somebody runs
-  directly; promoting it to a module because it parses would make every
-  existing node's directory mean something new.
+- **`.dlua` and `.lua`.** Both, because both are guest source everywhere else
+  in the format: `RepoFormat.md` admits either in a package and dollup's
+  source-only check takes either. A loader that walked only `.dlua` would
+  leave `util.lua` sitting in the directory answering to nothing, which is the
+  silent-absence failure this whole mechanism is written against. A `.json`
+  beside the entry is a config and a `.md` is prose; neither is a module and
+  neither is a mistake.
+- **One file per module name.** `enc.dlua` beside `enc.lua` is two files and
+  one name, and is refused. Preferring one would make the other dead code
+  nobody could see was dead.
 - **The walk happens once, at load.** A file added afterwards is not visible
   until the node is loaded again — what `diluvium analyze` sees over the
   directory is what the loader saw.
@@ -125,25 +136,37 @@ not: `dv_set_budget` is per *instance*, so every chunk in a node shares one
 budget, and compiling the modules spends a little of it before the entry
 starts.
 
-## One rule, written twice
+## One rule, three readers
 
-The name rule runs in two places: over the files the host finds, and over
-whatever string the guest hands `require`. The host cannot be in the loop for
-the second — that is what a preload table *is* — so the rule is written twice
-and cannot be written once.
+`drt_config::modules` holds it: the charset, the reserved `stdlib` component,
+the two directions between a name and a file, and which extensions are module
+files at all. drt's loader applies it to the files it walks; dollup applies it
+to a package at pull. One function, so a package dollup accepts is a package
+the loader can reach.
 
-What can be done is make the two testably identical, and that is done. The
-reserved word and the character class are interpolated into the generated Lua
-from the Rust constants above it, the refusal strings are
-character-for-character the same, and
+The generated Lua is the one copy that cannot be shared, because the host is
+not in the loop when a guest calls `require` — that is what a preload table
+*is*. So it is made testably identical instead: the reserved word and the
+character class are interpolated into the Lua from the Rust constants, the
+refusal strings are character-for-character the same, and
 `the_two_copies_of_the_name_rule_agree` runs one table of cases through both
-and fails if they ever differ.
+and fails if they ever differ. Breaking either side fails it, checked by
+breaking one.
 
 ## Sharing across repos
 
 A library is a package. `dollup pull <ref>` delivers it into `init/`, deploy
-copies it into the node's directory, and the loader finds it there. There is
-no second delivery path and no library search path outside the node.
+copies into the node's directory, and the loader finds it there. There is no
+second delivery path and no library search path outside the node.
+
+**Deploy copies one directory, not two**, and that is the open edge. `deploy::
+source_for` reads `dlua_dir` when the resolved profile sets one and `init/`
+when it does not — either, never both. So a pull into `init/` reaches a
+released root, whose profile sets no `dlua_dir`, and does *not* reach a
+development root, whose debug profile does. Until that is settled, a
+development root vendors its libraries into `dlua_dir` and checks them for
+drift, which is what this repository already does for its own copied files
+(`the_copies_are_byte_identical_to_their_sources`).
 
 Two nodes that both need a library each carry a copy. That is correct: they
 may run under different ceilings, ship in different roots, and be committed
@@ -161,7 +184,7 @@ separately. The cost is bytes on disk, which is the right thing to spend.
 ## Named but not built
 
 - A module manifest pinning which files are modules. Today it is every
-  `.dlua` in the directory except the entry.
+  `.dlua` and `.lua` in the directory except the entry.
 - Lazy compilation. Today every module is compiled at load, which is what
   makes a syntax error in one a failure before any of the node's code runs.
 - `.dluac`, above.

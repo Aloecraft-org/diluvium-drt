@@ -474,10 +474,22 @@ entry has not moved the pin yet.
   - Every module is its own chunk, not its own budget: `dv_set_budget`
     is per instance, so a node's chunks share one.
 
-  The name rule exists twice --- over the files the host finds, and over
-  whatever the guest passes `require` --- because the host is not in the
-  loop for the second. `the_two_copies_of_the_name_rule_agree` runs one
-  table of cases through both and fails if they differ.
+  The name rule lives in `drt_config::modules` as pure functions ---
+  the charset, the reserved `stdlib` component, and the two directions
+  between a name and a file --- because dollup applies the same one when
+  it refuses a package at pull. One function rather than two copies, for
+  the reason `project::RESERVED` is one list. The generated Lua is the
+  copy that cannot be shared, since the host is not in the loop when a
+  guest calls `require`; it is held identical instead, and
+  `the_two_copies_of_the_name_rule_agree` fails if the two ever differ.
+
+  **`.lua` is a module extension too**, not only `.dlua`. Both are guest
+  source everywhere else in the format --- `RepoFormat.md` admits either
+  in a package, dollup's source-only check takes either --- so a loader
+  that walked only `.dlua` would leave `util.lua` in a node's directory
+  answering to nothing. Two files with one name (`enc.dlua` beside
+  `enc.lua`) are refused rather than one being preferred, which would
+  make the other dead code nobody could see was dead.
 
 ### Changed
 
