@@ -3,7 +3,7 @@
   "repo": "Aloecraft-org/diluvium-drt",
   "latest": "v0.4.2",
   "mirror_tags": [
-    "v0.6.0-rc.2",
+    "v0.6.1-rc.1",
     "v0.4.2",
     "v0.4.1",
     "v0.4.0",
@@ -16,10 +16,10 @@
     {
       "version": "0.6.1-rc.1",
       "tag": "v0.6.1-rc.1",
-      "date": null,
-      "status": "unreleased",
+      "date": "2026-09-12",
+      "status": "released",
       "stable": false,
-      "mirror": false,
+      "mirror": true,
       "dv_abi": 1,
       "diluvium": "2c2f920d7fcfacd72e396e13b8ece5cd11f6d60d",
       "diluvium_build": 14,
@@ -80,7 +80,7 @@
           "**`wg.sh` writes JSON**, since discofetch `126b409`, which closes\nthe known issue 0.6.0rc1 recorded: the config it leaves on a\ncustomer machine loads again. Nothing changed in DRT for it; the\nrecord is here because the issue was recorded here.\n"
         ]
       },
-      "notes_md": "## [0.6.1-rc.1] - unreleased (prerelease)\n\n`v0.6.1-rc.1` &middot; dv ABI 1 &middot; diluvium `2c2f920d7fcf` (build14)\n\nThe first line opened entirely under the Aloecraft alignment\n(`doc/ALIGNMENT.md`). 0.6.0 carried one candidate in each spelling,\n`0.6.0rc1` and `0.6.0-rc.2`; 0.6.1 starts clean, so every tag on the\nline reads one way. The code is rc.2's, and the corpus now carries\nthe config `wg.sh` really writes.\n\nSame core, same ABI, same connector lists as 0.6.0-rc.2.\n\n### Connectors\n\n- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `data`, `listen`\n- `slim`: `time`, `fs`, `crypto`, `listen`\n- `wasi`: `time`, `fs`, `crypto`, `sql`, `listen`\n- `web`: `time`, `fs`, `crypto`\n\n### Core features\n\n- `full`: `regex`\n- `slim`: `regex`\n- `wasi`: `regex`\n- `web`: `regex`\n\n### Changed\n\n- **The corpus carries what `wg.sh` writes, captured rather than\n  reconstructed.** `crates/drt-config/tests/corpus/wg.json` was a\n  reconstruction from `doc/WireGuard.md` \u00a71, and it got the\n  `wireguard` block right and everything around it wrong: the real\n  program is `wg_rendezvous.dlua`, the caps and connectors carry\n  `rest` and `fs`, and there is no `peers` list, because the\n  rendezvous room supplies the peer at run time. Both shapes the\n  script writes are in the corpus now, produced by running it\n  against the rc1 binary (#25): kernel mode, and `wg-userspace.json`\n  for `--userspace --forward`, which is the no-root mode arriving in\n  a customer-facing script and a shape no example here exercised.\n\n### Fixed\n\n- **`wg.sh` writes JSON**, since discofetch `126b409`, which closes\n  the known issue 0.6.0rc1 recorded: the config it leaves on a\n  customer machine loads again. Nothing changed in DRT for it; the\n  record is here because the issue was recorded here.\n"
+      "notes_md": "## [0.6.1-rc.1] - 2026-09-12 (prerelease)\n\n`v0.6.1-rc.1` &middot; dv ABI 1 &middot; diluvium `2c2f920d7fcf` (build14)\n\nThe first line opened entirely under the Aloecraft alignment\n(`doc/ALIGNMENT.md`). 0.6.0 carried one candidate in each spelling,\n`0.6.0rc1` and `0.6.0-rc.2`; 0.6.1 starts clean, so every tag on the\nline reads one way. The code is rc.2's, and the corpus now carries\nthe config `wg.sh` really writes.\n\nSame core, same ABI, same connector lists as 0.6.0-rc.2.\n\n### Connectors\n\n- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `data`, `listen`\n- `slim`: `time`, `fs`, `crypto`, `listen`\n- `wasi`: `time`, `fs`, `crypto`, `sql`, `listen`\n- `web`: `time`, `fs`, `crypto`\n\n### Core features\n\n- `full`: `regex`\n- `slim`: `regex`\n- `wasi`: `regex`\n- `web`: `regex`\n\n### Changed\n\n- **The corpus carries what `wg.sh` writes, captured rather than\n  reconstructed.** `crates/drt-config/tests/corpus/wg.json` was a\n  reconstruction from `doc/WireGuard.md` \u00a71, and it got the\n  `wireguard` block right and everything around it wrong: the real\n  program is `wg_rendezvous.dlua`, the caps and connectors carry\n  `rest` and `fs`, and there is no `peers` list, because the\n  rendezvous room supplies the peer at run time. Both shapes the\n  script writes are in the corpus now, produced by running it\n  against the rc1 binary (#25): kernel mode, and `wg-userspace.json`\n  for `--userspace --forward`, which is the no-root mode arriving in\n  a customer-facing script and a shape no example here exercised.\n\n### Fixed\n\n- **`wg.sh` writes JSON**, since discofetch `126b409`, which closes\n  the known issue 0.6.0rc1 recorded: the config it leaves on a\n  customer machine loads again. Nothing changed in DRT for it; the\n  record is here because the issue was recorded here.\n"
     },
     {
       "version": "0.6.0-rc.2",
@@ -88,7 +88,7 @@
       "date": "2026-09-12",
       "status": "released",
       "stable": false,
-      "mirror": true,
+      "mirror": false,
       "dv_abi": 1,
       "diluvium": "2c2f920d7fcfacd72e396e13b8ece5cd11f6d60d",
       "diluvium_build": 14,

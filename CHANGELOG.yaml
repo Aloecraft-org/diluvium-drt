@@ -75,10 +75,10 @@ repo: Aloecraft-org/diluvium-drt
 releases:
   - version: 0.6.1-rc.1
     tag: v0.6.1-rc.1
-    date: null
-    status: unreleased
+    date: 2026-09-12
+    status: released
     stable: false
-    mirror: false
+    mirror: true
     dv_abi: 1
     diluvium: 2c2f920d7fcfacd72e396e13b8ece5cd11f6d60d
     diluvium_build: 14
@@ -124,7 +124,7 @@ releases:
     date: 2026-09-12
     status: released
     stable: false
-    mirror: true
+    mirror: false
     dv_abi: 1
     diluvium: 2c2f920d7fcfacd72e396e13b8ece5cd11f6d60d
     diluvium_build: 14
