@@ -103,4 +103,7 @@ RootConfig {
         host_key_path: None,
     },
     principals: [],
+    dlua_dir: None,
+    entry: None,
+    args: {},
 }

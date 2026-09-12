@@ -1,0 +1,30 @@
+{
+  "project_name": "my_drt_project",
+  "project_version": "0.0.0",
+  "root_id": "0192f0c1-8000-7000-8000-00000000abcd",
+  "drt": "0.5.0",
+  "caps": [
+    {
+      "effect": "grant",
+      "capability": "host:fs/*"
+    },
+    {
+      "effect": "grant",
+      "capability": "host:rest/get"
+    },
+    {
+      "effect": "grant",
+      "capability": "host:time"
+    },
+    {
+      "effect": "deny",
+      "capability": "host:fs/remove"
+    }
+  ],
+  "require_signatures": true,
+  "default_profile": "debug",
+  "profiles": [
+    "debug.config.json",
+    "preflight.config.json"
+  ]
+}

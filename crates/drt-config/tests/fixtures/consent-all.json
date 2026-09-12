@@ -1,0 +1,21 @@
+{
+  "root_id": "0192f0c1-8000-7000-8000-00000000abcd",
+  "accepted": [
+    {
+      "mode": "all",
+      "realm": "operator",
+      "accepted_against": "sha256:6c8b133655d3ffbf75e5b60270a0c04835251825f8bfcbf3b5d084bbd777f2c5",
+      "accepted_at": "2026-09-11T20:14:00Z"
+    }
+  ],
+  "signers": [
+    {
+      "key_id": "portal-1",
+      "alg": "ed25519",
+      "public_key": "bnoc3Smwt4/ROvTFWY/v9O8qlxZuPKby5Pv8zYBQW/E=",
+      "realms": [
+        "operator.rest"
+      ]
+    }
+  ]
+}

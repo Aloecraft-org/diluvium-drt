@@ -22,6 +22,33 @@ jobs:
       - name: GUARANTEES.md is present and non-empty
         run: test -s GUARANTEES.md
 
+  canonical-json:
+    # consent.md acceptance 6, and it cannot be satisfied by one job.
+    # `serde_json`'s `preserve_order` feature swaps `Map`'s backing store from
+    # `BTreeMap` to `IndexMap`, and cargo unifies features across a workspace:
+    # dollup's workspace enables it, drt's does not. So the same canonicalizer,
+    # shared by both, sees two key orders, and each repository's suite passes
+    # in isolation while signatures fail between them. The canonicalizer sorts
+    # structurally for exactly that reason; these two runs are what prove it,
+    # and `_preserve-order-test` exists only to put this job in dollup's state.
+    #
+    # Cheap on purpose: one crate, no C core, so it answers in seconds and
+    # fails loudly rather than riding along in a twenty-minute matrix.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Canonical JSON, preserve_order off (drt's workspace)
+        run: cargo test -p drt-config
+      - name: Canonical JSON, preserve_order on (dollup's workspace)
+        run: cargo test -p drt-config --features _preserve-order-test
+      # The browser tier builds without the consent feature, because a page is
+      # always on the no-root path. Checked here so "slim keeps it, web drops
+      # it" stays a fact rather than an intention.
+      - name: Builds without the consent feature (the web carve-out)
+        run: cargo check -p drt-config --no-default-features
+
   test:
     runs-on: ubuntu-latest
     steps:

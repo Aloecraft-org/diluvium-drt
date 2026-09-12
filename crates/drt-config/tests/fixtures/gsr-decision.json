@@ -1,0 +1,8 @@
+{
+  "request_hash": "sha256:d8597f6950ef480fe2f190b38ee549280f7df0ba3acddb849da0d4e29ad8ec21",
+  "decision": "approve",
+  "not_after": "2026-09-13T00:00:00Z",
+  "key_id": "portal-1",
+  "alg": "ed25519",
+  "signature": "BDnMzgCA2ynfZ8huwmWC2F6Jbjyx+7rB4Ne2Yl+kcnEkzE1T7oON2eVb+jtWbtDbpK0kZuirodt+rGWGokqiAw=="
+}

@@ -12,6 +12,47 @@
 //! shape lives here. The on-disk format is deliberately not fixed by this
 //! crate: everything is plain serde, so msgpack (the tests), JSON, TOML, or a
 //! `.dlua` surface all read into the same object.
+//!
+//! ## The root's own files, and who else reads them
+//!
+//! Beside the instance shape, this crate holds the formats a **root** is
+//! described by, and the logic that resolves them. Those are shared with
+//! `dollup`, which depends on this crate; nothing here depends on anything of
+//! dollup's, because drt must work where dollup is not installed.
+//!
+//! - [`project`] — `project.json`: the root descriptor and the declared
+//!   ceiling, plus the reserved names, the profile filename rule, and
+//!   [`project::NodePath`].
+//! - [`consent`] — `consent.json`: the operator acknowledging that ceiling,
+//!   and the one relation that decides whether a change prompts.
+//! - [`gsr`] — grant signing requests and the decisions about them.
+//! - [`resolve`] — what `start` would do, as a pure function, so `dollup
+//!   audit` and `stdlib:preflight` report the runtime's answer rather than an
+//!   approximation of it.
+//! - [`canon`] — canonical JSON and the one hash type, [`canon::Hash`].
+//! - [`sign`] — ed25519 over canonical bytes.
+//! - [`id`], [`time`] — the two primitive wire values, each minted or read by
+//!   the caller rather than by this crate.
+//! - [`realm`] — the consent noun, which is emphatically not
+//!   [`drt_caps::Scope`].
+
+pub mod canon;
+pub mod id;
+pub mod project;
+pub mod realm;
+pub mod resolve;
+pub mod time;
+
+// Signatures, and the two formats that carry them. Off for the browser tier
+// alone: a page is always on the no-root path, where consent does not apply,
+// and `ed25519-dalek` is weight a page has no use for. On for every native
+// build including slim -- "slim" never comes to mean "no consent check".
+#[cfg(feature = "consent")]
+pub mod consent;
+#[cfg(feature = "consent")]
+pub mod gsr;
+#[cfg(feature = "consent")]
+pub mod sign;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -901,6 +942,27 @@ pub struct RootConfig {
     pub identity: Identity,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub principals: Vec<SshPrincipal>,
+    /// Where this profile's source lives, relative to the root. Local
+    /// authoring; `init/` is delivered content and `live/` is what runs.
+    ///
+    /// On `RootConfig` and **not** on [`InstanceConfig`], with `entry` and
+    /// `args`, because §5's keystone is one config shape at every depth and a
+    /// spawn request carries source rather than a path. Resolution turns
+    /// `dlua_dir` + `entry` into the [`Program::Source`] the root instance
+    /// loads; `program` stays the instance-level field it always was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dlua_dir: Option<String>,
+    /// The root program: a file under `dlua_dir`, or `stdlib:<name>`. What
+    /// the C host's config calls `supervisor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<resolve::Entry>,
+    /// Defaults for the entry, and the declaration of this profile's own
+    /// command line: the default's type is what parses an override
+    /// ([`resolve::merge_args`]). This is what makes a downloaded,
+    /// pre-populated profile a one-command setup with no second schema
+    /// shipped beside it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub args: BTreeMap<String, resolve::ArgValue>,
 }
 
 impl Identity {

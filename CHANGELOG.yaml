@@ -567,6 +567,100 @@ releases:
         failure each has, and how a column crosses the hostcall boundary.
         Written for someone operating DRT rather than building the core.
       - "`examples/23-reading-parquet`, and the size ledger the plan asks for: `full` at `release-small` grows 1,349,408 bytes (+20.1%) for the `data` connector."
+      - |
+        **The root formats, and the resolution that reads them, in
+        `drt-config`**: `project.json` with the declared ceiling,
+        `consent.json`, grant signing requests and the decisions about them,
+        canonical JSON, ed25519 signing, and `resolve` -- what `start` would
+        do, as a pure function over inputs.
+
+        In `drt-config` rather than in `drt` because `dollup` depends on this
+        crate and `drt` never depends on anything of dollup's: drt has to
+        work where dollup is not installed. That direction is what makes
+        "audit reports what the runtime would do" a fact rather than an
+        intention -- `dollup audit`, `drt start` and `stdlib:preflight` call
+        one `resolve`, so they cannot drift within a release. Resolution
+        opens no path: the caller has already read the files, which is also
+        how a page reads them through `drt-platform` and a CLI reads the
+        host's.
+
+        Two shapes are load-bearing and worth stating. Every resolved field
+        carries the rule that chose it (`debug (default_profile)` is a value
+        and its provenance), because a setup report whose content is "which
+        rule fired" cannot be built on bare values. And failures are typed
+        values that accumulate rather than one error: `start` acts on the
+        first blocking one, audit renders all of them, and both get the same
+        wording because the wording is on the enum.
+
+        Nothing is wired into the runtime yet -- no verb reads any of it.
+        This is the shared crate landing first so the two repositories can
+        proceed in parallel.
+      - |
+        **Consent, as the operator acknowledging a ceiling** -- not a grant,
+        and it never creates one. The ceiling is `caps` in `project.json`,
+        declared there and nowhere else, and every profile attenuates under
+        it.
+
+        The relation that decides whether a ceiling change prompts is
+        `check_attenuation` and nothing else. An additive set difference
+        would have been the obvious implementation and is wrong: attenuation
+        treats the two effects asymmetrically -- allows may only shrink,
+        denies may only grow -- so a ceiling that *drops a deny* adds
+        nothing to the allow set and would be classified as a narrowing
+        while actually widening what the root may do, silently. One relation,
+        and the delta an operator reads is the objection itself rather than a
+        second computation that can disagree with the first.
+
+        `realm` is the consent noun and is deliberately not
+        `drt_caps::Scope`, which is what a grant applies to. Realm coverage
+        is `a == b || b.starts_with(a + ".")`, written once, and must not
+        reuse `drt_caps::implies`: that is byte-prefix matching with no
+        separator awareness, and pointed at dotted paths it makes
+        `operator.net` cover `operator.network` -- a widening carrying a
+        valid signature. That exact pair is a test.
+      - |
+        **Grant signing requests are content-addressed**: the identity is
+        `{root_id, node, realm, ask, valid_from, valid_until}` hashed, and
+        the pending file is named by it. `created_uuid7` and `reason` ride
+        outside the hash.
+
+        Three things fall out of that, and each is the answer to a bug
+        somebody would otherwise write. A restart finds its standing
+        approval, because the hash is recomputable from what the node asks
+        again -- an identity including the moment of asking would lose the
+        grant on every restart, and deleting the pending file would destroy
+        the only preimage. Idempotency is one `stat` rather than comparison
+        logic. And a node that rewords its plea keeps its grant.
+
+        Verification is four steps, each a named failure, and `not_after` is
+        checked **last** on purpose: never interpret unauthenticated data,
+        and an expired-but-valid approval should say "expired" rather than
+        "unknown key". The invariant is that an approval can only act within
+        the consented ceiling and can never widen beyond it; without it the
+        portal is an escalation path.
+      - |
+        **Canonical JSON that sorts structurally**, and does not trust
+        `serde_json::Map`'s iteration order.
+
+        `preserve_order` is a cargo feature and cargo unifies features across
+        a workspace. dollup's workspace enables it and drt's does not, so the
+        same helper shared by both would see two key orders and each
+        repository's suite would pass in isolation while signatures failed
+        between them -- the "signature failures nobody can debug" class,
+        arriving by a route neither test suite can see. Keys are therefore
+        collected and ordered by this crate, and CI runs the suite under both
+        feature settings. Two further traps get explicit detection rather
+        than hope: a non-finite float serializes as `null` without error, and
+        a duplicate key is last-wins silently, so a guest's `ask` is checked
+        at the msgpack boundary where both are still visible.
+      - |
+        **Golden fixtures in `crates/drt-config/tests/fixtures/`**: one
+        canonical-JSON input with its exact bytes and digest, a valid
+        `project.json`, a `consent.json` in each mode, and a signed request
+        and decision pair. Both repositories assert against the same bytes
+        instead of each writing their own and diverging, which is what makes
+        a disagreement between `dollup audit` and `drt start` a diff rather
+        than an investigation.
     changed:
       - |
         **`drt-connector-fs` publishes its path jail.** `FsScope` and
