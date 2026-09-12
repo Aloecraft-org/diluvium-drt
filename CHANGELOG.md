@@ -839,6 +839,46 @@ entry has not moved the pin yet.
   program that takes no arguments must not have to declare one — and a
   profile that declares arguments nothing ever read says so once at drain,
   because that profile is describing a command line it does not have.
+- **A `netcheck` block, and `stdlib:netcheck` to read it.** The verb's flags
+  as config keys, measured beside the drive loop on its own runtime, with
+  the verdict on the root program's queue — the arrangement `stun` and
+  `turn` already have.
+
+  A diagnostic a program can read is worth more than one a human reads
+  once. A rendezvous program deciding whether to offer a direct path or a
+  relay is asking exactly what `netcheck` answers, and asking it from inside
+  the deployment asks it about the deployment's own network rather than
+  about whatever shell ran the verb.
+
+  The measurement order moved out of `cli.rs` into `netcheck::run`, because
+  the verb and the block must not each have a copy of it: the configuration
+  fetch before the measurements, UDP before reflect so STUN's address wins,
+  the inbound probe last because it needs the reflect views. Not obvious, so
+  having it twice would mean having it wrong once.
+
+  The verdict crosses as a **table**, not a line of JSON text — a queue
+  carries msgpack, and a program should index `answer.verdict` rather than
+  parse. It is `render_json`'s own object, so a program reading the queue
+  and an operator reading `drt netcheck --json` see one answer. A verdict
+  whose queue the program has not declared is **dropped** rather than held,
+  which is the opposite of the listener's choice and deliberate: a request
+  is somebody waiting on an answer, a verdict is a snapshot the next one
+  supersedes.
+
+  `stdlib:netcheck` is nine lines and reimplements nothing. The measurement
+  needs UDP sockets and a TLS stack, which no connector offers a guest, so
+  it stays the host's and the stdlib program reads its answer. It is listed
+  only on builds that carry the measurement, because a name resolving to a
+  reader with nothing to read is worse than an absent name.
+
+  A block naming nothing to measure against is refused at start rather than
+  answered with an empty verdict: a deployment that asked for a diagnostic
+  and got "unknown" would read the "unknown" as the answer.
+- **`canon::to_msgpack`**, the inverse of `from_msgpack`. It cannot fail —
+  every JSON value has a msgpack form, and the asymmetry runs the other way
+  — and it lives in `canon` because the reason it exists is the boundary
+  that module owns: a queue carries values, so anything the host renders as
+  JSON and a program is meant to read has to cross as a value.
 
 ### Changed
 

@@ -121,6 +121,7 @@ RootConfig {
     turn: None,
     wireguard: None,
     tunnel: None,
+    netcheck: None,
     identity: Identity {
         host_key_path: None,
     },

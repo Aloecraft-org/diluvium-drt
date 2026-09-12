@@ -922,6 +922,50 @@ pub struct SshPrincipal {
 /// *instance* config is embedded flat — the same shape at depth zero — and
 /// the process-level rest is what only the OS process can own: connector
 /// wiring, listeners, identity, principals.
+/// `netcheck`: the NAT diagnostic, inside a deployment.
+///
+/// The verb's flags as keys, plus the two every other reporting block here has.
+/// A diagnostic a program can read is worth more than one a human reads once: a
+/// rendezvous program deciding whether to offer a direct path or a relay is
+/// asking exactly the question `netcheck` answers, and asking it from inside the
+/// deployment means asking it about the deployment's own network rather than
+/// about whatever shell ran the verb.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct NetcheckConfig {
+    /// STUN servers, `host:port`. The decisive measurement is the UDP mapping,
+    /// so two of these answer more than any number of anything else.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stun: Vec<String>,
+    /// Reflect edges. An edge supplies what to measure against -- its own STUN
+    /// list and vantages -- so one of these often replaces every other key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reflect: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reflect_at: Vec<String>,
+    /// Ports an inbound probe should try. Needs a `reflect` edge to derive the
+    /// probe host from.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub port: Vec<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_at: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pin_source_port: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub udp_port: Option<u16>,
+    /// Where the verdict lands, on the root program's queues.
+    #[serde(default = "default_netcheck_queue")]
+    pub queue: String,
+    /// How often to measure again, in milliseconds. `0` is once, at start,
+    /// which is what a deployment deciding its own topology wants; a number is
+    /// for one that expects the network to move under it.
+    #[serde(default)]
+    pub report_ms: u64,
+}
+
+fn default_netcheck_queue() -> String {
+    "netcheck".to_string()
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RootConfig {
     #[serde(flatten)]
@@ -942,6 +986,8 @@ pub struct RootConfig {
     pub wireguard: Option<WireguardConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tunnel: Option<TunnelConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub netcheck: Option<NetcheckConfig>,
     #[serde(default, skip_serializing_if = "Identity::is_default")]
     pub identity: Identity,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

@@ -21,16 +21,43 @@
 //!   answered `None` for it, so an entry naming it was refused with "this build
 //!   carries no stdlib program called 'preflight'; it carries preflight".
 //!
-//! **What is not here, stated rather than implied.** `tunnel` and `netcheck`
-//! belong here by the plan and are not built: the first needs raw stdin as a
-//! guest-reachable byte stream and the second needs a `netcheck` config block
-//! whose verdict lands on a queue. Neither exists yet, so neither is listed —
-//! a name that resolves to nothing would be worse than a name that is absent.
+//! **What is not here, stated rather than implied.** `tunnel` belongs here by
+//! the plan and is not built: the ProxyCommand shape needs raw stdin as a
+//! guest-reachable byte stream, and nothing offers one. It is therefore not
+//! listed — a name that resolves to nothing would be worse than a name that is
+//! absent — and `drt --config <file>` with a `tunnel` block is the path that
+//! does work.
 
 use drt_config::resolve::Resolution;
 
 /// The setup report: what `start` would resolve, printed, with nothing run.
 pub const PREFLIGHT: &str = "preflight";
+
+/// The NAT diagnostic's reader: wait for the verdict the `netcheck` block
+/// measures, print it, stop.
+pub const NETCHECK: &str = "netcheck";
+
+/// `stdlib:netcheck`, as Diluvium.
+///
+/// A **thin reader**, which is the whole point: the measurement is the host's --
+/// it needs UDP sockets and a TLS stack, which no connector offers a guest --
+/// and what used to be a subcommand is now a config block plus these nine lines.
+/// Nothing here reimplements anything, and that is why this is a stdlib program
+/// rather than a port.
+///
+/// It waits rather than polling: a measurement takes seconds, and a program that
+/// looped would be a program burning a deployment's instruction budget on an
+/// answer that is not there yet.
+#[cfg(feature = "netcheck")]
+const NETCHECK_SOURCE: &str = r#"
+-- Wait for the verdict the `netcheck` block measures, print it, and stop.
+local q = queue.declare("netcheck", { capacity = 1 })
+local _, answer = queue.wait({q})
+
+print("verdict: " .. tostring(answer.verdict))
+if answer.why ~= nil then print("  why: " .. tostring(answer.why)) end
+if answer.advice ~= nil then print("  " .. tostring(answer.advice)) end
+"#;
 
 /// What a stdlib name resolves to.
 ///
@@ -55,6 +82,11 @@ pub enum Kind {
 pub fn lookup(name: &str) -> Option<Kind> {
     match name {
         PREFLIGHT => Some(Kind::Native(PREFLIGHT)),
+        // Only where the measurement exists. A name that resolved to a reader
+        // with nothing to read would be worse than a name that is absent, and
+        // the `netcheck` block is what does the measuring.
+        #[cfg(feature = "netcheck")]
+        NETCHECK => Some(Kind::Source(NETCHECK_SOURCE)),
         _ => None,
     }
 }
@@ -63,7 +95,7 @@ pub fn lookup(name: &str) -> Option<Kind> {
 /// Filtered through [`lookup`], so the list cannot advertise what does not
 /// resolve.
 pub fn names() -> Vec<&'static str> {
-    [PREFLIGHT]
+    [PREFLIGHT, NETCHECK]
         .into_iter()
         .filter(|n| lookup(n).is_some())
         .collect()
@@ -246,6 +278,38 @@ mod tests {
 
     /// The registry is honest about what is absent: a name that resolved to
     /// nothing would be worse than a name that is not listed.
+    /// The reader is nine lines and reimplements nothing: the measurement needs
+    /// UDP sockets and a TLS stack, which no connector offers a guest, so it
+    /// stays the host's and this reads its answer.
+    #[cfg(feature = "netcheck")]
+    #[test]
+    fn the_netcheck_reader_only_reads() {
+        let source = match lookup(NETCHECK) {
+            Some(Kind::Source(source)) => source,
+            other => panic!("netcheck is Diluvium source, got {other:?}"),
+        };
+        assert!(
+            source.contains("queue.declare(\"netcheck\""),
+            "it reads the block's queue"
+        );
+        assert!(
+            source.contains("queue.wait"),
+            "it waits rather than polling"
+        );
+        assert!(
+            source.contains("answer.verdict"),
+            "and indexes a table, not text"
+        );
+        assert!(
+            !source.contains("host.call"),
+            "a reader makes no hostcalls: the measurement is the host's"
+        );
+        assert!(
+            source.lines().filter(|l| !l.trim().is_empty()).count() < 12,
+            "thin enough to read at a glance"
+        );
+    }
+
     /// One registry, so `names` and `lookup` cannot disagree -- which they did,
     /// and the symptom was a refusal listing the very name it had just refused.
     #[test]
@@ -256,12 +320,15 @@ mod tests {
                 "'{name}' is advertised and must resolve"
             );
         }
-        assert_eq!(names(), ["preflight"]);
         assert_eq!(lookup("preflight"), Some(Kind::Native("preflight")));
         assert!(is_native("preflight"));
+        assert!(names().contains(&"preflight"));
 
-        // Not built, and not pretended: a name that resolved to nothing would
-        // be worse than a name that is absent.
+        // `netcheck` is there exactly when the measurement is, because a reader
+        // with nothing to read is worse than an absent name.
+        assert_eq!(cfg!(feature = "netcheck"), names().contains(&"netcheck"));
+
+        // Not built, and not pretended.
         assert!(lookup("tunnel").is_none());
         assert!(!is_native("tunnel"));
     }

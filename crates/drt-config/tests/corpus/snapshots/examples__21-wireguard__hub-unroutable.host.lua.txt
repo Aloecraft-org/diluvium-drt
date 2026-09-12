@@ -56,6 +56,7 @@ RootConfig {
         },
     ),
     tunnel: None,
+    netcheck: None,
     identity: Identity {
         host_key_path: None,
     },

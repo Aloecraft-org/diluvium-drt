@@ -1863,83 +1863,24 @@ pub fn main(cli: Cli) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+            let ports: Vec<u16> = port.clone();
+            let inputs = crate::netcheck::Inputs {
+                stun,
+                reflect,
+                reflect_at,
+                port: ports,
+                probe_at,
+                pin_source_port,
+                udp_port,
+            };
             let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
-            let mut m = crate::netcheck::Measurements::default();
-            let edges: Vec<&str> = reflect.iter().map(String::as_str).collect();
-            let typed_at: Vec<&str> = reflect_at.iter().map(String::as_str).collect();
-            runtime.block_on(async {
-                // The configuration fetch first, and only when an edge is
-                // named: what to measure against comes from the thing being
-                // measured against, never from this binary (issue #25).
-                // Merged per key, the typed value winning, and the flags'
-                // own rules apply to the result -- so an answer naming one
-                // server is still "1 given", and an answer's vantages still
-                // may not host the probe.
-                let mut servers: Vec<String> = stun.clone();
-                let mut at: Vec<String> = reflect_at.clone();
-                let from = |what: &str, typed: bool, answered: usize| {
-                    if typed {
-                        format!(
-                            "{what} from --{}",
-                            if what == "stun" { "stun" } else { "reflect-at" }
-                        )
-                    } else if answered > 0 {
-                        format!("{what} from the answer ({answered})")
-                    } else {
-                        format!("no {what}")
-                    }
-                };
-                m.config = match edges.first() {
-                    Some(first) => {
-                        match crate::netcheck::gather::configure(first, &typed_at, &roots).await {
-                            Ok(answer) => {
-                                if servers.is_empty() {
-                                    servers = answer.stun.clone();
-                                }
-                                if at.is_empty() {
-                                    at = answer.vantages.clone();
-                                }
-                                Some(format!(
-                                    "{first}: {}, {}",
-                                    from("stun", !stun.is_empty(), answer.stun.len()),
-                                    from("vantages", !reflect_at.is_empty(), answer.vantages.len())
-                                ))
-                            }
-                            Err(why) => Some(format!("{first}: not read ({why}); flags only")),
-                        }
-                    }
-                    None if stun.is_empty() => Some(
-                        "nothing named to measure against: --reflect <url> supplies the rest, \
-                         or --stun twice"
-                            .into(),
-                    ),
-                    None => None,
-                };
-                let servers: Vec<&str> = servers.iter().map(String::as_str).collect();
-                let at: Vec<&str> = at.iter().map(String::as_str).collect();
-                crate::netcheck::gather::local_and_udp(&mut m, &servers, udp_port).await;
-                // After the UDP half on purpose: STUN's address is the one
-                // the decisive measurement saw, and an edge that disagrees
-                // with it is recorded as a disagreement rather than
-                // overwriting it.
-                crate::netcheck::gather::reflect(&mut m, &edges, &at, pin_source_port, &roots)
-                    .await;
-                // Last: it needs the reflect views to know which vantages
-                // this run has already contacted.
-                if let Some(first) = edges.first() {
-                    crate::netcheck::gather::probe(
-                        &mut m,
-                        first,
-                        probe_at.as_deref(),
-                        &port,
-                        &roots,
-                    )
-                    .await;
-                } else if !port.is_empty() {
-                    m.inbound_why =
-                        Some("--port needs a --reflect edge to derive the probe host from".into());
-                }
-            });
+            // One implementation of the measurement order, shared with the
+            // `netcheck` config block. The order is not obvious -- the
+            // configuration fetch before the measurements, UDP before reflect so
+            // STUN's address wins, the inbound probe last because it needs the
+            // reflect views -- so having it twice would mean having it wrong
+            // once.
+            let m = runtime.block_on(crate::netcheck::run(&inputs, &roots));
             // The same leak as `stun`/`relay`/`tunnel`, for the same reason:
             // FM-1, tokio 1.53.1's use-after-free in runtime teardown, and
             // `detect_mapping` resolves through `lookup_host`, so there is

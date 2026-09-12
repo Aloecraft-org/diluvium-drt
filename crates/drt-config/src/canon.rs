@@ -17,7 +17,8 @@
 //!   hashed and signed; [`hash`], those bytes to a [`Hash`];
 //!   [`hash_value`], the two composed, which is what callers actually
 //!   want; [`from_msgpack`], a guest-supplied msgpack value to a JSON
-//!   value or a named refusal.
+//!   value or a named refusal; [`to_msgpack`], the inverse, for a value the
+//!   host has and a guest should read.
 //! - Configurable: nothing. The algorithm name in [`HASH_PREFIX`] is part
 //!   of the wire format, not a knob.
 //! - Fan-out: [`write_canonical`] is the whole recursion, one arm per
@@ -296,6 +297,42 @@ fn walk(value: &rmpv::Value, at: &str) -> Result<serde_json::Value, NotCanonical
     })
 }
 
+/// A JSON value as a guest receives it.
+///
+/// The inverse of [`from_msgpack`], and it cannot fail: every JSON value has a
+/// msgpack form, which is the direction the asymmetry runs. Here rather than in
+/// a binary because the reason it exists is the boundary this module owns — a
+/// queue carries msgpack, so anything the host renders as JSON and a program is
+/// meant to *read* has to cross as a value and not as a string of text.
+///
+/// A non-integral number crosses as `f64`, which is what JSON means by a number
+/// that is not an integer. `u64` before `i64` so a large unsigned count does not
+/// arrive negative.
+pub fn to_msgpack(value: &serde_json::Value) -> rmpv::Value {
+    match value {
+        serde_json::Value::Null => rmpv::Value::Nil,
+        serde_json::Value::Bool(b) => rmpv::Value::Boolean(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(u) = n.as_u64() {
+                rmpv::Value::from(u)
+            } else if let Some(i) = n.as_i64() {
+                rmpv::Value::from(i)
+            } else {
+                rmpv::Value::F64(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        serde_json::Value::String(s) => rmpv::Value::from(s.as_str()),
+        serde_json::Value::Array(items) => {
+            rmpv::Value::Array(items.iter().map(to_msgpack).collect())
+        }
+        serde_json::Value::Object(map) => rmpv::Value::Map(
+            map.iter()
+                .map(|(k, v)| (rmpv::Value::from(k.as_str()), to_msgpack(v)))
+                .collect(),
+        ),
+    }
+}
+
 fn finite(f: f64, at: &str) -> Result<serde_json::Value, NotCanonical> {
     match serde_json::Number::from_f64(f) {
         Some(n) => Ok(serde_json::Value::Number(n)),
@@ -402,6 +439,23 @@ mod tests {
             String::from_utf8(to_canonical_bytes(&value)).unwrap(),
             r#"{"add":["example.com"]}"#
         );
+    }
+
+    /// Round-tripping a value the host renders: out to a guest and back. Every
+    /// JSON value has a msgpack form, so this direction cannot fail -- the
+    /// asymmetry is the other way, which is what `from_msgpack` refuses.
+    #[test]
+    fn a_json_value_crosses_to_msgpack_and_back() {
+        let value: serde_json::Value = serde_json::from_str(
+            r#"{"verdict":"direct","ports":[1,2,3],"deep":{"ok":true,"why":null},"rate":1.5}"#,
+        )
+        .unwrap();
+        let crossed = to_msgpack(&value);
+        assert_eq!(from_msgpack(&crossed).unwrap(), value);
+
+        // It is a map with string keys, which is what a guest indexes.
+        let map = crossed.as_map().expect("a map");
+        assert!(map.iter().all(|(k, _)| k.as_str().is_some()));
     }
 
     #[test]

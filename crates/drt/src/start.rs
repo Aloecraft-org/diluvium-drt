@@ -448,7 +448,22 @@ pub fn serve_with_observer<B: Acceptor>(
         None => None,
     };
 
-    // The tunnel, if the config names one. Last of the five because it is
+    // The NAT diagnostic, if the config names one. Its own runtime, its
+    // verdict on the same queue bridge: a rendezvous program deciding whether
+    // to offer a direct path or a relay is asking exactly what this answers,
+    // and asking it from inside the deployment asks it about the deployment's
+    // own network rather than about whatever shell ran the verb.
+    #[cfg(feature = "netcheck")]
+    let mut netcheck = match &config.netcheck {
+        Some(cfg) => {
+            let bridge = crate::netcheck::NetcheckBridge::start(cfg)?;
+            eprintln!("drt start: netcheck measuring, verdict on `{}`", cfg.queue);
+            Some(bridge)
+        }
+        None => None,
+    };
+
+    // The tunnel, if the config names one. Last of the six because it is
     // the one that only carries: it has no counters to report and no
     // questions to ask, so there is nothing below for it to take part in.
     #[cfg(feature = "tunnel")]
@@ -518,6 +533,12 @@ pub fn serve_with_observer<B: Acceptor>(
                 inst.pop(q).ok().flatten()
             });
             wg.report(&mut |queue, msg| sw.push(root, queue, msg).is_ok());
+        }
+        #[cfg(feature = "netcheck")]
+        if let Some(netcheck) = netcheck.as_mut() {
+            // A dropped verdict is superseded by the next measurement, which is
+            // why this drops rather than holds -- see `NetcheckBridge::report`.
+            netcheck.report(&mut |queue, msg| sw.push(root, queue, msg).is_ok());
         }
         observe(sw, root);
         if alive == 0 {
