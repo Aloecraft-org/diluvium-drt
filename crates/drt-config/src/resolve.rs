@@ -822,7 +822,7 @@ fn merge_into(out: &mut Resolution, config: &RootConfig, overrides: &Overrides) 
 /// does not stop for.
 fn check_pin(out: &mut Resolution, project: &ProjectJson, root: &RootInputs) {
     match (&project.drt, &root.binary_version) {
-        (Some(pinned), Some(present)) if pinned != present => {
+        (Some(pinned), Some(present)) if !crate::version::same(pinned, present) => {
             out.pin = Some(Decided::new(pinned.clone(), Rule::ProjectCeiling));
             out.findings.push(Finding::PinMismatch {
                 pinned: pinned.clone(),
@@ -1119,6 +1119,32 @@ mod tests {
         });
         let e = out.blocker().expect("blocks").to_string();
         assert!(e.contains("0.5.0") && e.contains("0.9.0"), "{e}");
+    }
+
+    /// The old spelling and the new one are one version (`doc/ALIGNMENT.md`
+    /// §10): a root pinned `0.5.0rc9` starts against a binary cut as
+    /// `v0.5.0-rc.9`, for as long as roots with old pins exist.
+    #[test]
+    fn a_pin_in_the_old_spelling_matches_a_binary_in_the_new_one() {
+        let caps = vec![Grant::grant("host:fs/*")];
+        let mut p = project(caps.clone());
+        p.drt = Some("0.5.0rc9".into());
+        let mut r = root(p, vec![("debug.config.json", profile("app.dlua", caps))]);
+        r.binary_version = Some("0.5.0-rc.9".into());
+        let out = resolve(&ResolveInputs {
+            root: Some(r),
+            ..ResolveInputs::default()
+        });
+        assert!(
+            out.blocker().is_none(),
+            "{}",
+            out.blocker().map(|b| b.to_string()).unwrap_or_default()
+        );
+        assert_eq!(
+            out.pin.as_ref().map(|p| p.value.as_str()),
+            Some("0.5.0rc9"),
+            "the pin keeps the spelling it was written in"
+        );
     }
 
     /// `None` is "could not establish it", and must not produce a mismatch

@@ -48,6 +48,7 @@ pub mod project;
 pub mod realm;
 pub mod resolve;
 pub mod time;
+pub mod version;
 
 // Signatures, and the two formats that carry them. Off for the browser tier
 // alone: a page is always on the no-root path, where consent does not apply,
