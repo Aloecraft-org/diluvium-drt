@@ -158,10 +158,20 @@ jobs:
       # prints and neither of which any job could see. The gate is the
       # conformance oracle on every other target; this is the target it
       # was written for.
+      #
+      # `--features full` and not `--all-features`: the latter also turns on
+      # `wasi` and `web`, which are *alternative* profiles rather than
+      # additions, so the enabled set never equalled PROFILE_FULL and
+      # `buildinfo` reported `custom`. The gate skips a `needs_build: full`
+      # example on anything but `full`, so this step has been skipping the
+      # fifteen it was added to run -- which is how two examples calling
+      # verbs that no longer exist survived three green-but-for-other-reasons
+      # runs. `default` is `slim`, already inside `full`, so this is exactly
+      # the profile a release ships.
       - name: The examples gate, natively
         run: |
           set -eu
-          cargo build --release --all-features
+          cargo build --release --features full
           cd examples && DRT="$GITHUB_WORKSPACE/target/release/drt" ./run-all.sh
       - name: Build without default features
         run: cargo build --workspace --no-default-features
