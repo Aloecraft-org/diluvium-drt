@@ -315,7 +315,8 @@ fn buildinfo_names_the_release_tag_when_built_as_one() {
 /// the binary reports the profile that set is. A feature added to `full`
 /// in the manifest and forgotten in `main.rs` fails here as `custom`; a
 /// feature added to the manifest and unknown to this test fails by name.
-/// Every name a profile table carries must be one `enabled_features` probes.
+/// Every name a profile table carries must be probed, in both the places
+/// that probe.
 ///
 /// It builds a `Vec<&str>` and compares it for equality against those tables,
 /// so a name in a table with no `feature!` line beside it can never appear in
@@ -333,8 +334,9 @@ fn buildinfo_names_the_release_tag_when_built_as_one() {
 /// would widen the crate's surface for a rule that is internal.
 #[test]
 fn every_profile_name_is_a_feature_the_binary_probes() {
-    let source =
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/cli.rs")).unwrap();
+    let read = |what: &str| std::fs::read_to_string(what).unwrap();
+    let source = read(concat!(env!("CARGO_MANIFEST_DIR"), "/src/cli.rs"));
+    let here = read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/cli.rs"));
 
     let quoted = |text: &str| -> Vec<String> {
         text.split('"')
@@ -344,16 +346,33 @@ fn every_profile_name_is_a_feature_the_binary_probes() {
             .collect()
     };
 
-    let probed: Vec<String> = source
-        .split("feature!(")
-        .skip(1)
-        .filter_map(|rest| rest.split(')').next().map(quoted))
-        .flatten()
-        .collect();
+    // Line-shaped, so the `"feature!("` written inside this very test is not
+    // itself scraped as a probe.
+    let probes = |text: &str| -> Vec<String> {
+        let mut out: Vec<String> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("feature!(\"") && l.ends_with("\");"))
+            .flat_map(&quoted)
+            .collect();
+        out.sort();
+        out
+    };
+
+    let probed = probes(&source);
+    let mirrored = probes(&here);
     assert!(
         probed.len() > 10,
         "the scrape found {} probes, so it has stopped matching the source",
         probed.len()
+    );
+    // Two lists of the same names in two crates. `profile_matches_its_manifest`
+    // compares what this file thinks was enabled against what the binary
+    // reports, so a name in one list and not the other makes that comparison
+    // disagree for a reason that has nothing to do with the binary.
+    assert_eq!(
+        probed, mirrored,
+        "src/cli.rs and tests/cli.rs probe different feature sets"
     );
 
     let mut checked = 0;
@@ -499,6 +518,10 @@ fn profile_matches_its_manifest() {
     feature!("stun");
     feature!("tunnel");
     feature!("turn");
+    // `wireguard` names it, so a full build has it and PROFILE_FULL lists
+    // it. Omitted here, this list reports eighteen leaves where the manifest
+    // closure has nineteen and no profile can ever match.
+    feature!("turn-client");
     feature!("wireguard");
     enabled.sort();
 
