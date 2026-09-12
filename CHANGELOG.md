@@ -12,6 +12,54 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
+## [0.6.1-rc.1] - unreleased (prerelease)
+
+`v0.6.1-rc.1` &middot; dv ABI 1 &middot; diluvium `2c2f920d7fcf` (build14)
+
+The first line opened entirely under the Aloecraft alignment
+(`doc/ALIGNMENT.md`). 0.6.0 carried one candidate in each spelling,
+`0.6.0rc1` and `0.6.0-rc.2`; 0.6.1 starts clean, so every tag on the
+line reads one way. The code is rc.2's, and the corpus now carries
+the config `wg.sh` really writes.
+
+Same core, same ABI, same connector lists as 0.6.0-rc.2.
+
+### Connectors
+
+- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `data`, `listen`
+- `slim`: `time`, `fs`, `crypto`, `listen`
+- `wasi`: `time`, `fs`, `crypto`, `sql`, `listen`
+- `web`: `time`, `fs`, `crypto`
+
+### Core features
+
+- `full`: `regex`
+- `slim`: `regex`
+- `wasi`: `regex`
+- `web`: `regex`
+
+### Changed
+
+- **The corpus carries what `wg.sh` writes, captured rather than
+  reconstructed.** `crates/drt-config/tests/corpus/wg.json` was a
+  reconstruction from `doc/WireGuard.md` §1, and it got the
+  `wireguard` block right and everything around it wrong: the real
+  program is `wg_rendezvous.dlua`, the caps and connectors carry
+  `rest` and `fs`, and there is no `peers` list, because the
+  rendezvous room supplies the peer at run time. Both shapes the
+  script writes are in the corpus now, produced by running it
+  against the rc1 binary (#25): kernel mode, and `wg-userspace.json`
+  for `--userspace --forward`, which is the no-root mode arriving in
+  a customer-facing script and a shape no example here exercised.
+
+### Fixed
+
+- **`wg.sh` writes JSON**, since discofetch `126b409`, which closes
+  the known issue 0.6.0rc1 recorded: the config it leaves on a
+  customer machine loads again. Nothing changed in DRT for it; the
+  record is here because the issue was recorded here.
+
+
 ## [0.6.0-rc.2] - 2026-09-12 (prerelease)
 
 `v0.6.0-rc.2` &middot; dv ABI 1 &middot; diluvium `2c2f920d7fcf` (build14)
