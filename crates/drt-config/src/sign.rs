@@ -17,7 +17,9 @@
 //! - Entry points: [`SecretKey::generate`] and [`SecretKey::from_seed`],
 //!   which the caller feeds entropy; [`SecretKey::sign`]; [`PublicKey::verify`];
 //!   [`signing_bytes`], the canonical bytes of an object with one field
-//!   omitted, which is what a signature actually covers.
+//!   omitted, which is what a signature actually covers;
+//!   [`SecretKey::to_file_text`] and [`SecretKey::from_file_text`], the stored
+//!   form both binaries read.
 //! - Configurable: nothing. [`Alg`] has one variant on purpose.
 //! - Fan-out: [`VerifyFailed`] names every way verification refuses.
 //!
@@ -76,9 +78,11 @@ pub struct PublicKey([u8; 32]);
 #[serde(try_from = "String", into = "String")]
 pub struct Signature([u8; 64]);
 
-/// A signing key. Deliberately **not** `Serialize`: a private key has no
-/// business in a config object, and the type system is a cheaper place to
-/// say so than a review comment.
+/// A signing key. Deliberately neither `Serialize` nor `Debug`: a private key
+/// has no business in a config object or in a log line, and the type system is
+/// a cheaper place to say so than a review comment. The cost is that a caller
+/// cannot `unwrap_err()` a `Result<SecretKey, _>` -- which is a small price and
+/// a good reminder.
 pub struct SecretKey(SigningKey);
 
 impl SecretKey {
@@ -109,6 +113,24 @@ impl SecretKey {
 
     pub fn sign(&self, bytes: &[u8]) -> Signature {
         Signature(self.0.sign(bytes).to_bytes())
+    }
+
+    /// The stored form: base64 of the 32-byte seed, one line.
+    ///
+    /// Here and not in either binary, because it is a **shared format**. dollup
+    /// keeps keys in `~/.dollup/keys/` and `drt key sign` reads the same key
+    /// with a path argument — "anything dollup can do to a key, drt can do to
+    /// the same key". Two implementations of that would be two key formats that
+    /// agreed until they did not.
+    pub fn to_file_text(&self) -> String {
+        format!("{}\n", B64.encode(self.seed_bytes()))
+    }
+
+    /// Read the stored form, refusing by name what is not one. Trailing
+    /// whitespace is tolerated because an editor will add it.
+    pub fn from_file_text(text: &str) -> Result<SecretKey, String> {
+        let seed: [u8; 32] = fixed(text.trim(), "a key file")?;
+        Ok(SecretKey::from_seed(&seed))
     }
 }
 
@@ -326,6 +348,36 @@ mod tests {
         // And the base64 form agrees with the byte form.
         let text: String = signature.clone().into();
         assert_eq!(Signature::try_from(text).unwrap(), rebuilt);
+    }
+
+    /// The stored form round-trips, and the same file read by either binary
+    /// produces the same key — which is the whole reason this lives here.
+    #[test]
+    fn the_stored_key_form_round_trips() {
+        let key = key();
+        let text = key.to_file_text();
+        assert!(text.ends_with('\n'), "one line, newline-terminated");
+
+        let reread = SecretKey::from_file_text(&text).unwrap();
+        assert_eq!(reread.public_key(), key.public_key());
+        // An editor's trailing whitespace does not break it.
+        assert_eq!(
+            SecretKey::from_file_text(&format!("  {}  \n\n", text.trim()))
+                .unwrap()
+                .public_key(),
+            key.public_key()
+        );
+
+        // No `unwrap_err`: `SecretKey` is not `Debug` on purpose, and keeping
+        // it that way is worth one `let Err(..) else`.
+        let Err(e) = SecretKey::from_file_text("this is not a key") else {
+            panic!("prose is not a key")
+        };
+        assert!(e.contains("a key file"), "{e}");
+        let Err(e) = SecretKey::from_file_text("AAAA") else {
+            panic!("four bytes is not a seed")
+        };
+        assert!(e.contains("ed25519 wants 32"), "{e}");
     }
 
     #[test]

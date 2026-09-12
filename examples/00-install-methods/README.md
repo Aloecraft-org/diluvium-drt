@@ -21,7 +21,7 @@ dv_abi: 1
 dv_abi_expected: 1
 diluvium: f137b308c4dce917b24c71ab41add61606945e58
 connectors: time,fs,crypto,sql,ssh,rest,ssmtp,exec,listen
-verbs: buildinfo,netcheck,ps,relay,repl,run,start,stun,tunnel
+verbs: buildinfo,key,netcheck,ps,relay,repl,run,start,stun,tunnel
 ```
 
 Another build answers with its own numbers. `drt buildinfo --json` is the

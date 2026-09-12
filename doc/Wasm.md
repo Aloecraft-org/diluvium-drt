@@ -190,7 +190,7 @@ dv_abi: 1
 dv_abi_expected: 1
 diluvium: 515160f645874fc82de001fea7f68803f47bbc58
 connectors: time,fs,crypto,sql
-verbs: buildinfo,ps,repl,run,start
+verbs: buildinfo,key,ps,repl,run,start
 $ wasmtime run -W exceptions=y --dir . drt.wasm run examples/hello.dlua
 time:             1788401535485
 fs/read note.txt:  denied no connector is wired for 'fs/read' in this process

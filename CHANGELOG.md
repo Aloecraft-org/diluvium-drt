@@ -717,6 +717,50 @@ entry has not moved the pin yet.
   block whose verdict lands on a queue, so neither is listed. One
   registry, filtered, after a first version kept two lists that disagreed
   immediately and refused `preflight` with "it carries preflight".
+- **`drt run` takes a file, a profile, code, stdin or a stdlib program**,
+  decided in one fixed order: an explicit `-f`/`-c`/`-p`, then `-`, then a
+  `stdlib:` prefix, then a leading `/` or `./`, then evidence of code,
+  then a declared profile name, and a file otherwise.
+
+  `drt run "print('hello!')"` works, which is what this was for.
+  `drt run - <<'EOF'` works, so a heredoc needs no flag. Extensions are
+  never consulted, so `drt run dlua-code.txt` runs. And the fallthrough is
+  a **file**, not a refusal, so the error can name the way out: `no file
+  'foo'; use -c to run it as code, -p for a profile, or -f to insist it is
+  a file`.
+
+  Evidence of code is a closed set — newline, parens, quotes, `=`, `;` —
+  and whitespace is deliberately not in it, because a Windows path has
+  spaces in it and `drt run "C:/my programs/app.dlua"` has to reach a
+  file. Parens are path-legal too, which is exactly why `-f` exists: the
+  set is evidence, not impossibility. A declared profile beats a file of
+  the same name, and `-f` is the way past that as well.
+
+  The rules are `drt_config::resolve::classify`, so they are stated once
+  and the browser tier classifies identically — a page declares no
+  profiles, so its bare tokens fall through to files, and stdin, profiles
+  and stdlib names are refused there by name rather than silently read as
+  paths.
+- **`drt key new` and `drt key sign`.** The cryptography without dollup,
+  and `key sign` is what turns consent.md §8's "a human with a text
+  editor" from a claim into a path: the runtime cannot tell a portal from
+  a person, but only if a person can actually produce a valid signature.
+
+  `drt key new <path>` writes the private seed `0600` and prints the
+  public half on **stdout** and nothing else, so `drt key new k > k.pub`
+  leaves a file with one key in it. A key file is never overwritten —
+  doing so loses the ability to re-make every signature it ever made.
+  `drt key sign <key> <request> --key-id <id>` reads a request out of
+  `state/gsr/pending/`, signs a decision, and writes it to
+  `state/gsr/decided/`, with `--deny` for the other verdict and
+  `--not-after` defaulting to an hour because revocation is out of scope
+  and a forgotten approval is the failure mode. A decision that is already
+  expired is refused at signing time rather than verifying and then
+  failing step 4, which reads as a mystery.
+
+  The key **file format** lives in `drt-config`, not here: dollup reads
+  the same key out of `~/.dollup/keys/`, and two implementations of one
+  format are two formats that agree until they do not.
 
 ### Changed
 

@@ -139,6 +139,45 @@ pub enum WgAction {
     Check,
 }
 
+/// What `drt key` can do.
+#[derive(clap::Subcommand)]
+pub enum KeyAction {
+    /// Generate a key: write its private seed to `path`, print its public key
+    /// on stdout.
+    ///
+    /// The public half is what goes into a root's `consent.json` `signers`
+    /// list, so it is the only thing on stdout -- `drt key new k > k.pub`
+    /// leaves a file with one key in it.
+    New {
+        /// Where the private seed goes. Never overwritten.
+        path: PathBuf,
+    },
+    /// Sign a decision about a pending grant request.
+    ///
+    /// This is what makes consent.md §8's "a human with a text editor" a real
+    /// approval path: the runtime cannot tell a portal from a person, but only
+    /// if a person can actually produce a valid signature.
+    Sign {
+        /// The key file, as written by `drt key new`.
+        key: PathBuf,
+        /// A request from `state/gsr/pending/`.
+        request: PathBuf,
+        /// The `key_id` this signs as. Must match a `signers` entry in the
+        /// root's `consent.json`, or verification stops at step 1.
+        #[arg(long = "key-id")]
+        key_id: String,
+        /// Deny instead of approving. A signed deny is an answer, which is why
+        /// the directory is `decided/` and not `approved/`.
+        #[arg(long)]
+        deny: bool,
+        /// When this decision stops being valid, as `YYYY-MM-DDTHH:MM:SSZ`.
+        /// Defaults to an hour out, because revocation is out of scope and a
+        /// forgotten approval is the failure mode.
+        #[arg(long = "not-after", value_name = "INSTANT")]
+        not_after: Option<String>,
+    },
+}
+
 #[derive(Parser)]
 #[command(name = "drt", version, about = "The Diluvium RunTime")]
 pub struct Cli {
@@ -176,8 +215,25 @@ pub enum Command {
     /// Run one program to completion: config + one program is a complete
     /// deployment.
     Run {
-        /// A `.dlua` or `.lua` file. Optional when the config names one.
-        program: Option<PathBuf>,
+        /// A file, a declared profile, Diluvium code, `-` for stdin, or
+        /// `stdlib:<name>`. Optional when the config names a program.
+        ///
+        /// Which it is, is decided in this order: an explicit flag below,
+        /// then `-`, then a `stdlib:` prefix, then a leading `/` or `./`, then
+        /// evidence of code (a newline, parens, quotes, `=` or `;` — not
+        /// whitespace, which is path-legal), then a declared profile name, and
+        /// a file otherwise. The last rule is what lets the error name the
+        /// flags instead of guessing.
+        target: Option<String>,
+        /// Read the argument as a file, whatever it looks like.
+        #[arg(short = 'f', long, conflicts_with_all = ["command", "profile"])]
+        file: bool,
+        /// Read the argument as Diluvium code.
+        #[arg(short = 'c', long, conflicts_with_all = ["file", "profile"])]
+        command: bool,
+        /// Read the argument as a declared profile name.
+        #[arg(short = 'p', long, conflicts_with_all = ["file", "command"])]
+        profile: bool,
     },
     /// Run the deployment: the root program, its swarm, and whatever
     /// listeners the config names. Foreground; a process supervisor
@@ -200,6 +256,15 @@ pub enum Command {
         /// says why.
         #[arg(long = "unsafe")]
         unsafe_stdlib: bool,
+    },
+    /// Keys: generate one, or sign a decision about a pending grant request.
+    ///
+    /// drt does the cryptography and never needs dollup installed. dollup
+    /// stores keys and copies public halves into a root's `consent.json`;
+    /// anything it can do to a key, this does to the same key with a path.
+    Key {
+        #[command(subcommand)]
+        action: KeyAction,
     },
     /// The introspection surface: instances, caps, budgets, usage, health.
     Ps,
@@ -485,7 +550,7 @@ pub fn buildinfo(json: bool) -> String {
         connectors.push("listen");
     }
 
-    let mut verbs: Vec<&str> = vec!["run", "start", "repl", "ps", "buildinfo"];
+    let mut verbs: Vec<&str> = vec!["buildinfo", "key", "ps", "repl", "run", "start"];
     if cfg!(feature = "relay") {
         verbs.push("relay");
     }
@@ -810,6 +875,245 @@ pub fn assemble(cli: &Cli) -> Result<(RootConfig, drt_connector::Dispatcher), St
     Ok((config, drt_connector::Dispatcher::new(registry)))
 }
 
+/// `drt key`: generate, or sign.
+fn key_verb(cli: &Cli, action: &KeyAction) -> ExitCode {
+    match action {
+        KeyAction::New { path } => match crate::key::new(path, &mut std::io::stdout()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("drt key new: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        KeyAction::Sign {
+            key,
+            request,
+            key_id,
+            deny,
+            not_after,
+        } => {
+            let not_after = match not_after {
+                Some(text) => match drt_config::time::Timestamp::parse(text) {
+                    Ok(instant) => Some(instant),
+                    Err(e) => {
+                        eprintln!("drt key sign: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                },
+                None => None,
+            };
+            // Where the decision goes: this root's `decided/`, because that is
+            // the directory the runtime reads. Outside a root there is nothing
+            // to approve, and saying so beats writing a signature into the
+            // working directory for nobody to find.
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let Some(root) = crate::drt_root::discover(&cwd, cli.root.as_deref()) else {
+                eprintln!(
+                    "drt key sign: there is no root here to record a decision in; \
+                     run it inside one, or name one with --root"
+                );
+                return ExitCode::FAILURE;
+            };
+            let verdict = if *deny {
+                drt_config::gsr::Verdict::Deny
+            } else {
+                drt_config::gsr::Verdict::Approve
+            };
+            match crate::key::sign(
+                key,
+                request,
+                &root.gsr_decided(),
+                key_id,
+                verdict,
+                not_after,
+                crate::drt_root::now(),
+            ) {
+                Ok(path) => {
+                    eprintln!("wrote {}", path.display());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("drt key sign: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+    }
+}
+
+/// Which reading the flags forced, if any. Clap's `conflicts_with_all` has
+/// already refused two at once, so this cannot lose information.
+fn explicit(file: bool, command: bool, profile: bool) -> Option<drt_config::resolve::Explicit> {
+    use drt_config::resolve::Explicit;
+    match (file, command, profile) {
+        (true, _, _) => Some(Explicit::File),
+        (_, true, _) => Some(Explicit::Code),
+        (_, _, true) => Some(Explicit::Profile),
+        _ => None,
+    }
+}
+
+/// `drt run`: one program to completion, from whichever of the five things the
+/// argument turned out to be.
+///
+/// The classification is `drt_config::resolve::classify`'s, not this file's, so
+/// the rules are stated once and are testable without a process. What is here
+/// is the IO each answer needs: opening a file, reading stdin, looking a
+/// profile up in a root.
+fn run_verb(
+    cli: &Cli,
+    target: Option<&str>,
+    explicit: Option<drt_config::resolve::Explicit>,
+    config: &RootConfig,
+    dispatcher: drt_connector::Dispatcher,
+) -> ExitCode {
+    use drt_config::resolve::Requested;
+
+    let Some(target) = target else {
+        // No argument: the config's own program, as it always was.
+        let Some(drt_config::Program::Path(path)) = config.root.program.clone() else {
+            eprintln!("drt run: name a program, as an argument or as `program` in the config");
+            return ExitCode::FAILURE;
+        };
+        return drive_run(&path, config, dispatcher);
+    };
+
+    // A profile name is only a profile if a root declares it, so the root is
+    // read before the argument is classified. That ordering is what makes
+    // "a listed profile wins over a file of the same name" true rather than
+    // aspirational.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let root = crate::drt_root::discover(&cwd, cli.root.as_deref());
+    let declared: Vec<drt_config::project::ProfileName> = root
+        .as_ref()
+        .map(|root| {
+            let (inputs, _) = root.read(Requested::Default, Vec::new());
+            inputs
+                .root
+                .as_ref()
+                .and_then(|r| r.project.as_ref())
+                .map(|p| p.declared_profiles().0.into_keys().collect())
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+
+    match drt_config::resolve::classify(target, explicit, &declared) {
+        Requested::File(path) => {
+            let path = PathBuf::from(&path);
+            if !drt_platform::fs::exists(&path) {
+                // The one place the disambiguators get named.
+                eprintln!("drt run: {}", drt_config::resolve::no_such_file(target));
+                return ExitCode::FAILURE;
+            }
+            drive_run(&path, config, dispatcher)
+        }
+        Requested::Code(source) => drive_source(&source, "=command", config, dispatcher),
+        Requested::Stdin => match read_stdin() {
+            Ok(source) => drive_source(&source, "=stdin", config, dispatcher),
+            Err(e) => {
+                eprintln!("drt run: cannot read stdin: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Requested::Stdlib(name) => match crate::stdlib::lookup(&name) {
+            Some(crate::stdlib::Kind::Source(src)) => {
+                drive_source(src, &format!("=stdlib:{name}"), config, dispatcher)
+            }
+            // A native program reports on a root; `drt run` has no resolution
+            // to hand it, so it says which verb does rather than printing an
+            // empty report.
+            Some(crate::stdlib::Kind::Native(name)) => {
+                eprintln!(
+                    "drt run: '{name}' reports on a root, so it is `drt start {name}` -- \
+                     `run` has no resolution to report on"
+                );
+                ExitCode::FAILURE
+            }
+            None => {
+                eprintln!(
+                    "drt run: this build carries no stdlib program called '{name}'; it carries {}",
+                    crate::stdlib::names().join(", ")
+                );
+                ExitCode::FAILURE
+            }
+        },
+        // `drt run -p <profile>` runs `live/` as it stands; `drt start
+        // <profile>` deploys first. The already-deployed message is what
+        // teaches the difference, so this arm must not quietly deploy.
+        Requested::Profile(name) => {
+            let Some(root) = root else {
+                eprintln!(
+                    "drt run: there is no root here, so '{name}' names no profile; \
+                     `--config <path>` is the self-contained form"
+                );
+                return ExitCode::FAILURE;
+            };
+            eprintln!(
+                "drt run: running a profile from {} is not built yet; \
+                 `drt start {name}` deploys and runs it",
+                root.live().display()
+            );
+            ExitCode::FAILURE
+        }
+        Requested::Default => unreachable!("classify never answers Default"),
+    }
+}
+
+/// Read every byte of stdin. The piped-code case, and the reason `-` is
+/// implemented rather than reserved: `drt run - <<'EOF'` is how a shell hands
+/// over a program without a file.
+fn read_stdin() -> std::io::Result<String> {
+    use std::io::Read;
+    let mut source = String::new();
+    std::io::stdin().read_to_string(&mut source)?;
+    Ok(source)
+}
+
+fn drive_run(
+    path: &std::path::Path,
+    config: &RootConfig,
+    dispatcher: drt_connector::Dispatcher,
+) -> ExitCode {
+    match run::run(
+        path,
+        std::sync::Arc::new(dispatcher),
+        config::ceiling(config),
+        config.root.budget,
+        config.root.numeric,
+    ) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("drt run: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Run source that never was a file. `name` is what a traceback says, which is
+/// why it is the one thing that differs between a command, stdin and a stdlib
+/// program: `[string "=command"]:1:` tells a reader where their code came from.
+fn drive_source(
+    source: &str,
+    name: &str,
+    config: &RootConfig,
+    dispatcher: drt_connector::Dispatcher,
+) -> ExitCode {
+    match run::run_source(
+        source,
+        name,
+        std::sync::Arc::new(dispatcher),
+        config::ceiling(config),
+        config.root.budget,
+        config.root.numeric,
+    ) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("drt run: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// `drt start`: find the root, resolve, gate on consent, then run the
 /// deployment — or, for a native stdlib entry, print its report and stop.
 ///
@@ -895,32 +1199,18 @@ pub fn main(cli: Cli) -> ExitCode {
         }
     };
     match cli.command {
-        Command::Run { ref program } => {
-            // The CLI argument names the program; a config may name one
-            // too, and the argument wins because it is the more specific
-            // thing the operator just typed.
-            let path = program.clone().or_else(|| match &config.root.program {
-                Some(drt_config::Program::Path(p)) => Some(p.clone()),
-                _ => None,
-            });
-            let Some(path) = path else {
-                eprintln!("drt run: name a program, as an argument or as `program` in the config");
-                return ExitCode::FAILURE;
-            };
-            match run::run(
-                &path,
-                std::sync::Arc::new(dispatcher),
-                config::ceiling(&config),
-                config.root.budget,
-                config.root.numeric,
-            ) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("drt run: {e}");
-                    ExitCode::FAILURE
-                }
-            }
-        }
+        Command::Run {
+            ref target,
+            file,
+            command,
+            profile,
+        } => run_verb(
+            &cli,
+            target.as_deref(),
+            explicit(file, command, profile),
+            &config,
+            dispatcher,
+        ),
         // `start` is handled before `assemble` (see `main`), so this arm
         // cannot be reached. Kept as a named unreachable rather than deleted,
         // because clap's `Command` must still be exhaustive here and a `_`
@@ -1399,6 +1689,7 @@ pub fn main(cli: Cli) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        Command::Key { ref action } => key_verb(&cli, action),
         Command::Ps => {
             // Unlike the REPL, `ps` has nothing it can do standalone: its
             // whole subject is a deployment already running in another

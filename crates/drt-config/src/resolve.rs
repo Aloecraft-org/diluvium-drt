@@ -25,8 +25,8 @@
 //!
 //! ## surface block
 //!
-//! - Entry points: [`resolve`]; [`merge_args`], the command-line override
-//!   rule; [`Entry::parse`].
+//! - Entry points: [`resolve`]; [`classify`], one typed argument to what it
+//!   means; [`merge_args`], the command-line override rule; [`Entry::parse`].
 //! - Configurable values: none here. The fallback order and the profile
 //!   filename rule live in [`crate::project`], beside the reserved names.
 //! - Fan-out: [`Requested`] is what the command line asked for, one arm per
@@ -234,6 +234,80 @@ pub enum ArgError {
 
 // depth: the inputs, which are everything resolution is allowed to look at
 
+/// Which reading the command line forced, when it forced one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Explicit {
+    /// `-f`
+    File,
+    /// `-c`
+    Code,
+    /// `-p`
+    Profile,
+}
+
+/// Characters that are **evidence of code**, as a closed set.
+///
+/// Not "cannot be a path": parens are legal in paths on every system this runs
+/// on, and whitespace is legal on Windows — which is why whitespace is
+/// deliberately *not* in here, and why the name is evidence rather than
+/// impossibility. A newline is what makes a bash heredoc work without a flag,
+/// which is the case this set mostly exists for.
+pub const CODE_EVIDENCE: &[char] = &['\n', '(', ')', '\'', '"', '=', ';'];
+
+/// The token that means standard input.
+pub const STDIN: &str = "-";
+
+/// One typed argument to what it means.
+///
+/// The order is the whole rule and it is fixed: an explicit flag, then stdin,
+/// then the `stdlib:` prefix, then a leading `/` or `./`, then evidence of
+/// code, then a bare token against the declared profiles, and a file otherwise.
+/// Each step is cheap to state and cheap to remember, which is the point —
+/// anyone reaching past this ruleset should expect to look it up.
+///
+/// **A bare token is tried as a profile first and as a file second**, and a
+/// listed profile wins even when a file of the same name sits in the working
+/// directory. `drt run app.dlua` is a file because `app.dlua` is not a declared
+/// profile name, not because it has an extension: extensions are not consulted
+/// at all, so `drt run dlua-code.txt` works.
+pub fn classify(token: &str, explicit: Option<Explicit>, profiles: &[ProfileName]) -> Requested {
+    match explicit {
+        Some(Explicit::File) => return Requested::File(token.to_string()),
+        Some(Explicit::Code) => return Requested::Code(token.to_string()),
+        Some(Explicit::Profile) => return Requested::Profile(token.to_string()),
+        None => {}
+    }
+    if token == STDIN {
+        return Requested::Stdin;
+    }
+    if let Some(name) = token.strip_prefix(STDLIB_PREFIX) {
+        return Requested::Stdlib(name.to_string());
+    }
+    if token.starts_with('/') || token.starts_with("./") {
+        return Requested::File(token.to_string());
+    }
+    if token.contains(CODE_EVIDENCE) {
+        return Requested::Code(token.to_string());
+    }
+    if profiles.iter().any(|p| p.as_str() == token) {
+        return Requested::Profile(token.to_string());
+    }
+    Requested::File(token.to_string())
+}
+
+/// What to say when a bare token turned out to be a file that is not there.
+///
+/// The one place the disambiguators get named. A reader who typed
+/// `drt run foo` meaning code, or meaning a profile, learns here rather than
+/// from the manual — which is the whole reason the fallthrough is a file and
+/// not a refusal.
+pub fn no_such_file(token: &str) -> String {
+    format!(
+        "no file '{token}'; use -c to run it as code, -p for a profile, \
+         or -f to insist it is a file"
+    )
+}
+
 /// What the command line asked to run.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum Requested {
@@ -270,7 +344,19 @@ pub struct RootInputs {
     pub profile_dir: Vec<String>,
     /// Filenames under the resolved `dlua_dir`, for the entry-exists check.
     pub dlua_dir: Vec<String>,
-    /// What `drt buildinfo` says this binary is, for the pin comparison.
+    /// Which drt the caller has established is present, for the pin comparison.
+    ///
+    /// **`None` means "could not establish it", and no [`Finding::PinMismatch`]
+    /// is reported** — a mismatch named against a guessed version would be
+    /// worse than no line at all. The caller says what it could not do in its
+    /// own words.
+    ///
+    /// The two callers establish it differently and neither is wrong. `drt`
+    /// fills in its own `CARGO_PKG_VERSION`, because the pin is a fact about
+    /// the binary that is running and that binary is this one. `dollup audit`
+    /// cannot run `.drt_root/drt` to ask — audit promises no execution, on a
+    /// root it does not trust — so it fills this in only when the binary's hash
+    /// matches the pinned version's, and prints its own line otherwise.
     pub binary_version: Option<String>,
 }
 
@@ -645,8 +731,13 @@ fn merge_into(out: &mut Resolution, config: &RootConfig, overrides: &Overrides) 
     }
 }
 
-/// `drt buildinfo` is what this compares against: the pin is a fact about
-/// the binary, so the binary is what answers.
+/// The pin against what is present.
+///
+/// Three states, not two. A pin with a version established and different is a
+/// mismatch; a pin with nothing established is just the pin, recorded and not
+/// complained about, because the caller that could not establish it is the one
+/// that should say so; and no pin at all is a finding audit reports and start
+/// does not stop for.
 fn check_pin(out: &mut Resolution, project: &ProjectJson, root: &RootInputs) {
     match (&project.drt, &root.binary_version) {
         (Some(pinned), Some(present)) if pinned != present => {
@@ -943,6 +1034,38 @@ mod tests {
         assert!(e.contains("0.5.0") && e.contains("0.9.0"), "{e}");
     }
 
+    /// `None` is "could not establish it", and must not produce a mismatch
+    /// named against a version nobody verified. dollup's audit relies on this:
+    /// it cannot execute `.drt_root/drt` to ask, so it leaves this unset and
+    /// prints its own line.
+    #[test]
+    fn an_unestablished_binary_version_reports_no_mismatch() {
+        let caps = vec![Grant::grant("host:fs/*")];
+        let mut r = root(
+            project(caps.clone()),
+            vec![("debug.config.json", profile("app.dlua", caps))],
+        );
+        r.binary_version = None;
+        let out = resolve(&ResolveInputs {
+            root: Some(r),
+            ..ResolveInputs::default()
+        });
+
+        assert_eq!(
+            out.pin.as_ref().map(|p| p.value.as_str()),
+            Some("0.5.0"),
+            "the pin is still reported"
+        );
+        assert!(
+            !out.findings
+                .iter()
+                .any(|f| matches!(f, Finding::PinMismatch { .. })),
+            "and nothing is claimed about a binary nobody checked: {:?}",
+            out.findings
+        );
+        assert!(out.blocker().is_none(), "{:?}", out.findings);
+    }
+
     #[test]
     fn a_missing_entry_file_is_reported_with_its_directory() {
         let caps = vec![Grant::grant("host:fs/*")];
@@ -1064,6 +1187,115 @@ mod tests {
         let merged =
             merge_args(&declared, &vec![("verbose".into(), Some("false".into()))]).unwrap();
         assert_eq!(merged["verbose"], ArgValue::Bool(false));
+    }
+
+    // depth: classifying one typed argument
+
+    fn declared(names: &[&str]) -> Vec<ProfileName> {
+        names.iter().map(|n| ProfileName::new(n).unwrap()).collect()
+    }
+
+    /// Every rule in the order it fires, on one list, so the order is readable
+    /// as a table rather than as seven tests that each hide the precedence.
+    #[test]
+    fn the_classifier_rules_fire_in_order() {
+        let profiles = declared(&["debug", "preflight"]);
+        let c = |token: &str| classify(token, None, &profiles);
+
+        // stdin, then the stdlib prefix, then a path-looking start.
+        assert_eq!(c("-"), Requested::Stdin);
+        assert_eq!(c("stdlib:preflight"), Requested::Stdlib("preflight".into()));
+        assert_eq!(c("./app.dlua"), Requested::File("./app.dlua".into()));
+        assert_eq!(c("/opt/app.dlua"), Requested::File("/opt/app.dlua".into()));
+
+        // Evidence of code.
+        assert_eq!(
+            c("print('hello!')"),
+            Requested::Code("print('hello!')".into())
+        );
+        assert_eq!(c("x = 1"), Requested::Code("x = 1".into()));
+        assert_eq!(c("a();b()"), Requested::Code("a();b()".into()));
+        assert_eq!(
+            c("local q = 1\nprint(q)"),
+            Requested::Code("local q = 1\nprint(q)".into()),
+            "a newline is what makes a bash heredoc work with no flag"
+        );
+
+        // A bare token: a declared profile, else a file.
+        assert_eq!(c("debug"), Requested::Profile("debug".into()));
+        assert_eq!(c("app.dlua"), Requested::File("app.dlua".into()));
+        assert_eq!(
+            c("dlua-code.txt"),
+            Requested::File("dlua-code.txt".into()),
+            "extensions are not consulted at all"
+        );
+        assert_eq!(
+            c("foo"),
+            Requested::File("foo".into()),
+            "the fallthrough is a file, so the error can name the disambiguators"
+        );
+    }
+
+    /// A listed profile wins over a file of the same name. Surprising once,
+    /// stated in the doc, and `-f` is the way out.
+    #[test]
+    fn a_declared_profile_beats_a_file_of_the_same_name() {
+        let profiles = declared(&["debug"]);
+        assert_eq!(
+            classify("debug", None, &profiles),
+            Requested::Profile("debug".into())
+        );
+        assert_eq!(
+            classify("debug", Some(Explicit::File), &profiles),
+            Requested::File("debug".into()),
+            "-f insists"
+        );
+    }
+
+    /// An explicit flag wins over every other rule, including the ones that
+    /// would otherwise be unambiguous.
+    #[test]
+    fn an_explicit_flag_beats_every_other_rule() {
+        let profiles = declared(&["debug"]);
+        // A path-looking token as code, because the operator said so.
+        assert_eq!(
+            classify("./app.dlua", Some(Explicit::Code), &profiles),
+            Requested::Code("./app.dlua".into())
+        );
+        // And a file literally named `-`, which is otherwise stdin.
+        assert_eq!(
+            classify("-", Some(Explicit::File), &profiles),
+            Requested::File("-".into())
+        );
+        // `stdlib:` is a prefix, not a reservation: -f reaches a file by that
+        // name if somebody really has one.
+        assert_eq!(
+            classify("stdlib:x", Some(Explicit::File), &profiles),
+            Requested::File("stdlib:x".into())
+        );
+    }
+
+    /// Whitespace is path-legal and is deliberately not evidence of code: a
+    /// Windows path has spaces in it, and treating those as code would make
+    /// `drt run "C:/my programs/app.dlua"` unreachable without a flag.
+    #[test]
+    fn whitespace_alone_is_not_evidence_of_code() {
+        let profiles = declared(&[]);
+        assert_eq!(
+            classify("my programs/app.dlua", None, &profiles),
+            Requested::File("my programs/app.dlua".into())
+        );
+        assert!(!CODE_EVIDENCE.contains(&' '));
+        assert!(!CODE_EVIDENCE.contains(&'\t'));
+    }
+
+    #[test]
+    fn the_not_found_message_names_the_way_out() {
+        let message = no_such_file("foo");
+        assert!(message.contains("no file 'foo'"), "{message}");
+        for flag in ["-c", "-p", "-f"] {
+            assert!(message.contains(flag), "{flag} is named: {message}");
+        }
     }
 
     #[test]

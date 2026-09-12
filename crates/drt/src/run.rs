@@ -38,7 +38,25 @@ pub fn prepare(
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("program");
+    prepare_source(&source, name, dispatcher, caps, budget, numeric)
+}
 
+/// [`prepare`] for source that never was a file: `drt run -c`, `drt run -`, a
+/// stdlib program.
+///
+/// `name` is what a traceback says, and it is the only thing that differs
+/// between the three. `[string "=command"]:1:` tells a reader their code came
+/// from the command line rather than from a file they should go looking for;
+/// the leading `=` is the engine's own convention for a chunk name that is not
+/// a path, which is why a traceback does not invent quotes around it.
+pub fn prepare_source(
+    source: &str,
+    name: &str,
+    dispatcher: Arc<Dispatcher>,
+    caps: Vec<Grant>,
+    budget: drt_config::Budget,
+    numeric: drt_config::Numeric,
+) -> Result<Solo, String> {
     let engine = DiluviumEngine::new().map_err(|e| e.to_string())?;
     // The ceiling the config set (or the wide local default when there is
     // no config). What is actually reachable is the intersection with what
@@ -47,7 +65,7 @@ pub fn prepare(
     Solo::load(
         &engine,
         LoadSpec {
-            program: ProgramBytes::Source(&source),
+            program: ProgramBytes::Source(source),
             name,
             budget,
             numeric,
@@ -97,12 +115,31 @@ pub fn run(
     budget: drt_config::Budget,
     numeric: drt_config::Numeric,
 ) -> Result<(), String> {
+    let prepared = prepare(program, dispatcher.clone(), caps, budget, numeric);
+    drive(prepared, dispatcher)
+}
+
+/// [`run`] for source that never was a file.
+pub fn run_source(
+    source: &str,
+    name: &str,
+    dispatcher: Arc<Dispatcher>,
+    caps: Vec<Grant>,
+    budget: drt_config::Budget,
+    numeric: drt_config::Numeric,
+) -> Result<(), String> {
+    let prepared = prepare_source(source, name, dispatcher.clone(), caps, budget, numeric);
+    drive(prepared, dispatcher)
+}
+
+/// The loop, shared by both, so a command and a file are driven identically.
+fn drive(prepared: Result<Solo, String>, dispatcher: Arc<Dispatcher>) -> Result<(), String> {
     // The same reactor `start` enters, for the same reason (src/runtime.rs):
     // `drt run`'s one instance is stalled by its own slow call either way,
     // but the call parks rather than blocks, so a deadline it carries is
     // the pump's to keep rather than the connector's fallback runtime's.
     let _runtime = crate::runtime::enter();
-    let mut solo = prepare(program, dispatcher.clone(), caps, budget, numeric)?;
+    let mut solo = prepared?;
     loop {
         let next = solo.tick(None);
         // We own the clock (the instance has none): honour the ask.

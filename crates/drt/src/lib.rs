@@ -21,6 +21,10 @@ pub mod drt_root;
 /// The grants desk: where `request_grant` lands and where a signed decision
 /// is read back. Files only -- it knows nothing of portals.
 pub mod gsr;
+/// `drt key new` and `drt key sign`: the cryptography, without dollup. What
+/// makes "a human with a text editor" a real approval path rather than a
+/// theoretical one.
+pub mod key;
 #[cfg(feature = "listen")]
 pub mod listen;
 /// `drt netcheck`: the NAT diagnostic. The verdict table is pure and
