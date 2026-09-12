@@ -365,6 +365,12 @@ plus the gap items alone, and that remains possible if the release is
 meant to carry nothing else. The workspace version is `0.5.0` for it, and
 `0.6.0` re-bumps when it is next to ship.
 
+**Superseded 2026-09-12 by `doc/ALIGNMENT.md` §1**, which every Aloecraft
+project adopts: a candidate is `vX.Y.Z-rc.N`, the crates carry the tag
+body, and `consistency` holds `.technoproj`, the newest entry and the
+manifests to one spelling. Tags cut under the rule below keep their
+spelling. What follows is the argument as it stood for rc8.
+
 **One thing not to re-litigate: the version scheme.** A candidate is
 `X.Y.ZrcN`, crate versions stay at `X.Y.Z`, and `script/changelog.py:318`
 enforces exactly that. A suffixed variant (`rc7g1`, to signal "rc7 plus a

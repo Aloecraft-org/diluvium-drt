@@ -115,6 +115,30 @@ def load():
             sys.exit("CHANGELOG.yaml: %s" % e)
 
 
+# The version grammar (doc/ALIGNMENT.md §1): `X.Y.Z`, or `X.Y.Z-<kind>.<n>`
+# with the dot, where the kind sorts as PEP 440 and SemVer both order it.
+# Every tag cut before v0.6.0-rc.2 was `X.Y.ZrcN`, and existing tags are
+# never respelled, so that shape stays valid for the entries that carry it
+# -- and only for those: the newest entry is the tree, and the tree is past
+# the cutover.
+VERSION = r"\d+\.\d+\.\d+(?:-(?:dev|alpha|beta|rc)\.\d+)?"
+LEGACY_VERSION = r"\d+\.\d+\.\d+(?:rc\d+)?"
+
+
+def technoproj_version():
+    """The version `.technoproj` spells (doc/ALIGNMENT.md §2), or None when
+    there is no such file to read."""
+    try:
+        v = json.loads(read(".technoproj"))["TECHNO_VERSION"]
+    except (OSError, KeyError, ValueError):
+        return None
+    spelled = "%d.%d.%d" % (v["major"], v["minor"], v["patch"])
+    pre = v.get("pre")
+    if pre:
+        spelled += "-%s.%d" % (pre["kind"], pre["n"])
+    return spelled
+
+
 def validate(doc):
     """-> list of problems, empty when the file is sound."""
     bad = []
@@ -128,6 +152,10 @@ def validate(doc):
     for i, r in enumerate(releases):
         v = r.get("version", "<unnamed>")
         where = "release %s" % v
+
+        if not (re.fullmatch(VERSION, str(v)) or re.fullmatch(LEGACY_VERSION, str(v))):
+            bad.append("%s: version is not X.Y.Z, X.Y.Z-<dev|alpha|beta|rc>.N, "
+                       "or the X.Y.ZrcN a tag before v0.6.0-rc.2 carries" % where)
 
         for key in r:
             if key not in KNOWN:
@@ -356,69 +384,62 @@ def consistency(doc):
     -> list of problems."""
     bad = []
     r = doc["releases"][0]
-    version = r["version"]
+    version = str(r["version"])
     where = "newest entry (%s)" % version
 
-    # A release candidate is `X.Y.ZrcN` -- no hyphen, matching the other
-    # repositories' candidates -- and the crates it is built from
-    # stay at `X.Y.Z`: the tag is the release's identity, the manifest
-    # version is the code's, and a candidate is the same code as the
-    # release it is a candidate for. Bumping a dozen path dependencies to
-    # `rc1` and back again would be churn that proves nothing, so the
-    # comparisons below are made against the base version.
-    m = re.fullmatch(r"(\d+\.\d+\.\d+)(?:rc\d+)?", str(version))
-    if not m:
-        bad.append("%s: version is not X.Y.Z or X.Y.ZrcN" % where)
+    # The tree is past the cutover (doc/ALIGNMENT.md §1): the tag is
+    # canonical, the entry's `version` is its body, and the crates carry
+    # the same body -- a candidate's crates say `0.6.0-rc.2`, not `0.6.0`.
+    # Until v0.6.0-rc.2 the crates stayed at the base while the tag carried
+    # `rcN`, and an unreleased entry was compared on its pin alone; both
+    # rules went with the scheme they served.
+    if not re.fullmatch(VERSION, version):
+        bad.append("%s: version is not X.Y.Z or X.Y.Z-<dev|alpha|beta|rc>.N "
+                   "-- the tree is past the cutover (doc/ALIGNMENT.md §1)"
+                   % where)
         return bad
-    version = m.group(1)
 
-    # An unreleased entry is compared on its pin and not on its version.
-    # The next minor is opened as `unreleased` when its first change lands
-    # (doc/Plan-2026-09.md), while the crates stay at the shipped version
-    # until it ships (doc/Gap-Release.md: "0.6.0 re-bumps when it is next
-    # to ship") -- so for the whole of a minor cycle the entry describing
-    # the tree names a version the manifests do not carry yet, and that is
-    # by design rather than drift. What the entry must still agree with is
-    # the embedded core, below: a pin moved in Cargo.lock without the
-    # changelog following is exactly the drift this exists to catch, and
-    # an unreleased entry sitting first is where that pin is recorded.
-    unreleased = r.get("status") == "unreleased"
+    # `.technoproj` is the version a human edits (§2); the entry and the
+    # manifests are the places it must reach. One spelling, three places,
+    # one check -- the alternative was the four hand-typed copies §3's
+    # `stamps` exist to retire.
+    spelled = technoproj_version()
+    if spelled is None:
+        bad.append(".technoproj: no TECHNO_VERSION to compare %s against" % where)
+    elif spelled != version:
+        bad.append(".technoproj spells %s but %s says %s"
+                   % (spelled, where, version))
 
     # Every `version = "..."` in a workspace manifest, not just the first:
     # the path dependencies carry it too, and cargo will not build if they
     # disagree -- but it *will* build if they agree with each other and
     # disagree with the changelog, which is the drift this catches.
-    for path in () if unreleased else ("Cargo.toml", "crates/drt-web/Cargo.toml"):
+    for path in ("Cargo.toml", "crates/drt-web/Cargo.toml"):
         try:
             text = read(path)
         except OSError as e:
             bad.append("%s: cannot read (%s)" % (path, e))
             continue
-        found = set(re.findall(r'version\s*=\s*"(\d+\.\d+\.\d+)"', text))
+        found = set(re.findall(r'version\s*=\s*"(%s)"' % VERSION, text))
         wrong = sorted(v for v in found if v != version)
         if wrong:
             bad.append("%s carries version %s but %s says %r"
                        % (path, ", ".join(repr(w) for w in wrong), where,
                           version))
 
-    # The embedded diluvium revision is a compatibility fact the release
-    # publishes, so a changelog claiming one revision while Cargo.lock pins
-    # another would put a wrong number in BUILDINFO's neighbour.
-    if r.get("diluvium"):
-        try:
-            lock = read("Cargo.lock")
-        except OSError as e:
-            bad.append("Cargo.lock: cannot read (%s)" % e)
-        else:
-            m = re.search(
-                r'name = "diluvium"\nversion = "[^"]*"\n'
-                r'source = "git\+[^#]*#([0-9a-f]+)"', lock)
-            if not m:
-                bad.append("Cargo.lock: no git revision pinned for diluvium")
-            elif not m.group(1).startswith(str(r["diluvium"])[:12]):
-                bad.append("Cargo.lock pins diluvium %s but %s says %s"
-                           % (m.group(1)[:12], where,
-                              str(r["diluvium"])[:12]))
+    # What is this repository's alone lives in script/checks.py, in the
+    # shape the shared engine will call it (doc/ALIGNMENT.md §3): the
+    # diluvium revision the entry claims against the one Cargo.lock pins.
+    checks = os.path.join(ROOT, "script", "checks.py")
+    if os.path.exists(checks):
+        import importlib.util
+        import types
+        spec = importlib.util.spec_from_file_location("checks", checks)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        ctx = types.SimpleNamespace(read=read, root=ROOT,
+                                    base=version.split("-")[0])
+        bad.extend(module.consistency(doc, ctx))
     return bad
 
 

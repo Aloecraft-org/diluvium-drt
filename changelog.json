@@ -14,6 +14,86 @@
   ],
   "releases": [
     {
+      "version": "0.6.0-rc.2",
+      "tag": "v0.6.0-rc.2",
+      "date": null,
+      "status": "unreleased",
+      "stable": false,
+      "mirror": false,
+      "dv_abi": 1,
+      "diluvium": "2c2f920d7fcfacd72e396e13b8ece5cd11f6d60d",
+      "diluvium_build": 14,
+      "connectors": {
+        "full": [
+          "time",
+          "fs",
+          "crypto",
+          "sql",
+          "ssh",
+          "rest",
+          "ssmtp",
+          "exec",
+          "data",
+          "listen"
+        ],
+        "slim": [
+          "time",
+          "fs",
+          "crypto",
+          "listen"
+        ],
+        "wasi": [
+          "time",
+          "fs",
+          "crypto",
+          "sql",
+          "listen"
+        ],
+        "web": [
+          "time",
+          "fs",
+          "crypto"
+        ]
+      },
+      "features": {
+        "full": [
+          "regex"
+        ],
+        "slim": [
+          "regex"
+        ],
+        "wasi": [
+          "regex"
+        ],
+        "web": [
+          "regex"
+        ]
+      },
+      "summary": "The second candidate for 0.6.0, and the first release under the\nAloecraft alignment (`doc/ALIGNMENT.md`): the code rc1 shipped, plus\nthe release machinery that document asks every project for. Nothing\na program sees changes; what a box, a root and a mirror see does.\n\n**The tag is spelled `v0.6.0-rc.2`**, and every other spelling\nderives from it: the crates carry `0.6.0-rc.2`, so `drt --version`\nand `buildinfo` say it, and a root's `drt` pin is compared to it. A\npin written the old way still matches a binary reporting the new one,\nfor this cycle. Tags before this one keep their spelling.\n\n**Artifacts are named by platform**, profile last:\n`drt_linux_x86_64_musl`, `drt_linux_x86_64_musl_slim`,\n`drt_darwin_arm64_slim`, `drt_windows_x86_64_slim.exe`,\n`drt_wasi.wasm`. This release carries the old names beside the new\nones, both in `SHA256SUMS.txt`; the next one drops the old names.\n\n**The mirror is `software.aloecraft.org/releases/diluvium-drt/`**,\nand it carries the newest candidate as well as the releases.\n`BUILDINFO.txt` opens with `tag`, `version`, `commit`, `branch` and\n`built`; `SHA256SUMS.txt` covers every asset, `install.sh` and\n`BUILDINFO.txt` included; and a `v*-dev.*` tag is a fast path: the\nsuite, the Linux build, no changelog entry, always a prerelease.\n\nSame core, same ABI, same connector lists as rc1.\n",
+      "upgrading": "- **Fetch by the new artifact name.** `drt_linux_static_x86_64` is\n  `drt_linux_x86_64_musl`, `drt_slim_<platform>` is\n  `drt_<platform>_slim`, and `drt_wasip2.wasm` is `drt_wasi.wasm`.\n  Both names are on this release and on no later one. `install.sh`\n  tries the new name and falls back to the old, so a pinned older tag\n  still installs.\n- **Pin either spelling this cycle.** A root that wants this\n  candidate pins `0.6.0-rc.2`. The old spelling of it is accepted\n  too, but do not write it: the normaliser goes away once no root\n  pins the old way.\n- **`DRT_MIRROR` moved.** A script that set it to\n  `https://diluvium.aloecraft.org/drt` should drop the override, or\n  point it at `https://software.aloecraft.org/releases/diluvium-drt`.\n",
+      "latest": false,
+      "sections": {
+        "added": [
+          "**A dev fast path.** A `v*-dev.*` tag, pushed or dispatched with\n`publish=true`, runs the suite and the Linux leg alone, skips\nwasip2, web and Windows, needs no changelog entry, publishes as a\nprerelease with a body that says what it is, and prunes dev\nreleases beyond the ten newest. `script/dev-tag.sh` prints the next\nfree tag, allocated from the tags that exist and never reused. No\nnightly yet.\n",
+          "**`.technoproj`** holds the version a human edits and the changelog\nengine's declaration (`doc/ALIGNMENT.md` \u00a72, \u00a73). `consistency`\nholds the newest entry, the workspace manifests and it to one\nspelling, and `script/checks.py` carries the one check that is this\nrepository's alone: the diluvium revision in `Cargo.lock` against\nthe entry.\n"
+        ],
+        "changed": [
+          "**The version scheme is `doc/ALIGNMENT.md` \u00a71's.** A candidate is\n`vX.Y.Z-rc.N`, the changelog `version` is the tag body, and the\ncrates carry it too, so `CARGO_PKG_VERSION` names the cut. Until\nnow the crates stayed at `X.Y.Z` while the tag carried `rcN`, which\nis why the pin reads the tag; it still does, and the two agree on a\ntagged build.\n",
+          "**`BUILDINFO.txt` opens with the five lines every Aloecraft release\ncarries**: `tag`, `version` (the tag body), `commit`, `branch`\n(derived, since a tag push carries none) and `built`, then the\nfacts it always carried.\n",
+          "**A `drt` pin in the old spelling matches a binary in the new one**,\nthrough a normaliser in drt-config that rewrites the one legacy\nshape ever cut and nothing else. Removable once no root pins the\nold way.\n",
+          "**The mirror is carried at\n`software.aloecraft.org/releases/diluvium-drt/`**, the address\n`install.sh` and the README name now, and the newest candidate is\nflagged for it, so `latest-prerelease/` resolves to a candidate\nrather than to the newest stable.\n",
+          "**The install example asks the binary its version rather than\nexpecting one.** The gate normalises `version:` the way it does the\ntag line, since the crates now carry a spelling that moves every\ncut.\n"
+        ],
+        "removed": [
+          "**The planned 0.5.0 entry.** Nine candidates shipped and no stable\ndid; the line closed with 0.6.0rc1, and the entry sat below it\nclaiming a release that was not going to happen. `validate` refuses\nan unreleased entry that is not the newest.\n"
+        ],
+        "fixed": [
+          "**`SHA256SUMS.txt` covers every asset.** `install.sh` and the web\nbuild's buildinfo were uploaded unmanifested, so the mirror could\nnot vouch for them.\n"
+        ]
+      },
+      "notes_md": "## [0.6.0-rc.2] - unreleased (prerelease)\n\n`v0.6.0-rc.2` &middot; dv ABI 1 &middot; diluvium `2c2f920d7fcf` (build14)\n\nThe second candidate for 0.6.0, and the first release under the\nAloecraft alignment (`doc/ALIGNMENT.md`): the code rc1 shipped, plus\nthe release machinery that document asks every project for. Nothing\na program sees changes; what a box, a root and a mirror see does.\n\n**The tag is spelled `v0.6.0-rc.2`**, and every other spelling\nderives from it: the crates carry `0.6.0-rc.2`, so `drt --version`\nand `buildinfo` say it, and a root's `drt` pin is compared to it. A\npin written the old way still matches a binary reporting the new one,\nfor this cycle. Tags before this one keep their spelling.\n\n**Artifacts are named by platform**, profile last:\n`drt_linux_x86_64_musl`, `drt_linux_x86_64_musl_slim`,\n`drt_darwin_arm64_slim`, `drt_windows_x86_64_slim.exe`,\n`drt_wasi.wasm`. This release carries the old names beside the new\nones, both in `SHA256SUMS.txt`; the next one drops the old names.\n\n**The mirror is `software.aloecraft.org/releases/diluvium-drt/`**,\nand it carries the newest candidate as well as the releases.\n`BUILDINFO.txt` opens with `tag`, `version`, `commit`, `branch` and\n`built`; `SHA256SUMS.txt` covers every asset, `install.sh` and\n`BUILDINFO.txt` included; and a `v*-dev.*` tag is a fast path: the\nsuite, the Linux build, no changelog entry, always a prerelease.\n\nSame core, same ABI, same connector lists as rc1.\n\n### Connectors\n\n- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `data`, `listen`\n- `slim`: `time`, `fs`, `crypto`, `listen`\n- `wasi`: `time`, `fs`, `crypto`, `sql`, `listen`\n- `web`: `time`, `fs`, `crypto`\n\n### Core features\n\n- `full`: `regex`\n- `slim`: `regex`\n- `wasi`: `regex`\n- `web`: `regex`\n\n### Added\n\n- **A dev fast path.** A `v*-dev.*` tag, pushed or dispatched with\n  `publish=true`, runs the suite and the Linux leg alone, skips\n  wasip2, web and Windows, needs no changelog entry, publishes as a\n  prerelease with a body that says what it is, and prunes dev\n  releases beyond the ten newest. `script/dev-tag.sh` prints the next\n  free tag, allocated from the tags that exist and never reused. No\n  nightly yet.\n- **`.technoproj`** holds the version a human edits and the changelog\n  engine's declaration (`doc/ALIGNMENT.md` \u00a72, \u00a73). `consistency`\n  holds the newest entry, the workspace manifests and it to one\n  spelling, and `script/checks.py` carries the one check that is this\n  repository's alone: the diluvium revision in `Cargo.lock` against\n  the entry.\n\n### Changed\n\n- **The version scheme is `doc/ALIGNMENT.md` \u00a71's.** A candidate is\n  `vX.Y.Z-rc.N`, the changelog `version` is the tag body, and the\n  crates carry it too, so `CARGO_PKG_VERSION` names the cut. Until\n  now the crates stayed at `X.Y.Z` while the tag carried `rcN`, which\n  is why the pin reads the tag; it still does, and the two agree on a\n  tagged build.\n- **`BUILDINFO.txt` opens with the five lines every Aloecraft release\n  carries**: `tag`, `version` (the tag body), `commit`, `branch`\n  (derived, since a tag push carries none) and `built`, then the\n  facts it always carried.\n- **A `drt` pin in the old spelling matches a binary in the new one**,\n  through a normaliser in drt-config that rewrites the one legacy\n  shape ever cut and nothing else. Removable once no root pins the\n  old way.\n- **The mirror is carried at\n  `software.aloecraft.org/releases/diluvium-drt/`**, the address\n  `install.sh` and the README name now, and the newest candidate is\n  flagged for it, so `latest-prerelease/` resolves to a candidate\n  rather than to the newest stable.\n- **The install example asks the binary its version rather than\n  expecting one.** The gate normalises `version:` the way it does the\n  tag line, since the crates now carry a spelling that moves every\n  cut.\n\n### Removed\n\n- **The planned 0.5.0 entry.** Nine candidates shipped and no stable\n  did; the line closed with 0.6.0rc1, and the entry sat below it\n  claiming a release that was not going to happen. `validate` refuses\n  an unreleased entry that is not the newest.\n\n### Fixed\n\n- **`SHA256SUMS.txt` covers every asset.** `install.sh` and the web\n  build's buildinfo were uploaded unmanifested, so the mirror could\n  not vouch for them.\n\n### Upgrading\n\n- **Fetch by the new artifact name.** `drt_linux_static_x86_64` is\n  `drt_linux_x86_64_musl`, `drt_slim_<platform>` is\n  `drt_<platform>_slim`, and `drt_wasip2.wasm` is `drt_wasi.wasm`.\n  Both names are on this release and on no later one. `install.sh`\n  tries the new name and falls back to the old, so a pinned older tag\n  still installs.\n- **Pin either spelling this cycle.** A root that wants this\n  candidate pins `0.6.0-rc.2`. The old spelling of it is accepted\n  too, but do not write it: the normaliser goes away once no root\n  pins the old way.\n- **`DRT_MIRROR` moved.** A script that set it to\n  `https://diluvium.aloecraft.org/drt` should drop the override, or\n  point it at `https://software.aloecraft.org/releases/diluvium-drt`.\n"
+    },
+    {
       "version": "0.6.0rc1",
       "tag": "v0.6.0rc1",
       "date": "2026-09-12",

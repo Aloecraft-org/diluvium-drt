@@ -3,7 +3,7 @@
     "major": 0,
     "minor": 6,
     "patch": 0,
-    "pre": { "kind": "rc", "n": 1 }
+    "pre": { "kind": "rc", "n": 2 }
   },
   "TECHNO_CHANGELOG": {
     "project": "DRT",
@@ -21,8 +21,8 @@
     "required": ["version", "tag", "status", "stable", "mirror", "summary"],
     "emit_json": true,
     "stamps": [
-      { "file": "Cargo.toml", "find": "version\\s*=\\s*\"(\\d+\\.\\d+\\.\\d+(?:-[a-z]+\\.\\d+)?)\"", "spelling": "base" },
-      { "file": "crates/drt-web/Cargo.toml", "find": "version\\s*=\\s*\"(\\d+\\.\\d+\\.\\d+(?:-[a-z]+\\.\\d+)?)\"", "spelling": "base" }
+      { "file": "Cargo.toml", "find": "version\\s*=\\s*\"(\\d+\\.\\d+\\.\\d+(?:-[a-z]+\\.\\d+)?)\"", "spelling": "semver" },
+      { "file": "crates/drt-web/Cargo.toml", "find": "version\\s*=\\s*\"(\\d+\\.\\d+\\.\\d+(?:-[a-z]+\\.\\d+)?)\"", "spelling": "semver" }
     ]
   },
   "TECHNO_INIT_DIRS": [".nogit", ".dump", "script"],

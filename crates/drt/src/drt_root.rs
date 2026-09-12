@@ -45,13 +45,15 @@ use drt_config::RootConfig;
 /// What a `drt` pin in `project.json` is compared against.
 ///
 /// The release tag when the build was cut as one, and the crate version
-/// otherwise. Those differ, and the difference is the point: by the version
-/// scheme (`doc/Gap-Release.md`, "one thing not to re-litigate") a candidate
-/// is tagged `X.Y.ZrcN` while its crates stay at `X.Y.Z`. A binary reporting
-/// `CARGO_PKG_VERSION` therefore calls itself `0.5.0` whether it was cut as
-/// rc8, rc9 or the release -- so a root pinned to `0.5.0rc9` could never
-/// start, and a root pinned to `0.5.0` could not tell two candidates apart.
-/// Prerelease pins did not work at all.
+/// otherwise. Under the scheme this was written for (`doc/Gap-Release.md`)
+/// the two differed on every candidate: a candidate was tagged `X.Y.ZrcN`
+/// while its crates stayed at `X.Y.Z`, so a binary reporting
+/// `CARGO_PKG_VERSION` called itself `0.5.0` whether it was cut as rc8, rc9
+/// or the release, and a root pinned to `0.5.0rc9` could never start.
+/// Since v0.6.0-rc.2 the crates carry the tag body too (`doc/ALIGNMENT.md`
+/// §1), so on a tagged build the two agree and the tag is simply the
+/// authority; on a development tree the crate version names the cut being
+/// worked toward, which is the honest answer for a binary nobody tagged.
 ///
 /// The tag already travels with the bytes: `build.rs` re-exports
 /// `DRT_RELEASE_TAG` and `drt buildinfo` prints it, which is
@@ -60,7 +62,8 @@ use drt_config::RootConfig;
 /// already there.
 ///
 /// A local build stamps no tag and falls back, so a development tree behaves
-/// exactly as it did.
+/// exactly as it did. A pin written in the old spelling is compared through
+/// `drt_config::version::same`, for one cycle.
 pub fn binary_version() -> String {
     pin_string(option_env!("DRT_RELEASE_TAG"), env!("CARGO_PKG_VERSION"))
 }
@@ -323,6 +326,9 @@ mod tests {
     fn a_release_tag_is_the_pin_and_loses_its_v() {
         assert_eq!(pin_string(Some("v0.5.0rc9"), "0.5.0"), "0.5.0rc9");
         assert_eq!(pin_string(Some("v0.5.0"), "0.5.0"), "0.5.0");
+        // Since the cutover the crates carry the tag body, so the two agree
+        // and the tag still wins.
+        assert_eq!(pin_string(Some("v0.6.0-rc.2"), "0.6.0-rc.2"), "0.6.0-rc.2");
         // A tag written without the `v` is taken as it is, rather than
         // having its first character eaten.
         assert_eq!(pin_string(Some("0.5.0rc9"), "0.5.0"), "0.5.0rc9");

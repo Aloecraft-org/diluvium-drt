@@ -611,11 +611,14 @@ pub fn buildinfo(json: bool) -> String {
     // range could not express even if one existed. `unknown` on a build
     // that does not pin it by revision.
     let diluvium_rev = env!("DRT_DILUVIUM_REV");
-    // The release tag, when the build was one. `version` is the crate's and
-    // every candidate under it prints the same `0.5.0`, so a box running
-    // rc3 could not be asked which candidate it ran; discofetch pinned the
-    // installed tag in a file beside the binary because the binary would
-    // not say (`DRT_ASKS.md` §3). Stamped by build.rs from the workflow's
+    // The release tag, when the build was one. `version` is the crate's,
+    // which carries the tag body since v0.6.0-rc.2 (doc/ALIGNMENT.md §1);
+    // before that every candidate under a version printed the same
+    // `0.5.0`, so a box running rc3 could not be asked which candidate it
+    // ran, and discofetch pinned the installed tag in a file beside the
+    // binary because the binary would not say (`DRT_ASKS.md` §3). The tag
+    // line stays: it is the one fact a development build lacks and a
+    // release has. Stamped by build.rs from the workflow's
     // `DRT_RELEASE_TAG`; a local build has none and prints no line.
     let tag = option_env!("DRT_RELEASE_TAG").filter(|t| !t.is_empty());
 

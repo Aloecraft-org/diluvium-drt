@@ -6,6 +6,7 @@
   "needs_build": "full",
   "normalise": [
     "s|^diluvium: [0-9a-f]\\{7,\\}$|diluvium: <revision>|",
+    "s|^version: .*$|version: <version>|",
     "/^tag: v/d"
   ]
 }
