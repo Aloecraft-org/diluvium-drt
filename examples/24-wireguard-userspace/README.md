@@ -23,8 +23,8 @@ Three terminals, or `./demo.sh` which is all of them:
 ```
 cd examples/24-wireguard-userspace
 drt start --config device.json          # what the fetchpoint serves
-drt wg --config fetchpoint.json         # its end of the tunnel
-drt wg --config laptop.json             # yours
+drt start --config fetchpoint.json         # its end of the tunnel
+drt start --config laptop.json             # yours
 curl http://127.0.0.1:18523/hello
 ```
 
@@ -36,7 +36,7 @@ ok: userspace on port 18520, 1 peer(s)
     no interface; forwards 127.0.0.1:18523 -> 10.9.0.2:80
 exit 0
 
-$ drt wg --config laptop.json
+$ drt start --config laptop.json
 drt wg: userspace up on port 18520, mtu 1420, address 10.9.0.1/24, public key lji56MXQ6Mhpi6WwKhqvSWth5YPmCTFq6dIl94sZt2Q=
 drt wg: forward 127.0.0.1:18523 -> 10.9.0.2:80
 drt wg: peer /a3GH0hkjdB0oghXkh7cDyfCQInPtj0VOMXNK8kVQ20= allowed 10.9.0.2/32 via 127.0.0.1:18521

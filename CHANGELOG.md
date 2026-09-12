@@ -562,6 +562,17 @@ entry has not moved the pin yet.
 
 ### Fixed
 
+- **`13-stun-server` and `24-wireguard-userspace` still called the verbs
+  that were removed** --- `drt stun --config` and a bare `drt wg
+  --config`. Both are `drt start` now, and their configs carry the
+  `entry` that makes a served block a deployment (`stdlib:stun`,
+  `stdlib:wg`); neither had one, because they were already JSON and so
+  were not in the set of files the `.host.lua` conversion touched. The
+  examples gate skips both on a build without `wireguard`, which is how
+  they were missed. A sweep of every example config for a `relay`,
+  `stun`, `turn` or `wireguard` block with no program now backs this up;
+  the three remaining in `21-wireguard` are inputs to `wg check`, which
+  serves nothing and needs no program.
 - **A relative `program` path is resolved against the config**, not
   against the working directory. The `.host.lua` mapper did this for
   `supervisor` and said why --- the deployment directory is the unit

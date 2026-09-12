@@ -1,14 +1,14 @@
 # DRT examples
 
 A run-through for someone who has a `drt` binary and has never run anything
-with it. Seventeen sittings — eighteen directories, because `05` has a live
-twin — meant in order: one idea each, a command block you can paste, and an
-`expected.txt` that is the real output of running it rather than a
+with it. Twenty-six sittings — twenty-seven directories, because `05` has a
+live twin — meant in order: one idea each, a command block you can paste, and
+an `expected.txt` that is the real output of running it rather than a
 transcription of what it ought to say. A **drt app** is a config plus a
 program; the first two examples are that sentence taken apart, and most of the
 rest are one program run under two or three configs, so every difference
 between the outputs is the config's doing and not the program's. This is not a
-reference. Everything here is v0.4.2.
+reference. Everything here is v0.5.0.
 
 | directory | what it teaches | the command |
 |---|---|---|
@@ -30,13 +30,26 @@ reference. Everything here is v0.4.2.
 | [`14-ssh-through-a-tunnel`](14-ssh-through-a-tunnel) | Use your own `ssh` client through DRT with OpenSSH's `ProxyCommand`. `scp`, `rsync`, `sftp` and `-L` come free. | `drt tunnel` |
 | [`15-sending-mail`](15-sending-mail) | Send mail without holding the relay's password, and without being able to choose who the mail is from. | `./demo.sh` |
 | [`16-exec`](16-exec) | `exec/run` runs a local command: a vector, never a shell string; the exit is an answer; and a deadline, a byte cap and an allow list are the deployment's. | `drt run --config deploy.json` |
+| [`17-serving-http`](17-serving-http) | The inbound half: `start` binds the port a config names and hands each request to the program as a queue message; the reply on another queue is the response, and headers cross only by allowlist. | `./demo.sh` |
+| [`18-capability-menu`](18-capability-menu) | `capabilities/list` answers what the deployment wired and what *this* instance may reach. It is gated on its own capability, so an auditor holding that and nothing else can report a swarm's whole reach. | `drt run --config auditor.json` |
+| [`19-a-tunnel-a-program-can-use`](19-a-tunnel-a-program-can-use) | The relay end to end on one machine: `--local` turns the caller half into a local port, so anything that speaks TCP reaches a device with no inbound address. One fresh leg per connection. | `./demo.sh` |
+| [`20-turn-relay`](20-turn-relay) | A TURN relay and the credential a program mints for it: one shared secret in two blocks, never held by the guest. A relay with no secret is an open relay and refuses to bind. | `./demo.sh` |
+| [`21-wireguard`](21-wireguard) | The `wireguard` block with no privilege: `wg keygen` and `wg pubkey` replace wireguard-tools, and `wg check` says whether a config can work without touching an interface. | `./demo.sh` |
+| [`22-wireguard-interface`](22-wireguard-interface) | The half that needs `CAP_NET_ADMIN`: the interface is really created, with the address and MTU the config names, and it goes away with the process. Asked of the kernel through `/sys`, not taken on DRT's word. | `./demo.sh` |
+| [`23-reading-parquet`](23-reading-parquet) | The `data` connector: parquet columns cross as raw bytes and text crosses dictionary-encoded, so a million-row column is a million bytes rather than a million Lua values. | `drt run --config app.json` |
+| [`24-wireguard-userspace`](24-wireguard-userspace) | `mode = "userspace"` puts a TCP/IP stack in the process instead of an interface on the machine, so two peers cross a real tunnel with no `CAP_NET_ADMIN`, no sudo and no wintun.dll. | `./demo.sh` |
+| [`25-modules`](25-modules) | A program in more than one file. Every `.dlua` beside the entry is a module the host compiled before the program started, so `require` reads no filesystem and costs no capability. | `drt run app.dlua` |
 
 `drt run` executes one program to completion and exits — no swarm, no
-listeners, no second instance — and it is what `01`–`07`, `10`, `12` and `16`
-use.
-`drt start` runs the whole deployment, and `08` needs it because a child has
-nowhere to live under `drt run`. `00`, `09` and `11` call neither: `buildinfo`,
-`netcheck`, `tunnel` and `relay` are verbs beside those two, not apps.
+listeners, no second instance — and it is what `01`–`07`, `10`, `12`, `16`,
+`18`, `23` and `25` use.
+`drt start` runs the whole deployment: `08` needs it because a child has
+nowhere to live under `drt run`, and `11`, `13`, `17`, `19`, `20`, `22` and
+`24` need it because a config block that serves — `relay`, `stun`, `turn`,
+`wireguard`, `listen` — is a deployment and not a verb. (`20` uses both: the
+relay under `start`, the program that mints a credential for it under `run`.)
+`00`, `09`, `14` and `21` call neither: `buildinfo`, `netcheck`, `tunnel` and
+`wg` are verbs beside those two, not apps.
 
 ## If you only do three
 
@@ -113,13 +126,12 @@ Named rather than omitted, so you are not left looking for them.
   show you a `denied` — and no example wires it, because in v0.4.0 the crypto
   scope demands a signing key even for the keyless calls. That conflict is
   unresolved, and it is why `crypto/random` is not answered with no config.
-- **`listen`, and `drt stun`.** The inbound half: a config that answers
-  requests rather than making them. `11` is as close as the set gets.
 - **`drt repl`** works and has no line editor — no history, no arrow keys, no
   editing a line you have typed. Not a first day's tool.
 - **`drt ps`** is a stub: it prints `drt ps: not built yet`, and reaching a
   running deployment over the control endpoint lands with sshd.
-- **The relay's control plane.** `11` is the tunnel and the relay themselves.
+- **The relay's control plane.** `11` and `19` are the tunnel and the relay
+  themselves.
   The half only `drt start` has — the supervisor, the admit question asked
   before a leg proceeds, the STUN pair — is in [`rendezvous/`](rendezvous),
   which wants a machine on either side and so is neither numbered nor gated.
