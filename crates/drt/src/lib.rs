@@ -30,6 +30,9 @@ pub mod gsr;
 pub mod key;
 #[cfg(feature = "listen")]
 pub mod listen;
+/// `require` for a sealed guest: modules resolved by the host before the
+/// program runs, looked up by the guest, and never a file the guest opens.
+pub mod modules;
 /// `drt netcheck`: the NAT diagnostic. The verdict table is pure and
 /// always compiled; the measurements that need STUN are behind `stun`.
 pub mod netcheck;

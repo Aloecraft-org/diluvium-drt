@@ -25,6 +25,11 @@ use crate::drive::{Next, Outcome, Solo};
 const BUDGET_ESCAPE_DOC: &str = "doc/Ask-0.5.0-Reply.md \u{a7}1.2";
 
 /// Load the program under the ceiling. Nothing runs until the first tick.
+///
+/// Through [`crate::modules::program_load`], so a program with modules beside
+/// it gets the generated chunk that carries them and a program without one
+/// gets its own source under its own name -- the second being every program
+/// that existed before modules did.
 pub fn prepare(
     program: &Path,
     dispatcher: Arc<Dispatcher>,
@@ -32,13 +37,15 @@ pub fn prepare(
     budget: drt_config::Budget,
     numeric: drt_config::Numeric,
 ) -> Result<Solo, String> {
-    let source = drt_platform::fs::read_to_string(program)
-        .map_err(|e| format!("cannot read {}: {e}", program.display()))?;
-    let name = program
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("program");
-    prepare_source(&source, name, dispatcher, caps, budget, numeric)
+    let loaded = crate::modules::program_load(program)?;
+    prepare_source(
+        &loaded.source,
+        &loaded.name,
+        dispatcher,
+        caps,
+        budget,
+        numeric,
+    )
 }
 
 /// [`prepare`] for source that never was a file: `drt run -c`, `drt run -`, a

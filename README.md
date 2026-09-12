@@ -173,6 +173,21 @@ host.call("sql/exec", {sql = "..."}) -- any connector by name
 host.try("sql/exec", {sql = "..."})  -- the same, without the raise
 ```
 
+**A program can be more than one file.** Every `.dlua` beside the entry is a
+module, and `require("text.case")` is `text/case.dlua` in the node's own
+directory:
+
+```lua
+local case = require("text.case")   -- text/case.dlua, beside the entry
+```
+
+The guest still cannot open a file. The host walks the node's directory
+before the program starts and compiles what it finds, so `require` is a
+lookup in a table that already exists — no search path, no filesystem, no
+capability, and nothing reachable outside the directory the node ships as.
+[`examples/25-modules`](examples/25-modules) is the shortest version and
+[`doc/Modules.md`](doc/Modules.md) is the mechanism.
+
 **`time.now()` does not exist, and the error is misleading.** `time` *is* a
 library — the pure calendar one, `time.iso` / `time.parse` / `time.fields` —
 so `time.now()` answers `attempt to call a nil value (field 'now')`, which

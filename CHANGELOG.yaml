@@ -1057,6 +1057,54 @@ releases:
         refusal -- so a config that asks for arbitration and runs a reader
         refuses every leg, visibly and failing closed. A deployment that
         arbitrates wants its own program; `examples/rendezvous` is one.
+    added:
+      - |
+        **Load-time modules: `require`, for a guest that cannot open a file.**
+        Every `.dlua` beside the entry is a module, and `require("db.claims")`
+        is `db/claims.dlua` in the node's own directory ---
+        `live/<name>/` for a deployed entry, the config's directory for a
+        `--config` run. No new hostcall, no new capability, no format change,
+        no ABI change. `doc/Modules.md` is the mechanism and
+        `examples/25-modules` is the shortest version of it.
+
+        **Not `package.preload`, which does not exist here.** A sealed guest is
+        opened without `LUA_LOADLIBK`, so there is no `package`, no
+        `package.preload` and no `require`; those arrive only with `--unsafe`,
+        where `require` is the filesystem one this exists to avoid. The ABI has
+        no preload call either --- `dv_register_code` is snapshot dedup, and
+        registering a chunk there does not make it reachable by name. What the
+        seal does keep is `load`, deliberately: *"It compiles bytes the program
+        already holds and reaches nothing."* So the host generates a chunk
+        holding the modules' source, compiles each with `load`, installs a
+        `require` over the result, and compiles and calls the entry.
+
+        Each module is its own `load`, so a traceback names the module's own
+        file and line, and Lua's 200-local ceiling --- which is per function ---
+        is spent per module rather than per node. The entry is loaded inside
+        the generated chunk rather than after it, under exactly the name it
+        would have had otherwise: adding a module to a node does not shift its
+        line numbers or change the shape of its errors. **A node with no
+        modules beside it generates nothing and is loaded exactly as before.**
+
+        Three corrections to the design note, recorded in `doc/Modules.md`:
+
+        - `.dluac` is deferred. `engine.rs` loads source with
+          `text_only(true)` --- "the verifier that does not exist yet" --- and
+          guest-side `load` accepts a binary chunk even under that flag, which
+          upstream records as a defect. Reaching bytecode modules through it
+          would put unverified bytecode inside the sandbox the entry is
+          protected from, so a `.dluac` beside the entry is refused by name
+          rather than ignored.
+        - A bad name is refused at the **call**, not at load. The host never
+          sees a call site, so a name that reaches `require` cannot be refused
+          before the call that passes it.
+        - Every module is its own chunk, not its own budget: `dv_set_budget`
+          is per instance, so a node's chunks share one.
+
+        The name rule exists twice --- over the files the host finds, and over
+        whatever the guest passes `require` --- because the host is not in the
+        loop for the second. `the_two_copies_of_the_name_rule_agree` runs one
+        table of cases through both and fails if they differ.
     removed:
       - |
         **`*.host.lua` configs, and the loader that read them.** Every

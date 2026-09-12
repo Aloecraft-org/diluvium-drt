@@ -1,0 +1,10 @@
+local M = {}
+
+-- Modules see each other: `require` is in scope here exactly as in the entry.
+local case = require("text.case")
+
+function M.titled(items)
+    return case.title(table.concat(items, ", "))
+end
+
+return M

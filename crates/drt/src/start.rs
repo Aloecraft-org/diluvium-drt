@@ -874,8 +874,14 @@ fn root_source(config: &RootConfig) -> Result<String, String> {
         }
     }
     match &config.root.program {
-        Some(drt_config::Program::Path(path)) => drt_platform::fs::read_to_string(path)
-            .map_err(|e| format!("cannot read {}: {e}", path.display())),
+        // Through `modules`, so a program with modules beside it gets the
+        // chunk that carries them. A program without any is read and loaded
+        // exactly as it was before modules existed.
+        Some(drt_config::Program::Path(path)) => {
+            crate::modules::program_load(path).map(|loaded| loaded.source)
+        }
+        // Inline source has no directory, so it has no modules. Same for a
+        // stdlib program, which arrives here as source for that reason.
         Some(drt_config::Program::Source(src)) => Ok(src.clone()),
         // The one place a pointer to dollup belongs: the user has
         // nothing to run, which is the only moment "where do programs come

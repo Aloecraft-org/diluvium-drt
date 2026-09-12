@@ -1004,6 +1004,12 @@ pub struct RootConfig {
     pub dlua_dir: Option<String>,
     /// The root program: a file under `dlua_dir`, or `stdlib:<name>`. What
     /// the C host's config calls `supervisor`.
+    ///
+    /// **One file of a directory.** `dlua_dir` is a directory and this names
+    /// a file in it; the loader may resolve the file's siblings from the same
+    /// directory, which is what `require` reaches (`doc/Modules.md`). The
+    /// `stdlib:` spelling is why `stdlib` is not a module name: a stdlib
+    /// program is reached here and never by `require`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<resolve::Entry>,
     /// Defaults for the entry, and the declaration of this profile's own
