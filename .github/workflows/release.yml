@@ -9,6 +9,10 @@ name: Release
 # required: BUILDINFO.txt in every release names the diluvium git revision
 # this binary embeds and the dv ABI version it speaks, so "which diluvium is
 # inside" is a fact you read off the release, never a tag-naming convention.
+#
+# A `v*-dev.*` tag is the fast path (doc/ALIGNMENT.md §7): the suite, the
+# Linux build only, no changelog entry, always a prerelease. The suffix
+# decides, so what was decided travels with the artifact.
 
 on:
   push:
@@ -47,9 +51,18 @@ jobs:
       tag: ${{ steps.check.outputs.tag }}
       publish: ${{ steps.check.outputs.publish }}
       sha: ${{ steps.check.outputs.sha }}
+      # The suffix decides (doc/ALIGNMENT.md §7): `v*-dev.*` builds one
+      # platform, needs no changelog entry, and is always a prerelease.
+      dev: ${{ steps.check.outputs.dev }}
+      # Derived, since a tag push carries none and a dispatch may name a
+      # commit (doc/ALIGNMENT.md §5); BUILDINFO records what was found.
+      branch: ${{ steps.check.outputs.branch }}
       # Derived from the changelog's `stable`, which is the truth; GitHub's
-      # flag is downstream of it.
-      prerelease: ${{ steps.changelog.outputs.prerelease }}
+      # flag is downstream of it. A dev build has no entry and is always one.
+      prerelease: ${{ steps.changelog.outputs.prerelease || steps.dev.outputs.prerelease }}
+      # Which platforms `build` runs: every one, or the Linux leg alone for
+      # a dev build. Declared in one place so the two lists cannot drift.
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -58,8 +71,10 @@ jobs:
       - id: check
         env:
           EVENT: ${{ github.event_name }}
+          IN_REF: ${{ inputs.ref }}
           IN_TAG: ${{ inputs.tag }}
           IN_PUBLISH: ${{ inputs.publish }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -eu
           if [ "$EVENT" = push ]; then
@@ -77,9 +92,82 @@ jobs:
               exit 1
             fi
           fi
+          SHA=$(git rev-parse HEAD)
+          case "$TAG" in
+            v*-dev.*) DEV=true ;;
+            *)        DEV=false ;;
+          esac
+          # The branch, recorded as found rather than guessed: a dispatch
+          # that names a branch is authoritative; a blank dispatch ran on
+          # the selected branch; a tag push, or a dispatch naming a commit,
+          # gets a branch containing the commit, the default branch first
+          # when more than one does.
+          DEFAULT=$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||' || true)
+          if [ "$EVENT" != push ] && [ -n "$IN_REF" ] && git show-ref -q --verify "refs/remotes/origin/$IN_REF"; then
+            BRANCH="$IN_REF"
+          elif [ "$EVENT" != push ] && [ -z "$IN_REF" ]; then
+            BRANCH="$REF_NAME"
+          else
+            CONTAINING=$(git branch -r --contains "$SHA" --format='%(refname:lstrip=3)' | grep -vx HEAD || true)
+            if [ -n "$DEFAULT" ] && printf '%s\n' "$CONTAINING" | grep -qx "$DEFAULT"; then
+              BRANCH="$DEFAULT"
+            else
+              BRANCH=$(printf '%s\n' "$CONTAINING" | head -1)
+            fi
+          fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "dev=$DEV" >> "$GITHUB_OUTPUT"
+          echo "branch=${BRANCH:-(detached)}" >> "$GITHUB_OUTPUT"
+      # The build matrix, declared here so a dev build can be the Linux leg
+      # alone: `strategy.matrix` cannot read a job output, but it can be a
+      # whole value from one. The setup strings are what the YAML `include`
+      # used to hold, comments included.
+      - id: matrix
+        env:
+          DEV: ${{ steps.check.outputs.dev }}
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json, os
+          # Static musl: the binary that installs onto any Linux box the way
+          # diluvium_linux_static_x86_64 does. `full` is the unprefixed
+          # default artifact -- DRT installs as the runtime, and a runtime
+          # that cannot serve is the two-binary cliff again; `slim` is the
+          # qualified variant for the distribution-size story.
+          #
+          # CC=musl-gcc matters twice over: diluvium-sys's build script
+          # invokes $CC directly (not the cc crate), and without it the C
+          # core is compiled by the host glibc gcc -- whose fortify and LFS
+          # symbols (__fprintf_chk, fopen64) do not exist in musl, as the
+          # first rehearsal proved at link time. The cc-crate users
+          # (aws-lc-sys, bundled sqlite) honour the same variable. AR for
+          # the same reason as CC, one step later: the build script archives
+          # the C core itself, and with no `AR` it asks for
+          # `x86_64-unknown-linux-musl-ar`, which `musl-tools` does not ship
+          # -- the second rehearsal proved that the way the first proved CC.
+          # Binutils `ar` archives musl-gcc's ELF objects; the archiver does
+          # not need to be target-specific.
+          linux = {
+              "name": "linux_static_x86_64",
+              "os": "ubuntu-latest",
+              "target": "x86_64-unknown-linux-musl",
+              "setup": "sudo apt-get update && sudo apt-get install -y musl-tools cmake"
+                       " && echo \"CC=musl-gcc\" >> \"$GITHUB_ENV\""
+                       " && echo \"AR=ar\" >> \"$GITHUB_ENV\"",
+          }
+          darwin = [
+              {"name": "darwin_arm64", "os": "macos-latest", "target": "aarch64-apple-darwin", "setup": "true"},
+              {"name": "darwin_x86_64", "os": "macos-15-intel", "target": "x86_64-apple-darwin", "setup": "true"},
+          ]
+          # linux aarch64 is next, not promised: the full profile carries
+          # aws-lc-sys through russh, and cross-compiling that is a job to
+          # rehearse, not to assume. Windows is not in this matrix because
+          # it cannot build both halves: it is `build-windows` below, slim
+          # only, and proven on a real Windows runner by `smoke-windows`.
+          include = [linux] if os.environ["DEV"] == "true" else [linux] + darwin
+          print("matrix=" + json.dumps({"include": include}))
+          EOF
       # The changelog is a release gate, not a formality: CHANGELOG.yaml is
       # what the release body and the mirror are generated from, so a tag
       # with no entry -- or an entry still marked unreleased -- would
@@ -89,7 +177,7 @@ jobs:
       # rehearsal still runs against an `unreleased` entry.
       - name: The changelog describes this tag
         id: changelog
-        if: steps.check.outputs.tag != ''
+        if: steps.check.outputs.tag != '' && steps.check.outputs.dev != 'true'
         run: |
           pip install --quiet pyyaml
           ./script/changelog.py validate
@@ -97,6 +185,17 @@ jobs:
           ./script/changelog.py release-check --tag '${{ steps.check.outputs.tag }}' \
             ${{ steps.check.outputs.publish == 'true' && '--publish' || '' }} \
             >> "$GITHUB_OUTPUT"
+      # A dev build has no entry, by design (doc/ALIGNMENT.md §7): it is one
+      # commit in someone's hands, not a release the changelog describes.
+      # The file still has to be sound, and the build is always a prerelease.
+      - name: A dev build needs no entry
+        id: dev
+        if: steps.check.outputs.dev == 'true'
+        run: |
+          pip install --quiet pyyaml
+          ./script/changelog.py validate
+          ./script/changelog.py check
+          echo "prerelease=true" >> "$GITHUB_OUTPUT"
 
   test:
     name: Tests
@@ -143,45 +242,9 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          # Static musl: the binary that installs onto any Linux box the
-          # way diluvium_linux_static_x86_64 does. `full` is the unprefixed
-          # default artifact — DRT installs as the runtime, and a runtime
-          # that cannot serve is the two-binary cliff again; `slim` is the
-          # qualified variant for the distribution-size story.
-          - name: linux_static_x86_64
-            os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            # CC=musl-gcc matters twice over: diluvium-sys's build script
-            # invokes $CC directly (not the cc crate), and without it the C
-            # core is compiled by the host glibc gcc — whose fortify and
-            # LFS symbols (__fprintf_chk, fopen64) do not exist in musl, as
-            # the first rehearsal proved at link time. The cc-crate users
-            # (aws-lc-sys, bundled sqlite) honour the same variable.
-            # AR for the same reason as CC, one step later: the build
-            # script archives the C core itself, and with no `AR` it asks
-            # for `x86_64-unknown-linux-musl-ar`, which `musl-tools` does
-            # not ship -- the second rehearsal proved that the way the
-            # first proved CC. Binutils `ar` archives musl-gcc's ELF
-            # objects; the archiver does not need to be target-specific.
-            setup: >-
-              sudo apt-get update && sudo apt-get install -y musl-tools cmake
-              && echo "CC=musl-gcc" >> "$GITHUB_ENV"
-              && echo "AR=ar" >> "$GITHUB_ENV"
-          - name: darwin_arm64
-            os: macos-latest
-            target: aarch64-apple-darwin
-            setup: 'true'
-          - name: darwin_x86_64
-            os: macos-15-intel
-            target: x86_64-apple-darwin
-            setup: 'true'
-          # linux aarch64 is next, not promised: the full profile carries
-          # aws-lc-sys through russh, and cross-compiling that is a job to
-          # rehearse, not to assume. Windows is not in this matrix because
-          # it cannot build both halves: it is `build-windows` below, slim
-          # only, and proven on a real Windows runner by `smoke-windows`.
+      # Declared in preflight (its `matrix` step), so a dev build is the
+      # Linux leg alone; the platform list and its reasons live there.
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
     env:
       DRT_RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
     steps:
@@ -232,6 +295,7 @@ jobs:
     # this matrix's smoke step exists to prevent (doc/Release.md).
     name: Build (wasip2)
     needs: [preflight, test]
+    if: needs.preflight.outputs.dev != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -314,6 +378,7 @@ jobs:
     # does for every other leg: from the bytes, not from YAML.
     name: Build (web)
     needs: [preflight, test]
+    if: needs.preflight.outputs.dev != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -410,6 +475,7 @@ jobs:
     # run for real in `smoke-windows`, on a Windows runner.
     name: Build (windows_x86_64)
     needs: [preflight, test]
+    if: needs.preflight.outputs.dev != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -450,6 +516,7 @@ jobs:
     # the slim binary anywhere.
     name: Smoke (windows_x86_64)
     needs: [preflight, build-windows]
+    if: needs.preflight.outputs.dev != 'true'
     runs-on: windows-latest
     timeout-minutes: 30
     defaults:
@@ -485,7 +552,21 @@ jobs:
   publish:
     name: Publish release
     needs: [preflight, test, build, build-wasip2, build-web, build-windows, smoke-windows]
-    if: needs.preflight.outputs.publish == 'true'
+    # A dev build skips the four cross-target legs, and a job whose `needs`
+    # were skipped is skipped itself unless it says otherwise. So this says
+    # otherwise, and checks by hand what the default would have: nothing
+    # was cancelled, the suite and the Linux leg passed, and either this is
+    # a dev build or every other leg passed too.
+    if: >-
+      !cancelled()
+      && needs.preflight.outputs.publish == 'true'
+      && needs.test.result == 'success'
+      && needs.build.result == 'success'
+      && (needs.preflight.outputs.dev == 'true'
+          || (needs.build-wasip2.result == 'success'
+              && needs.build-web.result == 'success'
+              && needs.build-windows.result == 'success'
+              && needs.smoke-windows.result == 'success'))
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -567,16 +648,22 @@ jobs:
           # is as close to "read off the artifact" as a page gets.
           WEB_CONNECTORS=$(sed -n 's/^connectors: //p' drt_web.buildinfo.txt 2>/dev/null || true)
           WEB_FEATURES=$(sed -n 's/^features: //p' drt_web.buildinfo.txt 2>/dev/null || true)
+          # The five lines every Aloecraft release carries (doc/ALIGNMENT.md
+          # §5), then this project's own facts. `version` is the tag body:
+          # the tag is canonical and this is its one derived spelling.
+          TAG='${{ needs.preflight.outputs.tag }}'
           {
-            echo "tag: ${{ needs.preflight.outputs.tag }}"
+            echo "tag: $TAG"
+            echo "version: ${TAG#v}"
             echo "commit: ${{ needs.preflight.outputs.sha }}"
+            echo "branch: ${{ needs.preflight.outputs.branch }}"
+            echo "built: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "diluvium: ${DILUVIUM_REV:-unknown}"
             # The ABI the embedded core speaks. This is what a package's
             # `requires.dv_abi` is checked against, so it belongs in the
             # release rather than being inferred from the diluvium rev.
             echo "dv_abi: ${DV_ABI:-unknown}"
             echo "diluvium_build: ${DILUVIUM_BUILD:-unknown}"
-            echo "built: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             # Which binary carries what. `full` and `slim` differ precisely
             # in their connector set, so a package declaring
             # `requires.connectors` can be admitted or refused by name
@@ -602,7 +689,11 @@ jobs:
             echo "profile.wasi.features: ${WASI_FEATURES:-unknown}"
             echo "profile.web.features: ${WEB_FEATURES:-unknown}"
           } > BUILDINFO.txt
-          sha256sum drt_* BUILDINFO.txt > SHA256SUMS.txt
+          # Every other asset, install.sh and the web buildinfo included
+          # (doc/ALIGNMENT.md §6): the mirror verifies each file it carries
+          # against this, and a file it cannot find here is one it cannot
+          # vouch for. Generated last, so it does not list itself.
+          sha256sum -- * > SHA256SUMS.txt
           cat BUILDINFO.txt SHA256SUMS.txt
       # The release body is the changelog's, not GitHub's autogenerated
       # commit list. CHANGELOG.yaml is the source of truth for release
@@ -610,11 +701,24 @@ jobs:
       # says what changed in the repository rather than what changed for
       # the person installing it.
       - name: Release notes, from the changelog
+        if: needs.preflight.outputs.dev != 'true'
         run: |
           set -eu
           pip install --quiet pyyaml
           ./script/changelog.py render md --tag '${{ needs.preflight.outputs.tag }}' \
             > release_notes.md
+          cat release_notes.md
+      # A dev build's body says what it is and where its facts are; there
+      # is no entry to render.
+      - name: Release notes for a dev build
+        if: needs.preflight.outputs.dev == 'true'
+        run: |
+          set -eu
+          {
+            echo "A dev build (doc/ALIGNMENT.md §7): commit \`${{ needs.preflight.outputs.sha }}\` on \`${{ needs.preflight.outputs.branch }}\`, the suite and the Linux build only, no changelog entry."
+            echo
+            echo "Not a release. \`BUILDINFO.txt\` says what is inside. Pin a candidate or a release for anything that has to keep working; the ten newest dev builds are kept and older ones are pruned."
+          } > release_notes.md
           cat release_notes.md
       - name: Create release
         uses: softprops/action-gh-release@v2
@@ -625,3 +729,22 @@ jobs:
           files: release_dist/*
           body_path: release_notes.md
           prerelease: ${{ needs.preflight.outputs.prerelease == 'true' }}
+      # Dev builds are disposable (doc/ALIGNMENT.md §7): keep the newest
+      # DEV_KEEP, delete the rest with their tags. A dev build worth keeping
+      # is worth an rc.
+      - name: Prune old dev releases
+        if: needs.preflight.outputs.dev == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DEV_KEEP: 10
+        run: |
+          set -eu
+          gh release list --limit 200 --json tagName,createdAt \
+              --jq '.[] | "\(.createdAt)\t\(.tagName)"' \
+            | { grep -E $'\tv[^\t]*-dev\\.[0-9]+$' || true; } \
+            | sort -r | tail -n "+$((DEV_KEEP + 1))" | cut -f2 \
+            | while read -r t; do
+                echo "pruning $t"
+                gh release delete "$t" --yes --cleanup-tag < /dev/null
+              done
