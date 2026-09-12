@@ -42,6 +42,41 @@ use drt_config::resolve::{Overrides, Requested, ResolveInputs, RootInputs};
 use drt_config::time::Timestamp;
 use drt_config::RootConfig;
 
+/// What a `drt` pin in `project.json` is compared against.
+///
+/// The release tag when the build was cut as one, and the crate version
+/// otherwise. Those differ, and the difference is the point: by the version
+/// scheme (`doc/Gap-Release.md`, "one thing not to re-litigate") a candidate
+/// is tagged `X.Y.ZrcN` while its crates stay at `X.Y.Z`. A binary reporting
+/// `CARGO_PKG_VERSION` therefore calls itself `0.5.0` whether it was cut as
+/// rc8, rc9 or the release -- so a root pinned to `0.5.0rc9` could never
+/// start, and a root pinned to `0.5.0` could not tell two candidates apart.
+/// Prerelease pins did not work at all.
+///
+/// The tag already travels with the bytes: `build.rs` re-exports
+/// `DRT_RELEASE_TAG` and `drt buildinfo` prints it, which is
+/// `doc/Release.md`'s rule that a compatibility fact travels with the binary
+/// rather than in a file beside it. This is the pin reading a fact that was
+/// already there.
+///
+/// A local build stamps no tag and falls back, so a development tree behaves
+/// exactly as it did.
+pub fn binary_version() -> String {
+    pin_string(option_env!("DRT_RELEASE_TAG"), env!("CARGO_PKG_VERSION"))
+}
+
+/// The transform, apart from the compile-time reads so it can be tested.
+///
+/// The leading `v` is the tag's and not the version's: `project.json` pins
+/// `0.5.0rc9` and the tag is `v0.5.0rc9`. An empty variable is a rehearsal's
+/// blank input and means no tag, the same reading `build.rs` gives it.
+fn pin_string(tag: Option<&str>, crate_version: &str) -> String {
+    tag.map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| t.strip_prefix('v').unwrap_or(t).to_string())
+        .unwrap_or_else(|| crate_version.to_string())
+}
+
 /// A located root: the directory that contains `.drt_root/`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Root {
@@ -201,9 +236,10 @@ impl Root {
                 init: drt_platform::fs::read_dir(self.init()).unwrap_or_default(),
                 // The pin is a fact about the binary that is running, which
                 // is not necessarily `.drt_root/drt`: `drt` on `PATH` is the
-                // documented happy path. So it is this binary's own version,
-                // the same string `drt buildinfo` prints.
-                binary_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                // documented happy path. So it is this binary's own identity
+                // -- see `binary_version`, which is the release tag when
+                // there is one and the crate version otherwise.
+                binary_version: Some(binary_version()),
             }),
             config_flag: None,
             requested,
@@ -280,6 +316,36 @@ pub fn mint() -> Result<Uuid7, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pin has to be the tag on a release build, because the crate
+    /// version cannot tell two candidates apart.
+    #[test]
+    fn a_release_tag_is_the_pin_and_loses_its_v() {
+        assert_eq!(pin_string(Some("v0.5.0rc9"), "0.5.0"), "0.5.0rc9");
+        assert_eq!(pin_string(Some("v0.5.0"), "0.5.0"), "0.5.0");
+        // A tag written without the `v` is taken as it is, rather than
+        // having its first character eaten.
+        assert_eq!(pin_string(Some("0.5.0rc9"), "0.5.0"), "0.5.0rc9");
+    }
+
+    /// A development tree is unchanged, which is what makes this safe to
+    /// land ahead of a release: no tag, no new behaviour.
+    #[test]
+    fn no_tag_is_the_crate_version_exactly_as_before() {
+        assert_eq!(pin_string(None, "0.5.0"), "0.5.0");
+        // `build.rs` treats a blank variable as no tag, and so must this --
+        // a rehearsal that exports an empty `DRT_RELEASE_TAG` must not make
+        // every root's pin compare against "".
+        assert_eq!(pin_string(Some(""), "0.5.0"), "0.5.0");
+        assert_eq!(pin_string(Some("   "), "0.5.0"), "0.5.0");
+    }
+
+    /// This build is not a release, so the two agree here. The test exists
+    /// to fail if the fallback is ever dropped.
+    #[test]
+    fn this_binary_reports_its_crate_version() {
+        assert_eq!(binary_version(), env!("CARGO_PKG_VERSION"));
+    }
     use crate::testfs::{self, Seeded};
 
     #[test]

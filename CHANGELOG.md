@@ -574,6 +574,24 @@ entry has not moved the pin yet.
 
 ### Fixed
 
+- **A `drt` pin is compared against the release tag, not the crate
+  version, so prerelease pins work.** By the version scheme a candidate
+  is tagged `X.Y.ZrcN` while its crates stay at `X.Y.Z`, and
+  `binary_version` reported `CARGO_PKG_VERSION` --- so every candidate
+  called itself `0.5.0`. A root pinned to `0.5.0rc9` could never start
+  against the rc9 binary, and a root pinned to `0.5.0` could not tell
+  rc8 from rc9.
+
+  The tag was already travelling with the bytes: `build.rs` re-exports
+  `DRT_RELEASE_TAG` and `drt buildinfo` prints it. Only the pin was not
+  reading it. It does now, minus the leading `v`, falling back to the
+  crate version when no tag was stamped --- so a development tree
+  behaves exactly as before, checked.
+
+  **One behaviour change to know about:** a root pinned to `X.Y.Z` now
+  *mismatches* a candidate binary where it used to match, which is the
+  second half of the same bug and the reason to want this. Pin the
+  candidate you mean to run.
 - **No build could report `profile: full`, so the examples gate skipped
   every example that needs one.** `PROFILE_FULL` gained `turn-client`
   when that feature was split out, and `enabled_features` did not gain
