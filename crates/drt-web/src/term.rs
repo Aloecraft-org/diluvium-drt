@@ -136,7 +136,23 @@ impl Term {
                     }
                 }
             }
-            Command::Start => match drt::start::prepare(&config, dispatcher) {
+            // A page is always on the no-root path: there is no `.drt_root/`
+            // in a memory filesystem a page seeded, and consent bounds a root
+            // rather than a config. So a profile name here has nothing to name,
+            // and saying so beats silently starting something else.
+            Command::Start {
+                profile: Some(name),
+            } => {
+                say(
+                    Fd::Stderr,
+                    &format!(
+                        "drt start: there is no root here, so '{name}' names no profile; \
+                         a page runs the config it was given\n"
+                    ),
+                );
+                Session::exited(1)
+            }
+            Command::Start { profile: None } => match drt::start::prepare(&config, dispatcher) {
                 Ok(driver) => Session {
                     kind: Kind::Start(driver),
                 },

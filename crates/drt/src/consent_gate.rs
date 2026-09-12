@@ -132,11 +132,6 @@ pub fn gate(
                     ask.say(&format!("    {line}"));
                 }
                 ask.say("");
-                // The objection is the decision. Printing it rather than a
-                // second description of the edit is what keeps the two from
-                // disagreeing.
-                ask.say(&format!("    {objection}"));
-                ask.say("");
                 if !confirm(
                     ask,
                     "accept the widened ceiling?",
@@ -157,12 +152,16 @@ pub fn gate(
 
 /// Ask, or fail by name. Never hang, and never assume yes.
 ///
-/// `detail` rides on the *error* and not on the prompt. Under a process
-/// supervisor the lines this printed to stderr and the line that killed the
-/// unit are often read separately -- a scraper, a paged alert, a `systemctl
-/// status` tail -- so the refusal repeats what actually changed rather than
-/// only the flag that would have allowed it. At a terminal the operator has
-/// already read the delta above, and the prompt stays a prompt.
+/// `detail` rides on the *error* and not on the prompt, and it is the **only**
+/// place the objection appears.
+///
+/// An earlier version printed it here and again in the block above, on the
+/// argument that a supervisor reads the two separately. That argument was
+/// wrong: both go to stderr, so it was plain duplication three lines apart.
+/// The split that is real is delta versus objection -- the `+`/`-` lines say
+/// what an operator is being asked to accept, and the objection says why it
+/// needs accepting, which belongs on the line that actually stops the process
+/// and survives a truncated `systemctl status`.
 fn confirm(ask: &mut dyn Ask, question: &str, flag: &str, detail: &str) -> Result<bool, String> {
     if !ask.interactive() {
         let because = if detail.is_empty() {
@@ -411,12 +410,18 @@ mod tests {
         .unwrap_err();
         assert!(e.contains("--accept-changes"), "{e}");
         assert!(e.contains("no terminal"), "it says why it cannot ask: {e}");
-        // Two channels, and each carries what it should: the delta went to
-        // stderr for a human reading the log, and the refusal itself repeats
-        // the objection for anything reading only the last line.
+        // The delta is on stderr and the objection is on the refusal, each in
+        // one place: an earlier version printed the objection twice, three
+        // lines apart, on an argument about channels that did not hold.
         assert!(
             unit.transcript().contains("+ host:exec/run"),
             "{}",
+            unit.transcript()
+        );
+        assert_eq!(
+            unit.transcript().matches("may only narrow").count(),
+            0,
+            "the objection is not also on stderr: {}",
             unit.transcript()
         );
         assert!(e.contains("host:exec/run"), "{e}");
@@ -533,8 +538,8 @@ mod tests {
         );
         assert!(e.contains("--accept-changes"), "{e}");
         assert!(
-            ask.transcript().contains("host:fs/remove"),
-            "and so does the delta on stderr: {}",
+            ask.transcript().contains("- deny host:fs/remove"),
+            "and the delta on stderr shows the deny that went away: {}",
             ask.transcript()
         );
     }

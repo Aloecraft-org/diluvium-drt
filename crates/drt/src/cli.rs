@@ -145,6 +145,28 @@ pub struct Cli {
     /// Root config file. Flags and env merge over it into one root object.
     #[arg(long, global = true)]
     pub config: Option<PathBuf>,
+    /// The root to act on, instead of looking for `.drt_root/` in the
+    /// working directory.
+    ///
+    /// Discovery deliberately does not walk up, so a systemd unit should use
+    /// this rather than `WorkingDirectory=`: systemd's default working
+    /// directory is `/`, and a unit relying on discovery would find no root
+    /// and run the no-root path without saying so.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub root: Option<PathBuf>,
+    /// Accept a **first** consent acceptance without asking.
+    ///
+    /// Deliberately not enough for a ceiling that has widened. A `-y` that
+    /// also accepted a widening would mean every unit file and CI job carried
+    /// permanent pre-consent to every future ceiling a root might declare,
+    /// which defeats the approval chain's invariant in practice while leaving
+    /// it true on paper. `--accept-changes` is that, separately.
+    #[arg(short = 'y', long, global = true)]
+    pub yes: bool,
+    /// Accept a ceiling that has widened since it was consented to. The
+    /// deliberate act, and the one `-y` does not cover.
+    #[arg(long, global = true)]
+    pub accept_changes: bool,
     #[command(subcommand)]
     pub command: Command,
 }
@@ -160,7 +182,12 @@ pub enum Command {
     /// Run the deployment: the root program, its swarm, and whatever
     /// listeners the config names. Foreground; a process supervisor
     /// backgrounds it, and there is deliberately no --detach.
-    Start,
+    Start {
+        /// Which profile, by name (`debug`, not `debug.config.json`).
+        /// Without one, `project.json`'s `default_profile` decides, and
+        /// without a `project.json` the pre-recognized fallback order does.
+        profile: Option<String>,
+    },
     /// A REPL is an instance, not a mode: a sealed guest with a generous
     /// local grant, bridged to this terminal.
     Repl {
@@ -783,6 +810,69 @@ pub fn assemble(cli: &Cli) -> Result<(RootConfig, drt_connector::Dispatcher), St
     Ok((config, drt_connector::Dispatcher::new(registry)))
 }
 
+/// `drt start`: find the root, resolve, gate on consent, then run the
+/// deployment — or, for a native stdlib entry, print its report and stop.
+///
+/// Separate from [`main`] because it is the one verb that does not take
+/// [`assemble`]'s config: `crate::boot` produces its own, and the order there
+/// is load-bearing (consent before connectors).
+fn start_verb(cli: &Cli, profile: Option<&str>) -> ExitCode {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut ask = crate::consent_gate::Terminal;
+    let booted = match crate::boot::boot(
+        &cwd,
+        cli.root.as_deref(),
+        cli.config.as_deref(),
+        profile,
+        crate::consent_gate::Flags {
+            yes: cli.yes,
+            accept_changes: cli.accept_changes,
+        },
+        &mut ask,
+    ) {
+        Ok(booted) => booted,
+        Err(e) => {
+            eprintln!("drt start: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // A native stdlib program is the host's to run, not an instance's. `boot`
+    // has already decided which it is, so this reads the answer rather than
+    // re-deriving it from the entry -- one place that knows.
+    if let (Some(crate::boot::Runnable::Native(name)), Some(resolution)) =
+        (&booted.runnable, &booted.resolution)
+    {
+        if *name == crate::stdlib::PREFLIGHT {
+            let pin = resolution.pin.as_ref().map(|p| p.value.as_str());
+            return match crate::stdlib::preflight(
+                resolution,
+                pin,
+                env!("CARGO_PKG_VERSION"),
+                resolution.consent.as_ref(),
+                &mut std::io::stdout(),
+            ) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("drt start: {e}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+    }
+
+    match start::start(&booted.config, booted.dispatcher) {
+        // Ok means the swarm drained: every instance exited. For a
+        // server-shaped deployment that never happens and foreground-forever
+        // is the contract; for a batch-shaped one this is the finish line.
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("drt start: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// The native binary: assemble, then run the verb to completion, sleeping
 /// where the driver says to.
 pub fn main(cli: Cli) -> ExitCode {
@@ -790,6 +880,13 @@ pub fn main(cli: Cli) -> ExitCode {
     // core's `print` and this file's `eprintln!` on the same line ending.
     // A no-op everywhere else.
     drt_platform::stdio::bytes_as_written();
+    // `start` assembles its own, before anything else here runs. A rooted
+    // deployment's config is the *resolved profile's* and not `--config`'s, so
+    // going through `assemble` first would wire one set of connectors to throw
+    // away and announce `exec` twice on a config that names it.
+    if let Command::Start { ref profile } = cli.command {
+        return start_verb(&cli, profile.as_deref());
+    }
     let (config, dispatcher) = match assemble(&cli) {
         Ok(pair) => pair,
         Err(e) => {
@@ -824,17 +921,11 @@ pub fn main(cli: Cli) -> ExitCode {
                 }
             }
         }
-        Command::Start => match start::start(&config, dispatcher) {
-            // Ok means the swarm drained: every instance exited. For a
-            // server-shaped deployment that never happens and foreground-
-            // forever is the contract; for a batch-shaped one this is the
-            // finish line.
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("drt start: {e}");
-                ExitCode::FAILURE
-            }
-        },
+        // `start` is handled before `assemble` (see `main`), so this arm
+        // cannot be reached. Kept as a named unreachable rather than deleted,
+        // because clap's `Command` must still be exhaustive here and a `_`
+        // arm would swallow the next verb somebody adds.
+        Command::Start { .. } => unreachable!("start is dispatched before assemble"),
         #[cfg(feature = "relay")]
         Command::Relay => {
             let Some(relay_config) = config.relay.clone() else {

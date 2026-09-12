@@ -1,6 +1,9 @@
 //! The DRT runtime, as a library. The `drt` binary is a thin CLI over
 //! this; keeping the flow here is what lets it be tested end to end.
 
+/// Everything before a deployment's first step: find the root, resolve, gate
+/// on consent, wire. The one place drt-config, drt_root and the gate meet.
+pub mod boot;
 /// The command surface, parsed and assembled once for every host.
 pub mod cli;
 pub mod config;
@@ -38,6 +41,9 @@ pub mod roots;
 pub mod run;
 pub mod runtime;
 pub mod start;
+/// Programs this binary carries, reached as `stdlib:<name>`. They run with no
+/// root, no cache and no dollup, which is the whole reason they exist.
+pub mod stdlib;
 #[cfg(feature = "stun")]
 pub mod stun;
 /// One installed filesystem and one lock, shared by every test here that

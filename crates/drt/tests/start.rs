@@ -735,3 +735,224 @@ mod polled {
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 }
+
+// depth: a rooted start, against a real filesystem
+
+/// Everything above this point drives a config straight into `start`. This
+/// block drives the *root* path instead — `.drt_root/` on a real disk, a
+/// profile resolved, consent accepted, a program found — because the unit tests
+/// for it run against `MemFs` and `StdFs` is what ships. A path jail, a
+/// `create_dir_all`, and a relative `dlua_dir` all behave slightly differently
+/// on the two, and only one of them is what an operator has.
+mod rooted {
+    use std::path::Path;
+
+    use drt::boot;
+    use drt::consent_gate::{Ask, Flags};
+
+    /// Nobody to ask, and a record of what it was told.
+    #[derive(Default)]
+    struct Quiet {
+        said: Vec<String>,
+    }
+
+    impl Ask for Quiet {
+        fn interactive(&self) -> bool {
+            false
+        }
+        fn say(&mut self, line: &str) {
+            self.said.push(line.to_string());
+        }
+        fn confirm(&mut self, _: &str) -> std::io::Result<bool> {
+            unreachable!("no test here answers a prompt")
+        }
+    }
+
+    /// A root on a real disk.
+    fn lay_out(dir: &Path, project: &str) {
+        std::fs::create_dir_all(dir.join(".drt_root/profile")).unwrap();
+        std::fs::create_dir_all(dir.join("dlua")).unwrap();
+        std::fs::write(dir.join(".drt_root/project.json"), project).unwrap();
+        std::fs::write(
+            dir.join(".drt_root/profile/debug.config.json"),
+            r#"{"dlua_dir":"dlua/","entry":"app.dlua","args":{"verbose":false}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(".drt_root/profile/preflight.config.json"),
+            r#"{"entry":"stdlib:preflight"}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("dlua/app.dlua"), "print('hello from app.dlua')\n").unwrap();
+    }
+
+    const PROJECT: &str = r#"{
+        "root_id": "0192f0c1-8000-7000-8000-00000000abcd",
+        "project_name": "my_drt_project",
+        "project_version": "0.0.0",
+        "drt": "0.5.0",
+        "caps": [{"effect":"grant","capability":"host:time"}],
+        "default_profile": "debug",
+        "profiles": ["debug.config.json", "preflight.config.json"]
+    }"#;
+
+    /// A first start accepts the ceiling with `-y`, writes `consent.json`, and
+    /// resolves the entry to a real path on disk. A second start is silent.
+    #[test]
+    fn a_first_rooted_start_accepts_and_the_second_is_silent() {
+        let tmp = tempfile::tempdir().unwrap();
+        lay_out(tmp.path(), PROJECT);
+
+        let mut ask = Quiet::default();
+        let booted = boot::boot(
+            tmp.path(),
+            None,
+            None,
+            None,
+            Flags {
+                yes: true,
+                accept_changes: false,
+            },
+            &mut ask,
+        )
+        .expect("it boots");
+
+        assert_eq!(
+            booted.config.root.program,
+            Some(drt_config::Program::Path(tmp.path().join("dlua/app.dlua"))),
+            "dlua_dir + entry resolved against the root's own directory"
+        );
+        assert!(
+            tmp.path().join(".drt_root/consent.json").exists(),
+            "-y wrote the acceptance"
+        );
+
+        // Second start: the hash matches, so nothing is said and nothing asked.
+        let mut again = Quiet::default();
+        boot::boot(tmp.path(), None, None, None, Flags::default(), &mut again)
+            .expect("a matching ceiling needs no flag at all");
+        assert!(again.said.is_empty(), "{:?}", again.said);
+    }
+
+    /// consent.md acceptance 1's second half, on a real disk: widen the
+    /// declared ceiling and `-y` is not enough.
+    #[test]
+    fn widening_the_ceiling_is_not_covered_by_minus_y() {
+        let tmp = tempfile::tempdir().unwrap();
+        lay_out(tmp.path(), PROJECT);
+        let yes = Flags {
+            yes: true,
+            accept_changes: false,
+        };
+        boot::boot(tmp.path(), None, None, None, yes, &mut Quiet::default()).unwrap();
+
+        std::fs::write(
+            tmp.path().join(".drt_root/project.json"),
+            PROJECT.replace(
+                r#"[{"effect":"grant","capability":"host:time"}]"#,
+                r#"[{"effect":"grant","capability":"host:time"},
+                    {"effect":"grant","capability":"host:fs/read"}]"#,
+            ),
+        )
+        .unwrap();
+
+        let mut ask = Quiet::default();
+        let e = boot::boot(tmp.path(), None, None, None, yes, &mut ask).unwrap_err();
+        assert!(e.contains("--accept-changes"), "{e}");
+        assert!(e.contains("host:fs/read"), "the refusal names it: {e}");
+
+        // And `--accept-changes` is.
+        boot::boot(
+            tmp.path(),
+            None,
+            None,
+            None,
+            Flags {
+                yes: false,
+                accept_changes: true,
+            },
+            &mut Quiet::default(),
+        )
+        .expect("the deliberate act works");
+    }
+
+    /// `--root` reaches a root from somewhere else, which is what a systemd
+    /// unit needs because systemd's default working directory is `/`.
+    #[test]
+    fn the_root_flag_reaches_a_root_from_outside_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        lay_out(tmp.path(), PROJECT);
+        let elsewhere = tempfile::tempdir().unwrap();
+
+        // Discovery does not walk up, and there is no root where we are.
+        let mut ask = Quiet::default();
+        let booted = boot::boot(
+            elsewhere.path(),
+            None,
+            None,
+            None,
+            Flags::default(),
+            &mut ask,
+        )
+        .expect("no root is the no-root path");
+        assert!(booted.root.is_none());
+
+        // Named explicitly, it is found.
+        let booted = boot::boot(
+            elsewhere.path(),
+            Some(tmp.path()),
+            None,
+            None,
+            Flags {
+                yes: true,
+                accept_changes: false,
+            },
+            &mut Quiet::default(),
+        )
+        .expect("--root finds it");
+        assert_eq!(booted.root.as_ref().unwrap().dir, tmp.path());
+    }
+
+    /// `drt start preflight` resolves and reports, and the report is the
+    /// resolution -- the same value `start` would act on.
+    #[test]
+    fn the_preflight_profile_reports_what_start_would_do() {
+        let tmp = tempfile::tempdir().unwrap();
+        lay_out(tmp.path(), PROJECT);
+        let booted = boot::boot(
+            tmp.path(),
+            None,
+            None,
+            Some("preflight"),
+            Flags {
+                yes: true,
+                accept_changes: false,
+            },
+            &mut Quiet::default(),
+        )
+        .expect("it boots");
+
+        let resolution = booted.resolution.as_ref().unwrap();
+        let mut out = Vec::new();
+        drt::stdlib::preflight(
+            resolution,
+            resolution.pin.as_ref().map(|p| p.value.as_str()),
+            "0.5.0",
+            resolution.consent.as_ref(),
+            &mut out,
+        )
+        .unwrap();
+        let report = String::from_utf8(out).unwrap();
+
+        assert!(
+            report.contains("profile: preflight (named on the command line)"),
+            "{report}"
+        );
+        assert!(report.contains("ceiling: 1 caps"), "{report}");
+        assert!(report.contains("stdlib:preflight"), "{report}");
+        assert!(
+            report.ends_with("start would run. nothing started.\n"),
+            "{report}"
+        );
+    }
+}

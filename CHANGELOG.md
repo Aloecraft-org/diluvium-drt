@@ -680,6 +680,43 @@ entry has not moved the pin yet.
   readable by whoever is running here. `--root` is what a systemd unit
   should use: systemd's default working directory is `/`, so a unit
   relying on discovery would find no root and not say so.
+- **`drt start` reads a root.** `--root`, a profile name
+  (`drt start debug`), `-y` and `--accept-changes`, and the order the
+  three layers go in: resolve, gate on consent, then wire. The ceiling is
+  checked before a connector exists, so a root whose consent has lapsed
+  never reaches the point of binding a port.
+
+  Two rules that were found by running it rather than by writing it. A
+  **native stdlib entry reports instead of gating**: `drt start preflight`
+  on a root nobody has consented to still prints, because telling an
+  operator whether consent matches is the whole job, and the first shape
+  of this gated first and so could not answer its own question. And start
+  **says nothing about findings that do not stop it** -- they are in the
+  resolution for `drt start preflight` and `dollup audit` to print, since
+  "no drt version is pinned" is worth reporting and is not worth saying on
+  every single start of an unpinned root.
+
+  `--config` inside a root still runs, and attenuates under the root's
+  ceiling: it is never a consent bypass, and the refusal is the same
+  attenuation check a spawn makes.
+- **`stdlib:<name>`, and `stdlib:preflight`.** A spelling that cannot
+  collide with a filename, so it needs no place in `drt run`'s bare-token
+  rules, and programs that run with no root, no cache and no dollup --
+  which is what a verb that used to be a subcommand needs in order to stay
+  reachable on a box holding one static binary.
+
+  `preflight` is the one program here, and it is the report the design
+  doc asks for: the profile that would run and the rule that chose it, the
+  pin against the binary present, the ceiling and whether consent matches
+  it, the entry, the merged args. It is the same `Resolution` that `start`
+  acts on and `dollup audit` reports, so the three cannot disagree about
+  what would happen.
+
+  What is absent is absent rather than advertised: `tunnel` needs raw
+  stdin as a guest-reachable byte stream and `netcheck` needs a config
+  block whose verdict lands on a queue, so neither is listed. One
+  registry, filtered, after a first version kept two lists that disagreed
+  immediately and refused `preflight` with "it carries preflight".
 
 ### Changed
 
