@@ -347,7 +347,7 @@ fn every_profile_name_is_a_feature_the_binary_probes() {
     let probed: Vec<String> = source
         .split("feature!(")
         .skip(1)
-        .filter_map(|rest| rest.split(')').next().map(|arg| quoted(arg)))
+        .filter_map(|rest| rest.split(')').next().map(quoted))
         .flatten()
         .collect();
     assert!(
