@@ -99,7 +99,11 @@ releases:
       line reads one way. The code is rc.2's, and the corpus now carries
       the config `wg.sh` really writes.
 
-      Same core, same ABI, same connector lists as 0.6.0-rc.2.
+      The old artifact names ride along once more, beside the new ones and
+      in `SHA256SUMS.txt`, because nobody has yet confirmed that dollup and
+      discofetch fetch by the new names; the release after this one drops
+      them once they do. Same core, same ABI, same connector lists as
+      0.6.0-rc.2.
     changed:
       - |
         **The corpus carries what `wg.sh` writes, captured rather than
