@@ -4,6 +4,8 @@
 //!
 //! Entry points:
 //! - [`frame`] — the wire: length-prefixed msgpack, request and reply.
+//! - [`channel`] — the byte stream under it, and its test double.
+//! - [`session`] — many calls over one stream, polled and never blocking.
 //!
 //! Configurable values: each module's own, named in its surface block.
 //!
@@ -27,4 +29,6 @@
 //! impls so the same frames and the same state machine run in a page,
 //! where there are no threads at all.
 
+pub mod channel;
 pub mod frame;
+pub mod session;
