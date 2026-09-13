@@ -1385,6 +1385,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "drt-plugin"
+version = "0.6.2-rc.1"
+dependencies = [
+ "rmp-serde",
+ "rmpv",
+ "serde",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "drt-swarm"
 version = "0.6.2-rc.1"
 dependencies = [

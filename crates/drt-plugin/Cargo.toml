@@ -1,0 +1,13 @@
+[package]
+name = "drt-plugin"
+description = "The plugin channel: frames, manifest, and a Connector over a byte stream"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+rmpv = { workspace = true }
+rmp-serde = { workspace = true }
+thiserror = { workspace = true }

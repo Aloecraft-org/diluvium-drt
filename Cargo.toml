@@ -8,6 +8,7 @@ members = [
     "crates/drt-hostcall",
     "crates/drt-platform",
     "crates/drt-connector",
+    "crates/drt-plugin",
     "crates/drt-swarm",
     "crates/drt",
     "connectors/time",
