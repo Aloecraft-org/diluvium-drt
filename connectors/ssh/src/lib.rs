@@ -36,6 +36,7 @@ const DEFAULT_MAX_OUTPUT_BYTES: u64 = 1024 * 1024;
 /// file exists and parses, so a bad path is a named refusal at boot rather
 /// than an auth failure at 3am.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SshScope {
     /// `host:port` to dial.
     host: String,

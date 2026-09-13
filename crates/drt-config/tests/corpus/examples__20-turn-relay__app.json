@@ -9,7 +9,7 @@
 
   "connectors": {
     "crypto": {
-      "_scope": "`turn.key` below is turn.json's key, exactly: this connector mints what that server verifies, and one secret is the whole deployment. The comment lives out here because a connector's `scope` is passed through to the connector verbatim -- an underscore key inside it would be data, not commentary.",
+      "_scope": "`turn.key` below is turn.json's key, exactly: this connector mints what that server verifies, and one secret is the whole deployment. It could sit inside `scope` too -- a `_` key is a comment at every depth since v0.6.1-rc.2 -- and lives out here so the block reads as exactly what the connector receives.",
       "scope": {
         "key": "a-master-key-for-this-example-000",
         "turn": {

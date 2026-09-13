@@ -66,6 +66,7 @@ const DEFAULT_MAX_RESULT_ROWS: usize = 1000;
 const JOURNAL_MODES: [&str; 6] = ["wal", "delete", "truncate", "persist", "memory", "off"];
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SqlScope {
     /// The granted directory. Programs name databases within it.
     scope: PathBuf,
@@ -496,5 +497,23 @@ impl Connector for SqlConnector {
                 ]))
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    /// Issue #31: `creat` for `create` produced a database Litestream could
+    /// not replicate while the deployment answered 200. A scope key this
+    /// connector does not know is refused by name, with the keys it takes.
+    #[test]
+    fn a_misspelled_scope_key_is_refused_by_name() {
+        let value = rmpv::Value::Map(vec![
+            (rmpv::Value::from("scope"), rmpv::Value::from(".")),
+            (rmpv::Value::from("creat"), rmpv::Value::from(false)),
+        ]);
+        let e = SqlScope::parse(Some(&Scope(value))).expect_err("refused");
+        assert!(e.contains("creat") && e.contains("create"), "{e}");
     }
 }

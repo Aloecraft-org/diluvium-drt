@@ -12,11 +12,13 @@
 //! these types, so a deployment moved from that host to DRT by swapping
 //! the binary and changing no files. Every shipped config is JSON now.
 //!
-//! Two things went with it and one came back. Gone for good: an unknown key
-//! was an error that named itself, and serde here ignores one, so a typo
-//! that was refused is now a silent default. Gone and rebuilt: the checks
-//! that mapper made on values serde cannot judge — see [`validate`], which
-//! runs on any config whatever format it arrived in.
+//! Two things went with it and both came back. An unknown key was an error
+//! that named itself; serde ignored one for a while, until issue #31
+//! measured what a silent default costs, and now every block refuses a key
+//! it does not know while `_`-prefixed keys are comments at every depth
+//! (`drt_config::comments`). And the checks that mapper made on values
+//! serde cannot judge — see [`validate`], which runs on any config whatever
+//! format it arrived in.
 //!
 //! **Grants are validated here, at startup, by name.** A capability whose
 //! scope is malformed or ill-typed for the connector it names must fail
@@ -37,8 +39,25 @@ pub fn load(path: Option<&Path>) -> Result<RootConfig, String> {
     };
     let text = drt_platform::fs::read_to_string(path)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    let mut config: RootConfig =
+    let mut value: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    // A `_`-prefixed key is a comment, at every depth and in every kind of
+    // block (`drt_config::comments`), and every other key must be one the
+    // reader knows: the refusal names the key, the block it sits in, and
+    // the keys that would have been taken. Issue #31 is why: `creat` for
+    // `create` ran migrations into a database that did not exist, in a
+    // journal mode Litestream cannot replicate, while `/health` said 200.
+    //
+    // Crossing a `serde_json::Value` costs two things, both accepted. A
+    // refusal names a path (`relay.labels.abc`) rather than a line and
+    // column, which for a JSON file is the more useful of the two. And a
+    // `Value`'s object is a sorted map, so a connector's `scope`, which
+    // arrives as the map the file spelled, arrives with its keys in order
+    // rather than in the file's order; every connector reads its scope by
+    // name, and the corpus snapshots record the sorted shape.
+    drt_config::comments::strip(&mut value);
+    let mut config: RootConfig = serde_path_to_error::deserialize(&value)
+        .map_err(|e| format!("{}: {}", path.display(), located(&value, e)))?;
     // Here rather than only at startup, so a refusal names the file it
     // refused. A deployment directory holds several of these and
     // "relay.labels.xps needs both keys" is a different message when it
@@ -46,6 +65,41 @@ pub fn load(path: Option<&Path>) -> Result<RootConfig, String> {
     validate(&config).map_err(|e| format!("{}: {e}", path.display()))?;
     resolve_program(&mut config, path);
     Ok(config)
+}
+
+// depth: naming the block when serde cannot
+//
+// `RootConfig` flattens `InstanceConfig`, and serde reads a flattened field
+// back out of a buffer the path tracker never sees, so a refusal under
+// `program`, `caps`, `budget` or `numeric` arrives with no path at all:
+// `unknown field `max_element`` with nothing saying `numeric`. Find it
+// again one key at a time, as the instance block alone, where every step
+// is tracked. A path of one segment is the key itself being refused, which
+// the outer error already says, and says without a list of the instance
+// block's keys that would be wrong at the top level.
+fn located(
+    value: &serde_json::Value,
+    err: serde_path_to_error::Error<serde_json::Error>,
+) -> String {
+    if err.path().iter().next().is_some() {
+        return err.to_string();
+    }
+    let serde_json::Value::Object(map) = value else {
+        return err.to_string();
+    };
+    for (key, child) in map {
+        let mut one = serde_json::Map::new();
+        one.insert(key.clone(), child.clone());
+        let alone = serde_json::Value::Object(one);
+        let Err(again) = serde_path_to_error::deserialize::<_, drt_config::InstanceConfig>(&alone)
+        else {
+            continue;
+        };
+        if again.path().iter().count() >= 2 {
+            return again.to_string();
+        }
+    }
+    err.to_string()
 }
 
 /// A relative `program` path is relative **to the config**, not to the

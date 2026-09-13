@@ -12,6 +12,89 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
+## [0.6.1-rc.2] - 2026-09-13 (prerelease)
+
+`v0.6.1-rc.2` &middot; dv ABI 1 &middot; diluvium `2c2f920d7fcf` (build14)
+
+A misspelled key in a config is a refusal by name again (#31). Under
+the `.host.lua` mapper it always was; serde ignored one, and rc1
+recorded the loss as a decision. discofetch then measured what it
+costs: `creat` for `create` ran eleven tables of migrations into a
+database that did not exist, in `journal_mode=delete`, which
+Litestream cannot replicate, while `/health` answered 200. The
+decision is reversed. Every block refuses a key it does not know,
+every connector but `rest` refuses a scope key it does not know,
+and the refusal names the key, the block it sits in, and the keys
+that would have been taken.
+
+**`_`-prefixed keys are comments everywhere**, with no exceptions:
+in a struct, in a map of names such as `relay.labels` or
+`connectors`, inside a connector's `scope`. They are removed before
+anything reads the document, which is what makes the refusal
+possible and what closes the map case #31 describes, where a comment
+in `labels` was refused as a label of the wrong shape.
+
+Same core, same ABI, same connector lists as rc.1. The old artifact
+names ride along once more, as rc.1's did and for the same reason.
+
+### Connectors
+
+- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `data`, `listen`
+- `slim`: `time`, `fs`, `crypto`, `listen`
+- `wasi`: `time`, `fs`, `crypto`, `sql`, `listen`
+- `web`: `time`, `fs`, `crypto`
+
+### Core features
+
+- `full`: `regex`
+- `slim`: `regex`
+- `wasi`: `regex`
+- `web`: `regex`
+
+### Changed
+
+- **`_`-prefixed keys are comments at every depth and in every kind
+  of block**, stripped before the document is read
+  (`drt_config::comments`, so dollup can apply the same rule to the
+  same files). Until now a comment was legal in a struct, refused in
+  a map of names, and data inside a connector's scope, and which was
+  which was not visible from the file.
+- **A refusal names a path rather than a line and column**:
+  `relay.labels.abc: unknown field `parkkey``, which for a JSON file
+  is the more useful of the two. The document crosses a
+  `serde_json::Value` on the way, whose object is a sorted map, so a
+  connector's `scope` arrives with its keys in order rather than as
+  the file spelled them. Every connector reads its scope by name,
+  and the three corpus snapshots that changed record exactly that
+  and nothing else.
+
+### Fixed
+
+- **An unknown key in a JSON config is refused by name** (#31), in
+  every block, a cap's grant included, and in every connector's
+  scope but `rest`'s, with the block's path and the keys that would
+  have been accepted: `numeric.max_element: unknown field
+  `max_element`, expected `max_elements` or `max_tier``. The hole
+  rc1 recorded under `removed` is closed, and
+  `a_misspelled_key_is_refused_by_name_and_a_comment_key_is_not_a_typo`
+  holds it. Not done from that issue: `rest`'s scope, which takes
+  three shapes and still ignores a key it does not know inside one
+  of them, and a report of what a `--config` run parsed. The
+  refusal makes the report unnecessary for a typo; it stays a good
+  idea for reading effective defaults.
+
+### Upgrading
+
+- **A config with a key DRT does not know no longer loads.** The
+  refusal names the key and the keys it would have taken; fix the
+  spelling. A key meant as a note must start with `_`.
+- **A `_` key inside a connector's `scope` is a comment now**, not
+  data. No connector ever read one, so nothing shipped depends on
+  the old reading; the sentence saying otherwise in
+  `examples/20-turn-relay/app.json` and in rc1's notes is
+  superseded.
+
+
 ## [0.6.1-rc.1] - 2026-09-12 (prerelease)
 
 `v0.6.1-rc.1` &middot; dv ABI 1 &middot; diluvium `2c2f920d7fcf` (build14)

@@ -40,6 +40,7 @@
 //!   [`drt_caps::Scope`].
 
 pub mod canon;
+pub mod comments;
 pub mod envelope;
 pub mod id;
 /// The module-name rule `require` and `dollup pull` both apply.
@@ -72,6 +73,7 @@ use drt_caps::{AttenuationError, Grant};
 /// attenuation means "inherit the parent's" — a child may state a smaller
 /// number, never a larger one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Budget {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<u64>,
@@ -88,6 +90,7 @@ pub struct Budget {
 /// either field means "no bound stated", which under attenuation means
 /// "inherit the parent's".
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Numeric {
     /// The most elements one kernel call may process. `None` is no bound;
     /// `Some(0)` is a bound of zero, which is a real configuration -- an
@@ -191,6 +194,7 @@ pub enum Program {
 /// [`InstanceConfig::check_attenuation`] is that rule, checked identically
 /// whether the parent is the process or another instance.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InstanceConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program: Option<Program>,
@@ -305,6 +309,7 @@ impl InstanceConfig {
 /// directory for `fs`, a directory for `sql`, a key), never the
 /// application's filenames. Programs name resources within the scope.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConnectorWiring {
     /// Names a registered backing when a build carries more than one
     /// (real vs mock, native vs browser). Default: the registry's default
@@ -321,6 +326,7 @@ pub struct ConnectorWiring {
 /// with the same field names and the same defaults, so a deployment moves
 /// between the C host and DRT by moving its config.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Listener {
     /// `http` today; `ssh` lands with the control endpoint. Non-local
     /// schemes resolve through ego-transport.
@@ -413,6 +419,7 @@ fn default_admit_grace_ms() -> u64 {
 /// deployment that states none keeps everything resident, bounded by the
 /// instance table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Residency {
     /// How many non-root instances may be resident at once. The root is
     /// exempt: it holds the request queues, and a deployment whose front
@@ -425,6 +432,7 @@ pub struct Residency {
 /// replace the key *values* and not this shape — and because per-label
 /// revocation is what a leaked device key needs.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RelayConfig {
     /// e.g. `127.0.0.1:8090` — behind the edge, which terminates TLS and
     /// routes `<label>--tunnel.<zone>` here.
@@ -472,6 +480,7 @@ pub struct RelayConfig {
 /// below two. A `stun1`/`stun2` pair on separate addresses is what makes
 /// that classification available to anyone pointed at them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StunConfig {
     /// e.g. `0.0.0.0:3478`, or a bare host paired with `port`. Unlike the
     /// relay and the http listener, a STUN server is *meant* to face the
@@ -514,6 +523,7 @@ fn default_stun_report_ms() -> u64 {
 /// minted here verifies against coturn too, so either can stand behind
 /// the same `--ice` answer (issue #12).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TurnConfig {
     /// e.g. `0.0.0.0:3478`, or a bare host paired with `port`. Faces the
     /// world, as `stun` does, so there is no loopback default: the config
@@ -589,6 +599,7 @@ fn default_turn_report_ms() -> u64 {
 /// and a key pasted from one should work in the other. Keys are base64, the
 /// tool's own encoding, not hex.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WireguardPeer {
     /// The peer's public key, base64. Its identity: there is no other name
     /// for a peer in this protocol.
@@ -656,6 +667,7 @@ impl WireguardMode {
 /// `mode = "userspace"`: `ssh -p 2222 127.0.0.1` with nothing configured on
 /// the client. The caller half; `tunnel`'s `bind` is the same shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WireguardForward {
     /// The local `ip:port` to listen on. Port `0` takes an ephemeral one,
     /// and the `wireguard_forward` report is how a program learns which.
@@ -672,6 +684,7 @@ pub struct WireguardForward {
 /// where in kernel mode the kernel would deliver to the box's own sshd.
 /// `tunnel --park --to`'s shape: dialed lazily, on the first connection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WireguardExpose {
     /// The `ip:port` a peer dials. The address is the block's own
     /// `address`, because the stack answers on that and nothing else.
@@ -699,6 +712,7 @@ pub struct WireguardExpose {
 /// relay -- trade the two measured endpoints, tell both sides -- completes
 /// here without a second daemon holding the socket.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WireguardConfig {
     /// The UDP port to listen on. **Required, and never zero**: gotatun
     /// reports the port it was *configured* with rather than the one it
@@ -837,6 +851,7 @@ fn default_admit_timeout_ms() -> u64 {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RelayLabel {
     /// Presented by the device parking a leg (`/park/<label>?k=…`).
     #[serde(default)]
@@ -875,6 +890,7 @@ pub struct RelayLabel {
 /// its own. `bind`, as every other block spells the local address it
 /// listens on. `park`, `to` and `listen` as the flags are.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TunnelConfig {
     /// The `ws://` or `wss://` URL the caller half dials: the relay's
     /// `/s/<label>?k=…`, or a gate straight in front of a `listen`.
@@ -906,6 +922,7 @@ pub struct TunnelConfig {
 /// Process identity. The host key doubles as the node identity and the
 /// snapshot stamp source (SPEC.md §§8–9).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Identity {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_key_path: Option<PathBuf>,
@@ -914,6 +931,7 @@ pub struct Identity {
 /// Authorized keys → capability grant sets: an SSH principal is an attenuated
 /// node in the provenance tree.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SshPrincipal {
     /// The public key, OpenSSH one-line format.
     pub key: String,
@@ -934,6 +952,7 @@ pub struct SshPrincipal {
 /// deployment means asking it about the deployment's own network rather than
 /// about whatever shell ran the verb.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NetcheckConfig {
     /// STUN servers, `host:port`. The decisive measurement is the UDP mapping,
     /// so two of these answer more than any number of anything else.
@@ -970,6 +989,7 @@ fn default_netcheck_queue() -> String {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RootConfig {
     #[serde(flatten)]
     pub root: InstanceConfig,

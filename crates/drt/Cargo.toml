@@ -57,6 +57,9 @@ tokio-tungstenite = { version = "0.24", optional = true, features = ["rustls-tls
 futures-util = { version = "0.3", default-features = false, optional = true }
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "io-std", "io-util", "net", "sync", "time", "macros"], optional = true }
 serde_json = "1"
+# The path to a refused key -- `connectors.sql.scope` -- beside serde's own
+# message, since a config is a tree and a key name alone is not a place.
+serde_path_to_error = "0.1"
 # The root's files are read through one generic helper (`drt_root::read_json`),
 # which needs the trait by name. Already in the tree under everything else
 # here; `drt` simply had no reason to name it until a root had files of its own.

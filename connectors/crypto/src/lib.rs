@@ -202,6 +202,7 @@ impl SecretSource {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TurnConfig {
     #[serde(flatten)]
     secret: SecretSource,
@@ -214,6 +215,7 @@ struct TurnConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct NamedSecret {
     name: String,
     #[serde(flatten)]
@@ -225,6 +227,7 @@ struct NamedSecret {
 /// for `crypto` the place is the key, and it is the one scope in the system
 /// whose contents deliberately never reach the program it serves.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CryptoScope {
     #[serde(flatten)]
     master: SecretSource,

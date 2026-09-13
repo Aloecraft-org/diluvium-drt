@@ -38,6 +38,7 @@ const DEFAULT_MAX_BYTES: u64 = 1024 * 1024;
 /// answer to "is this path inside it", including the symlink case. A path
 /// jail that exists twice is a path jail that is wrong once.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FsScope {
     /// The granted directory. Programs name files within it.
     scope: PathBuf,

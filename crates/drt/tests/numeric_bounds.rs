@@ -99,43 +99,98 @@ fn a_tier_that_does_not_exist_is_refused_with_the_three_that_do() {
 /// **A misspelled key is a silent default now**, and this test records that
 /// rather than asserting the promise that used to be kept.
 ///
-/// `max_element` was refused by name, and `numerics` at the top level was
-/// refused with the list of blocks that exist. Both were the `.host.lua`
-/// mapper's doing -- it matched every key and had an `other =>` arm -- and
-/// both went when it did. Serde reads these types without
-/// `deny_unknown_fields`, which it cannot have while `_`-prefixed keys are
-/// how a JSON config carries a comment.
+/// `max_element` was refused by name under the `.host.lua` mapper, and for
+/// one release after it went, serde read these types without
+/// `deny_unknown_fields` and a misspelled bound silently did not apply --
+/// recorded here as a decision, and then measured by issue #31: `creat` for
+/// `create` ran migrations into a database that did not exist, in a journal
+/// mode Litestream cannot replicate, while `/health` answered 200.
 ///
-/// So this is a real loss, recorded so it is a decision rather than a
-/// discovery: the bound silently does not apply, and nothing says so. The
-/// fix, when it is worth making, is a deserializer that refuses an unknown
-/// key **unless** it starts with `_`.
+/// Every block refuses a key it does not know now, and the refusal names
+/// the key, the block it sits in, and the keys it would have taken.
+/// `_`-prefixed keys are comments at every depth and in every kind of
+/// block, a map of names as much as a struct (`drt_config::comments`), so
+/// the convention that made `deny_unknown_fields` impossible is what makes
+/// it possible.
 #[test]
-fn a_misspelled_key_is_ignored_which_is_the_hole_left_by_the_lua_loader() {
+fn a_misspelled_key_is_refused_by_name_and_a_comment_key_is_not_a_typo() {
     let dir = tempfile::tempdir().unwrap();
-    let config = load(
+    let e = load(
         dir.path(),
         "typo.json",
         r#"{ "numeric": { "max_element": 10 } }"#,
     )
-    .expect("no longer refused");
-    assert_eq!(
-        config.root.numeric.max_elements, None,
-        "the bound the author meant to set is simply not set"
+    .expect_err("a bound that would not apply");
+    assert!(
+        e.contains("max_element") && e.contains("max_elements"),
+        "{e}"
+    );
+    assert!(e.contains("numeric"), "the block is named: {e}");
+
+    let e = load(dir.path(), "top.json", r#"{ "numerics": {} }"#).expect_err("not a block");
+    assert!(e.contains("numerics") && e.contains("numeric"), "{e}");
+
+    // A grant is a block too: `scop` for `scope` was a grant that did not
+    // narrow, and the refusal says which grant.
+    let e = load(
+        dir.path(),
+        "grant.json",
+        r#"{ "caps": [{ "capability": "host:time", "scop": {} }] }"#,
+    )
+    .expect_err("a scope that would not narrow");
+    assert!(
+        e.contains("scop") && e.contains("scope") && e.contains("caps[0]"),
+        "{e}"
     );
 
-    let config = load(dir.path(), "top.json", r#"{ "numerics": {} }"#).expect("no longer refused");
-    assert!(config.root.numeric.is_unbounded());
+    // The shape #31 found on a listener: `max_bod` for `max_body`.
+    let e = load(
+        dir.path(),
+        "listener.json",
+        r#"{ "listeners": [{ "bind": "127.0.0.1:0", "max_bod": 1 }] }"#,
+    )
+    .expect_err("a bound that would not bind");
+    assert!(e.contains("max_bod") && e.contains("max_body"), "{e}");
 
-    // The other half of that trade, and the reason it is made: a comment
-    // key is ignored on purpose, at every depth.
+    // A struct inside a map of names, which is where #31's `_who` lives:
+    // the refusal says which label.
+    let e = load(
+        dir.path(),
+        "label.json",
+        r#"{ "relay": { "bind": "127.0.0.1:8092", "labels": {
+              "abc": { "park_key": "k", "caller_key": "k", "parkkey": "x" } } } }"#,
+    )
+    .expect_err("a key no label has");
+    assert!(
+        e.contains("parkkey") && e.contains("relay.labels.abc"),
+        "{e}"
+    );
+
+    // Comment keys, at every depth and in every kind of block: a struct, a
+    // map of names (`connectors`, `relay.labels`), a connector's scope.
+    // Before this, a comment in a map of names was refused naming the
+    // struct it was not.
     let config = load(
         dir.path(),
         "commented.json",
-        r#"{ "_note": "why", "numeric": { "_note": "why", "max_elements": 64 } }"#,
+        r#"{
+          "_note": "why",
+          "numeric": { "_note": "why", "max_elements": 64 },
+          "connectors": {
+            "_note": "a map of names",
+            "time": { "_note": "why" },
+            "fs": { "scope": { "_note": "inside a scope", "scope": ".", "access": "read" } }
+          },
+          "relay": { "bind": "127.0.0.1:8092", "labels": {
+            "_note": "a comment, not a label",
+            "abc": { "_who": "this machine", "park_key": "k", "caller_key": "k" } } }
+        }"#,
     )
     .expect("a comment key is not a typo");
     assert_eq!(config.root.numeric.max_elements, Some(64));
+    assert_eq!(config.connectors.len(), 2);
+    let relay = config.relay.as_ref().expect("the block loads");
+    assert_eq!(relay.labels.keys().collect::<Vec<_>>(), ["abc"]);
 }
 
 /// The block is not feature-gated, unlike `relay`, `stun`, `turn` and

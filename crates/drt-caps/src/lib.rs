@@ -67,6 +67,7 @@ pub struct Scope(pub rmpv::Value);
 /// optional with a sane default on purpose: mandatory scope on every grant is
 /// friction, and friction is what gets hacked around.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Grant {
     #[serde(default = "default_effect")]
     pub effect: Effect,

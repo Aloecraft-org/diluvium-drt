@@ -99,6 +99,7 @@ pub const DEFAULT_PORT: u16 = 587;
 /// The place this connector is wired to: which relay, as whom, from what
 /// address, to whom the guest may write.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SsmtpScope {
     /// The relay. `df-mail-puller`'s `DF_SMTP_HOST`.
     pub host: String,
