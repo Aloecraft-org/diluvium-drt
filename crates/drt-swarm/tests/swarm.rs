@@ -1380,3 +1380,64 @@ fn gone_and_full_are_both_immediate_refusals() {
         );
     }
 }
+
+/// The map header grows format at 15 entries: `fixmap` holds up to 15, so
+/// a message with exactly 15 becomes a `map16`. Splicing a header is only
+/// correct if it crosses that boundary, and this is the message that would
+/// arrive corrupt if it did not.
+#[test]
+fn attaching_a_sender_crosses_the_fixmap_boundary_correctly() {
+    let sender = drt_config::peer::Sender::runtime(drt_config::project::NodePath::root());
+
+    for entries in [0usize, 1, 14, 15, 16, 17] {
+        let pairs: Vec<(rmpv::Value, rmpv::Value)> = (0..entries)
+            .map(|i| {
+                (
+                    rmpv::Value::from(format!("k{i}")),
+                    rmpv::Value::from(i as u64),
+                )
+            })
+            .collect();
+        let mut body = Vec::new();
+        rmpv::encode::write_value(&mut body, &rmpv::Value::Map(pairs)).unwrap();
+
+        let out = drt_swarm::swarm::attach_sender(&body, &sender);
+        let value = rmpv::decode::read_value(&mut &out[..])
+            .unwrap_or_else(|e| panic!("{entries} entries: the spliced map must decode: {e}"));
+        let map = value.as_map().expect("still a map");
+
+        assert_eq!(map.len(), entries + 1, "{entries} entries plus the sender");
+        assert!(
+            field(&value, "from").is_some(),
+            "{entries} entries: the sender is there"
+        );
+        for i in 0..entries {
+            assert_eq!(
+                field(&value, &format!("k{i}")).and_then(|v| v.as_u64()),
+                Some(i as u64),
+                "{entries} entries: k{i} survived the splice"
+            );
+        }
+    }
+}
+
+/// A message that is not a map is delivered byte for byte, and borrowed
+/// rather than copied — the non-map path must not allocate.
+#[test]
+fn a_non_map_message_is_delivered_untouched() {
+    let sender = drt_config::peer::Sender::runtime(drt_config::project::NodePath::root());
+    for raw in [
+        &b"\xc0"[..],         // nil
+        &b"\x2a"[..],         // a positive fixint
+        &b"\xa5hello"[..],    // a string
+        &b"\x92\x01\x02"[..], // an array
+        &b""[..],             // nothing at all
+    ] {
+        let out = drt_swarm::swarm::attach_sender(raw, &sender);
+        assert_eq!(&out[..], raw, "delivered byte for byte");
+        assert!(
+            matches!(out, std::borrow::Cow::Borrowed(_)),
+            "and borrowed, so the hot path does not allocate for it"
+        );
+    }
+}

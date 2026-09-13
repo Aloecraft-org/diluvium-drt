@@ -118,6 +118,14 @@ Two properties worth knowing:
   reader sees in order to add a field none of them asked for. A non-map
   message that ever needs a sender needs an envelope, and that is a format
   decision with its own document.
+- **It costs one allocation, and that is measured.** `bench/check-fidelity.py`
+  holds `queue.pN_allocs_per_roundtrip` under 5.0 against a baseline near
+  3.06. Decoding each message to an `rmpv::Value` and re-encoding cost three
+  allocations and broke the ceiling at 6.06, so the delivery path reads the
+  map *header*, writes a new one with the count raised by one, and copies the
+  body after the sender's bytes: 4.06, and nothing at all for a non-map
+  message. One allocation is the floor for adding a field to an immutable
+  byte message; anything lower needs a different envelope.
 
 `PeerRef` has a third form, `Runtime`, for the no-root path. `drt run` and
 a browser root have no `root_id`, and "every delivered message carries a

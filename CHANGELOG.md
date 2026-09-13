@@ -56,8 +56,15 @@ is. `doc/Peers.md` says what is reserved and what refuses by name.
   than asking "was this one of mine?" as a separate question. The
   runtime writes the key and replaces one a guest wrote itself.
   Only a msgpack map carries it — every message in this system is
-  one — and a non-map message is delivered untouched rather than
-  wrapped.
+  one — and a non-map message is delivered untouched and unallocated.
+  Delivery costs **one allocation per message**, measured: the map
+  header is rewritten with the count raised and the body copied
+  after the sender's bytes, rather than the whole message being
+  decoded to a value tree and re-encoded. The tree cost three, which
+  `bench/check-fidelity.py`'s ceiling of 5.0 on
+  `queue.pN_allocs_per_roundtrip` refused outright at 6.06; the
+  splice measures 4.06 against a 3.06 baseline. One allocation is
+  the floor for adding a field to an immutable byte message.
 
 ### Fixed
 

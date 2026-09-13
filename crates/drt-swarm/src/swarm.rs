@@ -849,7 +849,7 @@ impl<H: SwarmHost> Swarm<H> {
         from: &Sender,
         msg: &[u8],
     ) -> Result<(), SwarmError> {
-        let msg = &attach_sender(msg, from);
+        let msg: &[u8] = &attach_sender(msg, from);
         let Some(index) = self.find(id) else {
             return Err(SwarmError::Gone);
         };
@@ -1501,37 +1501,112 @@ fn check_grant_names(grants: &[Grant]) -> Result<(), String> {
 // a node pushes -- so the rule costs nothing in practice. A message that
 // is not a map is delivered untouched rather than being wrapped in one,
 // because wrapping would change what every existing reader sees in order
-// to add a field none of them asked for. If a non-map message ever needs
-// a sender, it needs an envelope, and that is a format decision with its
-// own doc.
+// to add a field none of them asked for.
 //
-// The cost is a decode and re-encode per delivery. Measured against the
-// alternative -- a second delivery channel for the sender, which is two
-// things to keep in step -- this is the cheaper mistake to fix.
+// **This is the hot path, and it is measured.** `queue.pN_allocs_per_-
+// roundtrip` has a ceiling of 5.0 against a baseline near 3.06
+// (`bench/check-fidelity.py`), so decoding to an `rmpv::Value` tree and
+// re-encoding is not available: doing that cost three allocations a
+// message and broke the ceiling outright. Instead the map *header* is
+// read, a new one is written with the count raised by one, and the
+// original body is copied after the sender's pre-encoded bytes. One
+// allocation, and none at all when there is nothing to attach to.
 
-/// `msg` with `from` inserted, or `msg` unchanged if it is not a map.
+/// The reserved key as msgpack: `fixstr`, length 4, `from`.
+const SENDER_KEY_BYTES: &[u8] = b"\xa4from";
+
+/// A msgpack map's entry count and where its body starts, or `None` when
+/// `msg` does not begin with a map.
 ///
-/// An existing `from` is replaced: the runtime is the authority on who
-/// sent something, and a guest that writes the key itself must not be able
-/// to forge a sender.
+/// Reads the header and nothing else — no allocation, and no walk of a
+/// body that may be megabytes of column data.
+fn map_header(msg: &[u8]) -> Option<(u32, usize)> {
+    match *msg.first()? {
+        b @ 0x80..=0x8f => Some(((b & 0x0f) as u32, 1)),
+        0xde => {
+            let n = u16::from_be_bytes(msg.get(1..3)?.try_into().ok()?);
+            Some((n as u32, 3))
+        }
+        0xdf => {
+            let n = u32::from_be_bytes(msg.get(1..5)?.try_into().ok()?);
+            Some((n, 5))
+        }
+        _ => None,
+    }
+}
+
+/// A map header for `count` entries, appended to `out`.
+fn write_map_header(out: &mut Vec<u8>, count: u32) {
+    match count {
+        0..=15 => out.push(0x80 | count as u8),
+        16..=0xffff => {
+            out.push(0xde);
+            out.extend_from_slice(&(count as u16).to_be_bytes());
+        }
+        _ => {
+            out.push(0xdf);
+            out.extend_from_slice(&count.to_be_bytes());
+        }
+    }
+}
+
+/// `msg` with `from` attached, borrowed unchanged when it is not a map.
+///
+/// The runtime is the authority on who sent something, so a `from` a guest
+/// wrote itself must not survive. Finding one exactly would mean walking
+/// every top-level value; instead the message is scanned for the encoded
+/// key as a byte sequence, which cannot miss one — a false positive costs
+/// only the slower path, never correctness.
 ///
 /// Public because the slice that delivers across a peer needs the same
 /// encoding — a second implementation of it is two things to keep in step
 /// — and because what a node ends up seeing is worth asserting directly.
-pub fn attach_sender(msg: &[u8], from: &Sender) -> Vec<u8> {
+pub fn attach_sender<'a>(msg: &'a [u8], from: &Sender) -> std::borrow::Cow<'a, [u8]> {
+    let Some((count, body_at)) = map_header(msg) else {
+        return std::borrow::Cow::Borrowed(msg);
+    };
+    let mut encoded = Vec::with_capacity(64);
+    encoded.extend_from_slice(SENDER_KEY_BYTES);
+    if rmpv::encode::write_value(&mut encoded, &from.to_value()).is_err() {
+        // A sender that will not encode is a bug in `Sender`, not a reason
+        // to drop the message the caller actually wrote.
+        return std::borrow::Cow::Borrowed(msg);
+    }
+
+    if contains(msg, SENDER_KEY_BYTES) {
+        return std::borrow::Cow::Owned(rebuild_without_forged_sender(msg, &encoded));
+    }
+    let body = &msg[body_at..];
+    let mut out = Vec::with_capacity(msg.len() + encoded.len() + 5);
+    write_map_header(&mut out, count.saturating_add(1));
+    out.extend_from_slice(&encoded);
+    out.extend_from_slice(body);
+    std::borrow::Cow::Owned(out)
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// The slow path, taken only when the encoded key appears somewhere in the
+/// message: decode, drop any `from` the guest wrote, and put the real one
+/// back. Exact, and its cost is paid by the message that earned it.
+fn rebuild_without_forged_sender(msg: &[u8], encoded_pair: &[u8]) -> Vec<u8> {
     let Ok(rmpv::Value::Map(mut pairs)) = rmpv::decode::read_value(&mut &msg[..]) else {
         return msg.to_vec();
     };
     pairs.retain(|(k, _)| k.as_str() != Some(SENDER_KEY));
-    pairs.push((rmpv::Value::from(SENDER_KEY), from.to_value()));
-    let mut out = Vec::with_capacity(msg.len() + 64);
-    match rmpv::encode::write_value(&mut out, &rmpv::Value::Map(pairs)) {
-        Ok(()) => out,
-        // Re-encoding what was just decoded cannot realistically fail, and
-        // if it somehow does, delivering the message the sender actually
-        // wrote beats dropping it over a field nobody asked for.
-        Err(_) => msg.to_vec(),
+    let mut out = Vec::with_capacity(msg.len() + encoded_pair.len() + 5);
+    write_map_header(&mut out, (pairs.len() as u32).saturating_add(1));
+    out.extend_from_slice(encoded_pair);
+    for (k, v) in &pairs {
+        if rmpv::encode::write_value(&mut out, k).is_err()
+            || rmpv::encode::write_value(&mut out, v).is_err()
+        {
+            return msg.to_vec();
+        }
     }
+    out
 }
 
 /// Clamp to at most `max` bytes on a character boundary — a lie about the

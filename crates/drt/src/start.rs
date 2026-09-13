@@ -528,14 +528,14 @@ pub fn serve_with_observer<B: Acceptor>(
             // A dropped report costs a panel one interval's numbers, and
             // the next report carries the running totals anyway — the
             // counters are cumulative, not deltas, so nothing is lost.
-            stun.report(&mut |queue, msg| sw.push(root, queue, msg).is_ok());
+            stun.report(&mut |queue, msg| sw.push(root, queue, &runtime_sender(), msg).is_ok());
         }
         #[cfg(feature = "turn")]
         if let Some(turn) = turn.as_mut() {
             // Closes first and always, then the snapshot on its timer; a
             // dropped snapshot is the next one's running totals, a
             // dropped close is a bill that never arrives.
-            turn.report(&mut |queue, msg| sw.push(root, queue, msg).is_ok());
+            turn.report(&mut |queue, msg| sw.push(root, queue, &runtime_sender(), msg).is_ok());
         }
         #[cfg(feature = "wireguard")]
         if let Some(wg) = wireguard.as_mut() {
@@ -547,13 +547,13 @@ pub fn serve_with_observer<B: Acceptor>(
                 let q = inst.queue(queue)?;
                 inst.pop(q).ok().flatten()
             });
-            wg.report(&mut |queue, msg| sw.push(root, queue, msg).is_ok());
+            wg.report(&mut |queue, msg| sw.push(root, queue, &runtime_sender(), msg).is_ok());
         }
         #[cfg(feature = "netcheck")]
         if let Some(netcheck) = netcheck.as_mut() {
             // A dropped verdict is superseded by the next measurement, which is
             // why this drops rather than holds -- see `NetcheckBridge::report`.
-            netcheck.report(&mut |queue, msg| sw.push(root, queue, msg).is_ok());
+            netcheck.report(&mut |queue, msg| sw.push(root, queue, &runtime_sender(), msg).is_ok());
         }
         observe(sw, root);
         if alive == 0 {
@@ -1022,7 +1022,7 @@ impl RelayBridge {
             // A full or undeclared queue is the deployment's own sizing to
             // see. An event dropped here costs a panel an update; failing
             // the relay over it would cost a session.
-            let _ = sw.push(root, &self.queue, &msg);
+            let _ = sw.push(root, &self.queue, &runtime_sender(), &msg);
         }
         while let Ok(admit) = self.admits.try_recv() {
             self.next_tok += 1;
@@ -1033,7 +1033,7 @@ impl RelayBridge {
                 ("label".into(), admit.label.as_str().into()),
                 ("leg".into(), admit.leg.into()),
             ]));
-            if sw.push(root, &self.queue, &msg).is_ok() {
+            if sw.push(root, &self.queue, &runtime_sender(), &msg).is_ok() {
                 self.pending.insert(tok, admit.reply);
             }
             // On a failed push the sender drops, which the relay reads as a
