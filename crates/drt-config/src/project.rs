@@ -54,6 +54,21 @@ pub const PROFILE_DIR: &str = "profile";
 /// operator-owned versus runtime-owned is the line this directory draws.
 pub const STATE_DIR: &str = "state";
 
+/// **Reserved. Nothing listens here.**
+///
+/// Where a root's peer endpoint will be, inside [`STATE_DIR`], when
+/// root-to-root delivery lands. The name is claimed now so that the slice
+/// that builds the listener does not also get to choose where it lives —
+/// a path is the one part of an endpoint that other software hard-codes,
+/// and choosing it under deadline is how it ends up somewhere that has to
+/// move later.
+///
+/// Inside `state/` because it is runtime-owned and must not travel: a
+/// socket copied into an `init/` tree would be a path to a listener that
+/// is not there. Nothing creates it — `ensure_state` deliberately does not
+/// — and `SPEC.md` §13a is amended when the listener lands, not before.
+pub const PEER_ENDPOINT: &str = "peer.sock";
+
 /// Names no node, profile, package or project may take, case-folded.
 ///
 /// Refused on both sides: drt at spawn and at profile resolution, dollup in

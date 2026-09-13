@@ -574,6 +574,7 @@ mod tests {
                 accepted_at: drt_root::now(),
             }],
             signers: Vec::new(),
+            peers: Vec::new(),
         };
 
         let mut ask = Scripted::default();

@@ -31,6 +31,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use drt_caps::{CapSet, Effect, Grant, Principal};
+use drt_config::peer::{QueueAddress, Sender, SENDER_KEY};
 use drt_config::project::{BadNodePath, NodePath};
 use drt_config::{Budget, Numeric, Tier};
 
@@ -825,11 +826,30 @@ impl<H: SwarmHost> Swarm<H> {
         Some(handle)
     }
 
+    /// Deliver, saying who from.
+    ///
     /// The host's side of the delivery table: resident → the queue; dead or
     /// unknown → [`SwarmError::Gone`], immediately; cached with
     /// `wake_on_message` → a bounded buffer, drained ahead of live pushes on
     /// the next step; cached without → gone.
-    pub fn push(&mut self, id: InstanceId, queue: &str, msg: &[u8]) -> Result<(), SwarmError> {
+    ///
+    /// **Never blocks.** A full queue is [`SwarmError::Limit`] straight
+    /// back to the caller, which decides inside its own deadline whether to
+    /// retry; a consumer that is gone and one that is full look the same
+    /// from here, which is the property that keeps a request from hanging
+    /// on a wedged consumer. The guest's own park for space is a different
+    /// thing entirely and is the engine's (`dv.h` §8.3).
+    ///
+    /// `addr` may not name a peer in this build; [`Swarm::push_to`] is
+    /// where that is refused, and this function is the local half it calls.
+    pub fn push(
+        &mut self,
+        id: InstanceId,
+        queue: &str,
+        from: &Sender,
+        msg: &[u8],
+    ) -> Result<(), SwarmError> {
+        let msg = &attach_sender(msg, from);
         let Some(index) = self.find(id) else {
             return Err(SwarmError::Gone);
         };
@@ -872,6 +892,25 @@ impl<H: SwarmHost> Swarm<H> {
             msg: msg.to_vec(),
         });
         Ok(())
+    }
+
+    /// Deliver to an address, which may name a peer.
+    ///
+    /// The entry point a node's write goes through, so that the shape of a
+    /// cross-peer write is settled before one is possible. A peer component
+    /// is refused by name here and nowhere else; a local address is
+    /// [`Swarm::push`].
+    pub fn push_to(
+        &mut self,
+        id: InstanceId,
+        addr: &QueueAddress,
+        from: &Sender,
+        msg: &[u8],
+    ) -> Result<(), SwarmError> {
+        let queue = addr
+            .deliverable()
+            .map_err(|e| SwarmError::Error(e.to_string()))?;
+        self.push(id, queue, from, msg)
     }
 
     // ----------------------------------------------- draining the lifecycle --
@@ -1447,6 +1486,52 @@ fn check_grant_names(grants: &[Grant]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+// depth: attaching the sender to a delivered message
+//
+// Seam 2: a node reads a queue and finds who sent it, without asking a
+// second question and without ever seeing a signature. The sender rides
+// under the reserved `from` key rather than in a wrapper, so a program
+// that already reads its own fields out of the map keeps working and one
+// that wants the sender reads one more key.
+//
+// **Only a map carries it.** Every message this system sends is a msgpack
+// map -- the lifecycle events, the hostcall request and reply, everything
+// a node pushes -- so the rule costs nothing in practice. A message that
+// is not a map is delivered untouched rather than being wrapped in one,
+// because wrapping would change what every existing reader sees in order
+// to add a field none of them asked for. If a non-map message ever needs
+// a sender, it needs an envelope, and that is a format decision with its
+// own doc.
+//
+// The cost is a decode and re-encode per delivery. Measured against the
+// alternative -- a second delivery channel for the sender, which is two
+// things to keep in step -- this is the cheaper mistake to fix.
+
+/// `msg` with `from` inserted, or `msg` unchanged if it is not a map.
+///
+/// An existing `from` is replaced: the runtime is the authority on who
+/// sent something, and a guest that writes the key itself must not be able
+/// to forge a sender.
+///
+/// Public because the slice that delivers across a peer needs the same
+/// encoding — a second implementation of it is two things to keep in step
+/// — and because what a node ends up seeing is worth asserting directly.
+pub fn attach_sender(msg: &[u8], from: &Sender) -> Vec<u8> {
+    let Ok(rmpv::Value::Map(mut pairs)) = rmpv::decode::read_value(&mut &msg[..]) else {
+        return msg.to_vec();
+    };
+    pairs.retain(|(k, _)| k.as_str() != Some(SENDER_KEY));
+    pairs.push((rmpv::Value::from(SENDER_KEY), from.to_value()));
+    let mut out = Vec::with_capacity(msg.len() + 64);
+    match rmpv::encode::write_value(&mut out, &rmpv::Value::Map(pairs)) {
+        Ok(()) => out,
+        // Re-encoding what was just decoded cannot realistically fail, and
+        // if it somehow does, delivering the message the sender actually
+        // wrote beats dropping it over a field nobody asked for.
+        Err(_) => msg.to_vec(),
+    }
 }
 
 /// Clamp to at most `max` bytes on a character boundary — a lie about the

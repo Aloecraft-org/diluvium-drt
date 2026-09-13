@@ -244,6 +244,7 @@ mod tests {
                 public_key: public,
                 realms: vec![Realm::root()],
             }],
+            peers: Vec::new(),
         };
         let decision: Decision =
             serde_json::from_str(&drt_platform::fs::read_to_string(&written).unwrap()).unwrap();

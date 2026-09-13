@@ -133,6 +133,16 @@ impl Root {
         self.state().join(drt_config::gsr::DECIDED_DIR)
     }
 
+    /// Where this root's peer endpoint **will** be. Reserved: nothing
+    /// creates it and nothing listens on it in this build.
+    ///
+    /// Here rather than only as a constant so the reservation is visible
+    /// beside the other paths a root has, which is where someone looking
+    /// for a free name would look.
+    pub fn peer_endpoint(&self) -> PathBuf {
+        self.state().join(project::PEER_ENDPOINT)
+    }
+
     /// The pinned binary, if this root carries one. `drt` on `PATH` is the
     /// other way to run, and the pin check compares against whichever
     /// binary is actually executing.
@@ -479,6 +489,17 @@ mod tests {
         assert!(
             !drt_platform::fs::exists(seeded.root.consent_json()),
             "consent.json is not in state/, and ensure_state does not invent it"
+        );
+        // Seam 6: the name is claimed, and nothing listens on it. A build
+        // that creates the path has started implementing the endpoint, and
+        // that is a decision with its own doc and its own slice.
+        assert!(
+            !drt_platform::fs::exists(seeded.root.peer_endpoint()),
+            "the peer endpoint is reserved, not created: nothing listens there in this build"
+        );
+        assert!(
+            seeded.root.peer_endpoint().starts_with(seeded.root.state()),
+            "it is runtime-owned, so it lives in state/ and never travels"
         );
     }
 

@@ -413,7 +413,13 @@ mod residency {
             .find(|id| *id != root && !sw.resident(*id))
             .unwrap();
         // msgpack uint 1 is the single byte 0x01 — no encoder needed.
-        sw.push(sleeping, "work", &[0x01]).unwrap();
+        sw.push(
+            sleeping,
+            "work",
+            &drt_config::peer::Sender::runtime(drt_config::project::NodePath::root()),
+            &[0x01],
+        )
+        .unwrap();
         sw.step();
         assert!(sw.resident(sleeping), "the message did not wake it");
 

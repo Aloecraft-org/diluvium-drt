@@ -449,6 +449,7 @@ mod tests {
                 public_key: key.public_key(),
                 realms: signer_realms,
             }],
+            peers: Vec::new(),
         }
     }
 

@@ -45,6 +45,7 @@ pub mod envelope;
 pub mod id;
 /// The module-name rule `require` and `dollup pull` both apply.
 pub mod modules;
+pub mod peer;
 pub mod project;
 pub mod realm;
 pub mod resolve;

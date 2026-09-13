@@ -39,6 +39,21 @@ use drt_swarm::engine::diluvium_engine::DiluviumEngine;
 use drt_swarm::engine::{Instance, QueueStatus, Step, WaitSet};
 use drt_swarm::pump::PumpHost;
 use drt_swarm::swarm::{Driven, Swarm, SwarmHost};
+
+/// Who the runtime itself is, when it delivers into the root node.
+///
+/// The args table and an ingress request both arrive from drt rather than
+/// from another node, and seam 2 says every delivered message carries a
+/// sender — so this one says "the runtime, into the root node" rather than
+/// naming a node that did not send it.
+///
+/// `PeerRef::Runtime` rather than this root's id because `start` reaches
+/// here on the no-root path too, where there is no id to name. A root that
+/// has one is not distinguished yet: nothing reads the field, and inventing
+/// the distinction before the wire exists is how it ends up wrong.
+fn runtime_sender() -> drt_config::peer::Sender {
+    drt_config::peer::Sender::runtime(drt_config::project::NodePath::root())
+}
 use drt_swarm::InstanceId;
 
 use crate::drive::{Next, Outcome};
@@ -656,7 +671,12 @@ impl ArgsDelivery {
     /// this is a table lookup.
     fn deliver(&mut self, sw: &mut Deployment, root: InstanceId) {
         let Some(bytes) = &self.pending else { return };
-        match sw.push(root, drt_config::resolve::ARGS_QUEUE, bytes) {
+        match sw.push(
+            root,
+            drt_config::resolve::ARGS_QUEUE,
+            &runtime_sender(),
+            bytes,
+        ) {
             Ok(()) => self.pending = None,
             // Not declared yet, or declared and momentarily full. Either way,
             // try again next pass.
@@ -735,7 +755,7 @@ fn deliver<B: Acceptor>(
     use crate::listen::Outcome;
     use drt_swarm::swarm::SwarmError;
     let queue = bound.listeners()[ingress.listener].queue.clone();
-    match sw.push(root, &queue, &ingress.message) {
+    match sw.push(root, &queue, &runtime_sender(), &ingress.message) {
         Ok(_) => {} // parked in the queue; the reply pump answers
         // Not answered here. A queue absent now may be declared by the
         // next step, and the program's boot is exactly when it is absent.

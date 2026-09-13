@@ -168,9 +168,16 @@ impl Swarm {
     }
 
     /// A msgpack message onto one of `id`'s queues.
+    ///
+    /// The page is the runtime here: a browser root has no `.drt_root/`
+    /// and so no id to name, and there are no peers to tell apart on the
+    /// no-root path. The message still carries a sender, because "every
+    /// delivered message carries one" is not a rule with a browser
+    /// exception.
     pub fn push(&mut self, id: u32, queue: &str, msg: &[u8]) -> Result<(), String> {
+        let from = drt_config::peer::Sender::runtime(drt_config::project::NodePath::root());
         self.inner
-            .push(InstanceId(id), queue, msg)
+            .push(InstanceId(id), queue, &from, msg)
             .map_err(|e| e.to_string())
     }
 

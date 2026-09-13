@@ -335,6 +335,7 @@ mod tests {
                     .map(|r| Realm::parse(r).unwrap())
                     .collect(),
             }],
+            peers: Vec::new(),
         };
         drt_platform::fs::write(
             seeded.root.project_json(),

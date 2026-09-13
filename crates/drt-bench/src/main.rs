@@ -29,6 +29,12 @@ use drt_swarm::engine::diluvium_engine::DiluviumEngine;
 use drt_swarm::swarm::{StepHost, Swarm};
 use drt_swarm::InstanceId;
 
+/// The bench harness is the runtime driving its own instances, so every
+/// message it pushes comes from the runtime and not from a node.
+fn bench_sender() -> drt_config::peer::Sender {
+    drt_config::peer::Sender::runtime(drt_config::project::NodePath::root())
+}
+
 /// Counts allocations so "allocation churn" can be measured rather than
 /// asserted. The C harness's equivalent number is zero on the timed path:
 /// it encodes its payload once before the loop and drains with a borrowed
@@ -412,7 +418,7 @@ fn queue(a: &Args, deadline: Duration) -> Result<Case, Stalled> {
         for _ in 0..rounds {
             let mark = allocs().0;
             for id in &workers {
-                if sw.push(*id, "work", &payload).is_ok() {
+                if sw.push(*id, "work", &bench_sender(), &payload).is_ok() {
                     pushed += 1;
                 } else {
                     refused += 1.0;
@@ -565,7 +571,7 @@ fn churn_at(
         } else {
             misses += 1;
         }
-        match sw.push(ids[pick], "work", &msg) {
+        match sw.push(ids[pick], "work", &bench_sender(), &msg) {
             Ok(()) => {}
             Err(drt_swarm::swarm::SwarmError::Limit(_)) => refused += 1,
             Err(_) => {
@@ -671,7 +677,7 @@ fn churn_at(
             });
         let (mut accepted, mut denied) = (0u64, 0u64);
         for _ in 0..64 {
-            match sw.push(victim, "work", &msg) {
+            match sw.push(victim, "work", &bench_sender(), &msg) {
                 Ok(()) => accepted += 1,
                 Err(_) => denied += 1,
             }

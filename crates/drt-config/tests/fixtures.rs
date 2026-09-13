@@ -144,6 +144,7 @@ fn consent_json_golden_in_both_modes() {
             accepted_at: accepted_at(),
         }],
         signers: signers.clone(),
+        peers: Vec::new(),
     };
     let all = ConsentJson {
         root_id: root_id(),
@@ -153,6 +154,7 @@ fn consent_json_golden_in_both_modes() {
             accepted_at: accepted_at(),
         }],
         signers,
+        peers: Vec::new(),
     };
 
     golden("consent-listed.json", &pretty(&listed));

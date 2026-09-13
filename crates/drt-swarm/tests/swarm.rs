@@ -13,6 +13,11 @@ use drt_swarm::engine::diluvium_engine::DiluviumEngine;
 use drt_swarm::swarm::{StepHost, Swarm, SwarmError};
 use drt_swarm::InstanceId;
 
+/// Every push in these tests is the harness standing in for the runtime.
+fn from() -> drt_config::peer::Sender {
+    drt_config::peer::Sender::runtime(drt_config::project::NodePath::root())
+}
+
 fn swarm() -> Swarm<StepHost> {
     let engine = Arc::new(DiluviumEngine::new().unwrap());
     Swarm::new(engine, StepHost::new())
@@ -121,7 +126,7 @@ fn spawn_request(code: &str, caps: &[&str], budget: Option<(u64, u64)>) -> rmpv:
 fn push_value(sw: &mut Swarm<StepHost>, id: InstanceId, queue: &str, v: &rmpv::Value) {
     let mut buf = Vec::new();
     rmpv::encode::write_value(&mut buf, v).unwrap();
-    sw.push(id, queue, &buf).unwrap();
+    sw.push(id, queue, &from(), &buf).unwrap();
 }
 
 fn field<'a>(event: &'a rmpv::Value, name: &str) -> Option<&'a rmpv::Value> {
@@ -389,21 +394,24 @@ fn the_delivery_table_answers_all_four_rows() {
     sw.step();
 
     // Resident, declared queue: delivered.
-    assert!(sw.push(root, "requests", b"\xa4stop").is_ok());
+    assert!(sw.push(root, "requests", &from(), b"\xa4stop").is_ok());
     // Resident, unknown queue.
     assert_eq!(
-        sw.push(root, "no/such/queue", b"\xc0"),
+        sw.push(root, "no/such/queue", &from(), b"\xc0"),
         Err(SwarmError::UnknownQueue)
     );
     // Unknown instance: gone, immediately.
     assert_eq!(
-        sw.push(InstanceId(999), "requests", b"\xc0"),
+        sw.push(InstanceId(999), "requests", &from(), b"\xc0"),
         Err(SwarmError::Gone)
     );
     settle(&mut sw, 10);
     // Dead instance (the root read "stop" and returned): gone.
     assert_eq!(sw.alive(), 0);
-    assert_eq!(sw.push(root, "requests", b"\xc0"), Err(SwarmError::Gone));
+    assert_eq!(
+        sw.push(root, "requests", &from(), b"\xc0"),
+        Err(SwarmError::Gone)
+    );
 }
 
 /// The self-initiated hibernation loop: a program parks after pushing
@@ -454,7 +462,7 @@ fn hibernation_is_self_initiated_and_wake_on_message_wakes() {
     for n in [40u32, 2, 0] {
         let mut buf = Vec::new();
         rmpv::encode::write_value(&mut buf, &rmpv::Value::from(n)).unwrap();
-        sw.push(child, "requests", &buf).unwrap();
+        sw.push(child, "requests", &from(), &buf).unwrap();
     }
     // ...and the next step wakes it, delivers them ahead of live pushes, and
     // the program continues from its wait with its heap intact.
@@ -505,19 +513,19 @@ fn the_wake_buffer_is_bounded_and_a_cached_instance_without_wake_is_gone() {
 
     // Without wake_on_message, a cached instance is not there.
     assert_eq!(
-        sw.push(no_waker, "requests", b"\xc0"),
+        sw.push(no_waker, "requests", &from(), b"\xc0"),
         Err(SwarmError::Gone)
     );
 
     // With it, the buffer takes exactly its bound and then refuses.
     for i in 0..16 {
         assert!(
-            sw.push(waker, "requests", b"\xc0").is_ok(),
+            sw.push(waker, "requests", &from(), b"\xc0").is_ok(),
             "message {i} fits"
         );
     }
     assert!(matches!(
-        sw.push(waker, "requests", b"\xc0"),
+        sw.push(waker, "requests", &from(), b"\xc0"),
         Err(SwarmError::Limit(_))
     ));
 }
@@ -550,7 +558,7 @@ fn a_stamped_swarm_stamps_its_snapshots() {
     // The cached snapshot restores under the same identity (the wake path),
     // and a fresh engine refuses it without the stamp — proving the stamp is
     // in the bytes, not advisory.
-    sw.push(child, "requests", b"\xc0").unwrap();
+    sw.push(child, "requests", &from(), b"\xc0").unwrap();
     settle(&mut sw, 10);
     assert!(sw.alive() >= 1, "woke under its own stamp");
 }
@@ -649,7 +657,7 @@ fn bytecode_spawns_are_a_stated_decision() {
     let mut raw = vec![0x82]; // fixmap, 2 pairs
     raw.extend_from_slice(b"\xa2op\xa5spawn");
     raw.extend_from_slice(b"\xa4code\xa7\x1bLua\xff\x00\x01");
-    sw.push(root, "requests", &raw).unwrap();
+    sw.push(root, "requests", &from(), &raw).unwrap();
     settle(&mut sw, 10);
     let log = drain_out(&mut sw, root, "log");
     assert_eq!(event_name(&log[0]), "faulted");
@@ -1187,4 +1195,188 @@ fn a_node_s_capability_set_records_the_node_it_belongs_to() {
         Some("root/intake".to_string()),
         "and a child's set says it is the child's"
     );
+}
+
+// ---------------------------------------------------- the peer groundwork --
+//
+// Nothing here reaches a peer. These hold the shape the slice that builds
+// peer delivery needs, so that slice changes who fills a field in rather
+// than what the field is.
+
+/// Acceptance 1: a delivered message carries `{peer, node}`, and a program
+/// can read it.
+///
+/// Read back out of the delivered bytes rather than asserted on the type,
+/// because what matters is what a *node* sees. A test over `Sender` alone
+/// would pass with nothing attached to the message at all.
+#[test]
+fn a_delivered_message_carries_who_it_came_from() {
+    let mut sw = swarm();
+    let root = sw
+        .root(SUPERVISOR.as_bytes(), lifecycle_caps(), Budget::default())
+        .unwrap();
+    sw.step();
+
+    let root_id = drt_config::id::Uuid7::mint(1_757_707_440_000, [0x66; 10]);
+    let sender = drt_config::peer::Sender::local(
+        root_id,
+        drt_config::project::NodePath::root()
+            .child("intake")
+            .unwrap(),
+    );
+
+    let mut body = Vec::new();
+    rmpv::encode::write_value(
+        &mut body,
+        &rmpv::Value::Map(vec![("op".into(), "ping".into())]),
+    )
+    .unwrap();
+
+    let delivered = drt_swarm::swarm::attach_sender(&body, &sender);
+    let value = rmpv::decode::read_value(&mut &delivered[..]).unwrap();
+
+    let from = field(&value, "from").expect("every delivered message carries a sender");
+    let peer = field(from, "peer").expect("the sender names a peer");
+    assert_eq!(field(peer, "kind").unwrap().as_str(), Some("root"));
+    assert_eq!(
+        field(peer, "root_id").unwrap().as_str(),
+        Some(root_id.to_string().as_str()),
+        "a local sender names its own root, so one field answers 'who sent this'"
+    );
+    assert_eq!(
+        field(from, "node").unwrap().as_str(),
+        Some("root/intake"),
+        "the local node form; the root is in `peer` already"
+    );
+    assert_eq!(
+        field(&value, "op").unwrap().as_str(),
+        Some("ping"),
+        "and the message the sender wrote is untouched beside it"
+    );
+
+    // It really is the delivery path that attaches it, not this test.
+    assert!(sw.push(root, "requests", &sender, &body).is_ok());
+}
+
+/// The runtime is the authority on who sent something, so a guest cannot
+/// write the reserved key itself and be believed.
+#[test]
+fn a_sender_a_guest_wrote_itself_is_replaced() {
+    let forged = rmpv::Value::Map(vec![
+        ("from".into(), rmpv::Value::from("someone else entirely")),
+        ("op".into(), "ping".into()),
+    ]);
+    let mut body = Vec::new();
+    rmpv::encode::write_value(&mut body, &forged).unwrap();
+
+    let sender = drt_config::peer::Sender::runtime(drt_config::project::NodePath::root());
+    let value = rmpv::decode::read_value(&mut &drt_swarm::swarm::attach_sender(&body, &sender)[..])
+        .unwrap();
+
+    let from = field(&value, "from").unwrap();
+    assert!(
+        from.as_map().is_some(),
+        "the forged string was replaced by the real sender: {from:?}"
+    );
+    let pairs = value.as_map().unwrap();
+    assert_eq!(
+        pairs
+            .iter()
+            .filter(|(k, _)| k.as_str() == Some("from"))
+            .count(),
+        1,
+        "and exactly once"
+    );
+}
+
+/// Acceptance 2: a write naming a peer is refused by name, whichever kind
+/// of peer it names.
+#[test]
+fn a_write_to_a_peer_fails_by_name_for_a_root_and_for_a_plugin() {
+    use drt_config::peer::{PeerRef, QueueAddress};
+
+    let mut sw = swarm();
+    let root = sw
+        .root(SUPERVISOR.as_bytes(), lifecycle_caps(), Budget::default())
+        .unwrap();
+    sw.step();
+
+    let peers = [
+        PeerRef::root(drt_config::id::Uuid7::mint(1_757_707_440_000, [0x77; 10])),
+        PeerRef::plugin("webauthn"),
+    ];
+    for peer in peers {
+        let addr = QueueAddress::on(peer, "requests");
+        let e = sw
+            .push_to(root, &addr, &from(), b"\xc0")
+            .expect_err("peer delivery is not supported in this build");
+        let said = e.to_string();
+        assert!(
+            said.contains("peer delivery is not supported"),
+            "refused by name: {said}"
+        );
+        assert!(said.contains("requests"), "and it names the queue: {said}");
+    }
+
+    // The same address without the peer component delivers.
+    assert!(sw
+        .push_to(root, &QueueAddress::local("requests"), &from(), b"\xa4stop")
+        .is_ok());
+}
+
+/// Acceptance 7: a full queue is an immediate named failure, never a wait.
+///
+/// `PARKS` declares a queue of capacity 1 and then parks, so the second
+/// message has nowhere to go and nothing will drain it. The assertion that
+/// matters is that the call *returns* — a `push` that blocked here would
+/// hang the test rather than fail it.
+#[test]
+fn a_write_to_a_full_queue_is_refused_immediately_rather_than_waiting() {
+    let mut sw = swarm();
+    let root = sw
+        .root(PARKS.as_bytes(), lifecycle_caps(), Budget::default())
+        .unwrap();
+    sw.step();
+
+    assert!(
+        sw.push(root, "idle", &from(), b"\xc0").is_ok(),
+        "the first message fits the capacity of one"
+    );
+    let e = sw
+        .push(root, "idle", &from(), b"\xc0")
+        .expect_err("the second has nowhere to go");
+    assert!(
+        matches!(e, SwarmError::Limit(_)),
+        "a bounded thing being full is a Limit, not a wait: {e:?}"
+    );
+    assert!(
+        e.to_string().contains("idle"),
+        "and it names the queue that is full: {e}"
+    );
+}
+
+/// A consumer that is gone and one that is full look the same to a sender,
+/// which is the property that keeps a handler from hanging on a wedged
+/// consumer: both are an immediate `Err`, and the caller decides inside its
+/// own deadline.
+#[test]
+fn gone_and_full_are_both_immediate_refusals() {
+    let mut sw = swarm();
+    let root = sw
+        .root(PARKS.as_bytes(), lifecycle_caps(), Budget::default())
+        .unwrap();
+    sw.step();
+
+    sw.push(root, "idle", &from(), b"\xc0").unwrap();
+    let full = sw.push(root, "idle", &from(), b"\xc0").unwrap_err();
+    let gone = sw
+        .push(InstanceId(4242), "idle", &from(), b"\xc0")
+        .unwrap_err();
+
+    for e in [&full, &gone] {
+        assert!(
+            matches!(e, SwarmError::Limit(_) | SwarmError::Gone),
+            "{e:?}"
+        );
+    }
 }

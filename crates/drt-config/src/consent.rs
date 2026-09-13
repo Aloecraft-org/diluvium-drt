@@ -14,12 +14,15 @@
 //!
 //! - Entry points: [`ConsentJson`], the file as a type; [`check`], the one
 //!   function `start`, `dollup consent` and `dollup audit` all call;
-//!   [`widen_check`], the relation that decides silent-or-prompt;
-//!   [`Change`], the same edit described for a human to read.
+//!   [`widen_check_ceiling`], the relation that decides silent-or-prompt,
+//!   with [`widen_check`] its caps half; [`Change`], the same edit
+//!   described for a human to read; [`PeerBinding`], a role bound to the
+//!   peer that satisfies it here.
 //! - Configurable: nothing. The modes are [`Accepted`]'s variants.
-//! - Fan-out: [`ConsentCheck`] is every answer `check` can give, and
-//!   [`ConsentFailure`] every way it refuses. `start` acts on one arm each;
-//!   audit renders them.
+//! - Fan-out: [`ConsentCheck`] is every answer `check` can give,
+//!   [`ConsentFailure`] every way it refuses, and [`PeerKind`] the two
+//!   things a peer can be. `start` acts on one arm each; audit renders
+//!   them.
 
 use serde::{Deserialize, Serialize};
 
@@ -44,6 +47,75 @@ pub struct ConsentJson {
     pub accepted: Vec<Accepted>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signers: Vec<Signer>,
+    /// **Reserved, and refused.** The operator's binding of each role a
+    /// `project.json` declares to an actual peer on this box.
+    ///
+    /// The format is settled — that is what this field is for — and nothing
+    /// implements it: a non-empty list is a named failure at start, so a
+    /// binding written today is refused rather than half-honoured. It
+    /// parses so that the refusal can name the role and the kind, and so
+    /// that whoever writes the first one is writing the final shape.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub peers: Vec<PeerBinding>,
+}
+
+/// One role, bound to the peer that satisfies it on this box.
+///
+/// Operator-owned and **never travels**, which is the whole point of the
+/// split: a root ships the roles it expects in `project.json`, and the same
+/// root runs against a different database on two boxes without editing the
+/// root.
+///
+/// `kind` is the seam between the two things a peer can be. A root is
+/// reached by its id on this box; a plugin has no id and is reached by the
+/// endpoint its platform provides. Both carry an identity key, because the
+/// runtime verifies a peer the same way either way, and both carry the
+/// queues the binding covers.
+///
+/// No `deny_unknown_fields` here, and it is serde's limitation rather than
+/// a decision — the same one [`Accepted`] carries. A `flatten`ed field
+/// collects what it does not recognise, so the two attributes together
+/// refuse `kind` itself. An unknown *kind* is still refused by name, which
+/// is the case that matters; an unknown field beside it is ignored. The
+/// fix, if it ever needs one, is a hand-written `Deserialize` and not a
+/// different shape.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PeerBinding {
+    /// The role, matching a [`crate::project::PeerDeclaration::role`].
+    pub peer: String,
+    #[serde(flatten)]
+    pub kind: PeerKind,
+    /// The queues this binding covers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queues: Vec<String>,
+}
+
+/// What satisfies a role: another drt root on this box, or a plugin.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum PeerKind {
+    /// Another drt root, addressed by its id. Reciprocity — that root's own
+    /// `consent.json` naming this one back — is checkable only on this box,
+    /// because a consent file never travels.
+    Root {
+        root_id: Uuid7,
+        public_key: PublicKey,
+    },
+    /// A plugin, which has no `root_id`. Its key comes from the signed
+    /// identity in its package, so the operator confirms a binding rather
+    /// than transcribing one. The binding is one way: a plugin names
+    /// nobody back.
+    Plugin { public_key: PublicKey },
+}
+
+impl PeerBinding {
+    /// The label a refusal uses: the role and what it is bound to.
+    pub fn describe(&self) -> String {
+        match &self.kind {
+            PeerKind::Root { root_id, .. } => format!("'{}' (root {root_id})", self.peer),
+            PeerKind::Plugin { .. } => format!("'{}' (a plugin)", self.peer),
+        }
+    }
 }
 
 /// One acceptance.
@@ -143,6 +215,7 @@ impl ConsentJson {
             root_id,
             accepted: Vec::new(),
             signers: Vec::new(),
+            peers: Vec::new(),
         }
     }
 
@@ -205,6 +278,8 @@ pub enum ConsentFailure {
     NoCeiling,
     #[error(transparent)]
     CeilingHash(#[from] project::CeilingHashError),
+    #[error("consent.json binds the peer {binding}, and peer delivery is not supported in this build; remove the binding to start")]
+    PeersNotSupported { binding: String },
 }
 
 /// The one function `start`, `dollup consent` and `dollup audit` all call.
@@ -228,6 +303,15 @@ pub fn check(
         return Err(ConsentFailure::RootIdMismatch {
             expected: project.root_id,
             found: consent.root_id,
+        });
+    }
+    // Reserved, so it refuses rather than being ignored. A binding that
+    // parsed and then did nothing would read, from the operator's side,
+    // exactly like one that worked — which is the failure mode this whole
+    // round is shaped against.
+    if let Some(binding) = consent.peers.first() {
+        return Err(ConsentFailure::PeersNotSupported {
+            binding: binding.describe(),
         });
     }
 
@@ -439,6 +523,7 @@ mod tests {
                 accepted_at: at(),
             }],
             signers: Vec::new(),
+            peers: Vec::new(),
         }
     }
 
@@ -470,8 +555,99 @@ mod tests {
                 accepted_at: at(),
             }],
             signers: Vec::new(),
+            peers: Vec::new(),
         };
         (project, consent)
+    }
+
+    fn binding(kind: PeerKind) -> PeerBinding {
+        PeerBinding {
+            peer: "db".into(),
+            kind,
+            queues: vec!["query".into(), "result".into()],
+        }
+    }
+
+    fn a_key() -> PublicKey {
+        crate::sign::SecretKey::generate([7u8; 32]).public_key()
+    }
+
+    /// Acceptance 3: a binding of either kind refuses at start by name, and
+    /// the same file without it starts.
+    ///
+    /// Refused rather than ignored on purpose. A binding that parsed and
+    /// then did nothing would look, from where the operator stands,
+    /// exactly like one that worked — which is the shape of every failure
+    /// this round is built against.
+    #[test]
+    fn a_peer_binding_of_either_kind_is_refused_by_name() {
+        let caps = vec![Grant::grant("host:fs/*")];
+        let project = project(caps.clone());
+
+        for kind in [
+            PeerKind::Root {
+                root_id: Uuid7::mint(1_757_707_440_000, [0x44; 10]),
+                public_key: a_key(),
+            },
+            PeerKind::Plugin {
+                public_key: a_key(),
+            },
+        ] {
+            let mut consent = accepted(caps.clone());
+            consent.peers.push(binding(kind));
+
+            let e = check(&project, Some(&consent)).expect_err("a bound peer refuses");
+            let said = e.to_string();
+            assert!(said.contains("db"), "the refusal names the role: {said}");
+            assert!(
+                said.contains("not supported in this build"),
+                "and says why: {said}"
+            );
+
+            consent.peers.clear();
+            assert_eq!(
+                check(&project, Some(&consent)).unwrap(),
+                ConsentCheck::Unchanged,
+                "the same file without the binding starts"
+            );
+        }
+    }
+
+    /// The format is settled now so that whoever writes the first binding
+    /// writes the final shape. Both spellings round-trip, and a root
+    /// binding carries an id where a plugin cannot.
+    #[test]
+    fn both_binding_kinds_round_trip_through_their_settled_shape() {
+        let root = binding(PeerKind::Root {
+            root_id: Uuid7::mint(1_757_707_440_000, [0x44; 10]),
+            public_key: a_key(),
+        });
+        let text = serde_json::to_string(&root).unwrap();
+        assert!(text.contains("\"kind\":\"root\""), "{text}");
+        assert!(text.contains("\"root_id\""), "{text}");
+        assert_eq!(serde_json::from_str::<PeerBinding>(&text).unwrap(), root);
+
+        let plugin = binding(PeerKind::Plugin {
+            public_key: a_key(),
+        });
+        let text = serde_json::to_string(&plugin).unwrap();
+        assert!(text.contains("\"kind\":\"plugin\""), "{text}");
+        assert!(
+            !text.contains("root_id"),
+            "a plugin has no root id, so the shape cannot carry one: {text}"
+        );
+        assert_eq!(serde_json::from_str::<PeerBinding>(&text).unwrap(), plugin);
+    }
+
+    /// An unknown kind is refused by name rather than defaulted, which is
+    /// what keeps a third kind from arriving silently.
+    #[test]
+    fn an_unknown_peer_kind_is_refused() {
+        let e = serde_json::from_str::<PeerBinding>(
+            r#"{"peer":"db","kind":"carrier-pigeon","public_key":"AAAA"}"#,
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("carrier-pigeon"), "{e}");
     }
 
     /// Acceptance 6, first half: a role that was not there before is reach
@@ -535,6 +711,7 @@ mod tests {
                 accepted_at: at(),
             }],
             signers: Vec::new(),
+            peers: Vec::new(),
         };
 
         let check = check(&project, Some(&stale)).unwrap();
@@ -694,6 +871,7 @@ mod tests {
                 accepted_at: at(),
             }],
             signers: Vec::new(),
+            peers: Vec::new(),
         };
         assert_eq!(
             check(&project, Some(&consent)).unwrap(),
