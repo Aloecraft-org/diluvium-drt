@@ -96,8 +96,9 @@ fn a_tier_that_does_not_exist_is_refused_with_the_three_that_do() {
     );
 }
 
-/// **A misspelled key is a silent default now**, and this test records that
-/// rather than asserting the promise that used to be kept.
+/// **A misspelled key is refused by name again**, and this test asserts
+/// the promise rather than recording, as it did for one release, that
+/// the promise was not kept.
 ///
 /// `max_element` was refused by name under the `.host.lua` mapper, and for
 /// one release after it went, serde read these types without
