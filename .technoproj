@@ -2,8 +2,8 @@
   "TECHNO_VERSION": {
     "major": 0,
     "minor": 6,
-    "patch": 1,
-    "pre": { "kind": "rc", "n": 2 }
+    "patch": 2,
+    "pre": { "kind": "rc", "n": 1 }
   },
   "TECHNO_CHANGELOG": {
     "project": "DRT",

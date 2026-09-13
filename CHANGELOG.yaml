@@ -73,6 +73,78 @@ schema: 1
 repo: Aloecraft-org/diluvium-drt
 
 releases:
+  - version: 0.6.2-rc.1
+    tag: v0.6.2-rc.1
+    date: null
+    status: unreleased
+    stable: false
+    mirror: false
+    summary: |
+      **Groundwork for peers, and nothing that talks to one.** A root can
+      declare the peers it expects, an address can name one, and every
+      delivered message says who it came from. Nothing in this build
+      reaches a peer: what landed is the shape the later slice needs, so
+      that slice changes who fills a field in rather than what the field
+      is. `doc/Peers.md` says what is reserved and what refuses by name.
+    changed:
+      - |
+        **The ceiling an operator consents to is `{caps, peers}`.**
+        `project.json` gained `peers`, a list of expected peers by role,
+        and it is hashed with `caps` — so declaring an inbound peer
+        prompts exactly as adding a cap does. The widen relation gained a
+        peers part and no others: an added role is a widening, a removed
+        one a narrowing.
+      - |
+        **A `consent.json` from before this reads unchanged and is
+        rewritten silently.** The stored ceiling is an object where it was
+        a bare array; both spellings read, only the object is written.
+        The preimage moved, so the hash moves, and identical caps with no
+        peers is a no-op edit that lands on the silent narrowing path.
+        Nothing prompts and no operator does anything.
+      - |
+        **Every delivered queue message carries `from: {peer, node}`.** A
+        local sender names its own root, so a node reads one field rather
+        than asking "was this one of mine?" as a separate question. The
+        runtime writes the key and replaces one a guest wrote itself.
+        Only a msgpack map carries it — every message in this system is
+        one — and a non-map message is delivered untouched rather than
+        wrapped.
+    added:
+      - |
+        **`QueueAddress`, with an optional peer component** that can name
+        a root by id or a plugin by name, so the hostcall ABI does not
+        change shape when peer delivery lands. Every write this build
+        makes leaves it absent; one that sets it is refused by name.
+      - |
+        **`host:peer/<role>`, mapping to the realm `operator.peer`.** No
+        hostcall grants it. A scope on a peer grant is refused: which
+        queues a cap may narrow to is unsettled, and one accepted now
+        could mean something else later.
+      - |
+        **A qualified node path, `<root_id>/root/intake`**, for addressing
+        and nothing else. Hashed objects still carry the local form with
+        `root_id` beside it, so the root is never hashed twice.
+    fixed:
+      - |
+        **A full queue is pinned as an immediate named failure** on the
+        delivery surface, and a consumer that is gone looks the same to a
+        sender as one that is full — which is what keeps a handler from
+        hanging on a wedged consumer. The engine's own park for space is
+        untouched: that is a guest parking on its own push (`dv.h` §8.3),
+        and `drt run` already names it when nothing will drain.
+    known_issues:
+      - |
+        **Two documents disagree about what a plugin is.** `doc/Peers.md`
+        makes one a peer reached by a queue write; `doc/Plugins.md`, from
+        2026-09-03, makes it a connector backing. Neither is superseded
+        and both are marked; reconciling them belongs to the slice that
+        chooses the endpoint.
+      - |
+        **Editing an existing peer role's `queues` does not prompt.** The
+        widen relation is over role names, so such an edit moves the
+        ceiling hash and lands on the silent narrowing path. Asserted as a
+        decision rather than left to be found.
+
   - version: 0.6.1-rc.2
     tag: v0.6.1-rc.2
     date: 2026-09-13

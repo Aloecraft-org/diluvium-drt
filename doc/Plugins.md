@@ -4,6 +4,15 @@
 it is built. The decisions in §5 are open and the owner's. Where a claim
 rests on code it names the file.
 
+> **Unreconciled, as of the peer groundwork.** `doc/Peers.md` §1 makes a
+> plugin a *peer*: reached by a queue write, bound in `consent.json`, with
+> the runtime verifying its identity the way it verifies a root's. This
+> document's §1 verdict is a connector *backing* behind the existing
+> `Connector` trait. Those are different designs, not two descriptions of
+> one, and nothing here has been changed to match. Neither is superseded
+> yet; reconciling them belongs to whoever scopes the endpoint slice, and
+> that slice lands after root-to-root delivery.
+
 **The ask.** Add a hostcall capability after the fact, without building a
 new `drt`. Distinguish the connectors compiled into the binary from ones
 connected later, and define the interface the later ones use.
