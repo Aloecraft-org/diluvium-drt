@@ -6,6 +6,8 @@
 //! - [`frame`] — the wire: length-prefixed msgpack, request and reply.
 //! - [`channel`] — the byte stream under it, and its test double.
 //! - [`session`] — many calls over one stream, polled and never blocking.
+//! - [`process`] — the unix transport: fork, exec, and keep fd 3. The
+//!   one platform-bound module, and it is `cfg(unix)`.
 //!
 //! Configurable values: each module's own, named in its surface block.
 //!
@@ -31,4 +33,6 @@
 
 pub mod channel;
 pub mod frame;
+#[cfg(unix)]
+pub mod process;
 pub mod session;

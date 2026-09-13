@@ -11,3 +11,17 @@ serde = { workspace = true }
 rmpv = { workspace = true }
 rmp-serde = { workspace = true }
 thiserror = { workspace = true }
+
+# Only the unix transport needs it: socketpair, O_NONBLOCK, dup2 onto fd 3,
+# and a kill aimed at the process group. The crate root stays target-neutral.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# The echo fixture the channel tests drive. A bin rather than a file in
+# tests/, so `CARGO_BIN_EXE_plugin-echo` gives the test a real absolute
+# path to exec -- which is what the channel requires and what a deployment
+# will hand it.
+[[bin]]
+name = "plugin-echo"
+path = "src/bin/plugin-echo.rs"
+required-features = []
