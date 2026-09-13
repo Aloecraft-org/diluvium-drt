@@ -126,6 +126,13 @@ impl Request {
     /// keys, because the set of fields in the identity is a decision and a
     /// decision belongs in code that fails to compile when someone adds a
     /// field without thinking about it.
+    ///
+    /// **`node` is the local form, and the root appears once.** A
+    /// [`crate::project::QualifiedNode`] spells the same node as
+    /// `<root_id>/root/intake`, and putting that here would hash the root
+    /// twice — once inside the string, once in `root_id` — leaving two
+    /// implementers free to hash different bytes for one request. The
+    /// qualified form is for addressing a peer and reaches no preimage.
     pub fn identity(&self) -> Hash {
         let mut map = serde_json::Map::new();
         map.insert("root_id".into(), self.root_id.to_string().into());
@@ -382,6 +389,45 @@ mod tests {
         .with_reason("the intake node needs the upstream")
     }
 
+    /// Acceptance 5, second half: the identity carries the local node form
+    /// and the root exactly once each.
+    ///
+    /// Asserted over the preimage rather than the hash, because a hash
+    /// cannot say *why* it is wrong. The same node has a qualified spelling
+    /// (`<root_id>/root/intake`) and it must not appear here — it would
+    /// hash the root twice.
+    #[test]
+    fn the_identity_carries_the_local_node_form_and_the_root_once() {
+        let request = request();
+        let qualified = request.node.qualified(request.root_id).to_string();
+
+        let mut map = serde_json::Map::new();
+        map.insert("root_id".into(), request.root_id.to_string().into());
+        map.insert("node".into(), request.node.as_str().into());
+        map.insert("realm".into(), request.realm.as_str().into());
+        map.insert("ask".into(), request.ask.clone());
+        let preimage = serde_json::to_string(&serde_json::Value::Object(map)).unwrap();
+
+        assert_eq!(
+            crate::canon::hash_value(&serde_json::from_str(&preimage).unwrap()),
+            request.identity(),
+            "the identity is that preimage and no other"
+        );
+        assert_eq!(
+            preimage.matches(&request.root_id.to_string()).count(),
+            1,
+            "the root appears exactly once: {preimage}"
+        );
+        assert!(
+            !preimage.contains(&qualified),
+            "the qualified form must not reach a preimage: {preimage}"
+        );
+        assert!(
+            preimage.contains("\"node\":\"root/intake\""),
+            "the local form is what is hashed: {preimage}"
+        );
+    }
+
     /// A consent file whose ceiling covers `host:rest/get`, with one signer
     /// authorized at the root realm.
     fn consent(key: &SecretKey, signer_realms: Vec<Realm>, ceiling: Vec<Grant>) -> ConsentJson {
@@ -394,7 +440,7 @@ mod tests {
             accepted: vec![Accepted::Listed {
                 realm: Realm::root(),
                 ceiling_hash: project::ceiling_hash(&project).unwrap(),
-                ceiling,
+                ceiling: crate::project::DeclaredCeiling::of_caps(ceiling),
                 accepted_at: now(),
             }],
             signers: vec![Signer {

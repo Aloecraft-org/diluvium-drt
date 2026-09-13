@@ -27,7 +27,7 @@ use drt_caps::{CapSet, Effect, Grant, Principal};
 
 use crate::canon::Hash;
 use crate::id::Uuid7;
-use crate::project::{self, ProjectJson};
+use crate::project::{self, DeclaredCeiling, ProjectJson};
 use crate::realm::{Realm, RealmRegistry};
 use crate::sign::{Alg, KeyId, PublicKey};
 use crate::time::Timestamp;
@@ -79,12 +79,17 @@ pub enum Accepted {
     Listed {
         realm: Realm,
         ceiling_hash: Hash,
-        /// The accepted caps, stored **verbatim** beside their hash.
+        /// The accepted ceiling, stored **verbatim** beside its hash: both
+        /// halves, `caps` and `peers`.
         ///
         /// Without this an entry can only say "changed", never which
         /// direction, and §4's delta cannot be computed at all — a hash is
         /// not invertible. Small, operator-owned, travels nowhere.
-        ceiling: Vec<Grant>,
+        ///
+        /// An entry written before `peers` existed holds a bare array here;
+        /// [`DeclaredCeiling`] reads that spelling and writes the object, so
+        /// an upgrade is a silent re-write rather than a refusal.
+        ceiling: DeclaredCeiling,
         accepted_at: Timestamp,
     },
 }
@@ -112,7 +117,7 @@ impl Accepted {
     pub fn realms(&self, registry: &RealmRegistry) -> Vec<Realm> {
         match self {
             Accepted::All { realm, .. } => vec![realm.clone()],
-            Accepted::Listed { ceiling, .. } => registry.realms_of(ceiling),
+            Accepted::Listed { ceiling, .. } => registry.realms_of(&ceiling.caps),
         }
     }
 }
@@ -244,8 +249,9 @@ pub fn check(
             if accepted_hash == &ceiling_hash {
                 return Ok(ConsentCheck::Unchanged);
             }
-            let change = Change::between(accepted, &project.caps);
-            match widen_check(&project.caps, accepted) {
+            let declared = project::declared_ceiling(project);
+            let change = Change::between(accepted, &declared);
+            match widen_check_ceiling(&declared, accepted) {
                 Ok(()) => Ok(ConsentCheck::Narrowed {
                     ceiling_hash,
                     change,
@@ -278,16 +284,56 @@ pub fn widen_check(new: &[Grant], accepted: &[Grant]) -> Result<(), Objection> {
     CapSet::root(accepted.to_vec())
         .attenuate(Principal("consent-widen-check".into()), new.to_vec())
         .map(|_| ())
-        .map_err(Objection)
+        .map_err(Objection::Caps)
 }
 
-/// What attenuation objected to. Printed as the delta, because the decision
-/// and the explanation must be one value — two computations over the same
-/// edit can disagree, and the one that prints would be the one nobody
-/// tested.
+/// The whole relation over both halves of the ceiling: [`widen_check`] for
+/// `caps`, and for `peers` an added role is a widening and a removed one is
+/// a narrowing.
+///
+/// **Roles, and nothing finer.** A role that stays but whose `queues` or
+/// `contract` changed is not a widening under this rule. That is deliberate
+/// — the rule is one an operator can hold in their head — and it is a real
+/// edge: the hash still moves, so such an edit lands on the silent
+/// narrowing path and rewrites the entry. Anything that needs a prompt for
+/// a changed queue list has to say so here, in this function, rather than
+/// by being noticed somewhere else.
+pub fn widen_check_ceiling(
+    new: &DeclaredCeiling,
+    accepted: &DeclaredCeiling,
+) -> Result<(), Objection> {
+    widen_check(&new.caps, &accepted.caps)?;
+    let added: Vec<String> = new
+        .peers
+        .iter()
+        .filter(|p| !accepted.peers.iter().any(|a| a.role == p.role))
+        .map(|p| p.role.clone())
+        .collect();
+    if added.is_empty() {
+        return Ok(());
+    }
+    Err(Objection::Peers { added })
+}
+
+/// What the widen relation objected to. Printed as the delta, because the
+/// decision and the explanation must be one value — two computations over
+/// the same edit can disagree, and the one that prints would be the one
+/// nobody tested.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
-#[error("the ceiling widened: {0}")]
-pub struct Objection(pub drt_caps::AttenuationError);
+pub enum Objection {
+    #[error("the ceiling widened: {0}")]
+    Caps(drt_caps::AttenuationError),
+    #[error("the ceiling widened: it declares {} nobody has consented to ({})", plural(added.len(), "a peer role", "peer roles"), added.join(", "))]
+    Peers { added: Vec<String> },
+}
+
+fn plural(n: usize, one: &str, many: &str) -> String {
+    if n == 1 {
+        one.to_string()
+    } else {
+        many.to_string()
+    }
+}
 
 /// The same edit described for a human: what appeared and what went away.
 ///
@@ -298,24 +344,39 @@ pub struct Objection(pub drt_caps::AttenuationError);
 pub struct Change {
     pub added: Vec<Grant>,
     pub removed: Vec<Grant>,
+    /// Peer roles this ceiling gained, by name.
+    pub peers_added: Vec<String>,
+    /// Peer roles it lost.
+    pub peers_removed: Vec<String>,
 }
 
 impl Change {
-    pub fn between(accepted: &[Grant], new: &[Grant]) -> Change {
+    pub fn between(accepted: &DeclaredCeiling, new: &DeclaredCeiling) -> Change {
         let same = |a: &Grant, b: &Grant| {
             a.effect == b.effect && a.capability == b.capability && a.scope == b.scope
         };
+        let roles = |from: &DeclaredCeiling, not_in: &DeclaredCeiling| -> Vec<String> {
+            from.peers
+                .iter()
+                .filter(|p| !not_in.peers.iter().any(|o| o.role == p.role))
+                .map(|p| p.role.clone())
+                .collect()
+        };
         Change {
             added: new
+                .caps
                 .iter()
-                .filter(|g| !accepted.iter().any(|a| same(a, g)))
+                .filter(|g| !accepted.caps.iter().any(|a| same(a, g)))
                 .cloned()
                 .collect(),
             removed: accepted
+                .caps
                 .iter()
-                .filter(|g| !new.iter().any(|n| same(n, g)))
+                .filter(|g| !new.caps.iter().any(|n| same(n, g)))
                 .cloned()
                 .collect(),
+            peers_added: roles(new, accepted),
+            peers_removed: roles(accepted, new),
         }
     }
 
@@ -328,15 +389,23 @@ impl Change {
             };
             format!("{sign} {effect}{}", g.capability)
         };
+        // A peer role reads as `peer db` rather than as a bare name, so a
+        // reader scanning a delta does not have to know which half of the
+        // ceiling a line came from.
         self.added
             .iter()
             .map(|g| describe(g, '+'))
             .chain(self.removed.iter().map(|g| describe(g, '-')))
+            .chain(self.peers_added.iter().map(|r| format!("+ peer {r}")))
+            .chain(self.peers_removed.iter().map(|r| format!("- peer {r}")))
             .collect()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.added.is_empty() && self.removed.is_empty()
+        self.added.is_empty()
+            && self.removed.is_empty()
+            && self.peers_added.is_empty()
+            && self.peers_removed.is_empty()
     }
 }
 
@@ -366,11 +435,145 @@ mod tests {
             accepted: vec![Accepted::Listed {
                 realm: Realm::root(),
                 ceiling_hash: project::ceiling_hash(&project).unwrap(),
-                ceiling: caps,
+                ceiling: DeclaredCeiling::of_caps(caps),
                 accepted_at: at(),
             }],
             signers: Vec::new(),
         }
+    }
+
+    fn peer(role: &str) -> crate::project::PeerDeclaration {
+        crate::project::PeerDeclaration {
+            role: role.into(),
+            queues: vec!["query".into(), "result".into()],
+            contract: "discofetch-db/1".into(),
+        }
+    }
+
+    /// A descriptor declaring both halves, and a consent entry that has
+    /// accepted exactly it.
+    fn with_peers(
+        caps: Vec<Grant>,
+        peers: Vec<crate::project::PeerDeclaration>,
+    ) -> (ProjectJson, ConsentJson) {
+        let project = ProjectJson {
+            caps,
+            peers,
+            ..ProjectJson::new(id())
+        };
+        let consent = ConsentJson {
+            root_id: id(),
+            accepted: vec![Accepted::Listed {
+                realm: Realm::root(),
+                ceiling_hash: project::ceiling_hash(&project).unwrap(),
+                ceiling: project::declared_ceiling(&project),
+                accepted_at: at(),
+            }],
+            signers: Vec::new(),
+        };
+        (project, consent)
+    }
+
+    /// Acceptance 6, first half: a role that was not there before is reach
+    /// into this root nobody agreed to, so it prompts.
+    #[test]
+    fn adding_a_peer_role_is_a_widening() {
+        let caps = vec![Grant::grant("host:fs/*")];
+        let (_, before) = with_peers(caps.clone(), vec![]);
+        let (after, _) = with_peers(caps, vec![peer("db")]);
+
+        let check = check(&after, Some(&before)).unwrap();
+        let ConsentCheck::Widened {
+            objection, change, ..
+        } = check
+        else {
+            panic!("declaring a peer must prompt, got {check:?}");
+        };
+        assert_eq!(change.peers_added, ["db"]);
+        assert!(change.added.is_empty(), "no cap moved");
+        let said = objection.to_string();
+        assert!(said.contains("db"), "the objection names the role: {said}");
+        assert!(
+            change.lines().contains(&"+ peer db".to_string()),
+            "the delta reads as a peer, not a bare name: {:?}",
+            change.lines()
+        );
+    }
+
+    /// Acceptance 6, second half. Symmetric with a cap: giving something up
+    /// never needs to be agreed to twice.
+    #[test]
+    fn removing_a_peer_role_is_silent() {
+        let caps = vec![Grant::grant("host:fs/*")];
+        let (_, before) = with_peers(caps.clone(), vec![peer("db"), peer("mail")]);
+        let (after, _) = with_peers(caps, vec![peer("db")]);
+
+        let check = check(&after, Some(&before)).unwrap();
+        let ConsentCheck::Narrowed { change, .. } = check else {
+            panic!("dropping a peer is a narrowing, got {check:?}");
+        };
+        assert_eq!(change.peers_removed, ["mail"]);
+        assert!(change.peers_added.is_empty());
+    }
+
+    /// The migration, stated as a test: an entry written before `peers`
+    /// existed hashes differently under the new preimage, and that must
+    /// cost an operator nothing. Identical caps and no peers is a no-op
+    /// edit, so it lands on the silent path and the entry is rewritten.
+    #[test]
+    fn an_entry_from_before_peers_is_rehashed_without_prompting() {
+        let caps = vec![Grant::grant("host:fs/*"), Grant::deny("host:fs/remove")];
+        let project = project(caps.clone());
+
+        let stale = ConsentJson {
+            root_id: id(),
+            accepted: vec![Accepted::Listed {
+                realm: Realm::root(),
+                // What the old preimage produced: `caps` alone.
+                ceiling_hash: crate::canon::hash_value(&serde_json::to_value(&caps).unwrap()),
+                ceiling: DeclaredCeiling::of_caps(caps),
+                accepted_at: at(),
+            }],
+            signers: Vec::new(),
+        };
+
+        let check = check(&project, Some(&stale)).unwrap();
+        let ConsentCheck::Narrowed { change, .. } = check else {
+            panic!("a re-hash with no edit must not prompt, got {check:?}");
+        };
+        assert!(
+            change.is_empty(),
+            "nothing actually changed, and the delta says so: {:?}",
+            change.lines()
+        );
+    }
+
+    /// The hole this rule leaves, asserted so it is a decision rather than
+    /// a discovery: the widen relation is over role *names*, so editing an
+    /// existing role's queues moves the hash without prompting. Whoever
+    /// wants a prompt for it changes `widen_check_ceiling`, and this test
+    /// is what will fail when they do.
+    #[test]
+    fn editing_an_existing_roles_queues_is_not_a_widening_today() {
+        let caps = vec![Grant::grant("host:fs/*")];
+        let (_, before) = with_peers(caps.clone(), vec![peer("db")]);
+        let mut wider = peer("db");
+        wider.queues.push("admin".into());
+        let (after, _) = with_peers(caps, vec![wider]);
+
+        assert_ne!(
+            project::ceiling_hash(&after).unwrap(),
+            match before.root_entry() {
+                Some(Accepted::Listed { ceiling_hash, .. }) => ceiling_hash.clone(),
+                _ => panic!("listed"),
+            },
+            "the queue list is inside the hashed ceiling"
+        );
+        let check = check(&after, Some(&before)).unwrap();
+        assert!(
+            matches!(check, ConsentCheck::Narrowed { .. }),
+            "today this is silent, got {check:?}"
+        );
     }
 
     #[test]
@@ -436,8 +639,11 @@ mod tests {
         let after = project(vec![Grant::grant("host:fs/*")]);
 
         let change = Change::between(
-            &[Grant::grant("host:fs/*"), Grant::deny("host:fs/remove")],
-            &after.caps,
+            &DeclaredCeiling::of_caps(vec![
+                Grant::grant("host:fs/*"),
+                Grant::deny("host:fs/remove"),
+            ]),
+            &project::declared_ceiling(&after),
         );
         assert!(
             change.added.is_empty(),

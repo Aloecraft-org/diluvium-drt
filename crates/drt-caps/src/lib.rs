@@ -540,3 +540,99 @@ mod tests {
         assert!(reg.validate(&extra).is_err());
     }
 }
+
+// depth: the peer family, reserved
+//
+// A cross-peer write is a queue write with an identity attached, and a node
+// may make one only if it holds a cap naming the peer. The family is
+// declared here so that a grant naming it has one spelling and one scope
+// rule from the start; nothing this round grants it, and no hostcall reads
+// it. `doc/Peers.md` says what lands when the slice does.
+
+/// The capability family naming a peer: `host:peer/<role>`.
+///
+/// `<role>` is the role a `project.json` declares and a `consent.json`
+/// binds, not a root id and not a plugin name. A cap names what this root
+/// calls the peer; which peer that is stays the operator's to say, so a
+/// root can be moved to a different box without its caps changing.
+pub const PEER_FAMILY: &str = "host:peer/*";
+
+/// The grant a node would hold to write to `role`.
+///
+/// Here rather than at a call site so that the one spelling of a peer
+/// capability lives with the family that defines it.
+pub fn peer_capability(role: &str) -> String {
+    format!("host:peer/{role}")
+}
+
+/// The scope-type for [`PEER_FAMILY`]: absent, and nothing else, **for
+/// now**.
+///
+/// A peer grant will almost certainly want to narrow to particular queues,
+/// and that shape is not settled. Refusing every scope is the reserved
+/// form: a scope written today cannot be silently misread tomorrow by a
+/// drt that has since decided what one means. The refusal says so rather
+/// than saying "malformed", because an author writing one is early, not
+/// wrong.
+pub struct PeerScope;
+
+impl ScopeType for PeerScope {
+    fn describe(&self) -> &str {
+        "no scope yet; narrowing a peer grant to particular queues is not settled"
+    }
+
+    fn validate(&self, scope: Option<&Scope>) -> Result<(), String> {
+        match scope {
+            None => Ok(()),
+            Some(_) => Err(
+                "a peer grant takes no scope in this build: which queues a cap may narrow to is \
+                 not settled, and a scope accepted now could mean something else later"
+                    .into(),
+            ),
+        }
+    }
+}
+
+#[cfg(test)]
+mod peer_tests {
+    use super::*;
+
+    #[test]
+    fn a_peer_grant_names_the_role_and_takes_no_scope_yet() {
+        assert_eq!(peer_capability("db"), "host:peer/db");
+
+        let mut registry = ScopeRegistry::new();
+        registry.declare(PEER_FAMILY, PeerScope);
+
+        registry
+            .validate(&[Grant::grant(peer_capability("db"))])
+            .expect("a bare peer grant is well-formed");
+
+        let scoped = Grant {
+            scope: Some(Scope(rmpv::Value::Map(vec![]))),
+            ..Grant::grant(peer_capability("db"))
+        };
+        let e = registry
+            .validate(&[scoped])
+            .expect_err("a scope on a peer grant is refused while its shape is unsettled");
+        assert!(e.to_string().contains("not settled"), "{e}");
+    }
+
+    /// The family covers any role, so declaring it once answers for all of
+    /// them.
+    #[test]
+    fn the_family_pattern_covers_every_role() {
+        let mut registry = ScopeRegistry::new();
+        registry.declare(PEER_FAMILY, PeerScope);
+        for role in ["db", "webauthn", "mail"] {
+            let scoped = Grant {
+                scope: Some(Scope(rmpv::Value::Boolean(true))),
+                ..Grant::grant(peer_capability(role))
+            };
+            assert!(
+                registry.validate(&[scoped]).is_err(),
+                "{role} is covered by the family pattern"
+            );
+        }
+    }
+}

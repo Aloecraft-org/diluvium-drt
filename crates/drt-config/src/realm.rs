@@ -16,9 +16,10 @@
 //! - Configurable: [`ROOT`], the root realm's name. One value, because
 //!   consent.md fixes it.
 //! - Fan-out: [`RealmOf`] is the per-family seam — one implementation per
-//!   capability family, registered by capability pattern. [`Structural`] is
-//!   the only implementation here and the default for families that have
-//!   not declared one.
+//!   capability family, registered by capability pattern, with
+//!   [`declare_families`] naming the ones this build declares. [`Peer`] is
+//!   the only declared family; [`Structural`] is the default for every
+//!   family that has not declared one.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -199,6 +200,34 @@ impl RealmOf for Structural {
         }
         Realm::parse(&path).ok()
     }
+}
+
+// depth: the peer family's realm, declared rather than inherited
+//
+// `Structural` would already map `host:peer/db` to `operator.peer.db`, so
+// this impl changes no answer today. It exists so the mapping is a
+// decision with a name on it: peers are the one family whose realm reaches
+// an operator through two files (a role declared in `project.json`, a
+// binding in `consent.json`), and inheriting that from a mechanical
+// fallback would make it look accidental. If the taxonomy ever moves the
+// family, it moves here and the tests below say what moved.
+
+/// `host:peer/<role>` lives under `operator.peer.<role>`, and
+/// `host:peer/*` under `operator.peer`.
+pub struct Peer;
+
+impl RealmOf for Peer {
+    fn realm_of(&self, grant: &Grant) -> Option<Realm> {
+        Structural.realm_of(grant)
+    }
+}
+
+/// The families this build declares, for a caller assembling a registry.
+///
+/// One function so that drt and dollup cannot disagree about which
+/// families are mapped — the same reason `RESERVED` is one list.
+pub fn declare_families(registry: &mut RealmRegistry) {
+    registry.declare(drt_caps::PEER_FAMILY, Peer);
 }
 
 /// Capability pattern to realm mapping, the shape `drt_caps::ScopeRegistry`
@@ -400,6 +429,57 @@ mod tests {
             realms.iter().map(|r| r.as_str()).collect::<Vec<_>>(),
             ["operator.net", "operator.network"],
             "net swallows net.domains and leaves network alone"
+        );
+    }
+}
+
+#[cfg(test)]
+mod peer_realm_tests {
+    use super::*;
+
+    /// Seam 5 and amendment 4: the peer family maps to its realm like any
+    /// other family, so consent covers a peer grant the same way.
+    #[test]
+    fn a_peer_grant_lives_under_operator_peer() {
+        let mut registry = RealmRegistry::new();
+        declare_families(&mut registry);
+
+        assert_eq!(
+            registry.realm_of(&Grant::grant(drt_caps::peer_capability("db"))),
+            Some(Realm::parse("operator.peer.db").unwrap())
+        );
+        assert_eq!(
+            registry.realm_of(&Grant::grant("host:peer/*")),
+            Some(Realm::parse("operator.peer").unwrap())
+        );
+    }
+
+    /// Consent at `operator.peer` covers every role, and consent at one
+    /// role does not cover another. That is the realm tree doing its
+    /// ordinary job, asserted here because a peer grant is the case an
+    /// operator is most likely to reason about by hand.
+    #[test]
+    fn one_roles_realm_does_not_cover_another() {
+        let family = Realm::parse("operator.peer").unwrap();
+        let db = Realm::parse("operator.peer.db").unwrap();
+        let mail = Realm::parse("operator.peer.mail").unwrap();
+
+        assert!(family.covers(&db) && family.covers(&mail));
+        assert!(!db.covers(&mail) && !mail.covers(&db));
+    }
+
+    /// A ceiling's realm list folds peer roles in like anything else.
+    #[test]
+    fn peer_grants_reach_the_ceilings_realm_list() {
+        let mut registry = RealmRegistry::new();
+        declare_families(&mut registry);
+        let realms = registry.realms_of(&[
+            Grant::grant("host:fs/read"),
+            Grant::grant(drt_caps::peer_capability("db")),
+        ]);
+        assert!(
+            realms.contains(&Realm::parse("operator.peer.db").unwrap()),
+            "{realms:?}"
         );
     }
 }

@@ -199,7 +199,7 @@ fn write_entry(
     consent.accepted.push(Accepted::Listed {
         realm: Realm::root(),
         ceiling_hash,
-        ceiling: project.caps.clone(),
+        ceiling: drt_config::project::declared_ceiling(project),
         accepted_at: drt_root::now(),
     });
     root.write_consent(&consent)

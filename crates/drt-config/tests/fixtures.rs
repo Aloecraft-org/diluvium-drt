@@ -140,7 +140,7 @@ fn consent_json_golden_in_both_modes() {
         accepted: vec![Accepted::Listed {
             realm: Realm::root(),
             ceiling_hash: project::ceiling_hash(&project()).unwrap(),
-            ceiling: ceiling(),
+            ceiling: drt_config::project::DeclaredCeiling::of_caps(ceiling()),
             accepted_at: accepted_at(),
         }],
         signers: signers.clone(),
@@ -162,6 +162,33 @@ fn consent_json_golden_in_both_modes() {
         let text = std::fs::read_to_string(dir().join(name)).unwrap();
         serde_json::from_str::<ConsentJson>(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
     }
+}
+
+/// A `consent.json` written before `peers` existed still reads, and reads
+/// as the same ceiling.
+///
+/// `consent-listed-pre-peers.json` is the bytes this repository actually
+/// shipped: `ceiling` a bare array. It is **never regenerated** — that is
+/// the whole point of keeping it — so `DRT_WRITE_FIXTURES=1` must not
+/// touch it. Refusing that spelling would mean every root already
+/// consented to failing to start on an upgrade.
+#[test]
+fn a_consent_file_written_before_peers_still_reads_as_the_same_ceiling() {
+    let text = std::fs::read_to_string(dir().join("consent-listed-pre-peers.json")).unwrap();
+    assert!(
+        text.contains("\"ceiling\": ["),
+        "the point of this fixture is the bare-array spelling; it has been regenerated"
+    );
+
+    let legacy: ConsentJson = serde_json::from_str(&text).expect("the old spelling still reads");
+    let Some(Accepted::Listed { ceiling: read, .. }) = legacy.root_entry() else {
+        panic!("the fixture's root entry is a listed one");
+    };
+    assert_eq!(read.caps, ceiling(), "the caps survive the read");
+    assert!(
+        read.peers.is_empty(),
+        "a ceiling written before peers existed declares none"
+    );
 }
 
 #[test]

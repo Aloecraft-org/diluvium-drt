@@ -235,7 +235,7 @@ mod tests {
             accepted: vec![Accepted::Listed {
                 realm: Realm::root(),
                 ceiling_hash: drt_config::project::ceiling_hash(&project).unwrap(),
-                ceiling,
+                ceiling: drt_config::project::DeclaredCeiling::of_caps(ceiling),
                 accepted_at: now(),
             }],
             signers: vec![Signer {

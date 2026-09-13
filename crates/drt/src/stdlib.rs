@@ -384,7 +384,7 @@ mod tests {
             &resolution(),
             Some(&drt_config::consent::ConsentCheck::Widened {
                 ceiling_hash: drt_config::project::caps_hash(&[]).unwrap(),
-                objection: drt_config::consent::Objection(
+                objection: drt_config::consent::Objection::Caps(
                     drt_caps::AttenuationError::NotHeldByParent {
                         capability: "host:exec/run".into(),
                     },

@@ -138,6 +138,11 @@ fn resolve_program(config: &mut RootConfig, path: &Path) {
 pub fn validate_grants(config: &RootConfig, registry: &Registry) -> Result<(), String> {
     let mut scopes = ScopeRegistry::new();
     registry.declare_scope_types(&mut scopes);
+    // The peer family has no connector to declare it: a cross-peer write is
+    // a queue write, not a hostcall into something wired. Declared here so a
+    // peer grant is still shape-checked at load rather than at a call that
+    // this build cannot make anyway.
+    scopes.declare(drt_caps::PEER_FAMILY, drt_caps::PeerScope);
     scopes
         .validate(&config.root.caps)
         .map_err(|e| e.to_string())

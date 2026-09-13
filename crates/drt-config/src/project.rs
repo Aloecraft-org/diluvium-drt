@@ -8,10 +8,12 @@
 //!
 //! ## surface block
 //!
-//! - Entry points: [`ProjectJson`], the file as a type; [`ceiling_hash`],
-//!   the hash consent.md §4 compares; [`ProfileName`], the filename-to-name
-//!   rule; [`NodePath`], a node's derived identity; [`is_reserved`], the
-//!   name refusal both binaries run.
+//! - Entry points: [`ProjectJson`], the file as a type; [`DeclaredCeiling`],
+//!   the two halves an operator consents to; [`ceiling_hash`], the hash
+//!   consent.md §4 compares; [`ProfileName`], the filename-to-name rule;
+//!   [`NodePath`], a node's derived identity; [`QualifiedNode`], that path
+//!   with its root attached for addressing a peer; [`PeerDeclaration`], one
+//!   expected peer; [`is_reserved`], the name refusal both binaries run.
 //! - Configurable values: [`RESERVED`], the reserved names;
 //!   [`PROFILE_SUFFIX`], the profile filename suffix; [`FALLBACK_ORDER`],
 //!   the pre-recognized configs consulted only when there is no
@@ -142,6 +144,21 @@ pub struct ProjectJson {
     /// grant: the wide default belongs to the no-root path alone.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub caps: Vec<Grant>,
+    /// **The other half of the ceiling**: the peers this root expects, by
+    /// role. Declared here, bound to actual peers in `consent.json`, and
+    /// hashed with `caps` as the one thing consent.md §4 protects — so
+    /// declaring an inbound peer prompts, exactly as adding a cap does.
+    ///
+    /// Part of the ceiling rather than beside it because an inbound peer is
+    /// reach into this root that the operator has not otherwise agreed to.
+    /// A ceiling hashed over `caps` alone would let a new role arrive
+    /// silently, which is the hole this field closes.
+    ///
+    /// Empty is the ordinary case and is not a failure: a root that talks to
+    /// nobody declares nothing. That is why it does not share `caps`'s
+    /// "empty is a named failure" rule.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub peers: Vec<PeerDeclaration>,
     #[serde(default, skip_serializing_if = "is_default_nesting")]
     pub allow_nested: AllowNested,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -159,6 +176,71 @@ pub struct ProjectJson {
     pub profiles: Vec<String>,
 }
 
+/// One expected peer, by the role this root calls it.
+///
+/// **Declared, never computed**, like everything else in this file. A root
+/// ships the peers it expects; the operator binds each role to an actual
+/// peer on this box in `consent.json`, which never travels. That split is
+/// what lets the same root run against a different database on two boxes
+/// without editing the root.
+///
+/// A peer is either another drt root or a plugin, and this side of the
+/// declaration cannot tell which — nor should it. Which kind satisfies the
+/// role is the operator's binding, so `role`, `queues` and `contract` are
+/// the same three fields either way.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerDeclaration {
+    /// What this root calls the peer. Local to this root: two roots may use
+    /// the same role name for different peers, and the binding decides.
+    pub role: String,
+    /// The queues this root expects to write to or read from on that peer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queues: Vec<String>,
+    /// A version string both sides declare. Compatibility is **string
+    /// equality** and nothing else.
+    ///
+    /// That is a flag day on purpose: `discofetch-db/1` to `/2` has no
+    /// overlap window, and every root naming it changes in one step. Fine
+    /// for a few roots on one box. It is not semver, must not be parsed as
+    /// one, and nothing here orders two contract strings.
+    pub contract: String,
+}
+
+impl PeerDeclaration {
+    /// A role name that can be printed in a refusal and matched against a
+    /// binding: non-empty, one segment, and not a reserved name.
+    ///
+    /// Checked rather than assumed because a role reaches an operator's
+    /// `consent.json` as a key they have to match by eye.
+    pub fn check_role(role: &str) -> Result<(), BadRole> {
+        if role.is_empty() {
+            return Err(BadRole::Empty);
+        }
+        if role.contains('/') || role.contains('\\') {
+            return Err(BadRole::Separator {
+                role: role.to_string(),
+            });
+        }
+        if is_reserved(role) {
+            return Err(BadRole::Reserved {
+                role: role.to_string(),
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum BadRole {
+    #[error("a peer role cannot be empty")]
+    Empty,
+    #[error("peer role '{role}' contains a path separator; a role is one name")]
+    Separator { role: String },
+    #[error("'{role}' is a reserved name and cannot name a peer role")]
+    Reserved { role: String },
+}
+
 fn default_true() -> bool {
     true
 }
@@ -167,12 +249,84 @@ fn is_default_nesting(value: &AllowNested) -> bool {
     *value == AllowNested::default()
 }
 
-/// The hash consent.md §4 compares: canonical JSON over the `caps` subtree
-/// and nothing else.
+/// The declared ceiling: what an operator consents to, and the only thing
+/// consent.md §4 hashes.
 ///
-/// Over `caps` rather than the whole file precisely so that bumping
-/// `project_version` or adding a profile does not invalidate consent.
-/// Editing the ceiling is the one edit that should, and this is why.
+/// Two halves, because a ceiling is two questions. `caps` is what this root
+/// may reach out and do. `peers` is who may be named on the other end of a
+/// queue write, which is reach both ways and so equally the operator's to
+/// agree to. Hashing `caps` alone would let a new inbound peer arrive
+/// without a prompt.
+///
+/// **Both keys are always present in the preimage**, empty or not. An
+/// omitted-when-empty `peers` would give one ceiling two hashes depending
+/// on which code path built it, and two implementers hashing different
+/// bytes for the same ceiling is the failure this shape exists to prevent.
+/// The cost is one silent re-write per existing root, the first time it
+/// starts under a drt that knows this field: identical caps and no peers
+/// is a no-op edit, which lands on the silent narrowing path and rewrites
+/// the entry in the new shape.
+#[derive(Debug, Clone, PartialEq, Default, Serialize)]
+pub struct DeclaredCeiling {
+    pub caps: Vec<Grant>,
+    pub peers: Vec<PeerDeclaration>,
+}
+
+impl DeclaredCeiling {
+    pub fn new(caps: Vec<Grant>, peers: Vec<PeerDeclaration>) -> DeclaredCeiling {
+        DeclaredCeiling { caps, peers }
+    }
+
+    /// A ceiling of caps alone: what every root declared before `peers`
+    /// existed, and what a caller building one in memory usually means.
+    pub fn of_caps(caps: Vec<Grant>) -> DeclaredCeiling {
+        DeclaredCeiling {
+            caps,
+            peers: Vec::new(),
+        }
+    }
+
+    /// The roles this ceiling names, for the widen relation.
+    pub fn roles(&self) -> Vec<&str> {
+        self.peers.iter().map(|p| p.role.as_str()).collect()
+    }
+}
+
+// depth: reading a stored ceiling written before `peers` existed
+//
+// A `consent.json` from an older drt holds `"ceiling": [ ...grants... ]`,
+// a bare array. Refusing it would make every existing root fail to start
+// on an upgrade, which is a worse outcome than any this change is for, so
+// both spellings deserialize and only the object is ever written. One-way,
+// and the rewrite happens on the silent narrowing path the first time the
+// root starts.
+impl<'de> Deserialize<'de> for DeclaredCeiling {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<DeclaredCeiling, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Either {
+            Legacy(Vec<Grant>),
+            Current {
+                #[serde(default)]
+                caps: Vec<Grant>,
+                #[serde(default)]
+                peers: Vec<PeerDeclaration>,
+            },
+        }
+        Ok(match Either::deserialize(d)? {
+            Either::Legacy(caps) => DeclaredCeiling::of_caps(caps),
+            Either::Current { caps, peers } => DeclaredCeiling { caps, peers },
+        })
+    }
+}
+
+/// The hash consent.md §4 compares: canonical JSON over the declared
+/// ceiling — `caps` and `peers` — and nothing else.
+///
+/// Over those two subtrees rather than the whole file precisely so that
+/// bumping `project_version` or adding a profile does not invalidate
+/// consent. Editing the ceiling is the one edit that should, and this is
+/// why.
 ///
 /// Fallible because a [`drt_caps::Scope`] is an `rmpv::Value` and msgpack
 /// can hold shapes JSON cannot (binary, an extension, a non-string map
@@ -180,16 +334,29 @@ fn is_default_nesting(value: &AllowNested) -> bool {
 /// practice this is a named failure for a descriptor built in memory — and
 /// a named failure is what consent.md asks for over a panic.
 pub fn ceiling_hash(project: &ProjectJson) -> Result<Hash, CeilingHashError> {
-    caps_hash(&project.caps)
+    ceiling_hash_of(&declared_ceiling(project))
 }
 
-/// [`ceiling_hash`] over a bare cap list: what consent.md's stored
+/// The declared ceiling this descriptor states.
+pub fn declared_ceiling(project: &ProjectJson) -> DeclaredCeiling {
+    DeclaredCeiling {
+        caps: project.caps.clone(),
+        peers: project.peers.clone(),
+    }
+}
+
+/// [`ceiling_hash`] over a ceiling in hand: what consent.md's stored
 /// `ceiling` is re-hashed as when an accepted entry is checked.
-pub fn caps_hash(caps: &[Grant]) -> Result<Hash, CeilingHashError> {
-    let value = serde_json::to_value(caps).map_err(|e| CeilingHashError {
+pub fn ceiling_hash_of(ceiling: &DeclaredCeiling) -> Result<Hash, CeilingHashError> {
+    let value = serde_json::to_value(ceiling).map_err(|e| CeilingHashError {
         detail: e.to_string(),
     })?;
     Ok(canon::hash_value(&value))
+}
+
+/// [`ceiling_hash_of`] for a ceiling of caps and no peers.
+pub fn caps_hash(caps: &[Grant]) -> Result<Hash, CeilingHashError> {
+    ceiling_hash_of(&DeclaredCeiling::of_caps(caps.to_vec()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -279,6 +446,7 @@ impl ProjectJson {
             duplicated_from: None,
             drt: None,
             caps: Vec::new(),
+            peers: Vec::new(),
             allow_nested: AllowNested::default(),
             sources: Vec::new(),
             require_signatures: true,
@@ -376,6 +544,104 @@ impl NodePath {
             check_segment(segment)?;
         }
         Ok(NodePath(text.to_string()))
+    }
+
+    /// This node with its root attached, for addressing a peer.
+    pub fn qualified(&self, root_id: Uuid7) -> QualifiedNode {
+        QualifiedNode {
+            root_id,
+            node: self.clone(),
+        }
+    }
+}
+
+// depth: the qualified form, and why it is a separate type
+//
+// `<root_id>/root/intake` names a node on a peer. It exists for addressing
+// and for nothing else: the moment it reaches a hash it would carry the
+// root twice, once in this string and once in the object's own `root_id`
+// field, and two implementers would disagree about which. So the qualified
+// form is a distinct type that no preimage accepts, and `NodePath` — the
+// local form — stays the only thing a hashed object can hold.
+//
+// The two spellings cannot be confused: a local path's first segment is
+// always `root`, and a uuid7 never is.
+
+/// A node path with the root it lives in: `<root_id>/root/intake`.
+///
+/// **Addressing only.** Hashed objects (a GSR identity, consent.md §6)
+/// carry [`NodePath`] — the local form — and `root_id` once as its own
+/// field. Nothing here goes into a preimage.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct QualifiedNode {
+    root_id: Uuid7,
+    node: NodePath,
+}
+
+impl QualifiedNode {
+    pub fn new(root_id: Uuid7, node: NodePath) -> QualifiedNode {
+        QualifiedNode { root_id, node }
+    }
+
+    pub fn root_id(&self) -> Uuid7 {
+        self.root_id
+    }
+
+    /// The local form: the suffix after the first `/`, and what every
+    /// hashed object carries.
+    pub fn node(&self) -> &NodePath {
+        &self.node
+    }
+
+    pub fn into_parts(self) -> (Uuid7, NodePath) {
+        (self.root_id, self.node)
+    }
+
+    /// Text to a qualified path. The head is the root id, the suffix after
+    /// the first `/` is an ordinary node path and is checked as one.
+    pub fn parse(text: &str) -> Result<QualifiedNode, BadQualifiedNode> {
+        let Some((head, rest)) = text.split_once('/') else {
+            return Err(BadQualifiedNode::NotQualified {
+                path: text.to_string(),
+            });
+        };
+        let root_id = Uuid7::parse(head).map_err(|e| BadQualifiedNode::Root {
+            head: head.to_string(),
+            detail: e.to_string(),
+        })?;
+        let node = NodePath::parse(rest)?;
+        Ok(QualifiedNode { root_id, node })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum BadQualifiedNode {
+    #[error("'{path}' names no root; a qualified node path is '<root_id>/{ROOT_NODE}/...'")]
+    NotQualified { path: String },
+    #[error("'{head}' does not lead a qualified node path: {detail}")]
+    Root { head: String, detail: String },
+    #[error(transparent)]
+    Node(#[from] BadNodePath),
+}
+
+impl std::fmt::Display for QualifiedNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.root_id, self.node)
+    }
+}
+
+impl From<QualifiedNode> for String {
+    fn from(q: QualifiedNode) -> String {
+        q.to_string()
+    }
+}
+
+impl TryFrom<String> for QualifiedNode {
+    type Error = BadQualifiedNode;
+
+    fn try_from(text: String) -> Result<QualifiedNode, BadQualifiedNode> {
+        QualifiedNode::parse(&text)
     }
 }
 
@@ -588,5 +854,136 @@ mod tests {
         let (named, bad) = p.declared_profiles();
         assert_eq!(named.len(), 2);
         assert_eq!(bad.len(), 1, "the unusable entry is reported");
+    }
+}
+
+#[cfg(test)]
+mod qualified_tests {
+    use super::*;
+
+    fn root_id() -> Uuid7 {
+        Uuid7::mint(1_757_707_440_000, [0x22; 10])
+    }
+
+    /// Acceptance 5, first half.
+    #[test]
+    fn a_qualified_node_path_round_trips_and_its_suffix_is_the_local_form() {
+        let local = NodePath::root().child("intake").unwrap();
+        let qualified = local.qualified(root_id());
+
+        let text = qualified.to_string();
+        assert_eq!(text, format!("{}/root/intake", root_id()));
+        assert_eq!(QualifiedNode::parse(&text).unwrap(), qualified);
+
+        let (id, node) = qualified.into_parts();
+        assert_eq!(id, root_id());
+        assert_eq!(node, local);
+        assert_eq!(
+            text.split_once('/').unwrap().1,
+            local.as_str(),
+            "the local form is the suffix after the first '/'"
+        );
+    }
+
+    /// Both forms parse, and neither is mistaken for the other. A local
+    /// path always leads with `root`; a uuid7 never does.
+    #[test]
+    fn the_two_forms_are_told_apart_by_their_first_segment() {
+        let local = "root/intake";
+        assert!(NodePath::parse(local).is_ok());
+        assert!(QualifiedNode::parse(local).is_err());
+
+        let qualified = format!("{}/root/intake", root_id());
+        assert!(QualifiedNode::parse(&qualified).is_ok());
+        assert!(
+            NodePath::parse(&qualified).is_err(),
+            "a qualified path is not a local one, so it cannot reach a preimage by accident"
+        );
+    }
+
+    #[test]
+    fn a_qualified_path_is_refused_by_name_at_each_half() {
+        let bad_root = QualifiedNode::parse("not-a-uuid/root/intake").unwrap_err();
+        assert!(
+            matches!(bad_root, BadQualifiedNode::Root { .. }),
+            "{bad_root}"
+        );
+
+        let bad_node = QualifiedNode::parse(&format!("{}/intake", root_id())).unwrap_err();
+        assert!(matches!(bad_node, BadQualifiedNode::Node(_)), "{bad_node}");
+
+        let unqualified = QualifiedNode::parse("intake").unwrap_err();
+        assert!(
+            matches!(unqualified, BadQualifiedNode::NotQualified { .. }),
+            "{unqualified}"
+        );
+    }
+
+    #[test]
+    fn a_qualified_path_serializes_as_the_one_string_it_prints() {
+        let q = NodePath::root().child("db").unwrap().qualified(root_id());
+        let json = serde_json::to_string(&q).unwrap();
+        assert_eq!(json, format!("\"{}/root/db\"", root_id()));
+        assert_eq!(serde_json::from_str::<QualifiedNode>(&json).unwrap(), q);
+    }
+
+    /// A role reaches an operator's `consent.json` as a key they match by
+    /// eye, so it is checked like any other name.
+    #[test]
+    fn a_peer_role_is_one_unreserved_name() {
+        assert!(PeerDeclaration::check_role("db").is_ok());
+        assert!(matches!(
+            PeerDeclaration::check_role(""),
+            Err(BadRole::Empty)
+        ));
+        assert!(matches!(
+            PeerDeclaration::check_role("a/b"),
+            Err(BadRole::Separator { .. })
+        ));
+        assert!(matches!(
+            PeerDeclaration::check_role(STATE_DIR),
+            Err(BadRole::Reserved { .. })
+        ));
+    }
+
+    /// The ceiling is two halves, and the hash moves when either does.
+    #[test]
+    fn the_hashed_ceiling_covers_both_halves() {
+        let caps = vec![Grant::grant("host:fs/*")];
+        let bare = ProjectJson {
+            caps: caps.clone(),
+            ..ProjectJson::new(root_id())
+        };
+        let with_peer = ProjectJson {
+            caps,
+            peers: vec![PeerDeclaration {
+                role: "db".into(),
+                queues: vec!["query".into()],
+                contract: "discofetch-db/1".into(),
+            }],
+            ..ProjectJson::new(root_id())
+        };
+        assert_ne!(
+            ceiling_hash(&bare).unwrap(),
+            ceiling_hash(&with_peer).unwrap()
+        );
+    }
+
+    /// Both keys are always in the preimage, so one ceiling has one hash
+    /// however the value was built.
+    #[test]
+    fn an_empty_peers_list_is_still_in_the_preimage() {
+        let caps = vec![Grant::grant("host:fs/*")];
+        let declared = DeclaredCeiling::of_caps(caps.clone());
+        let as_json = serde_json::to_value(&declared).unwrap();
+        assert!(
+            as_json.get("peers").is_some(),
+            "an omitted-when-empty peers would give one ceiling two hashes: {as_json}"
+        );
+        assert_ne!(
+            ceiling_hash_of(&declared).unwrap(),
+            canon::hash_value(&serde_json::to_value(&caps).unwrap()),
+            "the preimage is the object, not the bare cap array it used to be"
+        );
     }
 }
