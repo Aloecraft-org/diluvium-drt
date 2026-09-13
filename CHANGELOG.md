@@ -59,14 +59,15 @@ names ride along once more, as rc.1's did and for the same reason.
   same files). Until now a comment was legal in a struct, refused in
   a map of names, and data inside a connector's scope, and which was
   which was not visible from the file.
-- **A refusal names a path rather than a line and column**:
-  `relay.labels.abc: unknown field `parkkey``, which for a JSON file
-  is the more useful of the two. The document crosses a
-  `serde_json::Value` on the way, whose object is a sorted map, so a
-  connector's `scope` arrives with its keys in order rather than as
-  the file spelled them. Every connector reads its scope by name,
-  and the three corpus snapshots that changed record exactly that
-  and nothing else.
+- **A refusal names a path as well as a line and column**:
+  `relay.labels.abc.parkkey: unknown field `parkkey`, expected
+  `park_key` or `caller_key` at line 12 column 17`. A comment key
+  is dropped in
+  stream order as the text is read, never by way of a
+  `serde_json::Value`, whose object sorts its keys in one build and
+  keeps them in another: the loader writes the same bytes it wrote
+  in rc1, a connector's `scope` included, and the corpus snapshots
+  hold it to that.
 
 ### Fixed
 

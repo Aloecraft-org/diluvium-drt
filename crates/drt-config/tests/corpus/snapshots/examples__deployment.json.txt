@@ -40,6 +40,22 @@ RootConfig {
                                 String(
                                     Utf8String {
                                         s: Ok(
+                                            "scope",
+                                        ),
+                                    },
+                                ),
+                                String(
+                                    Utf8String {
+                                        s: Ok(
+                                            "./examples/workspace",
+                                        ),
+                                    },
+                                ),
+                            ),
+                            (
+                                String(
+                                    Utf8String {
+                                        s: Ok(
                                             "access",
                                         ),
                                     },
@@ -64,22 +80,6 @@ RootConfig {
                                     PosInt(
                                         65536,
                                     ),
-                                ),
-                            ),
-                            (
-                                String(
-                                    Utf8String {
-                                        s: Ok(
-                                            "scope",
-                                        ),
-                                    },
-                                ),
-                                String(
-                                    Utf8String {
-                                        s: Ok(
-                                            "./examples/workspace",
-                                        ),
-                                    },
                                 ),
                             ),
                         ],

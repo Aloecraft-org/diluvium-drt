@@ -39,8 +39,6 @@ pub fn load(path: Option<&Path>) -> Result<RootConfig, String> {
     };
     let text = drt_platform::fs::read_to_string(path)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    let mut value: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
     // A `_`-prefixed key is a comment, at every depth and in every kind of
     // block (`drt_config::comments`), and every other key must be one the
     // reader knows: the refusal names the key, the block it sits in, and
@@ -48,16 +46,18 @@ pub fn load(path: Option<&Path>) -> Result<RootConfig, String> {
     // `create` ran migrations into a database that did not exist, in a
     // journal mode Litestream cannot replicate, while `/health` said 200.
     //
-    // Crossing a `serde_json::Value` costs two things, both accepted. A
-    // refusal names a path (`relay.labels.abc`) rather than a line and
-    // column, which for a JSON file is the more useful of the two. And a
-    // `Value`'s object is a sorted map, so a connector's `scope`, which
-    // arrives as the map the file spelled, arrives with its keys in order
-    // rather than in the file's order; every connector reads its scope by
-    // name, and the corpus snapshots record the sorted shape.
-    drt_config::comments::strip(&mut value);
-    let mut config: RootConfig = serde_path_to_error::deserialize(&value)
-        .map_err(|e| format!("{}: {}", path.display(), located(&value, e)))?;
+    // Read in stream order through `Strip`, never by way of a
+    // `serde_json::Value`: a `Value`'s object sorts its keys in one build
+    // and keeps them in another (`_preserve-order-test`), and a connector's
+    // `scope` is the map the file spelled in the order it spelled it, which
+    // the corpus snapshots hold the loader to. The path tracker sits outside
+    // the filter, so a refusal names where it sits (`relay.labels.abc`) as
+    // well as the line and column serde_json puts on it.
+    let mut json = serde_json::Deserializer::from_str(&text);
+    let mut config: RootConfig =
+        serde_path_to_error::deserialize(drt_config::comments::Strip(&mut json))
+            .map_err(|e| format!("{}: {}", path.display(), located(&text, e)))?;
+    json.end().map_err(|e| format!("{}: {e}", path.display()))?;
     // Here rather than only at startup, so a refusal names the file it
     // refused. A deployment directory holds several of these and
     // "relay.labels.xps needs both keys" is a different message when it
@@ -74,22 +74,26 @@ pub fn load(path: Option<&Path>) -> Result<RootConfig, String> {
 // `program`, `caps`, `budget` or `numeric` arrives with no path at all:
 // `unknown field `max_element`` with nothing saying `numeric`. Find it
 // again one key at a time, as the instance block alone, where every step
-// is tracked. A path of one segment is the key itself being refused, which
-// the outer error already says, and says without a list of the instance
-// block's keys that would be wrong at the top level.
-fn located(
-    value: &serde_json::Value,
-    err: serde_path_to_error::Error<serde_json::Error>,
-) -> String {
+// is tracked: the text parsed once more as a `serde_json::Value`, which
+// a blame pass may do since order is nothing to it, stripped of its
+// comments, and probed a key at a time. A path of one segment is the key
+// itself being refused, which the outer error already says, and says
+// without a list of the instance block's keys that would be wrong at the
+// top level.
+fn located(text: &str, err: serde_path_to_error::Error<serde_json::Error>) -> String {
     if err.path().iter().next().is_some() {
         return err.to_string();
     }
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return err.to_string();
+    };
+    drt_config::comments::strip(&mut value);
     let serde_json::Value::Object(map) = value else {
         return err.to_string();
     };
     for (key, child) in map {
         let mut one = serde_json::Map::new();
-        one.insert(key.clone(), child.clone());
+        one.insert(key, child);
         let alone = serde_json::Value::Object(one);
         let Err(again) = serde_path_to_error::deserialize::<_, drt_config::InstanceConfig>(&alone)
         else {

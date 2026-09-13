@@ -43,6 +43,22 @@ RootConfig {
                                 String(
                                     Utf8String {
                                         s: Ok(
+                                            "scope",
+                                        ),
+                                    },
+                                ),
+                                String(
+                                    Utf8String {
+                                        s: Ok(
+                                            ".",
+                                        ),
+                                    },
+                                ),
+                            ),
+                            (
+                                String(
+                                    Utf8String {
+                                        s: Ok(
                                             "access",
                                         ),
                                     },
@@ -67,22 +83,6 @@ RootConfig {
                                     PosInt(
                                         65536,
                                     ),
-                                ),
-                            ),
-                            (
-                                String(
-                                    Utf8String {
-                                        s: Ok(
-                                            "scope",
-                                        ),
-                                    },
-                                ),
-                                String(
-                                    Utf8String {
-                                        s: Ok(
-                                            ".",
-                                        ),
-                                    },
                                 ),
                             ),
                         ],
@@ -112,33 +112,6 @@ RootConfig {
                                                     String(
                                                         Utf8String {
                                                             s: Ok(
-                                                                "allow_headers",
-                                                            ),
-                                                        },
-                                                    ),
-                                                    Array(
-                                                        [
-                                                            String(
-                                                                Utf8String {
-                                                                    s: Ok(
-                                                                        "authorization",
-                                                                    ),
-                                                                },
-                                                            ),
-                                                            String(
-                                                                Utf8String {
-                                                                    s: Ok(
-                                                                        "accept",
-                                                                    ),
-                                                                },
-                                                            ),
-                                                        ],
-                                                    ),
-                                                ),
-                                                (
-                                                    String(
-                                                        Utf8String {
-                                                            s: Ok(
                                                                 "origin",
                                                             ),
                                                         },
@@ -151,10 +124,6 @@ RootConfig {
                                                         },
                                                     ),
                                                 ),
-                                            ],
-                                        ),
-                                        Map(
-                                            [
                                                 (
                                                     String(
                                                         Utf8String {
@@ -182,6 +151,10 @@ RootConfig {
                                                         ],
                                                     ),
                                                 ),
+                                            ],
+                                        ),
+                                        Map(
+                                            [
                                                 (
                                                     String(
                                                         Utf8String {
@@ -198,10 +171,6 @@ RootConfig {
                                                         },
                                                     ),
                                                 ),
-                                            ],
-                                        ),
-                                        Map(
-                                            [
                                                 (
                                                     String(
                                                         Utf8String {
@@ -229,6 +198,10 @@ RootConfig {
                                                         ],
                                                     ),
                                                 ),
+                                            ],
+                                        ),
+                                        Map(
+                                            [
                                                 (
                                                     String(
                                                         Utf8String {
@@ -243,6 +216,33 @@ RootConfig {
                                                                 "https://4pgf3sdehfsl7rl6--outcome.discofetch.link",
                                                             ),
                                                         },
+                                                    ),
+                                                ),
+                                                (
+                                                    String(
+                                                        Utf8String {
+                                                            s: Ok(
+                                                                "allow_headers",
+                                                            ),
+                                                        },
+                                                    ),
+                                                    Array(
+                                                        [
+                                                            String(
+                                                                Utf8String {
+                                                                    s: Ok(
+                                                                        "authorization",
+                                                                    ),
+                                                                },
+                                                            ),
+                                                            String(
+                                                                Utf8String {
+                                                                    s: Ok(
+                                                                        "accept",
+                                                                    ),
+                                                                },
+                                                            ),
+                                                        ],
                                                     ),
                                                 ),
                                             ],
