@@ -1,9 +1,17 @@
 # Peers: the groundwork, and what is reserved
 
-**Status:** the groundwork landed; inter-root communication did not, and
-neither did plugins. This document says what shape exists, what refuses by
-name, and what is deliberately not here so nobody builds it early. Where a
-claim rests on code it names the file.
+**Status:** the groundwork landed; inter-root communication did not. This
+document says what shape exists, what refuses by name, and what is
+deliberately not here so nobody builds it early. Where a claim rests on
+code it names the file.
+
+**Scope: inter-root only.** Plugins were a separate unit of work and are
+not in this document. An earlier draft of it defined a peer as "another
+drt root or a plugin" and sequenced plugin endpoints behind root-to-root
+delivery; that folded two specifications into one and parked the plugin
+channel behind a wire protocol it never needed. `doc/Plugins.md` §1 is the
+plugin design: a connector *backing* behind the existing `Connector`
+trait. It depends on nothing here.
 
 Nothing in this build talks to a peer. Everything below is either a shape
 that is now fixed, or a named failure standing where a feature will go.
@@ -26,13 +34,17 @@ that is now fixed, or a named failure standing where a feature will go.
   check; either side alone can refuse.
 - **Same queue semantics.** A cross-peer write is a queue write with an
   identity attached.
-- **A peer is either another drt root or a plugin.** A root is addressed by
-  its path on the same box; a plugin by the endpoint its platform provides.
-  Neither is ever resolved through `~/.dollup/`.
+- **A peer is another drt root**, addressed by its path on the same box,
+  and never resolved through `~/.dollup/`. A plugin is not a peer: it is a
+  connector backing (`doc/Plugins.md` §1), reached through the dispatcher
+  like `fs` or `sql`, and it needs none of this.
 
-A plugin is in this document because it is the same mechanism: a peer that
-is not a drt root. Same contract, same consent, same caps; only the
-endpoint differs.
+The `kind: "plugin"` variant reserved in a `consent.json` peer binding
+was written on the assumption this document made, and the plugin channel
+does not use it. It stays reserved and inert — a non-empty `peers` list
+refuses at start either way — because whether a plugin reached *across* a
+peer boundary, rather than spawned locally, ever needs one is a question
+for the delivery slice and not for the plugin channel.
 
 ## 2. What exists now
 
@@ -204,18 +216,17 @@ document before any code: **wire protocol, framing, replay protection**,
 and per-message signing versus a session handshake. Peer-gone behaviour is
 not deferred; §3 above is the answer.
 
-Endpoint types for plugins land after root-to-root, because that slice is
-this one plus endpoint types.
+Plugin endpoints are not sequenced here at all. The native channel is a
+subprocess behind the `Connector` trait and is independent of this
+document; the browser and wasip2 endpoints for it are `doc/Plugins.md`'s
+to sequence.
 
 ## 6. Not here, named so nobody builds it early
 
 - The wire protocol for root-to-root, and the listener on
   `state/peer.sock`.
-- Endpoint types for plugins: ES module registration in the browser, a
-  process on stdio or a socket natively, a wasm component under wasmtime, a
-  wasip2 sibling component.
-- The plugin package kind in dollup, the loader manifest, and identity
-  pre-fill of a consent binding.
+- The plugin package kind in dollup, and identity pre-fill of a consent
+  binding. (Plugin *endpoints* are `doc/Plugins.md`'s, not this document's.)
 - The hostcall that grants a peer cap, and `request_grant` for peer
   admission.
 - Cross-box transport over wssd or rtcsock. Same contract, different
@@ -233,15 +244,15 @@ this one plus endpoint types.
   in a GSR identity, and the peer family mapping to a realm like any other
   — are applied **to the types here**. Whoever holds that document has to
   apply the same four, or the spec and the code disagree silently.
-- **`doc/Plugins.md` predates this and reaches a different conclusion.**
-  Written 2026-09-03 against v0.4.2, its verdict is to implement the plugin
+- **The `doc/Plugins.md` conflict is resolved, in that document's favour.**
+  It was written 2026-09-03 against v0.4.2, and its verdict — the plugin
   channel as a connector *backing* behind the existing `Connector` trait,
-  subprocess plus msgpack, and it says in as many words not to design a
-  second protocol. §1 here makes a plugin a peer instead: reached by a queue
-  write, bound in consent. Those are different designs, not two descriptions
-  of one. The groundwork does not depend on which wins, and nothing was
-  changed in that document — but the two cannot both stand, and reconciling
-  them belongs to whoever scopes the endpoint slice.
+  subprocess plus msgpack, and do not design a second protocol — is the one
+  being built. An earlier draft of this document made a plugin a peer
+  instead, reached by a queue write and bound in consent. That was the wrong
+  call twice over: it contradicted a settled design, and it made a
+  separately specified unit of work wait on a wire protocol that does not
+  exist. Nothing in that document was changed; this one gave way.
 - **The dollup half is not in this repository.** The `contract` field on the
   package manifest, `dollup audit` reporting declared peers, `dollup roots`
   showing the intended graph, and plugin delivery are all dollup's. So is
