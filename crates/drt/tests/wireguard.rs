@@ -1054,26 +1054,33 @@ fn the_wireguard_block_loads_with_wg_quicks_field_names() {
     assert_eq!(wg.peers[0].endpoint.as_deref(), Some("203.0.113.7:51820"));
     assert_eq!(wg.peers[0].keepalive, Some(25));
 
-    // **A misspelled key at block level is a silent default now.** The
-    // `.host.lua` mapper matched every key and had an `other =>` arm, so
-    // `privatekey` was refused by name; serde ignores it, and cannot do
-    // otherwise while `_`-prefixed keys are how a JSON config carries a
-    // comment. Asserted so it stays a decision -- doc/Modules.md's sibling
-    // in `tests/numeric_bounds.rs` records the same hole and the fix worth
-    // making: refuse an unknown key unless it starts with `_`.
+    // **A misspelled key at block level is refused by name** (issue #31),
+    // as the `.host.lua` mapper's `other =>` arm refused it, and the
+    // refusal names the block, the key, and the keys that would have been
+    // taken. A `_`-prefixed key is a comment at every depth and loads
+    // (`drt_config::comments`); `tests/numeric_bounds.rs` holds the same
+    // rule for the instance block.
     std::fs::write(
         dir.path().join("typo.json"),
         r#"{ "wireguard": { "listen_port": 1, "privatekey": "x" } }"#,
     )
     .unwrap();
-    let wg = drt::config::load(Some(&dir.path().join("typo.json")))
-        .expect("no longer refused")
-        .wireguard
-        .expect("the block still loads");
-    assert_eq!(
-        wg.private_key_env, None,
-        "the key the author meant to set is simply not set"
+    let err = drt::config::load(Some(&dir.path().join("typo.json")))
+        .expect_err("a key no wireguard block has");
+    assert!(
+        err.contains("wireguard.privatekey") && err.contains("private_key_env"),
+        "the block, the key and the keys that would have been taken: {err}"
     );
+    std::fs::write(
+        dir.path().join("comment.json"),
+        r#"{ "wireguard": { "_why": "a comment, not a typo", "listen_port": 1, "private_key_env": "WG_KEY" } }"#,
+    )
+    .unwrap();
+    let wg = drt::config::load(Some(&dir.path().join("comment.json")))
+        .expect("a comment key is not a typo")
+        .wireguard
+        .expect("the block loads");
+    assert_eq!(wg.private_key_env.as_deref(), Some("WG_KEY"));
 
     // A peer with no public key has no name at all, and that one is still
     // refused: `public_key` is required, so its absence is a missing field
