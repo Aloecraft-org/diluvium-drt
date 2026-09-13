@@ -72,6 +72,14 @@ pub const WG: &str = "wg";
 /// `table: 0x...`, which is how this was first written and what running the
 /// examples caught. So the reader renders it: the tag, then every other key
 /// sorted, so two runs of the same traffic print the same lines.
+///
+/// **`from` is skipped, for the same reason `event` is.** Every delivered
+/// queue message carries the sender the runtime attached (`doc/Peers.md`),
+/// and that is the envelope rather than a field the event carries. These
+/// four blocks are local by construction, so it is the same constant on
+/// every line: printing it would put `from={node=root peer={kind=runtime}}`
+/// on every counter a relay ever emits to say nothing that ever changes. A
+/// guest that wants the sender reads `report.from`; this renders reports.
 #[cfg(any(
     feature = "relay",
     feature = "stun",
@@ -110,7 +118,7 @@ local function line(report)
     if type(report) ~= "table" then return tostring(report) end
     local keys = {{}}
     for k in pairs(report) do
-        if k ~= "event" then keys[#keys + 1] = k end
+        if k ~= "event" and k ~= "from" then keys[#keys + 1] = k end
     end
     table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
     local out = tostring(report.event)
