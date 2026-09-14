@@ -19,6 +19,15 @@ connected later, and define the interface the later ones use.
 
 ---
 
+> **Scope superseded, 2026-09-14.** §1's verdict — the plugin channel as
+> a connector backing behind the existing `Connector` trait — stands and is
+> being built. What this document assumes about *instance scope* does not:
+> it inherits the C host's one-process-serving-many-callers shape, from a
+> host that had no nodes to own anything. `doc/Ownership.md` §4 settles it
+> the other way — a plugin instance belongs to its calling node, and a
+> shared plugin is a node that owns one and fronts it on a queue. Read
+> `max_inflight` below as per-owner rather than per-deployment.
+
 ## 1. The verdict
 
 Implement the plugin channel the C host already specified
