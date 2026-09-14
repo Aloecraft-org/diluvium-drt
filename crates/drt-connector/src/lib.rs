@@ -19,6 +19,22 @@ use drt_hostcall::{salvage_token, Reply, Request, Token};
 pub mod handles;
 pub use handles::{Caller, HandleId, Handles, NoSuchHandle};
 
+/// Who is asking, and under which grants.
+///
+/// `grants` is the scope on every grant that permits this call — one entry
+/// per permitting grant that carries a scope, none for a grant that does
+/// not. A connector that scopes per node (`crypto/derive`'s label
+/// patterns, `doc/Plan-0.7.0.md` §4.3a) reads them; most connectors ignore
+/// them, since a wiring scope is a place and a grant scope is a permission
+/// and only a few calls have anything to say about the second.
+///
+/// A struct rather than two parameters, so the next thing a connector
+/// needs to know about its caller is a field and not a signature change.
+pub struct Asker<'a> {
+    pub caller: Caller,
+    pub grants: &'a [Scope],
+}
+
 /// What a connector answers with. `Err` becomes `status = "error"` with the
 /// detail worded for the program to read; `denied` is never a connector's to
 /// say — the dispatcher decides it from the capability set, so a mock cannot
@@ -59,24 +75,24 @@ pub trait Connector: Send + Sync {
         scope: Option<&Scope>,
     ) -> CallResult;
 
-    /// Answer one call, knowing who asked. The default forgets the caller
-    /// and answers [`Connector::call`], so a connector that holds nothing
-    /// per node implements only that one and is unchanged by this method
-    /// existing. A connector that keeps resources on a guest's behalf
-    /// implements this instead, and keys what it keeps by `caller`
-    /// (`doc/Plan-0.7.0.md` §2.1–2.2).
+    /// Answer one call, knowing who asked and under what. The default
+    /// forgets the asker and answers [`Connector::call`], so a connector
+    /// that holds nothing per node implements only that one and is
+    /// unchanged by this method existing. A connector that keeps resources
+    /// on a guest's behalf implements this instead, and keys what it keeps
+    /// by `asker.caller` (`doc/Plan-0.7.0.md` §2.1–2.2).
     ///
-    /// `caller` is a value the dispatcher took from the routing step, never
-    /// from the request: a request whose subject is a string the asking
-    /// node chose is not an identity.
+    /// Everything in `asker` is a value the dispatcher took from the
+    /// routing step, never from the request: a request whose subject is a
+    /// string the asking node chose is not an identity.
     async fn call_as(
         &self,
-        caller: &Caller,
+        asker: &Asker<'_>,
         call: &str,
         args: Option<rmpv::Value>,
         scope: Option<&Scope>,
     ) -> CallResult {
-        let _ = caller;
+        let _ = asker;
         self.call(call, args, scope).await
     }
 
@@ -278,12 +294,26 @@ impl Dispatcher {
                 ))
             }
         };
-        if !caps.holds(&call_capability(&req.call)) {
+        let cap = call_capability(&req.call);
+        if !caps.holds(&cap) {
             return Routed::Answered(Reply::denied(
                 req.tok,
                 format!("'{}' is outside this instance's grants", req.call),
             ));
         }
+        // The scope on each grant that lets this call through, for a
+        // connector that scopes per node. Collected here because only the
+        // dispatcher holds the capability set, and collected as values so
+        // the call can be parked without borrowing the set that routed it.
+        let grants: Vec<Scope> = caps
+            .grants()
+            .iter()
+            .filter(|g| {
+                matches!(g.effect, drt_caps::Effect::Grant)
+                    && drt_caps::implies(&g.capability, &cap)
+            })
+            .filter_map(|g| g.scope.clone())
+            .collect();
         // The menu, answered here because only the dispatcher holds both
         // halves of the answer: what is wired, and what this instance may
         // reach. The C host wires it as a connector (`dhost.c`,
@@ -305,6 +335,7 @@ impl Dispatcher {
         };
         Routed::Call(PendingCall {
             caller,
+            grants,
             tok: req.tok,
             call: req.call,
             args: req.args,
@@ -494,6 +525,7 @@ pub enum Routed {
 /// in-flight table, while the rest of the swarm keeps stepping.
 pub struct PendingCall {
     caller: Caller,
+    grants: Vec<Scope>,
     tok: Token,
     call: String,
     args: Option<rmpv::Value>,
@@ -517,6 +549,11 @@ impl PendingCall {
         self.caller
     }
 
+    /// The scopes on the grants that let this call through.
+    pub fn grants(&self) -> &[Scope] {
+        &self.grants
+    }
+
     /// Run the connector and shape its answer into the reply: `ok` with
     /// the value, or `error` with the connector's own sentence. `denied`
     /// was decided at routing and never comes from here.
@@ -529,19 +566,28 @@ impl PendingCall {
     /// keep one method: a connector answers one value, and whether that
     /// value holds a column is a property of the value.
     pub async fn answer(self) -> Reply {
-        match self
-            .connector
-            .call_as(&self.caller, &self.call, self.args, self.scope.as_ref())
-            .await
-        {
+        let PendingCall {
+            caller,
+            grants,
+            tok,
+            call,
+            args,
+            connector,
+            scope,
+        } = self;
+        let asker = Asker {
+            caller,
+            grants: &grants,
+        };
+        match connector.call_as(&asker, &call, args, scope.as_ref()).await {
             Ok(value) => {
                 let mut blobs = Vec::new();
                 let value = drt_hostcall::lift_columns(value, &mut blobs);
-                let mut reply = Reply::ok(self.tok, value);
+                let mut reply = Reply::ok(tok, value);
                 reply.blobs = blobs;
                 reply
             }
-            Err(CallError(detail)) => Reply::error(self.tok, detail),
+            Err(CallError(detail)) => Reply::error(tok, detail),
         }
     }
 }
@@ -781,12 +827,12 @@ mod tests {
             }
             async fn call_as(
                 &self,
-                caller: &Caller,
+                asker: &Asker<'_>,
                 _: &str,
                 _: Option<rmpv::Value>,
                 _: Option<&Scope>,
             ) -> CallResult {
-                Ok(rmpv::Value::from(caller.to_string()))
+                Ok(rmpv::Value::from(asker.caller.to_string()))
             }
         }
         let mut reg = Registry::new();
@@ -805,6 +851,60 @@ mod tests {
 
         let reply = pollster::block_on(d.dispatch(&caps, &raw));
         assert_eq!(reply.value, Some(rmpv::Value::from("the root")));
+    }
+
+    /// §4.3a's control: a connector that scopes per node is handed the
+    /// scope on every grant that permitted the call — and only those. A
+    /// grant with no scope contributes nothing, so a broad unscoped grant
+    /// beside a narrow scoped one yields exactly the narrow one.
+    #[test]
+    fn a_connector_is_handed_the_scopes_on_the_grants_that_let_it_through() {
+        struct Sees;
+        #[async_trait::async_trait]
+        impl Connector for Sees {
+            async fn call(&self, _: &str, _: Option<rmpv::Value>, _: Option<&Scope>) -> CallResult {
+                unreachable!()
+            }
+            async fn call_as(
+                &self,
+                asker: &Asker<'_>,
+                _: &str,
+                _: Option<rmpv::Value>,
+                _: Option<&Scope>,
+            ) -> CallResult {
+                Ok(rmpv::Value::Array(
+                    asker.grants.iter().map(|Scope(v)| v.clone()).collect(),
+                ))
+            }
+        }
+        let mut reg = Registry::new();
+        reg.wire("scoped", Arc::new(Sees), None).unwrap();
+        let d = Dispatcher::new(reg);
+        let caps = CapSet::root(vec![
+            Grant::grant("host:*"),
+            Grant {
+                effect: drt_caps::Effect::Grant,
+                capability: "host:scoped/*".into(),
+                scope: Some(Scope(rmpv::Value::from("room:*"))),
+            },
+            Grant {
+                effect: drt_caps::Effect::Grant,
+                capability: "host:elsewhere".into(),
+                scope: Some(Scope(rmpv::Value::from("never"))),
+            },
+        ]);
+        let raw = to_bytes(&Request {
+            tok: 1,
+            call: "scoped/derive".into(),
+            args: None,
+        })
+        .unwrap();
+        let reply = pollster::block_on(d.dispatch_as(Caller::Node(1), &caps, &raw));
+        assert_eq!(
+            reply.value,
+            Some(rmpv::Value::Array(vec![rmpv::Value::from("room:*")])),
+            "{reply:?}"
+        );
     }
 
     /// Acceptance 5: a release that loses work reports it, attributed to

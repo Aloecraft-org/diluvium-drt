@@ -14,6 +14,7 @@
 //! crypto/jwt_sign        {claims, ttl?}            -> a JWT-HS256 string
 //! crypto/jwt_verify      {token}                   -> {valid, claims?|reason}
 //! crypto/turn_credential {user, ttl?}              -> {username, password, …}
+//! crypto/derive          {label}                   -> nothing; `label` now names a key
 //! ```
 //!
 //! Randomness through the hostcall log is the canonical replay win: the
@@ -44,6 +45,35 @@
 //! that moves from the C host to DRT keeps the same subkeys and its
 //! outstanding tokens still verify.
 //!
+//! ## Derived labels: a runtime name for a key that stays in the host
+//!
+//! `crypto.secrets` is config-time. A room created at 14:02 has no entry in
+//! a config written at deploy time, and a guest that built HKDF-expand out
+//! of `hmac` would hold the result in its heap — which is its snapshot.
+//! `crypto/derive {label}` registers a label for the calling node and
+//! returns **nothing**; the guest gets a name it can pass to `hmac`, and
+//! never the bytes (`doc/Plan-0.7.0.md` §4).
+//!
+//! - **A label never signs directly.** The rule the master already obeys,
+//!   one level down: a label master is derived from the configured master,
+//!   and each consumer derives its own subkey from *that* under the same
+//!   two labels — `KDF_LABEL_HMAC` for `hmac`, `KDF_LABEL_JWT` for the JWT.
+//!   One name, two non-interchangeable keys, so `host:crypto/hmac` is no
+//!   more a JWT oracle for a label than it is for the master.
+//! - **Derivation is deterministic**, a pure function of master and label,
+//!   because the signer and the verifier may be different nodes. A second
+//!   `derive` of a live label is idempotent, not a refusal.
+//! - **The scope on `host:crypto/derive` is the control.** A deterministic
+//!   label is re-mintable by anyone permitted to name it, so the grant
+//!   carries the patterns it may name — `room:2`, or `room:*` — in the
+//!   capability grammar's own trailing-`*` shape. A grant with no scope
+//!   names nothing. Lifetime is the ownership dimension's: a label belongs
+//!   to the node that derived it and is released when that node dies,
+//!   which loses nothing, since it is derived rather than stored.
+//! - **A label may not shadow a configured secret.** The name is refused
+//!   at `derive`, naming both, rather than found by a signature that
+//!   verifies on one host and not another.
+//!
 //! ## Two departures from the C, both noted rather than hidden
 //!
 //! - The C's fixed tables (`DH_MAX_SECRETS`, `DH_MAX_TURN_URIS`) are
@@ -60,6 +90,7 @@
 //!   own). Integer, string, bool and null claims — everything a real claim
 //!   set is made of — are byte-identical.
 
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use base64::Engine as _;
@@ -68,7 +99,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use drt_caps::{Scope, ScopeType};
-use drt_connector::{CallError, CallResult, Connector};
+use drt_connector::{Asker, CallError, CallResult, Caller, Connector};
 
 /// A configured secret is at most this long; longer is a file that is not a
 /// key. The C's `CRYPTO_KEY_MAX`.
@@ -86,6 +117,8 @@ const RANDOM_DEFAULT: usize = 32;
 const TURN_USER_MAX: usize = 256;
 /// Ten years. A ttl beyond this is a typo, not a policy.
 const TTL_MAX: i64 = 315_360_000;
+/// A derived label is a name, not a document.
+const LABEL_MAX: usize = 256;
 
 /// Domain separation: the master secret signs nothing directly, it only
 /// keys these two derivations. Versioned, so a future scheme can coexist.
@@ -98,6 +131,11 @@ const TTL_MAX: i64 = 315_360_000;
 pub const KDF_LABEL_HMAC: &[u8] = b"diluvium/crypto/hmac/v1";
 /// See [`KDF_LABEL_HMAC`].
 pub const KDF_LABEL_JWT: &[u8] = b"diluvium/crypto/jwt-hs256/v1";
+/// The root every derived label hangs off: `k_label = HMAC(master, this)`,
+/// and a label master is `HMAC(k_label, label)`. DRT's own — the C host has
+/// no runtime labels — and public for the same reason the other two are:
+/// changing it re-keys every label in every deployment.
+pub const KDF_LABEL_DERIVE: &[u8] = b"drt/crypto/derive/v1";
 
 /// `{"alg":"HS256","typ":"JWT"}`, base64url, unpadded. A **constant**,
 /// never a parsed field: `jwt_verify` compares the header segment against
@@ -244,6 +282,9 @@ struct CryptoScope {
 struct Keys {
     k_hmac: [u8; 32],
     k_jwt: [u8; 32],
+    /// What every runtime label derives from. Kept so the master need not
+    /// be; a label master is one HMAC from here and never from the master.
+    k_label: [u8; 32],
     default_ttl: i64,
     /// The TURN shared secret, **raw**: coturn recomputes the MAC with the
     /// same bytes, so there is nothing to derive. Absent means the
@@ -265,7 +306,12 @@ impl Drop for Keys {
     fn drop(&mut self) {
         // The subkeys do not linger in a freed page. Volatile so the writes
         // are not elided as dead stores.
-        for b in self.k_hmac.iter_mut().chain(self.k_jwt.iter_mut()) {
+        for b in self
+            .k_hmac
+            .iter_mut()
+            .chain(self.k_jwt.iter_mut())
+            .chain(self.k_label.iter_mut())
+        {
             unsafe { std::ptr::write_volatile(b, 0) };
         }
     }
@@ -279,6 +325,7 @@ impl Keys {
         // neither subkey discloses the other or the master.
         let k_hmac = hmac_sha256(&master, KDF_LABEL_HMAC);
         let k_jwt = hmac_sha256(&master, KDF_LABEL_JWT);
+        let k_label = hmac_sha256(&master, KDF_LABEL_DERIVE);
         drop(master);
         let turn = match &scope.turn {
             None => None,
@@ -301,6 +348,7 @@ impl Keys {
         Ok(Keys {
             k_hmac,
             k_jwt,
+            k_label,
             default_ttl: clamp_ttl(scope.default_ttl).unwrap_or(3600),
             turn,
             secrets,
@@ -465,17 +513,65 @@ fn verify_fail(reason: &str) -> CallResult {
 // The connector
 // ---------------------------------------------------------------------------
 
+/// One registered label's two subkeys. The label master they came from
+/// is not kept: nothing signs with it, so it does not outlive `derive`.
+struct LabelKeys {
+    hmac: [u8; 32],
+    jwt: [u8; 32],
+}
+
+impl Drop for LabelKeys {
+    fn drop(&mut self) {
+        for b in self.hmac.iter_mut().chain(self.jwt.iter_mut()) {
+            unsafe { std::ptr::write_volatile(b, 0) };
+        }
+    }
+}
+
+impl LabelKeys {
+    /// Deterministic in `(k_label, label)`, which is what lets two nodes
+    /// that both derive `room:2` reach the same key.
+    fn derive(k_label: &[u8; 32], label: &str) -> LabelKeys {
+        let mut master = hmac_sha256(k_label, label.as_bytes());
+        let keys = LabelKeys {
+            hmac: hmac_sha256(&master, KDF_LABEL_HMAC),
+            jwt: hmac_sha256(&master, KDF_LABEL_JWT),
+        };
+        for b in master.iter_mut() {
+            unsafe { std::ptr::write_volatile(b, 0) };
+        }
+        keys
+    }
+}
+
 /// `host:crypto/*`. Holds the derived subkeys for the scope it was wired
 /// with; the scope is parsed and the key read **once**, on first call, and
 /// re-derived only if a different scope is ever handed in.
+///
+/// `labels` is the ownership dimension applied to a name-addressed
+/// resource: keyed by `(who derived it, label)`, so one node's registration
+/// is invisible to another's and dies with it, while the bytes behind the
+/// same label are identical for every owner.
 #[derive(Default)]
 pub struct CryptoConnector {
     keys: Mutex<Option<(Scope, std::sync::Arc<Keys>)>>,
+    labels: Mutex<BTreeMap<(Caller, String), LabelKeys>>,
 }
 
 impl CryptoConnector {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The hmac subkey of a label `caller` registered, or `None` if it did
+    /// not — which is the same answer whether the label was never derived
+    /// or was released with its owner.
+    fn label_hmac_key(&self, caller: Caller, label: &str) -> Option<[u8; 32]> {
+        self.labels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&(caller, label.to_string()))
+            .map(|k| k.hmac)
     }
 
     fn keys(&self, scope: Option<&Scope>) -> Result<std::sync::Arc<Keys>, CallError> {
@@ -519,32 +615,50 @@ fn do_hash(args: Option<&rmpv::Value>) -> CallResult {
     Ok(rmpv::Value::from(to_hex(&Sha256::digest(data.as_bytes()))))
 }
 
-fn do_hmac(keys: &Keys, args: Option<&rmpv::Value>) -> CallResult {
+fn do_hmac(
+    c: &CryptoConnector,
+    keys: &Keys,
+    caller: Caller,
+    args: Option<&rmpv::Value>,
+) -> CallResult {
     let data = field(args, "data")
         .and_then(as_str)
         .ok_or_else(|| CallError::new("crypto/hmac: args.data must be a string"))?;
-    // args.key names a configured raw secret (crypto.secrets), for MACs a
-    // peer computes with the same bytes — a webhook signature. Absent, the
+    // args.key names either a configured raw secret (crypto.secrets), for
+    // MACs a peer computes with the same bytes — a webhook signature — or a
+    // label this caller derived, whose hmac subkey signs. Absent, the
     // derived subkey signs, as it always has.
+    let label_key: Option<[u8; 32]>;
     let key: &[u8] = match field(args, "key") {
         None => &keys.k_hmac,
         Some(named) => {
             let name = as_str(named).ok_or_else(|| {
-                CallError::new("crypto/hmac: args.key must be a string naming a configured secret")
+                CallError::new(
+                    "crypto/hmac: args.key must be a string naming a configured secret or a derived label",
+                )
             })?;
             match keys.secrets.iter().find(|(n, _)| n == name) {
                 Some((_, bytes)) => bytes,
-                // A name this deployment does not configure is a refusal,
-                // not a fallback to the default key: silently signing under
-                // a different key than the caller asked for is how a
-                // webhook signature ships broken.
-                None => {
-                    return Err(CallError::new(format!(
-                        "this deployment configures no secret named '{}' \
-                         (config.connectors.crypto.secrets)",
-                        &name[..name.len().min(64)]
-                    )))
-                }
+                None => match c.label_hmac_key(caller, name) {
+                    Some(k) => {
+                        label_key = Some(k);
+                        label_key.as_ref().map(|k| &k[..]).unwrap_or(&[])
+                    }
+                    // A name this deployment does not configure and this
+                    // caller did not derive is a refusal, not a fallback to
+                    // the default key: silently signing under a different
+                    // key than the caller asked for is how a webhook
+                    // signature ships broken. Never-derived and released
+                    // read alike here, on purpose.
+                    None => {
+                        return Err(CallError::new(format!(
+                            "this deployment configures no secret named '{}' \
+                             (config.connectors.crypto.secrets), and this caller \
+                             derived no label by that name (crypto/derive)",
+                            &name[..name.len().min(64)]
+                        )))
+                    }
+                },
             }
         }
     };
@@ -748,14 +862,103 @@ fn do_turn_credential(keys: &Keys, args: Option<&rmpv::Value>) -> CallResult {
     Ok(map(out))
 }
 
+/// The label patterns a set of grant scopes names: each scope is one
+/// pattern or an array of them, in the capability grammar's trailing-`*`
+/// shape. Anything else in a scope names nothing.
+fn label_patterns(grants: &[Scope]) -> Vec<&str> {
+    let mut out = Vec::new();
+    for Scope(value) in grants {
+        match value {
+            rmpv::Value::String(_) | rmpv::Value::Binary(_) => out.extend(as_str(value)),
+            rmpv::Value::Array(items) => out.extend(items.iter().filter_map(as_str)),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn do_derive(
+    c: &CryptoConnector,
+    keys: &Keys,
+    asker: &Asker<'_>,
+    args: Option<&rmpv::Value>,
+) -> CallResult {
+    let label = field(args, "label")
+        .and_then(as_str)
+        .ok_or_else(|| CallError::new("crypto/derive: args.label must be a string"))?;
+    if label.is_empty() || label.len() > LABEL_MAX || label.contains('\0') {
+        return Err(CallError::new(format!(
+            "crypto/derive: args.label must be 1..{LABEL_MAX} bytes with no NUL"
+        )));
+    }
+    // The scope on the grant is the control (§4.3a): a deterministic label
+    // is re-mintable by anyone permitted to name it, so who may name what
+    // is decided here and nowhere else. The refusal says what this grant
+    // allows and nothing about whether the label exists for someone else.
+    let patterns = label_patterns(asker.grants);
+    if !patterns.iter().any(|p| drt_caps::implies(p, label)) {
+        return Err(CallError::new(if patterns.is_empty() {
+            format!(
+                "crypto/derive: '{}' is outside this instance's host:crypto/derive grant, \
+                 which names no labels; a derive grant needs a scope of label patterns \
+                 (\"room:2\", or \"room:*\")",
+                &label[..label.len().min(64)]
+            )
+        } else {
+            format!(
+                "crypto/derive: '{}' is outside this instance's host:crypto/derive grant, \
+                 which allows: {}",
+                &label[..label.len().min(64)],
+                patterns.join(", ")
+            )
+        }));
+    }
+    // A label may not shadow a configured secret. Found here, by name,
+    // rather than by a signature that verifies on one host and not another.
+    if keys.secrets.iter().any(|(n, _)| n == label) {
+        return Err(CallError::new(format!(
+            "crypto/derive: '{}' is already a configured secret \
+             (config.connectors.crypto.secrets); a derived label may not shadow one",
+            &label[..label.len().min(64)]
+        )));
+    }
+    let mut table = c.labels.lock().unwrap_or_else(|e| e.into_inner());
+    // Idempotent: the bytes are a pure function of the master and the
+    // label, so re-deriving is re-registering, and a refusal here would
+    // leave a second owner of the same name unable to reach it.
+    table
+        .entry((asker.caller, label.to_string()))
+        .or_insert_with(|| LabelKeys::derive(&keys.k_label, label));
+    // Nothing comes back. That is the point.
+    Ok(rmpv::Value::Nil)
+}
+
 #[async_trait::async_trait]
 impl Connector for CryptoConnector {
     fn scope_type(&self) -> Box<dyn ScopeType> {
         Box::new(CryptoScopeType)
     }
 
+    /// The caller-blind path presents as the root with no grants: every
+    /// call that needs no identity works exactly as before, and `derive`
+    /// — which needs a scoped grant — refuses, since an unknown caller is
+    /// not permitted to name any label.
     async fn call(
         &self,
+        call: &str,
+        args: Option<rmpv::Value>,
+        scope: Option<&Scope>,
+    ) -> CallResult {
+        let asker = Asker {
+            caller: Caller::Root,
+            grants: &[],
+        };
+        self.call_as(&asker, call, args, scope).await
+    }
+
+    async fn call_as(
+        &self,
+        asker: &Asker<'_>,
         call: &str,
         args: Option<rmpv::Value>,
         scope: Option<&Scope>,
@@ -767,13 +970,26 @@ impl Connector for CryptoConnector {
         match call {
             "crypto/random" => do_random(args),
             "crypto/hash" => do_hash(args),
-            "crypto/hmac" => do_hmac(&keys, args),
+            "crypto/hmac" => do_hmac(self, &keys, asker.caller, args),
             "crypto/jwt_sign" => do_jwt_sign(&keys, args),
             "crypto/jwt_verify" => do_jwt_verify(&keys, args),
             "crypto/turn_credential" => do_turn_credential(&keys, args),
+            "crypto/derive" => do_derive(self, &keys, asker, args),
             other => Err(CallError::new(format!(
                 "the crypto connector has no call '{other}'"
             ))),
         }
+    }
+
+    /// A node is gone; its labels go with it. Nothing is lost by that, and
+    /// that is a claim rather than a shrug: a label is a pure function of
+    /// the master and its name, so whatever it signed still verifies and
+    /// whoever needs it again derives it again.
+    fn release(&self, caller: &Caller) -> Vec<String> {
+        self.labels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|(owner, _), _| owner != caller);
+        Vec::new()
     }
 }

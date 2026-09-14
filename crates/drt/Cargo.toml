@@ -103,6 +103,11 @@ tempfile = "3"
 pollster = "0.4"
 # The driver test's connector that answers on its second poll.
 async-trait = { workspace = true }
+# The ownership tests derive a label's keys independently of the crypto
+# connector and search a snapshot for them; both crates are already in the
+# tree behind that connector.
+hmac = "0.12"
+sha2 = "0.10"
 # The tunnel test drives a real SSH session through both bridge halves.
 ego_transport = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net", "sync", "time"] }

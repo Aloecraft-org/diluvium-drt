@@ -543,6 +543,14 @@ impl<H: SwarmHost> Swarm<H> {
             .unwrap_or(false)
     }
 
+    /// The bytes a hibernated instance was snapshotted to, for a test that
+    /// asserts what a snapshot does *not* contain — a key the host derived
+    /// on the instance's behalf must be in neither its heap nor here.
+    /// `None` while the instance is resident.
+    pub fn snapshot(&self, id: InstanceId) -> Option<&[u8]> {
+        self.find(id).and_then(|i| self.slots[i].snap.as_deref())
+    }
+
     pub fn cached_size(&self, id: InstanceId) -> usize {
         self.find(id)
             .and_then(|i| self.slots[i].snap.as_ref().map(Vec::len))
