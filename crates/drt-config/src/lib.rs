@@ -426,6 +426,21 @@ pub struct Residency {
     /// exempt: it holds the request queues, and a deployment whose front
     /// door hibernates is not saving memory, it is closed.
     pub max_resident: usize,
+    /// The shortest park timeout an instance may arm, in milliseconds. A
+    /// park deadline outlives hibernation (`doc/Plan-0.7.0.md` §6), so a
+    /// guest's choice of timeout is a wake rate for a parked node, and a
+    /// short one re-armed after every wake is a rebuild loop. Thirty
+    /// seconds: three orders of magnitude above a rebuild, far under the
+    /// minutes-to-hours deadlines the feature exists for (§6.4). A park
+    /// under it is refused when it is armed. Here and not on the root
+    /// config because this is the only block under which anything
+    /// hibernates.
+    #[serde(default = "default_park_floor_ms")]
+    pub park_floor_ms: u64,
+}
+
+fn default_park_floor_ms() -> u64 {
+    30_000
 }
 
 /// The rendezvous relay (`drt relay`): parked WSS legs paired by label and

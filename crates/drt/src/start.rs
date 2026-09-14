@@ -15,6 +15,14 @@
 //! contract), and the residency policy is real: a config naming
 //! `residency.max_resident` gets [`enforce_residency`]'s LRU each pass.
 //!
+//! **A park deadline outlives residency** (`doc/Plan-0.7.0.md` §6): a
+//! hibernated instance whose timeout elapses is woken — never killed — and
+//! sees the timeout on its own wait, the way a resident one does. That
+//! makes a guest's timeout a wake rate for a parked node, so a deployment
+//! with a residency policy carries a floor (`residency.park_floor_ms`) and
+//! a park under it is refused when it is armed. A deadline still dies with
+//! the process; the snapshot-store half is a different release (§6.1).
+//!
 //! The root program's **arguments** arrive the one way anything arrives here: a
 //! message on a queue. The merged table is pushed onto
 //! `drt_config::resolve::ARGS_QUEUE` once the program declares it, held until
@@ -67,7 +75,10 @@ pub const IDLE_TICK: Duration = Duration::from_millis(1);
 
 /// `StepHost` with a clock: resume a parked instance when a waited queue is
 /// ready, or when its own stated timeout has elapsed — whichever comes
-/// first. The wait cache follows residency exactly as `StepHost`'s does.
+/// first. Unlike `StepHost`'s, the wait cache does **not** follow
+/// residency: a park stays armed through hibernation and is dropped only
+/// with the slot, so a hibernated instance's deadline still fires
+/// ([`DeployHost::due`] is how the driver hears of it).
 #[derive(Default)]
 pub struct DeployHost {
     parked: HashMap<u32, Park>,
@@ -77,6 +88,11 @@ pub struct DeployHost {
     /// only place that sees work happen.
     tick: u64,
     active: HashMap<u32, u64>,
+    /// The shortest timeout a park may arm, when the deployment has a
+    /// residency policy — the only case anything hibernates, and so the
+    /// only case a timeout is a wake rate (§6.4). `None`: no floor, and a
+    /// short wait works as it always has.
+    park_floor: Option<Duration>,
 }
 
 struct Park {
@@ -91,18 +107,76 @@ impl DeployHost {
         DeployHost::default()
     }
 
+    /// A host that refuses to arm a park shorter than `floor`
+    /// (`residency.park_floor_ms`).
+    pub fn with_park_floor(floor: Duration) -> DeployHost {
+        DeployHost {
+            park_floor: Some(floor),
+            ..DeployHost::default()
+        }
+    }
+
+    /// Every instance whose park deadline has passed as of `now`, resident
+    /// or not. The driver's question about the hibernated ones: a resident
+    /// instance's deadline is answered in [`SwarmHost::drive`], a
+    /// hibernated one is not driven at all, so it is woken first.
+    pub fn due(&self, now: Instant) -> Vec<InstanceId> {
+        self.parked
+            .iter()
+            .filter(|(_, p)| p.deadline.is_some_and(|d| now >= d))
+            .map(|(id, _)| InstanceId(*id))
+            .collect()
+    }
+
+    /// The deadline for a wait, or the refusal: a timeout under the floor
+    /// is refused here, when it is armed, naming both (acceptance 22).
+    fn arm(&self, wait: &WaitSet) -> Result<Option<Instant>, String> {
+        let Some(timeout) = wait.timeout else {
+            return Ok(None);
+        };
+        if let Some(floor) = self.park_floor {
+            if timeout < floor {
+                return Err(format!(
+                    "a park with a {}ms timeout is under this deployment's park floor of {}ms \
+                     (residency.park_floor_ms): a parked instance's deadline is a wake rate, \
+                     and one re-armed that often is a rebuild loop",
+                    timeout.as_millis(),
+                    floor.as_millis()
+                ));
+            }
+        }
+        Ok(Some(Instant::now() + timeout))
+    }
+
     fn note(&mut self, id: InstanceId, step: Step) -> Driven {
         match step {
-            Step::Parked(wait) => {
-                let deadline = wait.timeout.map(|t| Instant::now() + t);
-                self.parked.insert(id.0, Park { wait, deadline });
-                Driven::Alive
-            }
+            Step::Parked(wait) => match self.arm(&wait) {
+                Ok(deadline) => {
+                    self.parked.insert(id.0, Park { wait, deadline });
+                    Driven::Alive
+                }
+                Err(why) => self.fault(id, why),
+            },
             Step::Done => {
                 self.parked.remove(&id.0);
                 Driven::Exited
             }
         }
+    }
+
+    /// A deployment that loses an instance says so. The swarm reports the
+    /// fault to the parent's system/events queue, which is right for
+    /// supervised children — but the root has no supervisor but this
+    /// process, and a deployment that drains silently after a root fault
+    /// reads as a mystery exit, not a diagnosis.
+    fn fault(&mut self, id: InstanceId, why: String) -> Driven {
+        self.parked.remove(&id.0);
+        let _ = writeln!(
+            drt_platform::stdio::stderr(),
+            "drt: instance {} faulted: {why}",
+            id.0
+        );
+        Driven::Faulted(why)
     }
 }
 
@@ -120,11 +194,14 @@ impl SwarmHost for DeployHost {
             Some(park) => Some((park.wait, park.deadline)),
             // The restored-instance path: its park was never returned by
             // anything here, so ask. A fresh instance answers `None` and
-            // runs.
-            None => inst.current_wait().map(|wait| {
-                let deadline = wait.timeout.map(|t| Instant::now() + t);
-                (wait, deadline)
-            }),
+            // runs. A woken instance is not this path: its park was kept.
+            None => match inst.current_wait() {
+                None => None,
+                Some(wait) => match self.arm(&wait) {
+                    Ok(deadline) => Some((wait, deadline)),
+                    Err(why) => return self.fault(id, why),
+                },
+            },
         };
         self.tick += 1;
         let step = match park {
@@ -151,8 +228,9 @@ impl SwarmHost for DeployHost {
                         inst.resume_timeout()
                     }
                     None => {
-                        // Keep the deadline armed across residency: the
-                        // cache entry may have been dropped by a wake.
+                        // Arm it, if this is the first sight of it (the
+                        // restored path); for a park already kept this is
+                        // the same entry again.
                         self.parked.insert(id.0, Park { wait, deadline });
                         return Driven::Alive;
                     }
@@ -161,29 +239,17 @@ impl SwarmHost for DeployHost {
         };
         match step {
             Ok(step) => self.note(id, step),
-            Err(e) => {
-                self.parked.remove(&id.0);
-                // A deployment that loses an instance says so. The swarm
-                // reports the fault to the parent's system/events queue,
-                // which is right for supervised children — but the root has
-                // no supervisor but this process, and a deployment that
-                // drains silently after a root fault reads as a mystery
-                // exit, not a diagnosis.
-                let _ = writeln!(
-                    drt_platform::stdio::stderr(),
-                    "drt: instance {} faulted: {e}",
-                    id.0
-                );
-                Driven::Faulted(e.to_string())
-            }
+            Err(e) => self.fault(id, e.to_string()),
         }
     }
 
-    fn attached(&mut self, id: InstanceId) {
-        self.parked.remove(&id.0);
-    }
+    // `attached` and `detached` keep the park: hibernation is not the end
+    // of a wait, and a woken instance resumes the wait it parked on, with
+    // the deadline it armed — not a fresh one (§6). Ids are never reused,
+    // so a build finds nothing under its id to clear.
 
-    fn detached(&mut self, id: InstanceId) {
+    /// The slot is gone for good; so is its park.
+    fn released(&mut self, id: InstanceId) {
         self.parked.remove(&id.0);
     }
 }
@@ -235,8 +301,8 @@ pub fn enforce_residency(sw: &mut Deployment, root: InstanceId, max_resident: us
     }
 }
 
-/// The earliest pending deadline across every park, so the idle sleep never
-/// overshoots a timeout an instance asked for.
+/// The earliest pending deadline across every park, resident or hibernated,
+/// so the idle sleep never overshoots a timeout an instance asked for.
 fn next_deadline(host: &DeployHost) -> Option<Instant> {
     host.parked.values().filter_map(|p| p.deadline).min()
 }
@@ -274,6 +340,7 @@ impl DeployDriver {
     /// how many instances are alive, which is the loop's own termination
     /// condition.
     pub fn step(&mut self) -> usize {
+        self.wake_due();
         let alive = self.sw.step();
         // What a dead node's connectors lost, attributed to it: the release
         // report (doc/Plan-0.7.0.md §2.5) reaches stderr here, in the one
@@ -293,6 +360,39 @@ impl DeployDriver {
             enforce_residency(&mut self.sw, self.root, max_resident);
         }
         alive
+    }
+
+    /// Wake every hibernated instance whose park deadline has passed, so
+    /// the step that follows drives it and the existing timeout path in
+    /// [`DeployHost`] hands the guest the timeout on its own wait (§6.5:
+    /// the deadline wakes its owner; it does not kill it).
+    ///
+    /// **Before** the step, for the swarm's own reason for waking on a
+    /// message first: a woken instance gets a whole step in the same pass.
+    /// Woken after it, the instance would meet [`enforce_residency`] with
+    /// its activity still stale and be hibernated again undriven — at
+    /// budget, forever. A resident instance's deadline is not this
+    /// function's: `drive` answers it.
+    ///
+    /// A snapshot that will not restore is the one wake that fails, and it
+    /// is the swarm's own fatal case on the message path, for its reason:
+    /// the alternative is a handle alive, non-resident and permanently
+    /// unreachable. Reported like any fault, then the instance is killed.
+    fn wake_due(&mut self) {
+        let now = Instant::now();
+        for id in self.sw.host().inner().due(now) {
+            if self.sw.resident(id) {
+                continue;
+            }
+            if let Err(e) = self.sw.wake(id) {
+                let _ = writeln!(
+                    drt_platform::stdio::stderr(),
+                    "drt: instance {} faulted: its park deadline passed and it will not wake: {e}",
+                    id.0
+                );
+                let _ = self.sw.kill(id);
+            }
+        }
     }
 
     /// One line, if this profile declared arguments and the root program never
@@ -722,7 +822,13 @@ fn deployment(
 ) -> Result<(Deployment, InstanceId), String> {
     let source = root_source(config)?;
     let engine = Arc::new(DiluviumEngine::new().map_err(|e| e.to_string())?);
-    let mut sw = Swarm::new(engine, PumpHost::new(DeployHost::new(), dispatcher));
+    // The floor belongs where hibernation is possible, and nothing
+    // hibernates without a residency policy (§6.4).
+    let host = match config.residency {
+        Some(r) => DeployHost::with_park_floor(Duration::from_millis(r.park_floor_ms)),
+        None => DeployHost::new(),
+    };
+    let mut sw = Swarm::new(engine, PumpHost::new(host, dispatcher));
     let root = sw
         // The root's numeric bounds are the deployment's ceiling, and
         // every child attenuates from them -- the same shape as the budget

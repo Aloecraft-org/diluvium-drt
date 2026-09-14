@@ -11,8 +11,8 @@
 //! crypto/random          {bytes=N}                 -> N CSPRNG bytes, hex
 //! crypto/hash            {data}                    -> lowercase hex, SHA-256
 //! crypto/hmac            {data, key?, expect?}     -> hex, or {valid}
-//! crypto/jwt_sign        {claims, ttl?}            -> a JWT-HS256 string
-//! crypto/jwt_verify      {token}                   -> {valid, claims?|reason}
+//! crypto/jwt_sign        {claims, ttl?, key?}      -> a JWT-HS256 string; `key` is a label, carried as `kid`
+//! crypto/jwt_verify      {token}                   -> {valid, claims?|reason}; `kid` selects the key
 //! crypto/turn_credential {user, ttl?}              -> {username, password, …}
 //! crypto/derive          {label}                   -> nothing; `label` now names a key
 //! ```
@@ -24,16 +24,24 @@
 //!
 //! ## The JWT decisions, because the mistakes here are famous
 //!
-//! - The header is **fixed**, and `jwt_verify` compares the header segment
-//!   against its known base64url form rather than parsing it. That closes
-//!   alg-confusion (`alg:none`, `alg:RS256`) structurally — there is no
-//!   header field a token can set to change how it is checked.
+//! - The header is **rebuilt, never read**. `jwt_verify` decodes the header
+//!   segment for one member, `kid`; looks that label up for the caller;
+//!   rebuilds the header that key would produce; and compares the segment
+//!   against it byte-wise. `alg` is never read out of a token, so there is
+//!   no header field a token can set to change how it is checked — that
+//!   closes alg-confusion (`alg:none`, `alg:RS256`) structurally, and a
+//!   header with two `kid`s or its members reordered fails the same compare
+//!   with no rule about either (`doc/Plan-0.7.0.md` §5.2). A token with no
+//!   `kid` rebuilds to the constant header and verifies under the default
+//!   key, behind `jwt.accept_unkeyed` (default on, §5.3).
 //! - The host owns `iat` and `exp`. `jwt_sign` drops any `iat`/`exp`/`nbf`
 //!   a guest put in its claims and injects its own, so a guest cannot mint
 //!   a token that never expires. `jwt_verify` **requires an integer `exp`**,
 //!   so a token with no enforceable expiry is treated as one that has none.
-//! - `jwt_verify` checks the MAC **before** it decodes or parses anything,
-//!   so the JSON parser only ever runs on bytes this host signed.
+//! - `jwt_verify` checks the MAC **before** it decodes or parses the
+//!   payload, so the claims parser only ever runs on bytes this host
+//!   signed. The one thing read ahead of the MAC is the header's `kid`,
+//!   and the header is then compared whole against a rebuild, not trusted.
 //! - The configured secret never signs directly. Two independent subkeys
 //!   are derived from it — one for `crypto/hmac`, one for the JWT MAC — so
 //!   that `crypto/hmac` (a general "sign these bytes" grant) cannot be used
@@ -73,6 +81,12 @@
 //! - **A label may not shadow a configured secret.** The name is refused
 //!   at `derive`, naming both, rather than found by a signature that
 //!   verifies on one host and not another.
+//! - **`jwt_sign {key = <label>}` signs under the label's JWT subkey** and
+//!   names the label in the header as `kid`, which is how a per-room or
+//!   per-issuer signing key is reachable at runtime (§5.2). A
+//!   `crypto.secrets` name is refused there by name: those bytes are
+//!   shared with a peer by definition, and `KDF_LABEL_JWT` is public, so
+//!   the peer could mint tokens this host would accept.
 //!
 //! ## Two departures from the C, both noted rather than hidden
 //!
@@ -142,6 +156,12 @@ pub const KDF_LABEL_DERIVE: &[u8] = b"drt/crypto/derive/v1";
 /// this rather than reading an `alg` out of the token, which is what closes
 /// alg-confusion structurally.
 pub const JWT_HEADER_B64: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9";
+/// The header of a token signed under a label: this prefix, the label as a
+/// JSON string, and the closing brace —
+/// `{"alg":"HS256","typ":"JWT","kid":"<label>"}` in that member order,
+/// every time. `jwt_verify` rebuilds it from the label a token names and
+/// compares byte-wise, so it is as much a constant as [`JWT_HEADER_B64`].
+const JWT_HEADER_KID_PREFIX: &str = r#"{"alg":"HS256","typ":"JWT","kid":"#;
 
 const B64URL: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -260,7 +280,25 @@ struct NamedSecret {
     secret: SecretSource,
 }
 
-/// The wiring: the master secret, the default ttl, and the two optional
+/// The `jwt` block: what `jwt_verify` accepts beyond a token that names its
+/// key. Unknown keys here are refused at wiring like the rest of the scope.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JwtConfig {
+    /// Whether a token with no `kid` verifies under the default key. On by
+    /// default, which costs nothing and is right for anyone holding tokens
+    /// already issued; off, every token must name its key, and retiring
+    /// the default key is a config change rather than a release
+    /// (`doc/Plan-0.7.0.md` §5.3).
+    #[serde(default = "default_accept_unkeyed")]
+    accept_unkeyed: bool,
+}
+
+fn default_accept_unkeyed() -> bool {
+    true
+}
+
+/// The wiring: the master secret, the default ttl, and the optional
 /// blocks. `ConnectorWiring::scope` carries a *place* for `fs` and `sql`;
 /// for `crypto` the place is the key, and it is the one scope in the system
 /// whose contents deliberately never reach the program it serves.
@@ -275,6 +313,8 @@ struct CryptoScope {
     turn: Option<TurnConfig>,
     #[serde(default)]
     secrets: Vec<NamedSecret>,
+    #[serde(default)]
+    jwt: Option<JwtConfig>,
 }
 
 /// The derived working keys. The master is not kept: nothing signs with it
@@ -294,6 +334,9 @@ struct Keys {
     /// shared secret (a webhook sender's), raw for the same reason as
     /// TURN's.
     secrets: Vec<(String, Vec<u8>)>,
+    /// `jwt.accept_unkeyed`: whether a token naming no `kid` verifies under
+    /// `k_jwt`.
+    accept_unkeyed: bool,
 }
 
 struct TurnKeys {
@@ -352,6 +395,11 @@ impl Keys {
             default_ttl: clamp_ttl(scope.default_ttl).unwrap_or(3600),
             turn,
             secrets,
+            accept_unkeyed: scope
+                .jwt
+                .as_ref()
+                .map(|j| j.accept_unkeyed)
+                .unwrap_or_else(default_accept_unkeyed),
         })
     }
 }
@@ -374,7 +422,7 @@ struct CryptoScopeType;
 
 impl ScopeType for CryptoScopeType {
     fn describe(&self) -> &str {
-        "a signing key: { key_file | key_env | key, default_ttl?, turn?, secrets? }"
+        "a signing key: { key_file | key_env | key, default_ttl?, turn?, secrets?, jwt? }"
     }
 
     fn validate(&self, scope: Option<&Scope>) -> Result<(), String> {
@@ -574,6 +622,16 @@ impl CryptoConnector {
             .map(|k| k.hmac)
     }
 
+    /// The JWT subkey of a label `caller` registered — the other half of
+    /// §4.2a's split, and never the same bytes as [`Self::label_hmac_key`].
+    fn label_jwt_key(&self, caller: Caller, label: &str) -> Option<[u8; 32]> {
+        self.labels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&(caller, label.to_string()))
+            .map(|k| k.jwt)
+    }
+
     fn keys(&self, scope: Option<&Scope>) -> Result<std::sync::Arc<Keys>, CallError> {
         let Some(scope) = scope else {
             return Err(CallError::new(
@@ -683,9 +741,81 @@ fn do_hmac(
     Ok(rmpv::Value::from(to_hex(&mac)))
 }
 
-fn do_jwt_sign(keys: &Keys, args: Option<&rmpv::Value>) -> CallResult {
+/// The header a token signed under `label` carries, base64url unpadded:
+/// [`JWT_HEADER_KID_PREFIX`], the label as a JSON string, the closing
+/// brace. Built the same way by `jwt_sign` and by `jwt_verify`'s rebuild,
+/// which is what makes the byte compare meaningful.
+fn kid_header_b64(label: &str) -> String {
+    let mut header = String::with_capacity(JWT_HEADER_KID_PREFIX.len() + label.len() + 3);
+    header.push_str(JWT_HEADER_KID_PREFIX);
+    header.push_str(&serde_json::Value::String(label.to_string()).to_string());
+    header.push('}');
+    B64URL.encode(header.as_bytes())
+}
+
+/// The `kid` a token's header segment names, if it names one as a string.
+/// This is the **only** thing ever read out of a header: it selects which
+/// label to look up, and the header is then rebuilt from that label and
+/// compared whole. A segment that does not decode, or decodes to something
+/// other than an object, or carries no string `kid`, names nothing —
+/// and then only the constant header can match.
+fn header_kid(segment: &str) -> Option<String> {
+    let bytes = B64URL.decode(segment).ok()?;
+    let serde_json::Value::Object(members) = serde_json::from_slice(&bytes).ok()? else {
+        return None;
+    };
+    members.get("kid")?.as_str().map(str::to_string)
+}
+
+fn do_jwt_sign(
+    c: &CryptoConnector,
+    keys: &Keys,
+    caller: Caller,
+    args: Option<&rmpv::Value>,
+) -> CallResult {
     let iat = now_secs();
     let ttl = clamp_ttl(int_field(args, "ttl")).unwrap_or(keys.default_ttl);
+
+    // args.key names a label this caller derived (§5.2): the token carries
+    // it as `kid` and is signed under the label's JWT subkey — never its
+    // hmac subkey, which is what keeps `crypto/hmac {key = label}` from
+    // being a forging oracle for it (§4.2a). Absent, the constant header
+    // and the default derived JWT key, as it always was.
+    let (header, k_jwt): (String, [u8; 32]) = match field(args, "key") {
+        None => (JWT_HEADER_B64.to_string(), keys.k_jwt),
+        Some(named) => {
+            let name = as_str(named).ok_or_else(|| {
+                CallError::new(
+                    "crypto/jwt_sign: args.key must be a string naming a derived label (crypto/derive)",
+                )
+            })?;
+            // A configured secret is refused by name, and before the labels
+            // are consulted: those bytes are shared with a peer by
+            // definition, and KDF_LABEL_JWT is public, so a subkey derived
+            // from them is one the peer can derive too. The subkey split
+            // protects a key from a guest that never sees the bytes; it
+            // cannot protect one from a party that already has them.
+            if keys.secrets.iter().any(|(n, _)| n == name) {
+                return Err(CallError::new(format!(
+                    "crypto/jwt_sign: '{}' is a configured secret \
+                     (config.connectors.crypto.secrets); those bytes are shared with a peer \
+                     and cannot back a token this host trusts — derive a label (crypto/derive) \
+                     and name that instead",
+                    &name[..name.len().min(64)]
+                )));
+            }
+            match c.label_jwt_key(caller, name) {
+                Some(k) => (kid_header_b64(name), k),
+                // Never-derived and released read alike, as in hmac.
+                None => {
+                    return Err(CallError::new(format!(
+                        "crypto/jwt_sign: this caller derived no label named '{}' (crypto/derive)",
+                        &name[..name.len().min(64)]
+                    )))
+                }
+            }
+        }
+    };
 
     // The payload JSON, built in the claims' own order so the token bytes
     // match the C host's for the same claim set: the guest's claims, minus
@@ -724,10 +854,10 @@ fn do_jwt_sign(keys: &Keys, args: Option<&rmpv::Value>) -> CallResult {
 
     // token = header "." base64url(payload) "." base64url(hmac(header.payload))
     let mut token = String::with_capacity(payload.len() * 2);
-    token.push_str(JWT_HEADER_B64);
+    token.push_str(&header);
     token.push('.');
     token.push_str(&B64URL.encode(payload.as_bytes()));
-    let mac = hmac_sha256(&keys.k_jwt, token.as_bytes());
+    let mac = hmac_sha256(&k_jwt, token.as_bytes());
     token.push('.');
     token.push_str(&B64URL.encode(mac));
     if token.len() > JWT_MAX_TOKEN {
@@ -736,7 +866,12 @@ fn do_jwt_sign(keys: &Keys, args: Option<&rmpv::Value>) -> CallResult {
     Ok(rmpv::Value::from(token))
 }
 
-fn do_jwt_verify(keys: &Keys, args: Option<&rmpv::Value>) -> CallResult {
+fn do_jwt_verify(
+    c: &CryptoConnector,
+    keys: &Keys,
+    caller: Caller,
+    args: Option<&rmpv::Value>,
+) -> CallResult {
     let token = field(args, "token")
         .and_then(as_str)
         .ok_or_else(|| CallError::new("crypto/jwt_verify: args.token must be a string"))?;
@@ -744,24 +879,48 @@ fn do_jwt_verify(keys: &Keys, args: Option<&rmpv::Value>) -> CallResult {
         return verify_fail("oversized");
     }
 
-    // Structure: exactly two dots, and the header segment is the one we
-    // emit. Comparing the header rather than parsing it is what closes
-    // alg-confusion — there is no field a token can set to be checked
-    // differently.
+    // Structure: exactly two dots.
     let Some(dot1) = token.find('.') else {
         return verify_fail("malformed");
     };
     let Some(dot2) = token[dot1 + 1..].find('.').map(|i| dot1 + 1 + i) else {
         return verify_fail("malformed");
     };
-    if &token[..dot1] != JWT_HEADER_B64 {
-        return verify_fail("alg");
-    }
+    let header = &token[..dot1];
+
+    // The key is selected from the `kid` the header names and from nothing
+    // else in the token (§5.2): look the label up for this caller, rebuild
+    // the header that key would produce, and compare the segment against
+    // it byte for byte. `alg` is never read, so there is no field a token
+    // can set to be checked differently; a header carrying two `kid`s, or
+    // its members in another order, fails the compare with no rule about
+    // either. No `kid` rebuilds to the constant header and the default
+    // key — the branch `accept_unkeyed` bounds (§5.3).
+    let k_jwt: [u8; 32] = match header_kid(header) {
+        Some(kid) => {
+            let Some(k) = c.label_jwt_key(caller, &kid) else {
+                return verify_fail("kid");
+            };
+            if header != kid_header_b64(&kid) {
+                return verify_fail("alg");
+            }
+            k
+        }
+        None => {
+            if header != JWT_HEADER_B64 {
+                return verify_fail("alg");
+            }
+            if !keys.accept_unkeyed {
+                return verify_fail("unkeyed");
+            }
+            keys.k_jwt
+        }
+    };
 
     // The MAC over "header.payload" and a constant-time compare against the
-    // token's signature, BEFORE decoding or parsing anything: the parser
-    // below only ever runs on bytes this host signed with its own key.
-    let mac = hmac_sha256(&keys.k_jwt, &token.as_bytes()[..dot2]);
+    // token's signature, BEFORE decoding or parsing the payload: the claims
+    // parser below only ever runs on bytes this host signed with its own key.
+    let mac = hmac_sha256(&k_jwt, &token.as_bytes()[..dot2]);
     let expect = B64URL.encode(mac);
     let sig = &token[dot2 + 1..];
     if sig.len() != expect.len()
@@ -971,8 +1130,8 @@ impl Connector for CryptoConnector {
             "crypto/random" => do_random(args),
             "crypto/hash" => do_hash(args),
             "crypto/hmac" => do_hmac(self, &keys, asker.caller, args),
-            "crypto/jwt_sign" => do_jwt_sign(&keys, args),
-            "crypto/jwt_verify" => do_jwt_verify(&keys, args),
+            "crypto/jwt_sign" => do_jwt_sign(self, &keys, asker.caller, args),
+            "crypto/jwt_verify" => do_jwt_verify(self, &keys, asker.caller, args),
             "crypto/turn_credential" => do_turn_credential(&keys, args),
             "crypto/derive" => do_derive(self, &keys, asker, args),
             other => Err(CallError::new(format!(
