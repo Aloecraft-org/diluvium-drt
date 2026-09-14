@@ -1,13 +1,30 @@
-# Ownership: a node holds a resource, and loses it when it dies
+# 0.7.0: ownership, and the four things discofetch is blocked on
 
-**Status:** spec, for the release after `0.6.2`. Proposed `0.7.0`; the
-version is set when the first change lands, per `doc/Plan-2026-09.md`.
-Nothing here is built. Where a claim rests on code it names the file.
+**Status:** the plan of record for the release after `0.6.2`, and the
+document to review. The version number is provisional until the first
+change lands, per `doc/Plan-2026-09.md`. Nothing here is built. Where a
+claim rests on code it names the file, and where it rests on a trace into
+diluvium it says so.
 
-This is one idea with three consequences. The idea is that a host-held
-resource can belong to a *node* rather than to the root. The
-consequences are node-owned sockets, scoped plugins, and the half of
-inter-root that is transport rather than protocol.
+It was `doc/Ownership.md` until the release grew past that name; the git
+history is continuous through the rename.
+
+## 0. What ships
+
+| # | what | why it is here |
+|---|---|---|
+| §2 | **The ownership dimension** — a host-held resource belongs to a node or to the root, and is released when its owner dies | the spine; everything below is a consumer of it |
+| §3 | **Node-owned sockets**, stream and datagram | one faulty client bounded to one node; parked services that hibernate |
+| §4 | **`crypto/derive { label }`** — a runtime name for a host-held subkey | a room made at 14:02 cannot have a config entry |
+| §5 | **`kid` in the JWT header**, algorithm from the named key | cheap now, a token-format break in a year |
+| §6 | **The park deadline outlives residency** | nothing fires on bytes *not* arriving |
+| §7 | Plugins: **deferred**, design settled | the dispatcher change does not belong in an expedited release |
+| §8 | Inter-root: **prerequisites only** | its blocker is a document, not code |
+
+One idea holds it together: **a host-held resource can belong to a node
+rather than to the root.** Sockets are its first consumer and the one that
+exercises it hardest. §4's labels are its second, for free. Plugins would
+be its third and are the reason §7 is deferred rather than dropped.
 
 ---
 
@@ -75,7 +92,7 @@ are one mechanism; pick `node` alone and `root` becomes a special case
 that has to be added back the first time something genuinely is a
 singleton. It is also why `sql`'s current behaviour is not a wart to be
 removed but a scope to be *stated*: it is `root`, and saying so is the fix
-(§8, risk 3).
+(§11, risk 3).
 
 ### 2.4 Death releases; hibernation does not
 
@@ -290,9 +307,203 @@ working ones are the resident ones. That is what makes "spawn a node per
 client" reasonable where thread-per-connection would not be, and it is the
 strongest argument for building this at all.
 
-## 4. Plugins, scoped
+## 4. `crypto/derive { label }` — a runtime name for a host-held subkey
 
-### 4.1 The scope question, settled the other way
+### 4.1 The problem it solves
+
+`crypto.secrets` is a map of host-held named secrets and `crypto/hmac`'s
+`key` argument names one (`connectors/crypto/src/lib.rs`). That is the
+right shape and it is config-time only. discofetch creates rooms, tokens
+and peers **at runtime**; a room made at 14:02 has no entry in a config
+written at deploy time.
+
+A guest can already build HKDF-expand out of the `hmac` that ships. The
+reason not to is that the derived key then lives in the guest heap, **and
+the guest heap is the snapshot** (§3.5: a whole-instance snapshot carries
+guest state verbatim). That defeats the property the connector's own
+header claims — the signing key lives in the host and never in a guest,
+in neither its heap nor its snapshot.
+
+### 4.2 The call
+
+```
+    crypto/derive { label = "room:" .. room_id }    -- returns nothing
+    crypto/hmac   { data = msg, key = "room:" .. room_id }
+```
+
+**Returning nothing is the whole point.** The call registers a subkey
+derived from the configured master under a runtime label; the guest gets a
+name it can pass to `hmac`, and never the bytes.
+
+Both halves exist. Named-secret lookup is `keys.secrets.iter().find(...)`
+in the `hmac` path. Keyed derivation from a master is `Keys::derive`,
+which already computes `hmac_sha256(&master, KDF_LABEL_HMAC)` and the same
+for JWT. This is those two wired to a guest-callable name.
+
+### 4.3 A label has an owner, like every other resource
+
+A derived label is a host-held resource, so §2.3 applies and it needs no
+new lifetime rule: **`node` by default, released when the owner dies**;
+`root` if declared. It survives hibernation exactly as a socket does
+(§2.4), so a parked node wakes with its labels intact.
+
+discofetch asked for process-scoped and said they re-derive on boot. Node
+scope is strictly better and costs nothing extra here: `room:<id>` dies
+with the node that made it rather than lingering until the process ends,
+and re-derivation on boot still works because a label is derived, not
+stored.
+
+### 4.4 The refusals
+
+- A label that collides with a configured `crypto.secrets` name is refused
+  at the `derive`, naming both. Silently shadowing a config-time secret
+  with a runtime one is the kind of thing that is discovered by a signature
+  that verifies on one host and not another.
+- `hmac` with an unknown key name already refuses; an expired or released
+  label reads as unknown, which is the same sentence.
+- `derive` is its own capability, `host:crypto/derive`. Holding
+  `host:crypto/hmac` does not imply the right to mint new keys.
+
+## 5. `kid` in the JWT header, and the algorithm from the named key
+
+### 5.1 What is there now, and what it costs
+
+`jwt_sign {claims, ttl?}` and `jwt_verify {token}` sign with one host key.
+The header is a **constant** — `{"alg":"HS256","typ":"JWT"}`, base64url,
+unpadded — and `jwt_verify` compares the header segment against that
+constant rather than reading an `alg` out of the token. That closes alg
+confusion structurally, and it stays.
+
+The consequence is that there is exactly one signing key for the life of
+the host: no rotation without invalidating every live token, and no
+per-issuer or per-room key.
+
+**The argument for doing this now is the format, not the crypto.** Adding
+`kid` later means every token already issued is re-minted or accepted
+through a second verifier during a migration window. Adding a second
+algorithm later turns the byte-wise header compare into a set compare — a
+security-sensitive edit made under whatever pressure created the need for
+it. Both are cheap today.
+
+### 5.2 The shape
+
+```
+    jwt_sign   { claims, key = <label> }    -- header carries kid = <label>
+    jwt_verify { token }                    -- kid selects the key
+```
+
+Two properties held, and the first is the one that matters:
+
+- **The verifier is selected from the named key, never from the token's
+  `alg`.** Look up `kid`, take that key's type, rebuild the header that
+  key would produce, compare byte-wise. It is today's property with one
+  indirection in front of it: still no field a token can set to change how
+  it is checked. An unknown `kid` refuses; a header that does not match
+  the rebuilt one refuses.
+- **`key` accepts a `crypto.secrets` name or a §4 label**, so a per-room
+  or per-issuer signing key is reachable at runtime.
+
+### 5.3 Tokens already issued keep working
+
+A token with no `kid` rebuilds to exactly today's constant header and
+verifies against the default derived key — so the migration window this
+release exists to avoid needing is not needed for this release either.
+That fallback is removable later; it is not load-bearing.
+
+### 5.4 Asymmetric is not in this release
+
+EdDSA/ed25519 is wanted when a self-hosted fetchpoint's tokens must verify
+without the issuer online, and that is open on discofetch's side rather
+than shipped. The `kid`-plus-algorithm-from-key-type shape above makes
+adding a key type **additive** rather than a format break, which is the
+part that has to be right now. If ed25519 lands cheaply alongside, take
+it; if it does not, nothing is lost.
+
+## 6. The park deadline outlives residency
+
+### 6.1 The one-liner half, and not the other one
+
+`detached` drops the park (`crates/drt/src/start.rs:186`), so a hibernated
+instance has no timer. `doc/Next.md` already priced this: most of the
+timer exists — `next_deadline` computes the earliest across the roster and
+the drive loop sleeps toward it — and the residency half is nearly a
+one-liner, while the snapshot-store half is weeks.
+
+**Only the residency half is in scope.** The deadline outlives `detached`
+and `next_deadline` considers hibernated instances. A deadline still dies
+with the process, and that is deliberate: scheduled things surviving a
+restart means the deadline belongs in the snapshot store, which is a
+different release.
+
+### 6.2 What it is not for
+
+Not row expiry. discofetch handles that lazily and it works: a read-time
+predicate for correctness, a counted sweep on the write path, a boot sweep
+for restart. All three ship already and need nothing from DRT.
+
+### 6.3 What it is for
+
+**A parked node whose peer died quietly.** Readiness (§3.4) fires on bytes
+arriving. Nothing fires on bytes *not* arriving, and the one case lazy
+evaluation structurally cannot reach is a node waiting on something that
+will never come.
+
+It is §11's risk 4 with the arrow reversed. There, a deadline firing too
+eagerly wakes a node that should have stayed parked. Here, no deadline at
+all parks a node forever. Both are the same mechanism read from opposite
+ends, which is why they belong in one release.
+
+### 6.4 What fires
+
+The deadline **wakes** its owner; it does not kill it. A guest sees the
+timeout on its own wait and decides what that means — unlike a vital
+handle (§3.3), where the runtime decides because the resource is gone. A
+timeout says "nothing arrived", which is information, not a verdict.
+
+## 7. Plugins: the design is settled and the build is deferred
+
+### 7.0 Why it waits
+
+`PluginConnector` is **not in this release**, and the reason is risk
+budget rather than dependency. If §2 lands first, plugins are technically
+unblocked: caller identity and per-instance release are exactly what
+per-node plugins need, and both scopes would work with no manifest churn.
+
+What does not fit is §7.3 — routing on `(family, scope key)` instead of a
+name touches the path every hostcall takes. §3 already carries caller
+identity, per-instance release, the handle table, vital handles, two verb
+sets, accept-and-transfer and the readiness push. Adding a change to the
+universal hostcall path on top of an expedited release is how a schedule
+becomes a rollback.
+
+There is a design reason as well as a scheduling one. **Sockets are the
+better first consumer of §2** — they exercise it harder than plugins do:
+transfer, vital handles, hibernation, readiness. Plugins as the second
+consumer then *validate* the abstraction rather than co-designing it, and
+if it is wrong that is one consumer's rework instead of two.
+
+So §2 must be built **resource-agnostic, not socket-shaped**: `release`
+walks resources rather than sockets, caller identity lands on the
+connector trait rather than on a socket-specific path, and the handle
+table is keyed by owner and kind rather than by fd. Free if decided now,
+and the whole difference between plugins being a follow-on and plugins
+being a second implementation. §4's labels are the cheap proof that it
+generalised, since they are a host-held resource that is not a socket.
+
+**What is already built and stays put:** `crates/drt-plugin` — the frame
+codec, the session state machine that multiplexes calls over one stream,
+and the unix transport that execs a plugin with its channel on fd 3.
+Thirty-eight tests, nine of them against a real subprocess. Nothing wires
+it into `drt`, so it adds nothing to the release artifact.
+
+One cost of deferring, stated so it is not a surprise: a library nothing
+consumes is unproven in a way tests do not fix. That channel has never
+carried a real workload, and the first true integration should be expected
+to find something — most likely in readiness timing, or in how a plugin's
+death surfaces to a caller. Which argues for plugins being the *early*
+part of the next release rather than the late part.
+
+### 7.1 The scope question, settled the other way
 
 `doc/Plugins.md` assumed one plugin process serving many callers — the
 manifest's `max_inflight` is written for it. That assumption came from the
@@ -323,7 +534,7 @@ own terms:
   process ambient.
 - *It is expensive to start.* Also the node author's call.
 
-### 4.2 Shared *state* is still composed
+### 7.2 Shared *state* is still composed
 
 `root` scope shares a **process**. It does not make that process a safe
 place to keep state several nodes read and write: a pool, a cache, a
@@ -334,14 +545,14 @@ So the two are not alternatives. Use `root` when the resource is a
 singleton by nature — it binds one port, it owns one device. Use a
 fronting node when what is shared is state.
 
-### 4.3 What changes
+### 7.3 What changes, when it is built
 
 The dispatcher routes **family → connector** today. It becomes
 **(family, scope key) → instance**: lazily started on first call, released
 when its key's owner dies (§2.3, §2.4). This is the riskiest change in the
 release and the one that depends hardest on §2.1.
 
-### 4.4 What the channel work already gives it
+### 7.4 What the channel work already gives it
 
 Built, green, and unchanged by this: the frame codec, the session state
 machine that multiplexes calls over one stream, and the unix transport
@@ -351,7 +562,7 @@ meaningful — one node may have several calls outstanding.
 A plugin still cannot answer `denied`. That word is the dispatcher's, and
 per-node instances do not change who may say it.
 
-## 5. Inter-root: the prerequisites, not the feature
+## 8. Inter-root: the prerequisites, not the feature
 
 **What lands:** the `Channel` generalisation. A stream obtained by dialing
 rather than by forking is `doc/Plugins.md` §4.1's `tcp` row, and it is
@@ -372,7 +583,7 @@ The reason to name inter-root here at all is sequencing: the transport a
 peer link will need is the transport a plugin uses, proven against a real
 subprocess first, in a release that was not blocked on it.
 
-## 6. Acceptance
+## 9. Acceptance
 
 1. A connector can learn its caller, and the nine existing connectors
    compile without edits.
@@ -409,13 +620,25 @@ subprocess first, in a release that was not blocked on it.
    superseded wording, so a change on either side is caught here.
 14. An acceptor spawns a child per connection and the child joins its
    subject by message; no second listener is bound per subject.
-15. Every refusal in `doc/Peers.md` still refuses, unchanged.
+15. `crypto/derive` registers a label, `crypto/hmac` signs with it, and
+   **the key is nowhere in the guest** — the test snapshots the node after
+   signing and searches the whole stream for the derived bytes.
+16. A derived label dies with its owner, survives its owner's hibernation,
+   and a label colliding with a `crypto.secrets` name is refused at the
+   `derive` naming both.
+17. A token signed under `kid = <label>` verifies; the same token with its
+   header swapped for another key's refuses; an unknown `kid` refuses; and
+   a token carrying **no** `kid` still verifies against the default key,
+   so nothing already issued breaks.
+18. A hibernated instance's park deadline still fires, waking it rather
+   than killing it, and the guest sees a timeout on its own wait.
+19. Every refusal in `doc/Peers.md` still refuses, unchanged.
 
-## 7. Not here, named so nobody builds it early
+## 10. Not here, named so nobody builds it early
 
 - **A plugin process per connection.** A node per connection is cheap; a
   process per connection is not.
-- **Inter-root delivery.** §5.
+- **Inter-root delivery.** §8.
 - **Handle transfer across roots.** Transfer is within one swarm. A handle
   that crossed a root boundary would be a capability escaping its ceiling.
 - **Per-tenant process isolation.** §3.7. A root is a process; this
@@ -429,9 +652,9 @@ subprocess first, in a release that was not blocked on it.
   to a node's queue — the pattern §3.4 describes, aimed at a clock instead
   of a socket. The pattern exists; the connector does not.
 
-## 8. Risks, in the order I would worry about them
+## 11. Risks, in the order I would worry about them
 
-1. **The dispatcher change (§4.3).** Routing on a pair rather than a name
+1. **The dispatcher change (§7.3), when plugins are built.** Routing on a pair rather than a name
    touches the path every hostcall takes. It wants the tightest test.
 2. **Handle transfer (§3.2)** is new surface with no precedent in this
    repository, and it is a deliberate hole in an invariant.
@@ -450,3 +673,59 @@ subprocess first, in a release that was not blocked on it.
    thing standing between a hibernating service and a connection that
    silently goes unserved. It wants a test with a real socket, not a
    loopback.
+
+## 12. The order of work
+
+Each step ends green and nothing depends on a step after it.
+
+1. **The ownership dimension** (§2), resource-agnostic from the first
+   commit: caller identity on the trait, a handle table keyed by owner and
+   kind, `release(owner)` on the death path, and a release that can say
+   what it lost. No sockets yet.
+2. **`crypto/derive`** (§4). Two connector halves wired to a name, and the
+   proof that §2 generalises past sockets while it is still cheap to
+   change if it does not.
+3. **Stream sockets** (§3.1–3.2): listen, accept, read, write, close, and
+   the transfer verb.
+4. **Vital handles** (§3.3), including the hibernating owner.
+5. **Readiness push** (§3.4), and the acceptance-13 test that a woken node
+   keeps both its queue handles and its socket.
+6. **Datagram sockets** (§3.1), the second verb set on a mechanism already
+   proven by the first.
+7. **`kid`** (§5). Independent of everything above; can move earlier if
+   someone is free, since it touches only the crypto connector.
+8. **The park deadline** (§6). The residency half only.
+9. **The `Channel` generalisation** (§8), which is `ProcessChannel` minus
+   the fork and lands nothing user-visible.
+
+Steps 1 and 2 are the ones to get right; 3 through 6 are where the
+schedule actually goes; 7 and 8 are small and separable, which makes them
+the right things to hand to a second pair of hands.
+
+## 13. Open for this review round
+
+Named so reviewers argue with the right things rather than the whole
+document.
+
+1. **Handle transfer (§3.2)** is the only genuinely new API surface and a
+   deliberate hole in the §2.2 invariant. If one thing in here is wrong,
+   the prior says it is this.
+2. **Vital handles (§3.3)** add a second way a node dies. Is "the runtime
+   killed it because its socket closed" distinguishable enough, in the
+   event a supervisor sees, from a trap or a budget kill?
+3. **Label lifetime (§4.3).** Node scope was chosen over the
+   process-scoped one that was asked for. Anyone holding a label across a
+   node boundary would be surprised by it, and nobody should be holding a
+   label across a node boundary.
+4. **`kid` without asymmetric (§5.4).** The claim is that adding a key
+   type later is additive. Worth one adversarial read: is there a case
+   where a verifier selected from the named key still has to branch on
+   something the token said?
+5. **The UDP fork (§3.1).** It is written as a commitment that the
+   guest-shuffled path is not the relay. If anyone thinks it will become
+   the relay anyway, say so now rather than after it ships.
+6. **`sql` (§11, risk 3).** Not this release's to change. The open
+   question is narrower: can two nodes name one database today, and so
+   share one transaction?
+7. **Anything in §10** that a reader assumed was in and is not — that list
+   exists to be argued with.

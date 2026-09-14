@@ -23,7 +23,7 @@ connected later, and define the interface the later ones use.
 > a connector backing behind the existing `Connector` trait — stands and is
 > being built. What this document assumes about *instance scope* does not:
 > it inherits the C host's one-process-serving-many-callers shape, from a
-> host that had no nodes to own anything. `doc/Ownership.md` §2.3 settles
+> host that had no nodes to own anything. `doc/Plan-0.7.0.md` §2.3 settles
 > it the other way: a plugin *declares* its scope, `node` or `root`, and
 > absent a declaration it is `node` — an instance per calling node. `root`
 > stays available for a genuine singleton and costs what it always cost,
