@@ -96,7 +96,11 @@ pub struct DeployHost {
 }
 
 struct Park {
-    wait: WaitSet,
+    /// The wait set as the instance issued it. `None` after a wake: queue
+    /// handles are runtime identity, valid for one residency
+    /// (`drt_swarm::engine::QueueHandle`), so a restored instance is asked
+    /// again at its next drive. The deadline is what outlives residency.
+    wait: Option<WaitSet>,
     /// When the wait's timeout elapses, on our clock. `None` for a park
     /// with no timeout — those wait for a message and nothing else.
     deadline: Option<Instant>,
@@ -152,7 +156,13 @@ impl DeployHost {
         match step {
             Step::Parked(wait) => match self.arm(&wait) {
                 Ok(deadline) => {
-                    self.parked.insert(id.0, Park { wait, deadline });
+                    self.parked.insert(
+                        id.0,
+                        Park {
+                            wait: Some(wait),
+                            deadline,
+                        },
+                    );
                     Driven::Alive
                 }
                 Err(why) => self.fault(id, why),
@@ -191,10 +201,20 @@ fn ready(wait: &WaitSet, info: QueueStatus) -> bool {
 impl SwarmHost for DeployHost {
     fn drive(&mut self, id: InstanceId, _caps: &CapSet, inst: &mut dyn Instance) -> Driven {
         let park = match self.parked.get(&id.0) {
-            Some(park) => Some((park.wait, park.deadline)),
-            // The restored-instance path: its park was never returned by
+            Some(Park {
+                wait: Some(wait),
+                deadline,
+            }) => Some((*wait, *deadline)),
+            // Woken: the deadline it armed survived residency; the handles
+            // did not, so the restored instance is asked for its wait
+            // again. Not re-armed — the floor was checked when it parked.
+            Some(Park {
+                wait: None,
+                deadline,
+            }) => inst.current_wait().map(|wait| (wait, *deadline)),
+            // The restored-instance path with no park kept: never seen by
             // anything here, so ask. A fresh instance answers `None` and
-            // runs. A woken instance is not this path: its park was kept.
+            // runs.
             None => match inst.current_wait() {
                 None => None,
                 Some(wait) => match self.arm(&wait) {
@@ -230,8 +250,14 @@ impl SwarmHost for DeployHost {
                     None => {
                         // Arm it, if this is the first sight of it (the
                         // restored path); for a park already kept this is
-                        // the same entry again.
-                        self.parked.insert(id.0, Park { wait, deadline });
+                        // the same entry again, with the wait re-issued.
+                        self.parked.insert(
+                            id.0,
+                            Park {
+                                wait: Some(wait),
+                                deadline,
+                            },
+                        );
                         return Driven::Alive;
                     }
                 }
@@ -243,10 +269,19 @@ impl SwarmHost for DeployHost {
         }
     }
 
-    // `attached` and `detached` keep the park: hibernation is not the end
-    // of a wait, and a woken instance resumes the wait it parked on, with
-    // the deadline it armed — not a fresh one (§6). Ids are never reused,
-    // so a build finds nothing under its id to clear.
+    // `detached` keeps the park: hibernation is not the end of a wait, and
+    // a woken instance resumes the wait it parked on with the deadline it
+    // armed — not a fresh one (§6). Ids are never reused, so a build finds
+    // nothing under its id to clear.
+
+    /// A wake (or a build, which finds nothing). The deadline stays; the
+    /// wait's handles were the old residency's and are dropped, so the
+    /// next drive asks the restored instance for its wait again.
+    fn attached(&mut self, id: InstanceId) {
+        if let Some(park) = self.parked.get_mut(&id.0) {
+            park.wait = None;
+        }
+    }
 
     /// The slot is gone for good; so is its park.
     fn released(&mut self, id: InstanceId) {
