@@ -16,7 +16,7 @@
 //!
 //! Fan-out: none.
 //!
-//! The descriptor count is process-wide, so this file is its own binary,
+//! The socket count is process-wide, so this file is its own binary,
 //! its tests hold `SERIAL` for their whole body so they never overlap, and
 //! each takes its baseline after the engine is up.
 
@@ -43,8 +43,25 @@ const DILUVIUM_VERIFIED: &str = "2c2f920d7fcfacd72e396e13b8ece5cd11f6d60d";
 /// process's descriptors at once would read each other's sockets.
 static SERIAL: Mutex<()> = Mutex::new(());
 
-fn open_fds() -> usize {
-    std::fs::read_dir("/proc/self/fd").unwrap().count()
+/// The sockets this process holds. Sockets only, because that is what
+/// every assertion here is about, and because a descriptor another thread
+/// opens and closes in passing would otherwise land in a baseline and be
+/// missed by every check after it. That happened: glibc reads
+/// `/proc/sys/vm/overcommit_memory` once, at the first thread teardown
+/// that trims a heap — the previous test's thread exiting just after it
+/// released `SERIAL` — and the read overlapped the next test's baseline
+/// about once in fifty runs.
+fn open_sockets() -> usize {
+    std::fs::read_dir("/proc/self/fd")
+        .unwrap()
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .ok()
+                .and_then(|entry| std::fs::read_link(entry.path()).ok())
+                .is_some_and(|target| target.to_string_lossy().starts_with("socket:"))
+        })
+        .count()
 }
 
 fn socket_dispatcher() -> Dispatcher {
@@ -202,7 +219,7 @@ fn drive_until_parked(sw: &mut Deployment, id: InstanceId) {
 fn a_killed_node_has_its_sockets_closed_and_the_loss_is_attributed() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let mut sw = deployment();
-    let before = open_fds();
+    let before = open_sockets();
 
     // Listen, tell the test where, accept one connection, park.
     const PROGRAM: &str = "\
@@ -222,7 +239,7 @@ fn a_killed_node_has_its_sockets_closed_and_the_loss_is_attributed() {
     let mut client = TcpStream::connect(addr.as_str()).unwrap();
     drive_until_parked(&mut sw, root);
     // The listener, the accepted side, and this test's own client.
-    assert_eq!(open_fds(), before + 3);
+    assert_eq!(open_sockets(), before + 3);
 
     sw.kill(root).unwrap();
     assert_eq!(sw.alive(), 0);
@@ -235,7 +252,7 @@ fn a_killed_node_has_its_sockets_closed_and_the_loss_is_attributed() {
         format!("a connection with {}, cut", client.local_addr().unwrap())
     );
 
-    assert_eq!(open_fds(), before + 1, "only the client remains");
+    assert_eq!(open_sockets(), before + 1, "only the client remains");
     let mut probe = [0u8; 1];
     assert_eq!(
         client.read(&mut probe).unwrap(),
@@ -297,7 +314,7 @@ fn acceptor() -> String {
 fn an_acceptor_spawns_a_child_per_connection_and_each_serves_its_own() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let mut sw = deployment();
-    let before = open_fds();
+    let before = open_sockets();
     let mut caps = socket_caps();
     caps.push(Grant::grant("lifecycle"));
     let root = sw
@@ -312,7 +329,7 @@ fn an_acceptor_spawns_a_child_per_connection_and_each_serves_its_own() {
     let child_b = drive_until_child_joins(&mut sw, root, "room:2");
     assert_ne!(child_a, child_b);
     assert_eq!(
-        open_fds(),
+        open_sockets(),
         before + 1 + 2 + 2,
         "one listener, two accepted sides, two clients: no listener per subject"
     );
@@ -345,7 +362,7 @@ fn an_acceptor_spawns_a_child_per_connection_and_each_serves_its_own() {
     let child_c = drive_until_child_joins(&mut sw, root, "room:3");
     assert_ne!(child_c, child_a);
     assert_eq!(
-        open_fds(),
+        open_sockets(),
         before + 1 + 2 + 2,
         "b's pair is gone, c's is here"
     );
@@ -365,12 +382,12 @@ fn an_acceptor_spawns_a_child_per_connection_and_each_serves_its_own() {
         sw.host_mut().take_lost().is_empty(),
         "a clean end loses nothing"
     );
-    assert_eq!(open_fds(), before + 1 + 2, "the listener and c's pair");
+    assert_eq!(open_sockets(), before + 1 + 2, "the listener and c's pair");
 
     drop(c);
     sw.kill(root).unwrap();
     assert_eq!(sw.alive(), 0);
-    assert_eq!(open_fds(), before);
+    assert_eq!(open_sockets(), before);
 }
 
 /// A service node (§3.3): it claims its first connection as vital and a
@@ -420,7 +437,7 @@ fn supervisor() -> String {
 fn a_vital_handle_ends_its_hibernating_owner_and_the_parent_hears_ended() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let mut sw = deployment();
-    let before = open_fds();
+    let before = open_sockets();
     let mut caps = socket_caps();
     caps.push(Grant::grant("lifecycle"));
     let root = sw
@@ -441,7 +458,7 @@ fn a_vital_handle_ends_its_hibernating_owner_and_the_parent_hears_ended() {
             other.local_addr().unwrap()
         )
     );
-    assert_eq!(open_fds(), before + 1 + 2 + 2);
+    assert_eq!(open_sockets(), before + 1 + 2 + 2);
 
     drive_until_parked(&mut sw, service);
     sw.hibernate(service).unwrap();
@@ -476,7 +493,7 @@ fn a_vital_handle_ends_its_hibernating_owner_and_the_parent_hears_ended() {
 
     drop(other);
     assert_eq!(
-        open_fds(),
+        open_sockets(),
         before + 1,
         "the listener, and nothing of the service's"
     );
@@ -540,7 +557,7 @@ fn a_hibernated_service_is_woken_by_bytes_and_keeps_both_kinds_of_handle() {
     );
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let mut sw = deployment();
-    let before = open_fds();
+    let before = open_sockets();
     let mut caps = socket_caps();
     caps.push(Grant::grant("lifecycle"));
     let root = sw
@@ -556,7 +573,7 @@ fn a_hibernated_service_is_woken_by_bytes_and_keeps_both_kinds_of_handle() {
         .strip_prefix("holding ")
         .and_then(|n| n.parse().ok())
         .expect("the service names its handle");
-    assert_eq!(open_fds(), before + 1 + 2);
+    assert_eq!(open_sockets(), before + 1 + 2);
 
     for round in [b"first" as &[u8], b"second"] {
         drive_until_parked(&mut sw, service);
@@ -583,5 +600,5 @@ fn a_hibernated_service_is_woken_by_bytes_and_keeps_both_kinds_of_handle() {
     }
     assert!(!sw.ids().contains(&service), "exited on end-of-file");
     assert!(sw.host_mut().take_lost().is_empty());
-    assert_eq!(open_fds(), before + 1, "the listener, and nothing else");
+    assert_eq!(open_sockets(), before + 1, "the listener, and nothing else");
 }
