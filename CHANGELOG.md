@@ -12,9 +12,25 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
-## [0.6.2-rc.1] - unreleased (prerelease)
+## [0.7.0-rc.1] - 2026-09-14 (prerelease)
 
-`v0.6.2-rc.1`
+`v0.7.0-rc.1` &middot; dv ABI 1 &middot; diluvium `2c2f920d7fcf` (build14)
+
+**A node can own a socket.** A host-held resource now belongs to
+exactly one instance, closes when that instance dies, survives its
+hibernation, and can be handed to a child by an explicit verb. The
+first resource is a stream socket: `listen`, `accept`, `read`,
+`write`, `close`, and `transfer`/`claim` for the acceptor-per-root
+pattern where each connection gets its own node. A handle declared
+`vital` ends its owner when it ends — hibernating or not — and a
+handle declared `wake` pushes readiness to the owner's queue, so a
+service parks for hours and is rebuilt by the bytes that need it.
+The same dimension gives `crypto/derive`, a runtime name for a key
+the guest never sees; `kid` in the JWT header selects that key at
+verify time; and a park deadline now outlives residency behind a
+floor. `doc/Plan-0.7.0.md` is the plan; `doc/0.7.0-ledger.md` is
+what landed against it and what did not: datagram sockets slipped,
+plugins are built as a crate and not wired.
 
 **Groundwork for peers, and nothing that talks to one.** A root can
 declare the peers it expects, an address can name one, and every
@@ -23,8 +39,82 @@ reaches a peer: what landed is the shape the later slice needs, so
 that slice changes who fills a field in rather than what the field
 is. `doc/Peers.md` says what is reserved and what refuses by name.
 
+Same core, same ABI as 0.6.1-rc.2. `full` gains the `socket`
+connector; the other profiles' connector lists are unchanged.
+
+### Connectors
+
+- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `data`, `socket`, `listen`
+- `slim`: `time`, `fs`, `crypto`, `listen`
+- `wasi`: `time`, `fs`, `crypto`, `sql`, `listen`
+- `web`: `time`, `fs`, `crypto`
+
+### Core features
+
+- `full`: `regex`
+- `slim`: `regex`
+- `wasi`: `regex`
+- `web`: `regex`
+
 ### Added
 
+- **The `socket` connector, `full` only** (`connector-socket`):
+  `socket/listen {addr}`, `accept {handle}`, `read {handle, max?}`,
+  `write {handle, data}`, `close {handle}`, over non-blocking
+  `std::net`. A call that must wait — `accept`, `read`, `write` —
+  is pending in the hostcall pump rather than spinning in the guest.
+  The wiring scope's `allow` names the `ip:port` literals a listen
+  may bind (port 0 for any), checked at boot. No `connect`: a
+  node-owned socket is for protocols the node serves.
+- **Transfer, as offer and claim.** `socket/transfer {handle, to}`
+  addresses an offer to an instance; the handle stays the holder's
+  until `socket/claim {handle?}` moves it under the same number, and
+  the holder is a stranger to it from then on. `claim {}` waits for
+  the first offer addressed to the caller, so a per-connection child
+  needs no message telling it its handle. One acceptor per root,
+  one listener, a child per connection.
+- **`vital` and `wake` on `listen`, `accept` and `claim`.** A vital
+  handle ends its owner when it ends — the far end hangs up, or the
+  owner closes it — and the kill works against a hibernating owner,
+  with no guest rebuilt to notice. A `wake` handle pushes
+  `{handle, ready = "read" | "accept"}` to the owner's `inbox` (or a
+  named queue) when it becomes readable, once per edge, re-armed by
+  the owner's own read or accept; the push is what wakes a node that
+  hibernated with `wake_on_message`.
+- **`ended`, a lifecycle event of its own.** A supervisor hears a
+  vital-handle kill as `{event = "ended", id, detail}`, distinguishable
+  from `faulted` and `exited` without reading a reason string.
+- **`crypto/derive {label}`** registers a name for a key derived
+  from the host's master, under the caller's `host:crypto/derive`
+  scope (a label pattern such as `room:*`). `crypto/hmac {key =
+  <label>}` and `jwt_sign {key = <label>}` then sign with that
+  label's own subkeys — hmac and jwt distinct, so an hmac cannot mint
+  a token — and the key is nowhere in the guest or its snapshot. Two
+  owners deriving one label reach one key; a label dies with its
+  owner; a label may not shadow a `crypto.secrets` name.
+- **`kid` in the JWT header.** `jwt_sign {key = <label>}` writes
+  `kid`, and `jwt_verify` selects the key from it: the header the
+  named key would produce is rebuilt and compared byte-wise, so
+  `alg` is never read from the token, and a token with two `kid`s or
+  reordered members refuses. `jwt.accept_unkeyed` in the crypto scope
+  (default `true`) keeps tokens with no `kid` verifying.
+- **The ownership dimension, for connector authors.**
+  `Connector::call_as` receives an `Asker { caller, grants }`;
+  `release(caller)` runs on death and never on hibernation;
+  `ended()` and `notices()` let a connector say, unprompted, that a
+  vital resource ended or a handle became ready. `Handles<R>` keys
+  any resource by `(Caller, HandleId)`, with `rekey` for transfer;
+  a handle used by a node that does not own it reads `no such
+  handle`, whether it exists elsewhere or not. Every method is
+  defaulted: the nine existing connectors compile unedited.
+- **`drt-plugin`, built and not wired.** The plugin channel's frames
+  (length-prefixed msgpack), a polled `Session` over any `Channel`,
+  and two transports: `ProcessChannel` (fork, exec, fd 3) and
+  `TcpChannel` (dial, or adopt a stream). A `PluginConnector` behind
+  the `Connector` trait is the next release's (`doc/Plan-0.7.0.md`
+  §7); nothing in a deployment reaches this crate yet.
+- **`residency.park_floor_ms`**, default 30 000: the shortest timed
+  park a deployment under a residency policy may arm.
 - **`QueueAddress`, with an optional peer component** that can name
   a root by id or a plugin by name, so the hostcall ABI does not
   change shape when peer delivery lands. Every write this build
@@ -39,6 +129,19 @@ is. `doc/Peers.md` says what is reserved and what refuses by name.
 
 ### Changed
 
+- **A park deadline outlives residency.** A hibernated instance
+  keeps the deadline it armed; when it passes, the instance is woken
+  — never killed — and sees the timeout on its own wait. The wait
+  set itself is re-asked of the restored instance, since queue
+  handles are runtime identity for one residency.
+- **`sql` states its one-database-per-node constraint** in its own
+  documentation: one connection per database path for the whole
+  root, so two nodes naming one database interleave on one
+  transaction. Give each node its own database, or write one
+  autocommitted statement at a time.
+- **A dead node's connectors report what they lost**, attributed:
+  `drt: instance N lost a connection with <peer>, cut` on stderr,
+  from the one place every drive loop passes through.
 - **The ceiling an operator consents to is `{caps, peers}`.**
   `project.json` gained `peers`, a list of expected peers by role,
   and it is hashed with `caps` — so declaring an inbound peer
@@ -77,15 +180,36 @@ is. `doc/Peers.md` says what is reserved and what refuses by name.
 
 ### Known issues
 
-- **Two documents disagree about what a plugin is.** `doc/Peers.md`
-  makes one a peer reached by a queue write; `doc/Plugins.md`, from
-  2026-09-03, makes it a connector backing. Neither is superseded
-  and both are marked; reconciling them belongs to the slice that
-  chooses the endpoint.
+- **The readiness push wakes only a node that hibernated with
+  `wake_on_message`.** A node the residency policy swapped out
+  without it is, to the push as to any message, not there — the
+  connection it holds goes unserved until something else wakes it
+  (`doc/Plan-0.7.0.md` §11 risk 4). Spawn a service node with
+  `wake_on_message = true`.
+- **Datagram sockets did not ship**, and neither did a plugin
+  connector: `doc/Plan-0.7.0.md` §3.1's UDP verbs slipped with their
+  launch consumer, and §7 defers `PluginConnector`. Acceptance 8, 9,
+  10 and 12 of that plan are open.
 - **Editing an existing peer role's `queues` does not prompt.** The
   widen relation is over role names, so such an edit moves the
   ceiling hash and lands on the silent narrowing path. Asserted as a
   decision rather than left to be found.
+
+### Upgrading
+
+- **A deployment with a `residency` policy refuses a timed park
+  shorter than `residency.park_floor_ms` (default 30 000).** A parked
+  node's deadline is now a wake rate, so a program under residency
+  that waits with a short timeout faults at arm time with the
+  timeout and the floor named. Lengthen the timeout, or lower the
+  floor for that deployment. Without a residency policy nothing
+  changes.
+- **`jwt_verify` reads `kid`.** A token without one verifies as
+  before while `jwt.accept_unkeyed` is on (the default); set it
+  `false` in the crypto scope once every live token names its key.
+- **`jwt_sign` refuses a `crypto.secrets` name as `key`.** Those
+  bytes are shared with a peer and cannot back a token this host
+  trusts; derive a label instead.
 
 
 ## [0.6.1-rc.2] - 2026-09-13 (prerelease)

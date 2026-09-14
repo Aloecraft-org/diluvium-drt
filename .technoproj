@@ -1,8 +1,8 @@
 {
   "TECHNO_VERSION": {
     "major": 0,
-    "minor": 6,
-    "patch": 2,
+    "minor": 7,
+    "patch": 0,
     "pre": { "kind": "rc", "n": 1 }
   },
   "TECHNO_CHANGELOG": {

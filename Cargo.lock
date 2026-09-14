@@ -1125,7 +1125,7 @@ dependencies = [
 
 [[package]]
 name = "drt"
-version = "0.6.2-rc.1"
+version = "0.7.0-rc.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -1173,7 +1173,7 @@ dependencies = [
 
 [[package]]
 name = "drt-bench"
-version = "0.6.2-rc.1"
+version = "0.7.0-rc.1"
 dependencies = [
  "clap",
  "drt-caps",
@@ -1187,7 +1187,7 @@ dependencies = [
 
 [[package]]
 name = "drt-caps"
-version = "0.6.2-rc.1"
+version = "0.7.0-rc.1"
 dependencies = [
  "rmpv",
  "serde",
@@ -1196,7 +1196,7 @@ dependencies = [
 
 [[package]]
 name = "drt-config"
-version = "0.6.2-rc.1"
+version = "0.7.0-rc.1"
 dependencies = [
  "base64",
  "drt-caps",
@@ -1211,7 +1211,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector"
-version = "0.6.2-rc.1"
+version = "0.7.0-rc.1"
 dependencies = [
  "async-trait",
  "drt-caps",
@@ -1225,7 +1225,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-crypto"
-version = "0.6.2-rc.1"
+version = "0.7.0-rc.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -1245,7 +1245,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-data"
-version = "0.6.2-rc.1"
+version = "0.7.0-rc.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1264,7 +1264,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-exec"
-version = "0.6.2-rc.1"
+version = "0.7.0-rc.1"
 dependencies = [
  "async-trait",
  "drt-caps",
@@ -1278,7 +1278,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-fs"
-version = "0.6.2-rc.1"
+version = "0.7.0-rc.1"
 dependencies = [
  "async-trait",
  "drt-caps",
@@ -1293,7 +1293,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-rest"
-version = "0.6.2-rc.1"
+version = "0.7.0-rc.1"
 dependencies = [
  "async-trait",
  "drt-caps",
@@ -1309,7 +1309,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-socket"
-version = "0.6.2-rc.1"
+version = "0.7.0-rc.1"
 dependencies = [
  "async-trait",
  "drt-caps",
@@ -1321,7 +1321,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-sql"
-version = "0.6.2-rc.1"
+version = "0.7.0-rc.1"
 dependencies = [
  "async-trait",
  "drt-caps",
@@ -1336,7 +1336,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-ssh"
-version = "0.6.2-rc.1"
+version = "0.7.0-rc.1"
 dependencies = [
  "async-trait",
  "drt-caps",
@@ -1354,7 +1354,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-ssmtp"
-version = "0.6.2-rc.1"
+version = "0.7.0-rc.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -1371,7 +1371,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-time"
-version = "0.6.2-rc.1"
+version = "0.7.0-rc.1"
 dependencies = [
  "async-trait",
  "drt-caps",
@@ -1384,7 +1384,7 @@ dependencies = [
 
 [[package]]
 name = "drt-hostcall"
-version = "0.6.2-rc.1"
+version = "0.7.0-rc.1"
 dependencies = [
  "rmp-serde",
  "rmpv",
@@ -1393,7 +1393,7 @@ dependencies = [
 
 [[package]]
 name = "drt-platform"
-version = "0.6.2-rc.1"
+version = "0.7.0-rc.1"
 dependencies = [
  "getrandom 0.3.4",
  "web-time",
@@ -1401,7 +1401,7 @@ dependencies = [
 
 [[package]]
 name = "drt-plugin"
-version = "0.6.2-rc.1"
+version = "0.7.0-rc.1"
 dependencies = [
  "libc",
  "rmp-serde",
@@ -1412,7 +1412,7 @@ dependencies = [
 
 [[package]]
 name = "drt-swarm"
-version = "0.6.2-rc.1"
+version = "0.7.0-rc.1"
 dependencies = [
  "async-trait",
  "diluvium",
@@ -1429,7 +1429,7 @@ dependencies = [
 
 [[package]]
 name = "drt-web"
-version = "0.6.2-rc.1"
+version = "0.7.0-rc.1"
 dependencies = [
  "clap",
  "console_error_panic_hook",
