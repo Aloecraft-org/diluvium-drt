@@ -309,6 +309,22 @@ impl<H: SwarmHost> SwarmHost for PumpHost<H> {
         ended
     }
 
+    /// What the connectors have to say, encoded; the root is never an
+    /// instance and the wrapped host may have its own.
+    fn notices(&mut self) -> Vec<(InstanceId, String, Vec<u8>)> {
+        let mut notices = self.inner.notices();
+        for notice in self.dispatcher.notices() {
+            let Caller::Node(id) = notice.owner else {
+                continue;
+            };
+            let mut bytes = Vec::new();
+            if rmpv::encode::write_value(&mut bytes, &notice.message).is_ok() {
+                notices.push((InstanceId(id), notice.queue, bytes));
+            }
+        }
+        notices
+    }
+
     fn released(&mut self, id: InstanceId) {
         self.pump.forget(id);
         for what in self.dispatcher.release(&Caller::Node(id.0)) {

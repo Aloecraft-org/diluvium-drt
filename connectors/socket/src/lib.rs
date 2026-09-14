@@ -2,13 +2,13 @@
 //! host holds by descriptor (`doc/Plan-0.7.0.md` §3.1).
 //!
 //! ```text
-//!   socket/listen {addr, vital?}  -> {handle = n, addr = "ip:port"}
-//!   socket/accept {handle, vital?} -> {handle = m, peer = "ip:port"}
+//!   socket/listen {addr, vital?, wake?}   -> {handle = n, addr = "ip:port"}
+//!   socket/accept {handle, vital?, wake?} -> {handle = m, peer = "ip:port"}
 //!   socket/read   {handle, max?}  -> {data = <bytes>, eof = bool}
 //!   socket/write  {handle, data}  -> {written = n}
 //!   socket/close  {handle}        -> nil
 //!   socket/transfer {handle, to}  -> nil                   (the holder)
-//!   socket/claim  {handle?, vital?} -> {handle, peer | addr} (the target)
+//!   socket/claim  {handle?, vital?, wake?} -> {handle, peer | addr} (the target)
 //! ```
 //!
 //! A guest never holds a descriptor; it holds a number the host issued to
@@ -28,6 +28,18 @@
 //! **No `connect`.** The verb set is listen, accept, read, write, close
 //! (§3.1). A node-owned socket is for protocols the node *serves*; TLS
 //! terminates outside and proxies in (§10).
+//!
+//! **A `wake` handle pushes readiness to its owner's queue (§3.4).**
+//! `wake = true` names the owner's `inbox`, `wake = "<queue>"` another of
+//! its queues. When the handle becomes readable — bytes or end-of-file on
+//! a connection, a connection waiting on a listener — the connector says
+//! `{handle = n, ready = "read" | "accept"}` on that queue, once, and says
+//! it again only after the owner has read or accepted: level-triggered,
+//! re-armed by use, so a queue never fills with the same fact. The push is
+//! what wakes a hibernated owner, by the swarm's own `wake_on_message`
+//! path — an owner that hibernated without asking to be woken is, to this
+//! push as to any other, not there. A service that wants to park for
+//! hours waits on its queue rather than in `read`; this is how it hears.
 //!
 //! **A `vital` handle ends its owner (§3.3).** Declared at creation or at
 //! claim — by the node whose lifetime is being tied, since the flag is a
@@ -63,6 +75,7 @@
 //! Replay: a reply is a message like any other, logged and replayed. A
 //! replay does **not** re-bind, re-accept, or re-send.
 
+use std::collections::VecDeque;
 use std::future::poll_fn;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -72,7 +85,7 @@ use std::task::Poll;
 use serde::Deserialize;
 
 use drt_caps::{Scope, ScopeType};
-use drt_connector::{Asker, CallError, CallResult, Caller, Connector, HandleId, Handles};
+use drt_connector::{Asker, CallError, CallResult, Caller, Connector, HandleId, Handles, Notice};
 
 // ---------------------------------------------------------------------------
 // Surface. [`SocketConnector`] answers the seven calls the `impl Connector`
@@ -86,6 +99,9 @@ pub const READ_MAX: usize = 64 * 1024;
 /// The most one `write` takes: 1 MiB, exec's own output cap. Past it the
 /// call is refused rather than truncated, like every other cap in this tree.
 pub const WRITE_MAX: usize = 1024 * 1024;
+/// How many waiting connections one readiness sweep takes into a `wake`
+/// listener's backlog per step, so a flood is bounded per tick.
+pub const ACCEPT_SWEEP: usize = 16;
 
 /// The connector. One table of sockets, each keyed by who holds it; the
 /// table is what makes §2's rules hold here without restating them.
@@ -212,6 +228,22 @@ impl Connector for SocketConnector {
         ended
     }
 
+    /// Every `wake` handle that became readable since its owner last used
+    /// it, as one notice each on the queue the owner named.
+    fn notices(&self) -> Vec<Notice> {
+        let mut out = Vec::new();
+        self.sockets.each(|owner, handle, socket| {
+            if let Some((queue, ready)) = socket.became_ready() {
+                out.push(Notice {
+                    owner,
+                    queue,
+                    message: reply(vec![("handle", handle.0.into()), ("ready", ready.into())]),
+                });
+            }
+        });
+        out
+    }
+
     fn finish(&self) -> Vec<String> {
         self.offers()
             .retain(|o| o.from != Caller::Root && o.to != Caller::Root);
@@ -232,10 +264,17 @@ struct Offer {
     handle: HandleId,
 }
 
+/// `wake` is the queue readiness goes to, if the owner asked; `notified`
+/// is whether it has been told and has not used the handle since.
 enum Socket {
     Listener {
         listener: TcpListener,
         vital: bool,
+        wake: Option<String>,
+        notified: bool,
+        /// Connections a readiness sweep already took, handed out by the
+        /// next `accept` before the listener is asked again.
+        backlog: VecDeque<(TcpStream, SocketAddr)>,
     },
     /// `eof` once the far end has finished sending: closing such a
     /// connection cuts nothing, and the report says nothing.
@@ -244,10 +283,79 @@ enum Socket {
         peer: SocketAddr,
         eof: bool,
         vital: bool,
+        wake: Option<String>,
+        notified: bool,
     },
 }
 
 impl Socket {
+    fn set_wake(&mut self, w: Option<String>) {
+        match self {
+            Socket::Listener { wake, notified, .. } | Socket::Stream { wake, notified, .. } => {
+                *wake = w;
+                *notified = false;
+            }
+        }
+    }
+
+    /// Whether this became readable and its owner has not been told: the
+    /// queue to say it on and the word for it. A look, under the table's
+    /// lock: one non-blocking peek or up to [`ACCEPT_SWEEP`] accepts. A
+    /// connection at end-of-file is said once and then never again — the
+    /// owner's next read sees the end, and there is nothing after it.
+    fn became_ready(&mut self) -> Option<(String, &'static str)> {
+        match self {
+            Socket::Listener {
+                listener,
+                wake: Some(queue),
+                notified,
+                backlog,
+                ..
+            } => {
+                if *notified {
+                    return None;
+                }
+                while backlog.len() < ACCEPT_SWEEP {
+                    match listener.accept() {
+                        Ok(accepted) => backlog.push_back(accepted),
+                        Err(_) => break,
+                    }
+                }
+                if backlog.is_empty() {
+                    return None;
+                }
+                *notified = true;
+                Some((queue.clone(), "accept"))
+            }
+            Socket::Stream {
+                stream,
+                eof,
+                wake: Some(queue),
+                notified,
+                ..
+            } => {
+                if *notified || *eof {
+                    return None;
+                }
+                let readable = match stream.peek(&mut [0u8; 1]) {
+                    Ok(0) => {
+                        *eof = true;
+                        true
+                    }
+                    Ok(_) => true,
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => false,
+                    Err(_) => true,
+                };
+                if !readable {
+                    return None;
+                }
+                *notified = true;
+                Some((queue.clone(), "read"))
+            }
+            _ => None,
+        }
+    }
+
     fn is_vital(&self) -> bool {
         match self {
             Socket::Listener { vital, .. } | Socket::Stream { vital, .. } => *vital,
@@ -405,9 +513,17 @@ impl SocketConnector {
             .local_addr()
             .map_err(|e| CallError::new(format!("listen on {addr}: {e}")))?;
         let vital = vital_arg(&args);
-        let handle = self
-            .sockets
-            .insert(caller, Socket::Listener { listener, vital });
+        let wake = wake_arg(&args);
+        let handle = self.sockets.insert(
+            caller,
+            Socket::Listener {
+                listener,
+                vital,
+                wake,
+                notified: false,
+                backlog: VecDeque::new(),
+            },
+        );
         Ok(reply(vec![
             ("handle", handle.0.into()),
             ("addr", bound.to_string().into()),
@@ -417,12 +533,25 @@ impl SocketConnector {
     async fn accept(&self, caller: Caller, args: Option<rmpv::Value>) -> CallResult {
         let handle = handle_arg(args.as_ref())?;
         let vital = args.as_ref().is_some_and(vital_arg);
+        let wake = args.as_ref().and_then(wake_arg);
         let (stream, peer) = self
             .until_ready(caller, handle, |socket| match socket {
-                Socket::Listener { listener, .. } => match listener.accept() {
-                    Ok(accepted) => Ok(Some(accepted)),
-                    Err(e) => not_yet(e, "accept"),
-                },
+                Socket::Listener {
+                    listener,
+                    backlog,
+                    notified,
+                    ..
+                } => {
+                    // Using the listener re-arms its readiness.
+                    *notified = false;
+                    if let Some(taken) = backlog.pop_front() {
+                        return Ok(Some(taken));
+                    }
+                    match listener.accept() {
+                        Ok(accepted) => Ok(Some(accepted)),
+                        Err(e) => not_yet(e, "accept"),
+                    }
+                }
                 Socket::Stream { .. } => Err(CallError::new(
                     "accept: the handle is a connection, not a listener",
                 )),
@@ -439,6 +568,8 @@ impl SocketConnector {
                 peer,
                 eof: false,
                 vital,
+                wake,
+                notified: false,
             },
         );
         Ok(reply(vec![
@@ -467,12 +598,22 @@ impl SocketConnector {
         let mut buf = vec![0u8; max];
         let n = self
             .until_ready(caller, handle, |socket| match socket {
-                Socket::Stream { stream, eof, .. } => match stream.read(&mut buf) {
+                Socket::Stream {
+                    stream,
+                    eof,
+                    notified,
+                    ..
+                } => match stream.read(&mut buf) {
                     Ok(0) => {
                         *eof = true;
+                        *notified = false;
                         Ok(Some(0))
                     }
-                    Ok(n) => Ok(Some(n)),
+                    Ok(n) => {
+                        // Reading re-arms readiness: the next bytes are news.
+                        *notified = false;
+                        Ok(Some(n))
+                    }
                     Err(e) => not_yet(e, "read"),
                 },
                 Socket::Listener { .. } => Err(not_a_connection("read")),
@@ -601,9 +742,11 @@ impl SocketConnector {
         // The claimant's declaration, fresh: the flag is the owner's, and
         // the owner just changed.
         let vital = args.as_ref().is_some_and(vital_arg);
+        let wake = args.as_ref().and_then(wake_arg);
         self.sockets
             .with(caller, handle, |s| {
                 s.set_vital(vital);
+                s.set_wake(wake);
                 s.describe(handle)
             })
             .map_err(|e| CallError::new(e.to_string()))
@@ -637,6 +780,16 @@ impl SocketConnector {
 
 /// `vital = true`, or nothing. Anything else is nothing: a flag that ties
 /// a lifetime is not inferred from a truthy value.
+/// `wake = true` is the owner's `inbox`; `wake = "<queue>"` is that queue;
+/// anything else is no wake.
+fn wake_arg(args: &rmpv::Value) -> Option<String> {
+    match field(args, "wake") {
+        Some(rmpv::Value::Boolean(true)) => Some("inbox".into()),
+        Some(rmpv::Value::String(s)) => s.as_str().map(String::from),
+        _ => None,
+    }
+}
+
 fn vital_arg(args: &rmpv::Value) -> bool {
     field(args, "vital").and_then(|v| v.as_bool()) == Some(true)
 }

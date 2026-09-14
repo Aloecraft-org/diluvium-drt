@@ -35,6 +35,19 @@ pub struct Asker<'a> {
     pub grants: &'a [Scope],
 }
 
+/// Something a connector has to say to an owner unprompted: a message for
+/// one of the owner's queues (`doc/Plan-0.7.0.md` §3.4). Readiness is the
+/// first kind — a handle became readable — and a timer firing would be
+/// another; the shape does not care. The host delivers it as any push
+/// into that queue, which is what wakes a hibernated owner that asked to
+/// be woken on a message.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Notice {
+    pub owner: Caller,
+    pub queue: String,
+    pub message: rmpv::Value,
+}
+
 /// What a connector answers with. `Err` becomes `status = "error"` with the
 /// detail worded for the program to read; `denied` is never a connector's to
 /// say — the dispatcher decides it from the capability set, so a mock cannot
@@ -139,6 +152,18 @@ pub trait Connector: Send + Sync {
     ///
     /// The default holds nothing vital and reports nothing.
     fn ended(&self) -> Vec<(Caller, String)> {
+        Vec::new()
+    }
+
+    /// What this connector has to tell owners unprompted since the last
+    /// ask (§3.4): each a [`Notice`] for one of the owner's queues. Asked
+    /// every step, so an answer is a look and not a wait. A notice the
+    /// host cannot deliver — the queue full, the owner gone or parked
+    /// without asking to be woken — is dropped like any such push; a
+    /// connector says a thing again only when it becomes true again.
+    ///
+    /// The default has nothing to say.
+    fn notices(&self) -> Vec<Notice> {
         Vec::new()
     }
 }
@@ -272,6 +297,16 @@ impl Dispatcher {
             .wired
             .values()
             .flat_map(|w| w.connector.ended())
+            .collect()
+    }
+
+    /// Everything every connector has to tell an owner unprompted (§3.4),
+    /// name order.
+    pub fn notices(&self) -> Vec<Notice> {
+        self.registry
+            .wired
+            .values()
+            .flat_map(|w| w.connector.notices())
             .collect()
     }
 

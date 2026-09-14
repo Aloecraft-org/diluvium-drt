@@ -10,6 +10,8 @@
 //! - [`Handles::remove`] — take one back, by handle.
 //! - [`Handles::rekey`] — move one to another owner, number unchanged.
 //! - [`Handles::take_where`] — sweep out what a predicate says is done.
+//! - [`Handles::each`] — look at every resource, for a sweep that removes
+//!   nothing.
 //! - [`Handles::release`] — take back everything one node owns. The death
 //!   path (`doc/Plan-0.7.0.md` §2.4).
 //! - [`Handles::drain_root`] — take back everything the root owns. The
@@ -203,6 +205,15 @@ impl<R> Handles<R> {
         keys.into_iter()
             .filter_map(|key| inner.table.remove(&key).map(|r| (key.0, key.1, r)))
             .collect()
+    }
+
+    /// Visit every resource, whoever holds it, under the table's lock: a
+    /// look at each, never a wait. The sweep a connector runs to notice
+    /// what has become ready (`doc/Plan-0.7.0.md` §3.4).
+    pub fn each(&self, mut f: impl FnMut(Caller, HandleId, &mut R)) {
+        for ((owner, handle), r) in self.lock().table.iter_mut() {
+            f(*owner, *handle, r);
+        }
     }
 
     /// How many resources `caller` holds. For tests and reports.

@@ -122,6 +122,15 @@ pub trait SwarmHost {
     fn ended(&mut self) -> Vec<(InstanceId, String)> {
         Vec::new()
     }
+    /// Messages the host has for instances unprompted (`doc/Plan-0.7.0.md`
+    /// §3.4): `(instance, queue, msgpack)`, each delivered as a push from
+    /// the runtime at the top of the step. A push that fails — queue full,
+    /// instance gone, or cached without `wake_on_message` — is dropped
+    /// exactly as any such push is; the host says the thing again when it
+    /// is true again. A host with nothing to say reports nothing.
+    fn notices(&mut self) -> Vec<(InstanceId, String, Vec<u8>)> {
+        Vec::new()
+    }
 }
 
 /// A host whose `drive` is one `run` or `resume` — the single-threaded
@@ -959,6 +968,16 @@ impl<H: SwarmHost> Swarm<H> {
             self.kill_subtree(id, false);
             if parent != 0 {
                 self.emit(parent, "ended", id.0, Some(&why));
+            }
+        }
+        // Then what the host has to say, before the wake loop, so a cached
+        // instance woken by a notice gets its whole step in the step the
+        // notice arrived in — the readiness push (§3.4) is this.
+        let notices = self.host.notices();
+        if !notices.is_empty() {
+            let from = Sender::runtime(NodePath::root());
+            for (id, queue, msg) in notices {
+                let _ = self.push(id, &queue, &from, &msg);
             }
         }
         // Waking first, so a woken instance gets a whole step in the same

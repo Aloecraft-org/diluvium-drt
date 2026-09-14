@@ -10,6 +10,9 @@
 //!
 //! Configurable values:
 //! - `STEPS` — how far to drive before the program is expected somewhere.
+//! - `DILUVIUM_VERIFIED` — the diluvium revision acceptance 13 was last
+//!   proved against. Bump it only after re-running that test on the new
+//!   pin: the fact it rests on is an implementation note, not a contract.
 //!
 //! Fan-out: none.
 //!
@@ -34,6 +37,7 @@ use drt_swarm::swarm::Swarm;
 use drt_swarm::InstanceId;
 
 const STEPS: usize = 256;
+const DILUVIUM_VERIFIED: &str = "2c2f920d7fcfacd72e396e13b8ece5cd11f6d60d";
 
 /// Held by every test for its whole body: two tests counting one
 /// process's descriptors at once would read each other's sockets.
@@ -476,4 +480,108 @@ fn a_vital_handle_ends_its_hibernating_owner_and_the_parent_hears_ended() {
         before + 1,
         "the listener, and nothing of the service's"
     );
+}
+
+/// A service that parks between messages (§3.4): it claims with `wake`,
+/// keeps the `inbox` handle it looked up before its first park and the
+/// socket handle it was given, and after every wake takes the notice off
+/// the one (`queue.wait` returns the message) and reads with the other —
+/// no re-`lookup`, no re-resolve.
+const PARKED_SERVICE: &str = "\
+    local inbox = queue.lookup('inbox')\n\
+    local outbox = queue.lookup('outbox')\n\
+    local c, s, d = host.try('socket/claim', {wake = true})\n\
+    assert(s == 'ok', 'claim: ' .. tostring(s) .. ' ' .. tostring(d))\n\
+    queue.push(outbox, 'holding ' .. c.handle)\n\
+    while true do\n\
+      local _, n = queue.wait({inbox})\n\
+      assert(n.handle == c.handle and n.ready == 'read', 'the notice names the handle')\n\
+      local r, s2, d2 = host.try('socket/read', {handle = c.handle})\n\
+      assert(s2 == 'ok', 'read: ' .. tostring(s2) .. ' ' .. tostring(d2))\n\
+      if r.eof then break end\n\
+      local _, s3, d3 = host.try('socket/write', {handle = c.handle, data = r.data})\n\
+      assert(s3 == 'ok', 'write: ' .. tostring(s3) .. ' ' .. tostring(d3))\n\
+    end\n\
+    host.try('socket/close', {handle = c.handle})\n";
+
+/// Spawns the parked service with `wake_on_message` — the swarm's own
+/// wake path, which the readiness push rides — accepts one connection,
+/// hands it over, and parks for good.
+fn parking_supervisor() -> String {
+    format!(
+        "\
+        local inbox = queue.lookup('inbox')\n\
+        local outbox = queue.lookup('outbox')\n\
+        local l, s, d = host.try('socket/listen', {{addr = '127.0.0.1:0'}})\n\
+        assert(s == 'ok', 'listen: ' .. tostring(s) .. ' ' .. tostring(d))\n\
+        queue.push(outbox, l.addr)\n\
+        local child = host.spawn{{code = [==[{PARKED_SERVICE}]==], wake_on_message = true,\n\
+          caps = {{'host:socket/claim', 'host:socket/read', 'host:socket/write', 'host:socket/close'}}}}\n\
+        local c, s2, d2 = host.try('socket/accept', {{handle = l.handle}})\n\
+        assert(s2 == 'ok', 'accept: ' .. tostring(s2) .. ' ' .. tostring(d2))\n\
+        local _, s3, d3 = host.try('socket/transfer', {{handle = c.handle, to = child.id}})\n\
+        assert(s3 == 'ok', 'transfer: ' .. tostring(s3) .. ' ' .. tostring(d3))\n\
+        queue.wait({{inbox}})\n"
+    )
+}
+
+/// Acceptance 4 and 13. A hibernated service keeps its socket, a write
+/// from the far end wakes it, and after waking it uses both the queue
+/// handle and the socket handle it held before — twice, so the second
+/// wake proves the readiness re-armed. Pinned to the diluvium revision
+/// it was proved against, because §3.5 rests on an implementation note.
+#[test]
+fn a_hibernated_service_is_woken_by_bytes_and_keeps_both_kinds_of_handle() {
+    assert_eq!(
+        env!("DRT_DILUVIUM_REV"),
+        DILUVIUM_VERIFIED,
+        "the diluvium pin moved: re-prove §3.5 (handles survive a whole-instance \
+         snapshot) on the new revision, then bump DILUVIUM_VERIFIED"
+    );
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut sw = deployment();
+    let before = open_fds();
+    let mut caps = socket_caps();
+    caps.push(Grant::grant("lifecycle"));
+    let root = sw
+        .root(parking_supervisor().as_bytes(), caps, Budget::default())
+        .unwrap();
+    let addr = drive_until_outbox(&mut sw, root);
+
+    let mut client = TcpStream::connect(addr.as_str()).unwrap();
+    client.set_nonblocking(true).unwrap();
+    let (service, said) = drive_until_child_says(&mut sw, root);
+    let said = said.as_str().unwrap().to_string();
+    let socket_number: u64 = said
+        .strip_prefix("holding ")
+        .and_then(|n| n.parse().ok())
+        .expect("the service names its handle");
+    assert_eq!(open_fds(), before + 1 + 2);
+
+    for round in [b"first" as &[u8], b"second"] {
+        drive_until_parked(&mut sw, service);
+        sw.hibernate(service).unwrap();
+        assert!(!sw.resident(service), "parked and swapped out");
+
+        client.write_all(round).unwrap();
+        drive_until_read(&mut sw, &mut client, round);
+        assert!(
+            sw.resident(service),
+            "the bytes woke it, and it served them with the handles it had"
+        );
+    }
+    let _ = socket_number;
+
+    // To completion: the far end hangs up, the wake carries end-of-file,
+    // the service closes and exits, and nothing is lost.
+    drop(client);
+    for _ in 0..STEPS {
+        sw.step();
+        if !sw.ids().contains(&service) {
+            break;
+        }
+    }
+    assert!(!sw.ids().contains(&service), "exited on end-of-file");
+    assert!(sw.host_mut().take_lost().is_empty());
+    assert_eq!(open_fds(), before + 1, "the listener, and nothing else");
 }
