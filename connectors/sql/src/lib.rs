@@ -43,6 +43,18 @@
 //! - The row cap **refuses rather than truncates**: a truncated result is a
 //!   silent lie, and a guest can page with LIMIT/OFFSET like anything else
 //!   that reads a database.
+//! - **One database file per node, or single-statement writes only.** One
+//!   `SqlConnector` is wired for the root with one scope, and the handle
+//!   cache is keyed by path and never evicted, so two nodes naming the
+//!   same database reach the same `Connection`: a `BEGIN` in one and
+//!   writes in another interleave on one transaction, and nothing refuses
+//!   it. This connector is `root`-scoped (`doc/Plan-0.7.0.md` §2.3, §11
+//!   risk 3) — the connection follows the root's lifetime, not a node's —
+//!   and until a per-node connection exists the discipline is the
+//!   program's: give each node its own database, or make every write one
+//!   autocommitted statement. The failure otherwise reports through
+//!   [`SqlConnector::finish`] at teardown, which is far too late to first
+//!   hear of it.
 //!
 //! Replay note, as `doc/Host.md` carries it: replies are in the message
 //! log, so a replay *replays* them and does not re-execute against the
