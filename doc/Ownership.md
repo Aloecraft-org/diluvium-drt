@@ -95,14 +95,42 @@ is a claim, not a shrug — the wording `finish` already uses.
 
 ## 3. Node-owned sockets
 
-### 3.1 What a node can hold
+### 3.1 What a node can hold: two verb sets, one mechanism
 
-Listen, accept, read, write, close, capability-gated with a scope naming
-what may be bound — the shape `connectors/exec`'s `allow` already
-establishes for "which of these may a guest name".
+**Stream** — listen, accept, read, write, close.
+**Datagram** — bind, recv, send, close. No accept, because there is
+nothing to accept.
+
+Both are capability-gated with a scope naming what may be bound, the shape
+`connectors/exec`'s `allow` already establishes for "which of these may a
+guest name".
+
+**UDP is in.** `doc/Rooms.md` §8.4's second case — the fetchpoint is the
+reachable side and allocates one UDP port per room, forwarding down the
+tunnel to the hub — is a launch path, and leaving datagrams out means a
+second pass through the same connector to add four verbs later. The
+ownership dimension is identical; only the vocabulary differs.
+
+**The existing transport blocks stay root-wide, and that is a fork worth
+naming.** `stun::bind`, `turn::bind`, the relay's `TcpListener::bind` and
+`listen::bind` all bind from config at start
+(`crates/drt/src/start.rs:354`). A per-room UDP port can therefore be had
+two ways: a room node binds its own datagram handle and shuffles the bytes
+itself, which is simple and puts every packet through a guest; or one of
+those blocks gains `node` scope (§2.3) and forwards host-side with a
+node-owned lifetime. For a control plane the first is fine. For relaying
+WireGuard traffic the second is the one to want, and this release does not
+do it — it only makes it expressible.
+
+What UDP does **not** bring with it is the per-client isolation of §3.7.
+There are no connections, so there is no node per connection: one node
+owns the port and demultiplexes packets itself. Datagram sockets get
+ownership and lifetime; they do not get blast radius. Anyone expecting a
+faulty sender to be contained the way a faulty TCP client is has read too
+much into this section.
 
 A guest never holds a descriptor; it cannot, it has no syscalls. It holds
-a handle, and the host holds the fd. "Node-owned" is a statement about
+a handle and the host holds the fd. "Node-owned" is a statement about
 lifetime and reach, not about who calls `read`.
 
 ### 3.2 Accept spawns, and the handle transfers
@@ -118,7 +146,45 @@ instance ownership otherwise forbids exactly this, and a rule with a
 silent exception is worse than a rule with a named one. It is the only
 genuinely new API surface here, and the place to expect argument.
 
-### 3.3 Readiness without residency
+**Where the acceptor lives is a separate question, and the answer is: not
+in the thing being served.** One acceptor per root spawns a child per
+connection; the child reads whatever the far end says it wants and then
+attaches itself to that subject — a room, a tenant, a session — **by queue
+message**. The alternative, an acceptor per room, means every room binds
+its own listener behind the proxy, which is a port per room for no gain.
+
+The rule it rests on: **the ownership tree is not the membership graph.**
+A child owns its socket because it was transferred one; it belongs to a
+room because it said so and the room agreed. Parentage is about lifetime,
+not membership.
+
+That also makes "deleting a room ends its parked services" an explicit
+message rather than a tree teardown — which is the right shape, because a
+teardown that happens by structure cannot say what it lost, and §2.5 asks
+that it be able to.
+
+### 3.3 A vital handle, because the guarantee has a direction
+
+§2.2 and §2.4 guarantee **node dies → handle closes**. They do not
+guarantee the converse, and `doc/Rooms.md` §2.2 wants the converse:
+*"socket closes, node exits, service gone, nobody needs notifying."*
+
+Without something here, a clean close is a readiness event (§3.4) that the
+node observes and then *chooses* to exit on. That is program logic. A node
+with a bug sits there holding a dead socket, and the service is gone while
+the node is not.
+
+So a handle may be declared **vital** — at creation, or at transfer (§3.2),
+which is where a per-connection child gets one. The contract is: *this node
+exists to serve this handle; when the handle ends, the node ends.* The
+runtime kills the owner, and the release path (§2.4) does the rest.
+
+This is the socket-owns-node arrangement, reached from the other side, and
+it costs one flag. A node may still hold ordinary handles it survives; a
+service node declares its one socket vital and the guarantee is the
+runtime's rather than the program's.
+
+### 3.4 Readiness without residency
 
 A node with a quiet socket hibernates. The connector pushes to the
 owner's queue when its handle becomes readable, and the push wakes it —
@@ -128,7 +194,53 @@ This is the block pattern, pointed at one node instead of a config-named
 queue: `turn`, `relay` and `wireguard` already push to node queues on
 their own intervals. The mechanism is proven; what is new is the address.
 
-### 3.4 What this buys, and what it does not
+### 3.5 Two handle namespaces, and why they differ
+
+A queue handle and a resource handle follow different rules, and the
+difference is not arbitrary — they have **different issuers**.
+
+- A **queue handle is issued by the instance**. It is "runtime identity —
+  valid only for the instance that issued it", so it is cleared wherever
+  `inst` changes: build, hibernate, wake (`crates/drt-swarm/src/swarm.rs`).
+  Hibernation snapshots and drops the instance, so the handle names a
+  queue in an instance that no longer exists. The parked wait set is
+  dropped for the same reason.
+- A **resource handle is issued by the host**, keyed by `InstanceId`,
+  which is the same id across `hibernate` and `wake`. Rebuilding the guest
+  does not invalidate it.
+
+So the shape is **wake, re-resolve queues, continue** — the socket
+survives the nap and the queue names are looked up again. That is not new
+burden from this release; it is what hibernation already does, and sockets
+simply do not join in.
+
+**To confirm before building:** whether guest code must re-`lookup` after
+waking, or whether the dlua binding re-resolves under it. The host drops
+its interning and the woken instance re-parks, but which side a guest
+author sees is a Diluvium-side question this document has not traced. The
+answer belongs in §6 as a test either way, because "wake and continue"
+and "wake, re-declare, continue" are different programs.
+
+### 3.6 Which surface goes down which path
+
+This release is **additive**: a new connector, not a change to
+`crates/drt/src/listen.rs`. Both paths exist afterwards, and the rule for
+choosing is about who parses the bytes.
+
+- **The root-owned listener, for protocols the host parses.** It is a
+  queue bridge and it gives HTTP request parsing, the header allowlist,
+  and the one-request-per-connection discipline. Everything REST-shaped
+  stays here. A guest reimplementing HTTP on a raw socket would be
+  throwing away a working parser and a deliberate allowlist.
+- **A node-owned socket, for protocols the node speaks.** It gives bytes.
+  A long-lived WSS leg, a datagram port, a framed protocol of the node's
+  own — anything whose lifetime is the service's rather than the request's.
+
+For `doc/Rooms.md` that means the mutating verbs keep arriving on the
+root's queue while `park` and `advertise` become node-owned, which is the
+split that document already implies without saying so.
+
+### 3.7 What this buys, and what it does not
 
 **It bounds a faulty client.** Malformed input, a slow-loris, abusive
 traffic: the handler node absorbs it, its budget caps it, a trap kills it,
@@ -141,7 +253,7 @@ contained from a host-side fault by this mechanism. Node isolation is
 guest-fault isolation. Anyone who reads this document as "a tenant can no
 longer take down the system" has read it wrong.
 
-### 3.5 Why node-per-connection is affordable here
+### 3.8 Why node-per-connection is affordable here
 
 A hibernated node costs roughly **1.4 KB** cached in the benchmark's
 churn case (256 agents, an eighth resident:
@@ -254,7 +366,17 @@ subprocess first, in a release that was not blocked on it.
    nodes calling it reach the same one, and it outlives either of them.
 10. A plugin declaring a scope that is neither is refused at load, by name
    and with both spellings in the message.
-11. Every refusal in `doc/Peers.md` still refuses, unchanged.
+11. A handle declared **vital** kills its owner when it closes: the far
+   end hangs up, the node is gone without having run a line of its own
+   logic, and its other handles are released.
+12. A datagram handle binds, receives from several senders and sends to
+   each, and is released with its owner like any other.
+13. A node that hibernates and wakes **re-resolves its queue handles and
+   keeps its socket** — the one test that pins §3.5, and the one that
+   says whether guest code must re-`lookup` or the binding does it.
+14. An acceptor spawns a child per connection and the child joins its
+   subject by message; no second listener is bound per subject.
+15. Every refusal in `doc/Peers.md` still refuses, unchanged.
 
 ## 7. Not here, named so nobody builds it early
 
@@ -263,8 +385,16 @@ subprocess first, in a release that was not blocked on it.
 - **Inter-root delivery.** §5.
 - **Handle transfer across roots.** Transfer is within one swarm. A handle
   that crossed a root boundary would be a capability escaping its ceiling.
-- **Per-tenant process isolation.** §3.4. A root is a process; this
+- **Per-tenant process isolation.** §3.7. A root is a process; this
   release does not change that.
+- **WebSocket framing and TLS termination.** The stream verbs are listen,
+  accept, read, write, close. A WSS service terminates TLS outside and
+  proxies in; the websocket framing above the bytes is a connector or a
+  plugin, and neither is here.
+- **Scheduled wake.** §3.4 gives wake-on-readable and nothing gives
+  "wake me at T". Expiry under hibernation wants a timer connector pushing
+  to a node's queue — the pattern §3.4 describes, aimed at a clock instead
+  of a socket. The pattern exists; the connector does not.
 
 ## 8. Risks, in the order I would worry about them
 
@@ -277,7 +407,13 @@ subprocess first, in a release that was not blocked on it.
    to *say so* rather than to rework it. What stays open is narrower and
    worth answering before an incident answers it — whether two nodes can
    name one database today, and therefore share one transaction.
-4. **A parked node that never wakes.** Readiness push (§3.3) is the only
+
+   Until it is answered, anything building on this should take the rule
+   rather than the risk: **one database file per node, or single-statement
+   writes only.** A shared file plus an interleaved `BEGIN` is the failure
+   `Connector::finish` exists to describe, and it reports at teardown,
+   which is far too late to be the first anyone hears of it.
+4. **A parked node that never wakes.** Readiness push (§3.4) is the only
    thing standing between a hibernating service and a connection that
    silently goes unserved. It wants a test with a real socket, not a
    loopback.
