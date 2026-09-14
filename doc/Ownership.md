@@ -118,9 +118,13 @@ naming.** `stun::bind`, `turn::bind`, the relay's `TcpListener::bind` and
 two ways: a room node binds its own datagram handle and shuffles the bytes
 itself, which is simple and puts every packet through a guest; or one of
 those blocks gains `node` scope (§2.3) and forwards host-side with a
-node-owned lifetime. For a control plane the first is fine. For relaying
-WireGuard traffic the second is the one to want, and this release does not
-do it — it only makes it expressible.
+node-owned lifetime. **This is a sequencing commitment, not a menu.** The
+guest-shuffled path is for control-plane datagrams and for the demo. It is
+**not the relay**, and it must not become the relay by being the one that
+shipped first and worked: a data plane that moves every WireGuard packet
+through a guest is a different thing wearing the same shape. The
+node-scoped relay block is the next release's headline, and until it
+exists the guest path carries that sentence in its own documentation.
 
 What UDP does **not** bring with it is the per-client isolation of §3.7.
 There are no connections, so there is no node per connection: one node
@@ -179,6 +183,13 @@ which is where a per-connection child gets one. The contract is: *this node
 exists to serve this handle; when the handle ends, the node ends.* The
 runtime kills the owner, and the release path (§2.4) does the rest.
 
+**The owner may be hibernating when it happens**, and that is the case a
+parked service actually reaches after hours of quiet. So the kill has to
+work against a snapshot rather than a running instance: there is no guest
+to notice, nothing to unwind, and the release path (§2.4) runs against a
+slot whose `inst` is already `None`. A vital handle that only fired on
+resident owners would have its gap exactly where this design leans on it.
+
 This is the socket-owns-node arrangement, reached from the other side, and
 it costs one flag. A node may still hold ordinary handles it survives; a
 service node declares its one socket vital and the guarantee is the
@@ -209,17 +220,34 @@ difference is not arbitrary — they have **different issuers**.
   which is the same id across `hibernate` and `wake`. Rebuilding the guest
   does not invalidate it.
 
-So the shape is **wake, re-resolve queues, continue** — the socket
-survives the nap and the queue names are looked up again. That is not new
-burden from this release; it is what hibernation already does, and sockets
-simply do not join in.
+**Traced, because it decides the shape of every guest program.** A guest's
+handles *do* survive. A whole-instance snapshot carries the queue
+subsystem's state — `diluvium_snap` writes it under `queues`
+(`src/dsnap.c`) — and that state is a plain table of numbers, strings and
+tables, so restoring it verbatim brings the queues, their contents and the
+program's own handles back unchanged. diluvium's own implementation note
+says it outright: *"Handles do not go stale after all."*
 
-**To confirm before building:** whether guest code must re-`lookup` after
-waking, or whether the dlua binding re-resolves under it. The host drops
-its interning and the woken instance re-parks, but which side a guest
-author sees is a Diluvium-side question this document has not traced. The
-answer belongs in §6 as a test either way, because "wake and continue"
-and "wake, re-declare, continue" are different programs.
+So for guest code the shape is **wake and continue**. A service node is a
+loop, not a state machine with a re-entry step, and nothing needs a
+re-`lookup` prologue.
+
+The clear on DRT's side is not in tension with that. `slot.handles` is the
+*host's* name-to-handle memo, cleared because the host cannot assume the
+`inst` pointer it interned against is the same object; the guest's handles
+live in the snapshot and DRT's memo does not. Two caches, one of them
+guest-visible and durable, the other host-side and rebuilt.
+
+**One correction is owed upstream, and it is not this repository's to
+make.** `doc/Messaging.md` §10.8 still reads "Queue handles do not
+survive… Any handle value stored in program state is stale and must not be
+silently reused", which is what the design intended before the whole-
+instance snapshot made it unnecessary. §10.8's re-declare-by-name step is
+still needed for the case it was actually written for — moving one
+program's state into an instance that already has queues, which
+`diluvium_queue_setstate` refuses rather than merging two numbering
+spaces. Anyone reading §10.8 alone will build the prologue this section
+says is not needed.
 
 ### 3.6 Which surface goes down which path
 
@@ -353,7 +381,7 @@ subprocess first, in a release that was not blocked on it.
 3. A node that is killed has its handles closed; a test observes the fd
    count return to its starting value.
 4. A node that **hibernates** keeps its handles, and a write from the far
-   end wakes it.
+   end wakes it — the readable half of the parked-service case.
 5. A release that loses work reports it, attributed to the node.
 6. A node accepts a connection, spawns a child, transfers the handle, and
    the child serves the connection to completion.
@@ -366,14 +394,19 @@ subprocess first, in a release that was not blocked on it.
    nodes calling it reach the same one, and it outlives either of them.
 10. A plugin declaring a scope that is neither is refused at load, by name
    and with both spellings in the message.
-11. A handle declared **vital** kills its owner when it closes: the far
-   end hangs up, the node is gone without having run a line of its own
-   logic, and its other handles are released.
+11. A handle declared **vital** kills its owner when it closes — and the
+   test runs it **against a hibernating owner**, because that is the state
+   a parked service is in when the far end finally hangs up. The node is
+   gone without running a line of its own logic and its other handles are
+   released, with no guest resident to notice. This is acceptance 4's
+   socket in its other state, and the one that would leave a gap exactly
+   where the rooms design leans on the guarantee.
 12. A datagram handle binds, receives from several senders and sends to
    each, and is released with its owner like any other.
-13. A node that hibernates and wakes **re-resolves its queue handles and
-   keeps its socket** — the one test that pins §3.5, and the one that
-   says whether guest code must re-`lookup` or the binding does it.
+13. A node that hibernates and wakes **keeps both its queue handles and
+   its socket**, and reuses each without re-resolving anything. This pins
+   §3.5 against the upstream behaviour rather than against §10.8's
+   superseded wording, so a change on either side is caught here.
 14. An acceptor spawns a child per connection and the child joins its
    subject by message; no second listener is bound per subject.
 15. Every refusal in `doc/Peers.md` still refuses, unchanged.
