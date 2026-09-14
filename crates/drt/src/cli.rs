@@ -60,6 +60,7 @@ const PROFILE_FULL: &[&str] = &[
     "connector-exec",
     "connector-fs",
     "connector-rest",
+    "connector-socket",
     "connector-sql",
     "connector-ssh",
     "connector-ssmtp",
@@ -511,6 +512,7 @@ pub enum Command {
         feature = "connector-rest",
         feature = "connector-ssmtp",
         feature = "connector-exec",
+        feature = "connector-socket",
         feature = "connector-data",
         feature = "netcheck"
     )),
@@ -554,6 +556,9 @@ pub fn buildinfo(json: bool) -> String {
     }
     if cfg!(feature = "connector-data") {
         connectors.push("data");
+    }
+    if cfg!(feature = "connector-socket") {
+        connectors.push("socket");
     }
     if cfg!(feature = "listen") {
         connectors.push("listen");
@@ -691,6 +696,7 @@ fn enabled_features() -> Vec<&'static str> {
     feature!("connector-ssmtp");
     feature!("connector-data");
     feature!("connector-exec");
+    feature!("connector-socket");
     feature!("connector-time");
     feature!("listen");
     feature!("netcheck");
@@ -858,6 +864,18 @@ pub fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
                     )
                     .map_err(|e| e.to_string())?
             }
+            // A port a node binds and holds by handle: closed when the node
+            // is released, kept across its hibernation (doc/Plan-0.7.0.md
+            // §3). The scope's `allow` bounds what may be bound, in exec's
+            // shape.
+            #[cfg(feature = "connector-socket")]
+            "socket" => registry
+                .wire(
+                    "socket",
+                    std::sync::Arc::new(drt_connector_socket::SocketConnector::new()),
+                    wiring.scope.clone(),
+                )
+                .map_err(|e| e.to_string())?,
             other => {
                 return Err(format!(
                     "config wires connector '{other}', which this build does not carry"

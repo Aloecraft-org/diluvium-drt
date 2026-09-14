@@ -482,6 +482,12 @@ impl<H: SwarmHost> Swarm<H> {
         &self.host
     }
 
+    /// The host, mutably: for what the host accumulates between steps and
+    /// hands over — a pump's report of what a dead node's connectors lost.
+    pub fn host_mut(&mut self) -> &mut H {
+        &mut self.host
+    }
+
     pub fn alive(&self) -> usize {
         self.slots.iter().filter(|s| s.id != 0 && s.alive).count()
     }

@@ -275,6 +275,16 @@ impl DeployDriver {
     /// condition.
     pub fn step(&mut self) -> usize {
         let alive = self.sw.step();
+        // What a dead node's connectors lost, attributed to it: the release
+        // report (doc/Plan-0.7.0.md §2.5) reaches stderr here, in the one
+        // place every drive loop passes through.
+        for (id, what) in self.sw.host_mut().take_lost() {
+            let _ = writeln!(
+                drt_platform::stdio::stderr(),
+                "drt: instance {} lost {what}",
+                id.0
+            );
+        }
         // After the step, because the step is the only thing that can have
         // declared the queue -- the held-request shape, for the held-request
         // reason.

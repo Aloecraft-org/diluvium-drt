@@ -1138,6 +1138,7 @@ dependencies = [
  "drt-connector-exec",
  "drt-connector-fs",
  "drt-connector-rest",
+ "drt-connector-socket",
  "drt-connector-sql",
  "drt-connector-ssh",
  "drt-connector-ssmtp",
@@ -1304,6 +1305,18 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "webpki-roots 0.26.11",
+]
+
+[[package]]
+name = "drt-connector-socket"
+version = "0.6.2-rc.1"
+dependencies = [
+ "async-trait",
+ "drt-caps",
+ "drt-connector",
+ "pollster",
+ "rmpv",
+ "serde",
 ]
 
 [[package]]

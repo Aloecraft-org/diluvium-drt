@@ -82,6 +82,7 @@ jobs:
           - connector-ssmtp
           - connector-ssh
           - connector-exec
+          - connector-socket
           - connector-data
           - tunnel
           - relay
