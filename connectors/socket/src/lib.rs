@@ -2,13 +2,13 @@
 //! host holds by descriptor (`doc/Plan-0.7.0.md` §3.1).
 //!
 //! ```text
-//!   socket/listen {addr}          -> {handle = n, addr = "ip:port"}
-//!   socket/accept {handle}        -> {handle = m, peer = "ip:port"}
+//!   socket/listen {addr, vital?}  -> {handle = n, addr = "ip:port"}
+//!   socket/accept {handle, vital?} -> {handle = m, peer = "ip:port"}
 //!   socket/read   {handle, max?}  -> {data = <bytes>, eof = bool}
 //!   socket/write  {handle, data}  -> {written = n}
 //!   socket/close  {handle}        -> nil
 //!   socket/transfer {handle, to}  -> nil                   (the holder)
-//!   socket/claim  {handle?}       -> {handle, peer | addr}  (the target)
+//!   socket/claim  {handle?, vital?} -> {handle, peer | addr} (the target)
 //! ```
 //!
 //! A guest never holds a descriptor; it holds a number the host issued to
@@ -28,6 +28,16 @@
 //! **No `connect`.** The verb set is listen, accept, read, write, close
 //! (§3.1). A node-owned socket is for protocols the node *serves*; TLS
 //! terminates outside and proxies in (§10).
+//!
+//! **A `vital` handle ends its owner (§3.3).** Declared at creation or at
+//! claim — by the node whose lifetime is being tied, since the flag is a
+//! property of the entry under its owner. When a vital connection ends
+//! (the far end hangs up, or the owner closes it) the connector reports
+//! the owner through [`Connector::ended`], the swarm kills it where it
+//! lies, resident or hibernating, and the release path closes whatever
+//! else it held. The guarantee runs socket → node; §2.4 already gave node
+//! → socket. A vital listener ends only when closed: nothing ends it from
+//! outside.
 //!
 //! **Transfer is offer and claim (§3.2), and ownership is single-valued at
 //! every instant.** `transfer {handle, to}` addresses an offer to instance
@@ -84,6 +94,9 @@ pub struct SocketConnector {
     /// Offers in flight, oldest first. Each names a handle its holder
     /// still owns and the instance it is addressed to.
     offers: Mutex<Vec<Offer>>,
+    /// Owners whose vital handle was closed by their own hand, reported on
+    /// the next [`Connector::ended`] alongside the ones the far end ended.
+    ended: Mutex<Vec<(Caller, String)>>,
 }
 
 impl Default for SocketConnector {
@@ -97,6 +110,7 @@ impl SocketConnector {
         SocketConnector {
             sockets: Handles::new("socket"),
             offers: Mutex::new(Vec::new()),
+            ended: Mutex::new(Vec::new()),
         }
     }
 }
@@ -183,6 +197,21 @@ impl Connector for SocketConnector {
             .collect()
     }
 
+    /// Owners whose vital connection ended since the last ask: closed by
+    /// them, or hung up on by the far end (one non-blocking peek per vital
+    /// connection per ask). Each ending is reported once, and the entry is
+    /// gone with the report — the owner is about to be, too.
+    fn ended(&self) -> Vec<(Caller, String)> {
+        let mut ended = std::mem::take(&mut *self.ended.lock().unwrap_or_else(|e| e.into_inner()));
+        for (owner, _, socket) in self
+            .sockets
+            .take_where(|_, _, s| s.is_vital() && s.has_ended())
+        {
+            ended.push((owner, format!("its vital {} ended", socket.name())));
+        }
+        ended
+    }
+
     fn finish(&self) -> Vec<String> {
         self.offers()
             .retain(|o| o.from != Caller::Root && o.to != Caller::Root);
@@ -206,6 +235,7 @@ struct Offer {
 enum Socket {
     Listener {
         listener: TcpListener,
+        vital: bool,
     },
     /// `eof` once the far end has finished sending: closing such a
     /// connection cuts nothing, and the report says nothing.
@@ -213,10 +243,56 @@ enum Socket {
         stream: TcpStream,
         peer: SocketAddr,
         eof: bool,
+        vital: bool,
     },
 }
 
 impl Socket {
+    fn is_vital(&self) -> bool {
+        match self {
+            Socket::Listener { vital, .. } | Socket::Stream { vital, .. } => *vital,
+        }
+    }
+
+    fn set_vital(&mut self, v: bool) {
+        match self {
+            Socket::Listener { vital, .. } | Socket::Stream { vital, .. } => *vital = v,
+        }
+    }
+
+    /// Whether this has ended on its own: a connection whose far end is
+    /// gone, seen by a peek that costs one syscall. A listener never ends
+    /// on its own.
+    fn has_ended(&mut self) -> bool {
+        match self {
+            Socket::Listener { .. } => false,
+            Socket::Stream { eof: true, .. } => true,
+            Socket::Stream { stream, eof, .. } => match stream.peek(&mut [0u8; 1]) {
+                Ok(0) => {
+                    *eof = true;
+                    true
+                }
+                Ok(_) => false,
+                Err(e) if e.kind() == ErrorKind::WouldBlock => false,
+                Err(_) => true,
+            },
+        }
+    }
+
+    /// What this is, for a sentence about it.
+    fn name(&self) -> String {
+        match self {
+            Socket::Stream { peer, .. } => format!("connection with {peer}"),
+            Socket::Listener { listener, .. } => format!(
+                "listener on {}",
+                listener
+                    .local_addr()
+                    .map(|a| a.to_string())
+                    .unwrap_or_default()
+            ),
+        }
+    }
+
     /// The reply that names this socket to whoever now holds it: a
     /// connection by its peer, a listener by its address.
     fn describe(&self, handle: HandleId) -> rmpv::Value {
@@ -225,7 +301,7 @@ impl Socket {
                 ("handle", handle.0.into()),
                 ("peer", peer.to_string().into()),
             ]),
-            Socket::Listener { listener } => reply(vec![
+            Socket::Listener { listener, .. } => reply(vec![
                 ("handle", handle.0.into()),
                 (
                     "addr",
@@ -328,7 +404,10 @@ impl SocketConnector {
         let bound = listener
             .local_addr()
             .map_err(|e| CallError::new(format!("listen on {addr}: {e}")))?;
-        let handle = self.sockets.insert(caller, Socket::Listener { listener });
+        let vital = vital_arg(&args);
+        let handle = self
+            .sockets
+            .insert(caller, Socket::Listener { listener, vital });
         Ok(reply(vec![
             ("handle", handle.0.into()),
             ("addr", bound.to_string().into()),
@@ -337,9 +416,10 @@ impl SocketConnector {
 
     async fn accept(&self, caller: Caller, args: Option<rmpv::Value>) -> CallResult {
         let handle = handle_arg(args.as_ref())?;
+        let vital = args.as_ref().is_some_and(vital_arg);
         let (stream, peer) = self
             .until_ready(caller, handle, |socket| match socket {
-                Socket::Listener { listener } => match listener.accept() {
+                Socket::Listener { listener, .. } => match listener.accept() {
                     Ok(accepted) => Ok(Some(accepted)),
                     Err(e) => not_yet(e, "accept"),
                 },
@@ -358,6 +438,7 @@ impl SocketConnector {
                 stream,
                 peer,
                 eof: false,
+                vital,
             },
         );
         Ok(reply(vec![
@@ -442,9 +523,17 @@ impl SocketConnector {
 
     fn close(&self, caller: Caller, args: Option<rmpv::Value>) -> CallResult {
         let handle = handle_arg(args.as_ref())?;
-        self.sockets
+        let socket = self
+            .sockets
             .remove(caller, handle)
             .map_err(|e| CallError::new(e.to_string()))?;
+        // Closing one's own vital handle is ending it: the owner ends too.
+        if socket.is_vital() {
+            self.ended.lock().unwrap_or_else(|e| e.into_inner()).push((
+                caller,
+                format!("its vital {} was closed by its owner", socket.name()),
+            ));
+        }
         // Closing withdraws any offer of it: there is nothing left to claim.
         self.offers()
             .retain(|o| !(o.from == caller && o.handle == handle));
@@ -509,8 +598,14 @@ impl SocketConnector {
         self.sockets
             .rekey(from, caller, handle)
             .map_err(|e| CallError::new(e.to_string()))?;
+        // The claimant's declaration, fresh: the flag is the owner's, and
+        // the owner just changed.
+        let vital = args.as_ref().is_some_and(vital_arg);
         self.sockets
-            .with(caller, handle, |s| s.describe(handle))
+            .with(caller, handle, |s| {
+                s.set_vital(vital);
+                s.describe(handle)
+            })
             .map_err(|e| CallError::new(e.to_string()))
     }
 
@@ -539,6 +634,12 @@ impl SocketConnector {
 }
 
 // depth: reading the request
+
+/// `vital = true`, or nothing. Anything else is nothing: a flag that ties
+/// a lifetime is not inferred from a truthy value.
+fn vital_arg(args: &rmpv::Value) -> bool {
+    field(args, "vital").and_then(|v| v.as_bool()) == Some(true)
+}
 
 fn handle_arg(args: Option<&rmpv::Value>) -> Result<HandleId, CallError> {
     args.and_then(|a| field(a, "handle"))

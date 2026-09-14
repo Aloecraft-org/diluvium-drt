@@ -84,25 +84,32 @@ fn field(v: &rmpv::Value, name: &str) -> Option<rmpv::Value> {
         .map(|(_, v)| v.clone())
 }
 
-/// Drive until some child of `root` announces `subject` on its outbox,
-/// and return which.
-fn drive_until_child_joins(sw: &mut Deployment, root: InstanceId, subject: &str) -> InstanceId {
+/// Drive until some child of `root` says anything on its outbox, and
+/// return which child and what.
+fn drive_until_child_says(sw: &mut Deployment, root: InstanceId) -> (InstanceId, rmpv::Value) {
     for _ in 0..STEPS {
         sw.step();
         let children: Vec<InstanceId> = sw.ids().into_iter().filter(|id| *id != root).collect();
         for child in children {
             if let Some(m) = pop(sw, child, "outbox") {
-                let said = field(&m, "subject").and_then(|v| v.as_str().map(String::from));
-                assert_eq!(
-                    said.as_deref(),
-                    Some(subject),
-                    "a child joined the wrong subject"
-                );
-                return child;
+                return (child, m);
             }
         }
     }
-    panic!("no child joined {subject} in {STEPS} steps");
+    panic!("no child said anything in {STEPS} steps");
+}
+
+/// Drive until some child of `root` announces `subject` on its outbox,
+/// and return which.
+fn drive_until_child_joins(sw: &mut Deployment, root: InstanceId, subject: &str) -> InstanceId {
+    let (child, m) = drive_until_child_says(sw, root);
+    let said = field(&m, "subject").and_then(|v| v.as_str().map(String::from));
+    assert_eq!(
+        said.as_deref(),
+        Some(subject),
+        "a child joined the wrong subject"
+    );
+    child
 }
 
 /// Drive until the far end has read exactly `want` from a non-blocking
@@ -152,20 +159,14 @@ fn connect(addr: &str, subject: &str) -> TcpStream {
 }
 
 /// Drive until the instance's `outbox` yields a string, and return it.
-fn drive_until_outbox(sw: &mut Swarm<PumpHost<DeployHost>>, id: InstanceId) -> String {
+fn drive_until_outbox(sw: &mut Deployment, id: InstanceId) -> String {
     for _ in 0..STEPS {
         sw.step();
-        assert_eq!(
-            sw.alive(),
-            1,
+        assert!(
+            sw.ids().contains(&id),
             "the program faulted; its reason is on stderr"
         );
-        let inst = sw.instance_mut(id).expect("resident");
-        let Some(outbox) = inst.queue("outbox") else {
-            continue;
-        };
-        if let Ok(Some(raw)) = inst.pop(outbox) {
-            let v = rmpv::decode::read_value(&mut raw.as_slice()).unwrap();
+        if let Some(v) = pop(sw, id, "outbox") {
             return v.as_str().expect("a string").to_string();
         }
     }
@@ -173,12 +174,11 @@ fn drive_until_outbox(sw: &mut Swarm<PumpHost<DeployHost>>, id: InstanceId) -> S
 }
 
 /// Drive until the instance is parked on a wait set.
-fn drive_until_parked(sw: &mut Swarm<PumpHost<DeployHost>>, id: InstanceId) {
+fn drive_until_parked(sw: &mut Deployment, id: InstanceId) {
     for _ in 0..STEPS {
         sw.step();
-        assert_eq!(
-            sw.alive(),
-            1,
+        assert!(
+            sw.ids().contains(&id),
             "the program faulted; its reason is on stderr"
         );
         if sw
@@ -367,4 +367,113 @@ fn an_acceptor_spawns_a_child_per_connection_and_each_serves_its_own() {
     sw.kill(root).unwrap();
     assert_eq!(sw.alive(), 0);
     assert_eq!(open_fds(), before);
+}
+
+/// A service node (§3.3): it claims its first connection as vital and a
+/// second plainly, says what it holds, and parks — the state a parked
+/// service is in when the far end finally hangs up.
+const SERVICE: &str = "\
+    local inbox = queue.lookup('inbox')\n\
+    local outbox = queue.lookup('outbox')\n\
+    local v, s, d = host.try('socket/claim', {vital = true})\n\
+    assert(s == 'ok', 'claim: ' .. tostring(s) .. ' ' .. tostring(d))\n\
+    local o, s2, d2 = host.try('socket/claim', {})\n\
+    assert(s2 == 'ok', 'claim: ' .. tostring(s2) .. ' ' .. tostring(d2))\n\
+    queue.push(outbox, 'holding ' .. v.peer .. ' and ' .. o.peer)\n\
+    queue.wait({inbox})\n";
+
+/// A supervisor: spawns the service first (its vital claim waits), then
+/// accepts two connections and hands both over, then forwards every
+/// lifecycle event it hears to its outbox as `<event> <id>`.
+fn supervisor() -> String {
+    format!(
+        "\
+        local outbox = queue.lookup('outbox')\n\
+        local l, s, d = host.try('socket/listen', {{addr = '127.0.0.1:0'}})\n\
+        assert(s == 'ok', 'listen: ' .. tostring(s) .. ' ' .. tostring(d))\n\
+        queue.push(outbox, l.addr)\n\
+        local child = host.spawn{{code = [==[{SERVICE}]==],\n\
+          caps = {{'host:socket/claim', 'host:socket/read', 'host:socket/write', 'host:socket/close'}}}}\n\
+        for i = 1, 2 do\n\
+          local c, s2, d2 = host.try('socket/accept', {{handle = l.handle}})\n\
+          assert(s2 == 'ok', 'accept: ' .. tostring(s2) .. ' ' .. tostring(d2))\n\
+          local _, s3, d3 = host.try('socket/transfer', {{handle = c.handle, to = child.id}})\n\
+          assert(s3 == 'ok', 'transfer: ' .. tostring(s3) .. ' ' .. tostring(d3))\n\
+        end\n\
+        while true do\n\
+          local ev = host.events(60000)\n\
+          if ev then queue.push(outbox, ev.event .. ' ' .. ev.id) end\n\
+        end\n"
+    )
+}
+
+/// Acceptance 11 and 23. The owner is **hibernating** when the far end
+/// of its vital connection hangs up: it is ended without a line of its
+/// own logic running and with no guest resident, its other connection is
+/// released with it and the loss attributed, and its parent hears
+/// `ended` — its own variant, not `faulted`, not `exited`.
+#[test]
+fn a_vital_handle_ends_its_hibernating_owner_and_the_parent_hears_ended() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut sw = deployment();
+    let before = open_fds();
+    let mut caps = socket_caps();
+    caps.push(Grant::grant("lifecycle"));
+    let root = sw
+        .root(supervisor().as_bytes(), caps, Budget::default())
+        .unwrap();
+    let addr = drive_until_outbox(&mut sw, root);
+
+    // First in is the vital one: offers are claimed oldest first.
+    let vital = TcpStream::connect(addr.as_str()).unwrap();
+    let mut other = TcpStream::connect(addr.as_str()).unwrap();
+    other.set_nonblocking(true).unwrap();
+    let (service, said) = drive_until_child_says(&mut sw, root);
+    assert_eq!(
+        said.as_str().unwrap(),
+        format!(
+            "holding {} and {}",
+            vital.local_addr().unwrap(),
+            other.local_addr().unwrap()
+        )
+    );
+    assert_eq!(open_fds(), before + 1 + 2 + 2);
+
+    drive_until_parked(&mut sw, service);
+    sw.hibernate(service).unwrap();
+    assert!(!sw.resident(service), "a parked service, hours into quiet");
+
+    // The far end hangs up.
+    drop(vital);
+    for _ in 0..STEPS {
+        sw.step();
+        if !sw.ids().contains(&service) {
+            break;
+        }
+    }
+    assert!(
+        !sw.ids().contains(&service),
+        "ended where it lay, with no guest rebuilt to notice"
+    );
+
+    // Its other handle went with it, attributed.
+    drive_until_eof(&mut sw, &mut other);
+    let lost = sw.host_mut().take_lost();
+    assert_eq!(lost.len(), 1, "{lost:?}");
+    assert_eq!(lost[0].0 .0, service.0);
+    assert_eq!(
+        lost[0].1,
+        format!("a connection with {}, cut", other.local_addr().unwrap())
+    );
+
+    // The supervisor heard the variant.
+    let heard = drive_until_outbox(&mut sw, root);
+    assert_eq!(heard, format!("ended {}", service.0));
+
+    drop(other);
+    assert_eq!(
+        open_fds(),
+        before + 1,
+        "the listener, and nothing of the service's"
+    );
 }

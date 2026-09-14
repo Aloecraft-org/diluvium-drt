@@ -129,6 +129,18 @@ pub trait Connector: Send + Sync {
     fn finish(&self) -> Vec<String> {
         Vec::new()
     }
+
+    /// Owners whose **vital** resource has ended since the last ask, each
+    /// with a sentence saying which (`doc/Plan-0.7.0.md` §3.3). A vital
+    /// resource is one its owner declared it exists to serve; when it
+    /// ends, the runtime ends the owner, and this is how the runtime
+    /// hears. Asked every step, so an answer must be a look and not a
+    /// wait, and each ending is reported exactly once.
+    ///
+    /// The default holds nothing vital and reports nothing.
+    fn ended(&self) -> Vec<(Caller, String)> {
+        Vec::new()
+    }
 }
 
 /// One wired connector: a backing plus the scope it was granted.
@@ -249,6 +261,17 @@ impl Dispatcher {
             .wired
             .values()
             .flat_map(|w| w.connector.release(caller))
+            .collect()
+    }
+
+    /// Every owner some connector says has lost the resource it exists to
+    /// serve (§3.3), with the connector's sentence. Name order, like the
+    /// other two sweeps.
+    pub fn ended(&self) -> Vec<(Caller, String)> {
+        self.registry
+            .wired
+            .values()
+            .flat_map(|w| w.connector.ended())
             .collect()
     }
 

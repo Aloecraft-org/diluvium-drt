@@ -9,6 +9,7 @@
 //! - [`Handles::with`] — use one of `caller`'s resources, by handle.
 //! - [`Handles::remove`] — take one back, by handle.
 //! - [`Handles::rekey`] — move one to another owner, number unchanged.
+//! - [`Handles::take_where`] — sweep out what a predicate says is done.
 //! - [`Handles::release`] — take back everything one node owns. The death
 //!   path (`doc/Plan-0.7.0.md` §2.4).
 //! - [`Handles::drain_root`] — take back everything the root owns. The
@@ -181,6 +182,29 @@ impl<R> Handles<R> {
         self.release(Caller::Root)
     }
 
+    /// Take back every resource `keep` says is done with, whoever holds
+    /// it, each with its owner and handle. The sweep a connector runs when
+    /// it must notice something about what it holds without being asked —
+    /// a vital resource that ended (`doc/Plan-0.7.0.md` §3.3). The
+    /// predicate sees the resource mutably and is called under the table's
+    /// lock, so it must be a look, not a wait.
+    pub fn take_where(
+        &self,
+        mut done: impl FnMut(Caller, HandleId, &mut R) -> bool,
+    ) -> Vec<(Caller, HandleId, R)> {
+        let mut inner = self.lock();
+        let keys: Vec<_> = inner
+            .table
+            .iter_mut()
+            .filter_map(|((owner, handle), r)| {
+                done(*owner, *handle, r).then_some((*owner, *handle))
+            })
+            .collect();
+        keys.into_iter()
+            .filter_map(|key| inner.table.remove(&key).map(|r| (key.0, key.1, r)))
+            .collect()
+    }
+
     /// How many resources `caller` holds. For tests and reports.
     pub fn count(&self, caller: Caller) -> usize {
         self.lock()
@@ -293,6 +317,27 @@ mod tests {
         );
         assert_eq!(table.count(a), 0);
         assert_eq!(table.count(b), 1);
+    }
+
+    /// §3.3: a sweep takes exactly what the predicate names, across owners,
+    /// and says whose each one was.
+    #[test]
+    fn take_where_sweeps_across_owners_and_names_each() {
+        let table: Handles<u8> = Handles::new("thing");
+        let a = Caller::Node(1);
+        let b = Caller::Node(2);
+        let ha = table.insert(a, 10);
+        table.insert(a, 3);
+        let hb = table.insert(b, 12);
+        let mut taken = table.take_where(|_, _, r| *r >= 10);
+        taken.sort_unstable_by_key(|(_, h, _)| *h);
+        assert_eq!(taken, vec![(a, ha, 10), (b, hb, 12)]);
+        assert_eq!(table.count(a), 1);
+        assert_eq!(table.count(b), 0);
+        assert!(
+            table.take_where(|_, _, r| *r >= 10).is_empty(),
+            "swept once"
+        );
     }
 
     #[test]

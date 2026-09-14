@@ -111,6 +111,17 @@ pub trait SwarmHost {
     /// instance — a hostcall answer still in flight — needs the difference.
     /// A host that holds nothing across residency implements neither.
     fn released(&mut self, _id: InstanceId) {}
+    /// Instances whose **vital** resource has ended since the last step
+    /// (`doc/Plan-0.7.0.md` §3.3), each with the host's sentence saying
+    /// which. The swarm ends each one — resident or cached alike, since a
+    /// parked service is exactly the owner this is for — and tells its
+    /// parent with the `ended` event, its own variant, so a supervisor
+    /// can tell a service that finished from one that trapped without
+    /// reading a reason string. A host holding nothing vital reports
+    /// nothing.
+    fn ended(&mut self) -> Vec<(InstanceId, String)> {
+        Vec::new()
+    }
 }
 
 /// A host whose `drive` is one `run` or `resume` — the single-threaded
@@ -936,6 +947,20 @@ impl<H: SwarmHost> Swarm<H> {
     /// are alive, so a caller's loop condition is obvious.
     pub fn step(&mut self) -> usize {
         self.spawns_this_step = 0;
+        // Vital resources first, before any wake: an owner whose reason to
+        // exist is gone is ended where it lies, cached or resident, with
+        // no guest rebuilt to notice.
+        for (id, why) in self.host.ended() {
+            let Some(index) = self.find(id) else { continue };
+            if !self.slots[index].alive {
+                continue;
+            }
+            let parent = self.slots[index].parent;
+            self.kill_subtree(id, false);
+            if parent != 0 {
+                self.emit(parent, "ended", id.0, Some(&why));
+            }
+        }
         // Waking first, so a woken instance gets a whole step in the same
         // step its message arrived in. A wake that fails is fatal: the
         // alternative is a handle alive, non-resident, and permanently

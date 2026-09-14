@@ -297,6 +297,18 @@ impl<H: SwarmHost> SwarmHost for PumpHost<H> {
     /// Death, and only death. Hibernation goes through `detached`, which
     /// deliberately does not reach the dispatcher: a parked node keeps what
     /// it holds (§2.4).
+    /// What the connectors say ended, as instances; the root is never an
+    /// instance and the wrapped host may have its own.
+    fn ended(&mut self) -> Vec<(InstanceId, String)> {
+        let mut ended = self.inner.ended();
+        for (caller, why) in self.dispatcher.ended() {
+            if let Caller::Node(id) = caller {
+                ended.push((InstanceId(id), why));
+            }
+        }
+        ended
+    }
+
     fn released(&mut self, id: InstanceId) {
         self.pump.forget(id);
         for what in self.dispatcher.release(&Caller::Node(id.0)) {
