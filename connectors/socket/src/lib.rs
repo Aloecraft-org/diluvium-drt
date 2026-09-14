@@ -7,6 +7,8 @@
 //!   socket/read   {handle, max?}  -> {data = <bytes>, eof = bool}
 //!   socket/write  {handle, data}  -> {written = n}
 //!   socket/close  {handle}        -> nil
+//!   socket/transfer {handle, to}  -> nil                   (the holder)
+//!   socket/claim  {handle?}       -> {handle, peer | addr}  (the target)
 //! ```
 //!
 //! A guest never holds a descriptor; it holds a number the host issued to
@@ -27,6 +29,22 @@
 //! (§3.1). A node-owned socket is for protocols the node *serves*; TLS
 //! terminates outside and proxies in (§10).
 //!
+//! **Transfer is offer and claim (§3.2), and ownership is single-valued at
+//! every instant.** `transfer {handle, to}` addresses an offer to instance
+//! `to`; the handle is **still the holder's** — usable, closable (`close`
+//! withdraws the offer), released with the holder if it dies first. At
+//! `claim` the entry moves to the claimant under the **same number** and
+//! the holder's every use of it is `no such handle` from then on. An offer
+//! is matched on the dispatcher's caller, never on anything in the
+//! request, so a node claims only what was addressed to it. `claim {}`
+//! with no handle **waits** for the first offer addressed to the caller —
+//! the per-connection child cannot be told its handle before it exists,
+//! and a retry loop in guest code is the wrong fix — while `claim
+//! {handle}` is immediate. No descendancy check: the connector cannot make
+//! one, and the ownership tree is not the membership graph. Nothing is
+//! copied and no descriptor moves; a `to` that never claims costs the
+//! holder nothing past its own lifetime.
+//!
 //! **One DRT bound, the scope's:** `allow`, the addresses a `listen` may
 //! bind, in the shape `connectors/exec`'s `allow` established. Absent, any
 //! address. Present, a `listen` naming anything else is refused by name,
@@ -38,6 +56,7 @@
 use std::future::poll_fn;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::Mutex;
 use std::task::Poll;
 
 use serde::Deserialize;
@@ -46,7 +65,7 @@ use drt_caps::{Scope, ScopeType};
 use drt_connector::{Asker, CallError, CallResult, Caller, Connector, HandleId, Handles};
 
 // ---------------------------------------------------------------------------
-// Surface. [`SocketConnector`] answers the five calls the `impl Connector`
+// Surface. [`SocketConnector`] answers the seven calls the `impl Connector`
 // below dispatches, under the scope [`SocketScopeType`] describes. The two
 // values are the caps a deployment does not tune.
 // ---------------------------------------------------------------------------
@@ -62,6 +81,9 @@ pub const WRITE_MAX: usize = 1024 * 1024;
 /// table is what makes §2's rules hold here without restating them.
 pub struct SocketConnector {
     sockets: Handles<Socket>,
+    /// Offers in flight, oldest first. Each names a handle its holder
+    /// still owns and the instance it is addressed to.
+    offers: Mutex<Vec<Offer>>,
 }
 
 impl Default for SocketConnector {
@@ -74,6 +96,7 @@ impl SocketConnector {
     pub fn new() -> Self {
         SocketConnector {
             sockets: Handles::new("socket"),
+            offers: Mutex::new(Vec::new()),
         }
     }
 }
@@ -138,6 +161,8 @@ impl Connector for SocketConnector {
             "socket/read" => self.read(caller, args).await,
             "socket/write" => self.write(caller, args).await,
             "socket/close" => self.close(caller, args),
+            "socket/transfer" => self.transfer(caller, args),
+            "socket/claim" => self.claim(caller, args).await,
             other => Err(CallError::new(format!("socket: unknown call '{other}'"))),
         }
     }
@@ -147,6 +172,10 @@ impl Connector for SocketConnector {
     /// report (§2.5). A listener closing is the intended end of its
     /// service and says nothing.
     fn release(&self, caller: &Caller) -> Vec<String> {
+        // Offers it made die with what it held; offers addressed to it
+        // have no one left to claim them.
+        self.offers()
+            .retain(|o| o.from != *caller && o.to != *caller);
         self.sockets
             .release(*caller)
             .into_iter()
@@ -155,6 +184,8 @@ impl Connector for SocketConnector {
     }
 
     fn finish(&self) -> Vec<String> {
+        self.offers()
+            .retain(|o| o.from != Caller::Root && o.to != Caller::Root);
         self.sockets
             .drain_root()
             .into_iter()
@@ -164,6 +195,13 @@ impl Connector for SocketConnector {
 }
 
 // depth: what the host holds behind a handle
+
+/// One `transfer` not yet claimed: `handle` is still `from`'s.
+struct Offer {
+    from: Caller,
+    to: Caller,
+    handle: HandleId,
+}
 
 enum Socket {
     Listener {
@@ -179,6 +217,28 @@ enum Socket {
 }
 
 impl Socket {
+    /// The reply that names this socket to whoever now holds it: a
+    /// connection by its peer, a listener by its address.
+    fn describe(&self, handle: HandleId) -> rmpv::Value {
+        match self {
+            Socket::Stream { peer, .. } => reply(vec![
+                ("handle", handle.0.into()),
+                ("peer", peer.to_string().into()),
+            ]),
+            Socket::Listener { listener } => reply(vec![
+                ("handle", handle.0.into()),
+                (
+                    "addr",
+                    listener
+                        .local_addr()
+                        .map(|a| a.to_string())
+                        .unwrap_or_default()
+                        .into(),
+                ),
+            ]),
+        }
+    }
+
     /// What closing this loses, if anything. Consumes the socket, so the
     /// descriptor is gone by the time the sentence is read.
     fn lost(self) -> Option<String> {
@@ -385,7 +445,77 @@ impl SocketConnector {
         self.sockets
             .remove(caller, handle)
             .map_err(|e| CallError::new(e.to_string()))?;
+        // Closing withdraws any offer of it: there is nothing left to claim.
+        self.offers()
+            .retain(|o| !(o.from == caller && o.handle == handle));
         Ok(rmpv::Value::Nil)
+    }
+
+    fn transfer(&self, caller: Caller, args: Option<rmpv::Value>) -> CallResult {
+        let handle = handle_arg(args.as_ref())?;
+        let to = args
+            .as_ref()
+            .and_then(|a| field(a, "to"))
+            .and_then(|v| v.as_u64())
+            .and_then(|n| u32::try_from(n).ok())
+            .map(Caller::Node)
+            .ok_or_else(|| CallError::new("args.to must be an instance id"))?;
+        if to == caller {
+            return Err(CallError::new("transfer to self"));
+        }
+        // The holder's, or the constant: an offer of someone else's handle
+        // must read exactly like an offer of nothing.
+        self.sockets
+            .with(caller, handle, |_| ())
+            .map_err(|e| CallError::new(e.to_string()))?;
+        let mut offers = self.offers();
+        // A second transfer of the same handle replaces the first: the
+        // holder may change its mind until someone claims.
+        offers.retain(|o| !(o.from == caller && o.handle == handle));
+        offers.push(Offer {
+            from: caller,
+            to,
+            handle,
+        });
+        Ok(rmpv::Value::Nil)
+    }
+
+    async fn claim(&self, caller: Caller, args: Option<rmpv::Value>) -> CallResult {
+        let named = match args.as_ref().and_then(|a| field(a, "handle")) {
+            None | Some(rmpv::Value::Nil) => None,
+            Some(v) => Some(
+                v.as_u64()
+                    .map(HandleId)
+                    .ok_or_else(|| CallError::new("args.handle must be a handle number"))?,
+            ),
+        };
+        // Named: that offer or nothing, now. Unnamed: the oldest offer
+        // addressed here, and until one exists the call is pending.
+        let (from, handle) = poll_fn(|_| {
+            let mut offers = self.offers();
+            let at = offers
+                .iter()
+                .position(|o| o.to == caller && named.is_none_or(|h| o.handle == h));
+            match at {
+                Some(i) => {
+                    let o = offers.remove(i);
+                    Poll::Ready(Ok((o.from, o.handle)))
+                }
+                None if named.is_some() => Poll::Ready(Err(CallError::new("no such handle"))),
+                None => Poll::Pending,
+            }
+        })
+        .await?;
+        self.sockets
+            .rekey(from, caller, handle)
+            .map_err(|e| CallError::new(e.to_string()))?;
+        self.sockets
+            .with(caller, handle, |s| s.describe(handle))
+            .map_err(|e| CallError::new(e.to_string()))
+    }
+
+    fn offers(&self) -> std::sync::MutexGuard<'_, Vec<Offer>> {
+        self.offers.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Drive one non-blocking operation to completion in the pump: every

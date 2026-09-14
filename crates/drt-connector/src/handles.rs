@@ -8,6 +8,7 @@
 //! - [`Handles::insert`] — give `caller` a handle to `resource`.
 //! - [`Handles::with`] — use one of `caller`'s resources, by handle.
 //! - [`Handles::remove`] — take one back, by handle.
+//! - [`Handles::rekey`] — move one to another owner, number unchanged.
 //! - [`Handles::release`] — take back everything one node owns. The death
 //!   path (`doc/Plan-0.7.0.md` §2.4).
 //! - [`Handles::drain_root`] — take back everything the root owns. The
@@ -145,6 +146,18 @@ impl<R> Handles<R> {
             .ok_or(NoSuchHandle)
     }
 
+    /// Move one of `from`'s resources to `to`, **number unchanged**. Ids
+    /// are unique within a table, so the same number under a new owner
+    /// aliases nothing; from this call on, `from` presenting it gets
+    /// [`NoSuchHandle`] like anyone else. The transfer primitive
+    /// (`doc/Plan-0.7.0.md` §3.2), resource-agnostic like the rest.
+    pub fn rekey(&self, from: Caller, to: Caller, handle: HandleId) -> Result<(), NoSuchHandle> {
+        let mut inner = self.lock();
+        let resource = inner.table.remove(&(from, handle)).ok_or(NoSuchHandle)?;
+        inner.table.insert((to, handle), resource);
+        Ok(())
+    }
+
     /// Everything `caller` owns, taken back, with each one's handle. The
     /// death path: the connector decides what, if anything, was lost by
     /// each resource going away, and says so in its own words.
@@ -260,6 +273,26 @@ mod tests {
         assert_eq!(table.with(node, h1, |r| *r), Err(NoSuchHandle));
         let h2 = table.insert(node, 2);
         assert_ne!(h1, h2, "ids are never reused within a table");
+    }
+
+    /// §3.2: a rekey moves the resource, keeps the number, and leaves the
+    /// old owner with the same sentence as a stranger.
+    #[test]
+    fn rekey_moves_a_resource_and_keeps_its_number() {
+        let table: Handles<u8> = Handles::new("thing");
+        let a = Caller::Node(1);
+        let b = Caller::Node(2);
+        let h = table.insert(a, 5);
+        assert_eq!(table.rekey(a, b, h), Ok(()));
+        assert_eq!(table.with(b, h, |r| *r), Ok(5), "same number, new owner");
+        assert_eq!(table.with(a, h, |r| *r), Err(NoSuchHandle));
+        assert_eq!(
+            table.rekey(a, b, h),
+            Err(NoSuchHandle),
+            "and cannot be moved twice"
+        );
+        assert_eq!(table.count(a), 0);
+        assert_eq!(table.count(b), 1);
     }
 
     #[test]
