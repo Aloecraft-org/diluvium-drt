@@ -11,9 +11,10 @@
 //! Configurable values: none. A transport's own knobs (an address, an
 //! exec path) belong to that transport's constructor.
 //!
-//! Fan-out: the implementations are [`Loopback`] here and `ProcessChannel`
-//! in `process` (unix). `spawn`, `tcp`, a Worker and a WebSocket are the
-//! rows in `doc/Plugins.md` §4.1 that this trait exists to keep uniform.
+//! Fan-out: the implementations are [`Loopback`] here, `ProcessChannel`
+//! in `process` (unix) and `TcpChannel` in `tcp` (a stream dialed or
+//! handed in). `spawn`, a Worker and a WebSocket are the remaining rows
+//! in `doc/Plugins.md` §4.1 that this trait exists to keep uniform.
 //!
 //! # Why both halves are non-blocking
 //!

@@ -6,13 +6,15 @@
 //! - [`frame`] — the wire: length-prefixed msgpack, request and reply.
 //! - [`channel`] — the byte stream under it, and its test double.
 //! - [`session`] — many calls over one stream, polled and never blocking.
-//! - [`process`] — the unix transport: fork, exec, and keep fd 3. The
-//!   one platform-bound module, and it is `cfg(unix)`.
+//! - [`process`] — the unix transport: fork, exec, and keep fd 3. A
+//!   platform-bound module, `cfg(unix)`.
+//! - [`tcp`] — the dialed transport: `process` minus the fork
+//!   (`doc/Plan-0.7.0.md` §8). Native and wasi, where `std::net` is.
 //!
 //! Configurable values: each module's own, named in its surface block.
 //!
-//! Fan-out: the transports, once `channel` lands — `socketpair` and
-//! `spawn` and `tcp` natively, a Worker or a WebSocket in a page. They
+//! Fan-out: the transports — `socketpair` (`process`) and `tcp` here,
+//! `spawn` natively, a Worker or a WebSocket in a page. They
 //! differ only in how the byte stream is *obtained*; the frames on it are
 //! identical, which is the claim that makes one plugin run everywhere.
 //!
@@ -36,3 +38,5 @@ pub mod frame;
 #[cfg(unix)]
 pub mod process;
 pub mod session;
+#[cfg(any(unix, windows, target_os = "wasi"))]
+pub mod tcp;
