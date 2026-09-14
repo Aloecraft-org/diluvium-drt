@@ -34,4 +34,6 @@ default = ["engine-diluvium"]
 engine-diluvium = ["dep:diluvium"]
 
 [dev-dependencies]
+# Only the pump's own tests define a connector; the crate proper never does.
+async-trait = { workspace = true }
 tempfile = "3"

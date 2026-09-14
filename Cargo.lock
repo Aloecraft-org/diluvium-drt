@@ -1399,6 +1399,7 @@ dependencies = [
 name = "drt-swarm"
 version = "0.6.2-rc.1"
 dependencies = [
+ "async-trait",
  "diluvium",
  "drt-caps",
  "drt-config",

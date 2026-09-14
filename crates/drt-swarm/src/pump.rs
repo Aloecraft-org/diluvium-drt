@@ -44,7 +44,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 use drt_caps::CapSet;
-use drt_connector::{Dispatcher, Routed};
+use drt_connector::{Caller, Dispatcher, Routed};
 use drt_hostcall::Reply;
 
 use crate::engine::{Instance, QueueHandle};
@@ -108,7 +108,7 @@ impl Pump {
             let Ok(Some(raw)) = inst.pop(calls) else {
                 break;
             };
-            match dispatcher.route(caps, &raw) {
+            match dispatcher.route_as(Caller::Node(id.0), caps, &raw) {
                 Routed::Answered(reply) => landed += self.land(id, replies, inst, reply),
                 Routed::Call(call) => {
                     let mut future: ReplyFuture = Box::pin(call.answer());
@@ -225,6 +225,12 @@ pub struct PumpHost<H: SwarmHost> {
     inner: H,
     dispatcher: Arc<Dispatcher>,
     pump: Pump,
+    /// What connectors reported lost when a node died, attributed to it,
+    /// waiting for the driver to take it (`doc/Plan-0.7.0.md` §2.5). Kept
+    /// here rather than written anywhere because this crate has no stderr
+    /// and no supervisor queue of its own; the driver that does is the one
+    /// to say it.
+    lost: Vec<(InstanceId, String)>,
 }
 
 impl<H: SwarmHost> PumpHost<H> {
@@ -239,7 +245,14 @@ impl<H: SwarmHost> PumpHost<H> {
             inner,
             dispatcher,
             pump: Pump::new(),
+            lost: Vec::new(),
         }
+    }
+
+    /// Everything connectors reported lost since the last take, each
+    /// attributed to the node that owned it. Empty is the ordinary answer.
+    pub fn take_lost(&mut self) -> Vec<(InstanceId, String)> {
+        std::mem::take(&mut self.lost)
     }
 
     /// The wrapped host — the pump adds hostcalls, it does not hide what
@@ -281,8 +294,109 @@ impl<H: SwarmHost> SwarmHost for PumpHost<H> {
         self.inner.detached(id);
     }
 
+    /// Death, and only death. Hibernation goes through `detached`, which
+    /// deliberately does not reach the dispatcher: a parked node keeps what
+    /// it holds (§2.4).
     fn released(&mut self, id: InstanceId) {
         self.pump.forget(id);
+        for what in self.dispatcher.release(&Caller::Node(id.0)) {
+            self.lost.push((id, what));
+        }
         self.inner.released(id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::swarm::StepHost;
+    use drt_connector::{CallResult, Connector, Handles, Registry};
+    use std::sync::Mutex;
+
+    /// A connector that holds one thing per node and records every release
+    /// it is asked for, so the test can see which hook reached it.
+    struct Holding {
+        table: Handles<&'static str>,
+        releases: Mutex<Vec<Caller>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Connector for Holding {
+        async fn call(
+            &self,
+            _: &str,
+            _: Option<rmpv::Value>,
+            _: Option<&drt_caps::Scope>,
+        ) -> CallResult {
+            Ok(rmpv::Value::Nil)
+        }
+        fn release(&self, caller: &Caller) -> Vec<String> {
+            self.releases.lock().unwrap().push(*caller);
+            self.table
+                .release(*caller)
+                .into_iter()
+                .map(|(_, what)| format!("{caller} lost {what}"))
+                .collect()
+        }
+    }
+
+    fn host_with(holding: Arc<Holding>) -> PumpHost<StepHost> {
+        let mut reg = Registry::new();
+        reg.wire("hold", holding, None).unwrap();
+        PumpHost::new(StepHost::new(), Dispatcher::new(reg))
+    }
+
+    /// §2.4: hibernation must not release. `detached` is the hibernation
+    /// hook and `released` is the death hook; only the second reaches the
+    /// dispatcher, and the report it collects names the node.
+    #[test]
+    fn detached_keeps_a_nodes_resources_and_released_takes_them() {
+        let holding = Arc::new(Holding {
+            table: Handles::new("thing"),
+            releases: Mutex::new(Vec::new()),
+        });
+        holding.table.insert(Caller::Node(4), "a quiet socket");
+        let mut host = host_with(holding.clone());
+
+        host.detached(InstanceId(4));
+        assert!(
+            holding.releases.lock().unwrap().is_empty(),
+            "hibernation reached the dispatcher's release"
+        );
+        assert_eq!(
+            holding.table.count(Caller::Node(4)),
+            1,
+            "still held while parked"
+        );
+        assert!(host.take_lost().is_empty());
+
+        host.released(InstanceId(4));
+        assert_eq!(*holding.releases.lock().unwrap(), vec![Caller::Node(4)]);
+        assert_eq!(
+            holding.table.count(Caller::Node(4)),
+            0,
+            "gone with the node"
+        );
+        let lost = host.take_lost();
+        assert_eq!(lost.len(), 1);
+        assert_eq!(lost[0].0, InstanceId(4));
+        assert_eq!(lost[0].1, "instance 4 lost a quiet socket");
+        assert!(host.take_lost().is_empty(), "taking drains");
+    }
+
+    /// A node that held nothing releases nothing, and a sibling's holdings
+    /// are not touched by its death.
+    #[test]
+    fn releasing_one_node_leaves_a_siblings_resources() {
+        let holding = Arc::new(Holding {
+            table: Handles::new("thing"),
+            releases: Mutex::new(Vec::new()),
+        });
+        holding.table.insert(Caller::Node(5), "sibling's");
+        let mut host = host_with(holding.clone());
+
+        host.released(InstanceId(6));
+        assert!(host.take_lost().is_empty(), "nothing of 6's to lose");
+        assert_eq!(holding.table.count(Caller::Node(5)), 1);
     }
 }

@@ -16,6 +16,9 @@ use std::sync::Arc;
 use drt_caps::{call_capability, CapSet, Scope, ScopeError, ScopeRegistry, ScopeType};
 use drt_hostcall::{salvage_token, Reply, Request, Token};
 
+pub mod handles;
+pub use handles::{Caller, HandleId, Handles, NoSuchHandle};
+
 /// What a connector answers with. `Err` becomes `status = "error"` with the
 /// detail worded for the program to read; `denied` is never a connector's to
 /// say — the dispatcher decides it from the capability set, so a mock cannot
@@ -55,6 +58,42 @@ pub trait Connector: Send + Sync {
         args: Option<rmpv::Value>,
         scope: Option<&Scope>,
     ) -> CallResult;
+
+    /// Answer one call, knowing who asked. The default forgets the caller
+    /// and answers [`Connector::call`], so a connector that holds nothing
+    /// per node implements only that one and is unchanged by this method
+    /// existing. A connector that keeps resources on a guest's behalf
+    /// implements this instead, and keys what it keeps by `caller`
+    /// (`doc/Plan-0.7.0.md` §2.1–2.2).
+    ///
+    /// `caller` is a value the dispatcher took from the routing step, never
+    /// from the request: a request whose subject is a string the asking
+    /// node chose is not an identity.
+    async fn call_as(
+        &self,
+        caller: &Caller,
+        call: &str,
+        args: Option<rmpv::Value>,
+        scope: Option<&Scope>,
+    ) -> CallResult {
+        let _ = caller;
+        self.call(call, args, scope).await
+    }
+
+    /// One node is gone for good — killed, out of budget, trapped — and
+    /// whatever this connector held for it goes with it. Each string
+    /// returned is one thing that did not end well, said so a reader can
+    /// tell whose it was (§2.4–2.5).
+    ///
+    /// Never called for hibernation. A parked node keeps what it holds;
+    /// that is the whole point of it being able to park.
+    ///
+    /// The default holds nothing per node and so loses nothing. As with
+    /// [`Connector::finish`], an empty answer is a claim and not a shrug.
+    fn release(&self, caller: &Caller) -> Vec<String> {
+        let _ = caller;
+        Vec::new()
+    }
 
     /// Last call before the process goes away. A connector holding state
     /// that outlives a hostcall says here whether that state ended well,
@@ -182,9 +221,32 @@ impl Dispatcher {
             .collect()
     }
 
-    /// Answer one drained request against one guest's capability set.
+    /// Tell every wired connector one node is gone for good, and collect
+    /// what each says it lost for that node. The per-node counterpart of
+    /// [`Dispatcher::finish`], and like it visited in name order so the
+    /// report is stable.
+    ///
+    /// Called from the host's death hook and never from its hibernation
+    /// hook — `SwarmHost::released`, not `detached` (§2.4).
+    pub fn release(&self, caller: &Caller) -> Vec<String> {
+        self.registry
+            .wired
+            .values()
+            .flat_map(|w| w.connector.release(caller))
+            .collect()
+    }
+
+    /// Answer one drained request against one guest's capability set, with
+    /// no instance behind it. The root is the caller: a harness, a test, or
+    /// the process's own bookkeeping, and what such a call creates lives to
+    /// teardown.
     pub async fn dispatch(&self, caps: &CapSet, raw: &[u8]) -> Reply {
-        match self.route(caps, raw) {
+        self.dispatch_as(Caller::Root, caps, raw).await
+    }
+
+    /// [`Dispatcher::dispatch`], knowing which instance asked.
+    pub async fn dispatch_as(&self, caller: Caller, caps: &CapSet, raw: &[u8]) -> Reply {
+        match self.route_as(caller, caps, raw) {
             Routed::Answered(reply) => reply,
             Routed::Call(call) => call.answer().await,
         }
@@ -200,6 +262,13 @@ impl Dispatcher {
     /// answer is not ready can be parked and polled later, with nothing
     /// borrowed from the dispatcher or the capability set that routed it.
     pub fn route(&self, caps: &CapSet, raw: &[u8]) -> Routed {
+        self.route_as(Caller::Root, caps, raw)
+    }
+
+    /// [`Dispatcher::route`], knowing which instance asked. The pump uses
+    /// this one; the caller rides on the [`PendingCall`] so the connector
+    /// learns it however late the call is answered.
+    pub fn route_as(&self, caller: Caller, caps: &CapSet, raw: &[u8]) -> Routed {
         let req: Request = match drt_hostcall::from_bytes(raw) {
             Ok(req) => req,
             Err(e) => {
@@ -235,6 +304,7 @@ impl Dispatcher {
             ));
         };
         Routed::Call(PendingCall {
+            caller,
             tok: req.tok,
             call: req.call,
             args: req.args,
@@ -423,6 +493,7 @@ pub enum Routed {
 /// where it was routed or much later and somewhere else — a pump's
 /// in-flight table, while the rest of the swarm keeps stepping.
 pub struct PendingCall {
+    caller: Caller,
     tok: Token,
     call: String,
     args: Option<rmpv::Value>,
@@ -441,6 +512,11 @@ impl PendingCall {
         &self.call
     }
 
+    /// Who asked.
+    pub fn caller(&self) -> Caller {
+        self.caller
+    }
+
     /// Run the connector and shape its answer into the reply: `ok` with
     /// the value, or `error` with the connector's own sentence. `denied`
     /// was decided at routing and never comes from here.
@@ -455,7 +531,7 @@ impl PendingCall {
     pub async fn answer(self) -> Reply {
         match self
             .connector
-            .call(&self.call, self.args, self.scope.as_ref())
+            .call_as(&self.caller, &self.call, self.args, self.scope.as_ref())
             .await
         {
             Ok(value) => {
@@ -672,6 +748,127 @@ mod tests {
         let reply = pollster::block_on(d.dispatch(&caps, &raw));
         assert_eq!(reply.status, Status::Error);
         assert!(reply.detail.unwrap().contains("time/monotonic"));
+    }
+
+    /// Acceptance 1, the runtime half: a connector written before the
+    /// caller existed — implementing `call` and nothing else — is reached
+    /// through the caller-aware path unchanged, because `call_as` defaults
+    /// to it. (The compile half is the nine crates in `connectors/`
+    /// building with no edits.)
+    #[test]
+    fn a_connector_that_never_heard_of_callers_still_answers() {
+        let d = dispatcher_with_time();
+        let caps = caps(&["host:time"]);
+        let raw = to_bytes(&Request {
+            tok: 5,
+            call: "time".into(),
+            args: None,
+        })
+        .unwrap();
+        let reply = pollster::block_on(d.dispatch_as(Caller::Node(3), &caps, &raw));
+        assert_eq!(reply, Reply::ok(5, rmpv::Value::from(1_700_000_000_000u64)));
+    }
+
+    /// A connector that does care sees exactly who asked, and the plain
+    /// `dispatch` path presents as the root.
+    #[test]
+    fn a_caller_aware_connector_is_told_who_asked() {
+        struct Echo;
+        #[async_trait::async_trait]
+        impl Connector for Echo {
+            async fn call(&self, _: &str, _: Option<rmpv::Value>, _: Option<&Scope>) -> CallResult {
+                unreachable!("call_as is implemented, so this is never the path")
+            }
+            async fn call_as(
+                &self,
+                caller: &Caller,
+                _: &str,
+                _: Option<rmpv::Value>,
+                _: Option<&Scope>,
+            ) -> CallResult {
+                Ok(rmpv::Value::from(caller.to_string()))
+            }
+        }
+        let mut reg = Registry::new();
+        reg.wire("who", Arc::new(Echo), None).unwrap();
+        let d = Dispatcher::new(reg);
+        let caps = caps(&["host:who"]);
+        let raw = to_bytes(&Request {
+            tok: 1,
+            call: "who".into(),
+            args: None,
+        })
+        .unwrap();
+
+        let reply = pollster::block_on(d.dispatch_as(Caller::Node(42), &caps, &raw));
+        assert_eq!(reply.value, Some(rmpv::Value::from("instance 42")));
+
+        let reply = pollster::block_on(d.dispatch(&caps, &raw));
+        assert_eq!(reply.value, Some(rmpv::Value::from("the root")));
+    }
+
+    /// Acceptance 5: a release that loses work reports it, attributed to
+    /// the node, and a release for a node that held nothing reports
+    /// nothing. Two connectors, so the report is seen to be collected
+    /// across the registry in name order.
+    #[test]
+    fn release_collects_each_connectors_loss_attributed_to_the_node() {
+        struct Holds {
+            table: Handles<&'static str>,
+        }
+        #[async_trait::async_trait]
+        impl Connector for Holds {
+            async fn call(&self, _: &str, _: Option<rmpv::Value>, _: Option<&Scope>) -> CallResult {
+                Ok(rmpv::Value::Nil)
+            }
+            fn release(&self, caller: &Caller) -> Vec<String> {
+                self.table
+                    .release(*caller)
+                    .into_iter()
+                    .map(|(h, what)| {
+                        format!(
+                            "{} {} #{} owned by {caller} ended with {what}",
+                            self.table.kind(),
+                            self.table.kind(),
+                            h.0
+                        )
+                    })
+                    .collect()
+            }
+        }
+        let a = Arc::new(Holds {
+            table: Handles::new("alpha"),
+        });
+        let b = Arc::new(Holds {
+            table: Handles::new("beta"),
+        });
+        a.table.insert(Caller::Node(7), "work unflushed");
+        b.table.insert(Caller::Node(7), "a transaction open");
+        b.table.insert(Caller::Node(8), "nothing of 7's");
+
+        let mut reg = Registry::new();
+        reg.wire("beta", b.clone(), None).unwrap();
+        reg.wire("alpha", a.clone(), None).unwrap();
+        let d = Dispatcher::new(reg);
+
+        let lost = d.release(&Caller::Node(7));
+        assert_eq!(lost.len(), 2, "{lost:?}");
+        assert!(lost[0].starts_with("alpha"), "name order: {lost:?}");
+        assert!(lost[1].starts_with("beta"), "name order: {lost:?}");
+        assert!(
+            lost.iter().all(|l| l.contains("owned by instance 7")),
+            "attributed: {lost:?}"
+        );
+
+        assert!(
+            d.release(&Caller::Node(9)).is_empty(),
+            "held nothing, lost nothing"
+        );
+        assert_eq!(
+            b.table.count(Caller::Node(8)),
+            1,
+            "a sibling's is untouched"
+        );
     }
 
     #[test]
