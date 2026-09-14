@@ -5,8 +5,8 @@ version is set when the first change lands, per `doc/Plan-2026-09.md`.
 Nothing here is built. Where a claim rests on code it names the file.
 
 This is one idea with three consequences. The idea is that a host-held
-resource can belong to a *node* rather than to the deployment. The
-consequences are node-owned sockets, per-node plugins, and the half of
+resource can belong to a *node* rather than to the root. The
+consequences are node-owned sockets, scoped plugins, and the half of
 inter-root that is transport rather than protocol.
 
 ---
@@ -27,15 +27,15 @@ So the hard half is conceded. What does not exist is *whose*:
   args, scope)` — caps gate the call before it arrives, but no identity
   comes with it (`crates/drt-connector/src/lib.rs`).
 - **`sql` keys its cache by `PathBuf`** (`connectors/sql/src/lib.rs`), so
-  handles are deployment-wide. Two nodes that can name one database share
-  one connection, and therefore one transaction.
-- **`finish` fires once**, across every wired connector, at deployment
-  teardown (`crates/drt/src/run.rs:178`). `do_kill` does not touch
-  connectors. There is no per-instance release path at all.
+  handles are root-wide. Two nodes that can name one database share one
+  connection, and therefore one transaction.
+- **`finish` fires once**, across every wired connector, when the root goes
+  (`crates/drt/src/run.rs:178`). `do_kill` does not touch connectors.
+  There is no per-instance release path at all.
 
 Nothing above is a bug being fixed. It is a dimension that was never
 needed, because until now every resource a connector held was one the
-whole deployment shared.
+whole root shared.
 
 ## 2. The ownership dimension
 
@@ -56,7 +56,28 @@ presenting a number it did not receive gets **no such handle** — not a
 permission failure, because from where it stands the handle does not
 exist. A denial would tell it something true about another node.
 
-### 2.3 Death releases; hibernation does not
+### 2.3 There are two lifetimes, so the scope is two-valued
+
+A host-held resource can follow the root's lifetime or a node's. There is
+no third, so the ownership dimension is not a flag bolted onto one feature
+— it is the shape the runtime already has, written down.
+
+- **`root`** — one instance for the root, released when the root goes.
+  This is what every connector does today, unstated.
+- **`node`** — one instance per calling node, released when that node dies.
+
+The instance table is keyed by the scope's key: the owner for `node`, one
+root key for `root`. Release-by-owner then falls out — a root-scoped
+instance matches no owner and survives to teardown without a second path.
+
+**Supporting both costs less than supporting one.** Keyed this way they
+are one mechanism; pick `node` alone and `root` becomes a special case
+that has to be added back the first time something genuinely is a
+singleton. It is also why `sql`'s current behaviour is not a wart to be
+removed but a scope to be *stated*: it is `root`, and saying so is the fix
+(§8, risk 3).
+
+### 2.4 Death releases; hibernation does not
 
 `release(owner)` runs on the instance-death path — kill, budget
 exhaustion, a trap. It closes that node's handles and nothing else's.
@@ -66,7 +87,7 @@ for hours is the case this release exists to serve; a handle that did not
 survive hibernation would force every parked service to stay resident,
 which is the cost the whole design is trying to avoid.
 
-### 2.4 A release says what was lost
+### 2.5 A release says what was lost
 
 `finish`'s lesson applies per node: releasing must be able to report what
 did not survive, attributed to the node that owned it. "Nothing was lost"
@@ -129,7 +150,7 @@ working ones are the resident ones. That is what makes "spawn a node per
 client" reasonable where thread-per-connection would not be, and it is the
 strongest argument for building this at all.
 
-## 4. Plugins, per node
+## 4. Plugins, scoped
 
 ### 4.1 The scope question, settled the other way
 
@@ -137,9 +158,18 @@ strongest argument for building this at all.
 manifest's `max_inflight` is written for it. That assumption came from the
 C host, which had no nodes to own anything.
 
-In DRT a shared plugin is an **ambient singleton**, which is the thing the
-node and capability model exists to avoid. So the default inverts: a
-plugin instance belongs to the node that called it.
+In DRT an implicitly shared plugin is an **ambient singleton**, which is
+the thing the node and capability model exists to avoid. So the default
+inverts: a plugin declares its scope (§2.3), and absent a declaration it
+is `node` — an instance belonging to the node that called it.
+
+`root` stays available, because some things genuinely are singletons and
+forcing their authors to write a fronting node would be make-work. What it
+costs is stated rather than hidden: a `root`-scoped plugin serves several
+nodes and **cannot tell them apart**, since caller identity stops at the
+host. Any per-caller policy is then the host's to enforce before the call,
+never the plugin's. A `node`-scoped plugin gets that isolation
+structurally and needs no such care.
 
 Three arguments for sharing were considered and all three fail on DRT's
 own terms:
@@ -153,17 +183,22 @@ own terms:
   process ambient.
 - *It is expensive to start.* Also the node author's call.
 
-### 4.2 Sharing is composed, not built in
+### 4.2 Shared *state* is still composed
 
-A shared plugin is a node that owns one and fronts it on a queue. That
-needs no host feature, it is how everything else in this system is shared,
-and it removes a configuration axis rather than adding one.
+`root` scope shares a **process**. It does not make that process a safe
+place to keep state several nodes read and write: a pool, a cache, a
+limiter still wants an owner and a concurrency model, and in this system
+that owner is a node that holds it and fronts it on a queue.
+
+So the two are not alternatives. Use `root` when the resource is a
+singleton by nature — it binds one port, it owns one device. Use a
+fronting node when what is shared is state.
 
 ### 4.3 What changes
 
 The dispatcher routes **family → connector** today. It becomes
-**(family, owner) → instance**: lazily started on an owner's first call,
-released when that owner dies (§2.3). This is the riskiest change in the
+**(family, scope key) → instance**: lazily started on first call, released
+when its key's owner dies (§2.3, §2.4). This is the riskiest change in the
 release and the one that depends hardest on §2.1.
 
 ### 4.4 What the channel work already gives it
@@ -212,17 +247,19 @@ subprocess first, in a release that was not blocked on it.
    the child serves the connection to completion.
 7. A child that traps mid-connection is killed; its socket closes; its
    siblings and its parent are unaffected.
-8. A plugin instance belongs to its calling node: two nodes calling one
-   plugin family get two processes, and each dies with its owner.
-9. A plugin declaring a scope this host cannot honour is refused at load,
-   by name.
-10. Every refusal in `doc/Peers.md` still refuses, unchanged.
+8. A plugin that declares `node` scope, or declares none, belongs to its
+   calling node: two nodes calling one family get two processes, and each
+   dies with its owner.
+9. A plugin that declares `root` scope gets one process for the root: two
+   nodes calling it reach the same one, and it outlives either of them.
+10. A plugin declaring a scope that is neither is refused at load, by name
+   and with both spellings in the message.
+11. Every refusal in `doc/Peers.md` still refuses, unchanged.
 
 ## 7. Not here, named so nobody builds it early
 
 - **A plugin process per connection.** A node per connection is cheap; a
   process per connection is not.
-- **Shared plugin instances as a host feature.** §4.2 — compose it.
 - **Inter-root delivery.** §5.
 - **Handle transfer across roots.** Transfer is within one swarm. A handle
   that crossed a root boundary would be a capability escaping its ceiling.
@@ -235,11 +272,11 @@ subprocess first, in a release that was not blocked on it.
    touches the path every hostcall takes. It wants the tightest test.
 2. **Handle transfer (§3.2)** is new surface with no precedent in this
    repository, and it is a deliberate hole in an invariant.
-3. **`sql`'s path-keyed cache.** This release does not have to fix it, but
-   it makes the question unavoidable: once handles have owners, a
-   deployment-wide connection is visibly the odd one out. Whether two
-   nodes can name one database today is worth answering before someone
-   answers it with an incident.
+3. **`sql`'s path-keyed cache.** Not this release's to change, and §2.3
+   is why it does not have to be: `sql` is `root`-scoped, and the fix is
+   to *say so* rather than to rework it. What stays open is narrower and
+   worth answering before an incident answers it — whether two nodes can
+   name one database today, and therefore share one transaction.
 4. **A parked node that never wakes.** Readiness push (§3.3) is the only
    thing standing between a hibernating service and a connection that
    silently goes unserved. It wants a test with a real socket, not a
