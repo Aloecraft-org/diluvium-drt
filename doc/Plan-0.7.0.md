@@ -14,7 +14,7 @@ history is continuous through the rename.
 | # | what | why it is here |
 |---|---|---|
 | §2 | **The ownership dimension** — a host-held resource belongs to a node or to the root, and is released when its owner dies | the spine; everything below is a consumer of it |
-| §3 | **Node-owned sockets**, stream and datagram | one faulty client bounded to one node; parked services that hibernate |
+| §3 | **Node-owned sockets**, stream and datagram | one faulty client bounded to one node; parked services that hibernate. Datagram ships for ownership parity, **not** for the per-room relay port (§3.1) |
 | §4 | **`crypto/derive { label }`** — a runtime name for a host-held subkey, with a prefix scope and per-consumer subkeys | a room made at 14:02 cannot have a config entry |
 | §5 | **`kid` in the JWT header**, algorithm from the named key, interop secrets refused | cheap now, a token-format break in a year |
 | §6 | **The park deadline outlives residency** | nothing fires on bytes *not* arriving |
@@ -122,11 +122,27 @@ Both are capability-gated with a scope naming what may be bound, the shape
 `connectors/exec`'s `allow` already establishes for "which of these may a
 guest name".
 
-**UDP is in.** `doc/Rooms.md` §8.4's second case — the fetchpoint is the
-reachable side and allocates one UDP port per room, forwarding down the
-tunnel to the hub — is a launch path, and leaving datagrams out means a
-second pass through the same connector to add four verbs later. The
-ownership dimension is identical; only the vocabulary differs.
+**UDP is in, and the reason is parity rather than a launch consumer.**
+The ownership dimension is identical for a datagram socket — bind, own,
+release, survive hibernation — and only the vocabulary differs, so leaving
+datagrams out means a second pass through the same connector to add four
+verbs later.
+
+**It does not ship for the per-room relay port, and an earlier draft said
+otherwise.** That draft justified UDP by a consumer described as *"the
+fetchpoint allocates one UDP port per room and forwards everything on it
+down the tunnel to the hub"* — and then committed, three paragraphs later,
+that the guest-shuffled path is not the relay. Forwarding tunnel traffic
+**is** data plane, so those two sentences could not both be true. The
+commitment is the one that stands: that port is a next-release path
+needing the node-scoped block, not a 0.7.0 one.
+
+What is left for the guest datagram path at 0.7.0 is control-plane
+traffic — per-room keepalives, handshakes, anything at signalling rates.
+**If there is no such consumer at launch, UDP can slip to the next release
+alongside the relay block at no cost to anything else here**, and that is
+a cheaper decision to make now than after the verbs exist. Stated plainly
+so it is a choice rather than an assumption nobody noticed making.
 
 **The existing transport blocks stay root-wide, and that is a fork worth
 naming.** `stun::bind`, `turn::bind`, the relay's `TcpListener::bind` and
@@ -194,8 +210,10 @@ that it be able to.
 ### 3.3 A vital handle, because the guarantee has a direction
 
 §2.2 and §2.4 guarantee **node dies → handle closes**. They do not
-guarantee the converse, and `doc/Rooms.md` §2.2 wants the converse:
-*"socket closes, node exits, service gone, nobody needs notifying."*
+guarantee the converse, and the consumer design wants the converse. Its
+requirement, quoted because the document it comes from is a discofetch
+draft that is not in either repository: *"socket closes, node exits,
+service gone, nobody needs notifying."*
 
 Without something here, a clean close is a readiness event (§3.4) that the
 node observes and then *chooses* to exit on. That is program logic. A node
@@ -294,9 +312,10 @@ choosing is about who parses the bytes.
   A long-lived WSS leg, a datagram port, a framed protocol of the node's
   own — anything whose lifetime is the service's rather than the request's.
 
-For `doc/Rooms.md` that means the mutating verbs keep arriving on the
-root's queue while `park` and `advertise` become node-owned, which is the
-split that document already implies without saying so.
+For the consumer design that means the mutating verbs keep arriving on
+the root's queue while its `park` and `advertise` become node-owned — the
+split it already implies without saying so. Its confirmation, on review:
+*"§3.6's split is the one we'd have drawn."*
 
 ### 3.7 What this buys, and what it does not
 
@@ -503,11 +522,20 @@ verifies against the default derived key, so nothing already issued
 breaks.
 
 **That fallback ships as config, not as a promise to remove it later.**
-`jwt.accept_unkeyed`, default `true`. The earlier draft called it
+`jwt.accept_unkeyed`, **default `true`**. The earlier draft called it
 "removable later", which walked straight into the thing §5.1 exists to
 avoid: removing it *is* a migration window, for the exact case `kid` was
 wanted for — retiring the default key. One boolean now makes that a config
 change rather than a release.
+
+Default `true` costs nothing and is correct for anyone holding tokens
+already issued. **Its first consumer sets it `false` from day one** —
+discofetch has no live DRT-signed JWTs, since their API tokens are
+prefix-and-hash rather than JWT, so there is nothing to migrate and no
+reason to carry the branch. That also answers the worry that a default-on
+compatibility switch never gets turned off: acceptance 21's "refuses with
+it off" is a path exercised in production from the first deploy rather
+than a theoretical one.
 
 It is also the one place §5.2's "never branch on what the token said" is
 not quite true: `kid` present versus absent is a branch on the token, and
@@ -552,7 +580,7 @@ arriving. Nothing fires on bytes *not* arriving, and the one case lazy
 evaluation structurally cannot reach is a node waiting on something that
 will never come.
 
-It is §11's risk 4 with the arrow reversed. There, a deadline firing too
+It is §11's risk 5 with the arrow reversed. There, a deadline firing too
 eagerly wakes a node that should have stayed parked. Here, no deadline at
 all parks a node forever. Both are the same mechanism read from opposite
 ends, which is why they belong in one release.
@@ -566,10 +594,23 @@ rebuild loop, and §3.8's affordability argument assumes parked nodes stay
 parked. It is a footgun one guest can point at the whole root.
 
 It is still the right feature and it is asked for. It ships with a
-**configured floor** on how short a deadline a parked instance may arm,
-and §11 carries it as a risk rather than leaving it to be discovered. The
-deadlines this is for are minutes to hours; a floor costs their author
+**configured floor of 30 seconds** on how short a deadline a parked
+instance may arm.
+
+The number comes from the right quantity, which is not the per-node
+rebuild cost: it is **aggregate wakes per second across the parked
+population**. Five hundred parked nodes at a 30-second floor is about 17
+wakes a second, which is nothing. The same population at a one-second
+floor is 500 a second, which is a different machine. Thirty seconds is
+three orders of magnitude above a rebuild and far under the
+minutes-to-hours deadlines this exists for, so it costs their author
 nothing.
+
+**The floor is a proxy for the quantity that actually matters**, and that
+is worth writing down before somebody raises the parked count tenfold and
+rediscovers it. The correct long-term control is a cap on aggregate wakes
+per second, because the floor is per-node and the cost is
+population-wide. Not worth building now; §11 risk 5 carries the note.
 
 ### 6.5 What fires
 
@@ -729,7 +770,7 @@ subprocess first, in a release that was not blocked on it.
    gone without running a line of its own logic and its other handles are
    released, with no guest resident to notice. This is acceptance 4's
    socket in its other state, and the one that would leave a gap exactly
-   where the rooms design leans on the guarantee.
+   where a parked-service design leans on the guarantee.
 12. A datagram handle binds, receives from several senders and sends to
    each, and is released with its owner like any other.
 13. A node that hibernates and wakes **keeps both its queue handles and
@@ -817,13 +858,27 @@ subprocess first, in a release that was not blocked on it.
 
 5. **A guest-chosen deadline is a wake rate (§6.4).** A short recurring
    deadline on a parked node is a rebuild loop, and §3.8's affordability
-   argument assumes parked nodes stay parked. The configured floor is the
-   mitigation; the risk is that the floor is set once, generously, and
-   never revisited.
+   argument assumes parked nodes stay parked. The 30-second floor is the
+   mitigation.
+
+   The risk is not that the floor is wrong; it is that **the floor is a
+   proxy for the wrong quantity**. It is per-node, and the cost is
+   population-wide: the same floor that is generous at 500 parked nodes is
+   not at 5,000. The correct control is a cap on aggregate wakes per
+   second. Not worth building until the parked count justifies it, and
+   worth having written down here so that whoever raises that count by an
+   order of magnitude finds this paragraph instead of the symptom.
 
 ## 12. The order of work
 
-Each step ends green and nothing depends on a step after it.
+**Before any of it, and not in the list because it is not ours to do:**
+file the `doc/Messaging.md` §10.8 correction upstream. Until it lands, two
+public documents disagree about whether queue handles survive, and anyone
+building a service node from §10.8 writes the re-`lookup` prologue §3.5
+says is unnecessary. It blocks nothing here and should not wait on
+anything here either.
+
+Each step below ends green and nothing depends on a step after it.
 
 1. **The ownership dimension** (§2), resource-agnostic from the first
    commit: caller identity on the trait, a handle table keyed by owner and
@@ -845,14 +900,6 @@ Each step ends green and nothing depends on a step after it.
 9. **The `Channel` generalisation** (§8), which is `ProcessChannel` minus
    the fork and lands nothing user-visible.
 
-0. **File the `doc/Messaging.md` §10.8 correction upstream**, before
-   release rather than after. Until it lands, two public documents
-   disagree about whether queue handles survive, and anyone building a
-   service node from §10.8 writes the re-`lookup` prologue §3.5 says is
-   unnecessary. Not this repository's to change, which is why it is step
-   zero rather than a step: it blocks nothing here and should not wait on
-   anything here either.
-
 Steps 1 and 2 are the ones to get right; 3 through 6 are where the
 schedule actually goes; 7 and 8 are small and separable, which makes them
 the right things to hand to a second pair of hands.
@@ -863,30 +910,34 @@ Rooms design with unbuilt pieces on the consumer side regardless, so a week
 there costs least. That is the consumer's own judgement and it matches how
 §12 was already ordered.
 
-## 13. Open, after the first review round
+## 13. Open, after two review rounds
 
-Six of the seven questions the first draft asked came back answered, and
-the answers are folded in above rather than left here. What remains:
+§4 and §5 are settled — no further argument from the consumer on either,
+and §5.2's refusal of a `crypto.secrets` name improved on what was asked
+for. What remains is two items, and one of them is a number nobody can set
+alone.
 
-1. **Handle transfer (§3.2)** — still the only genuinely new API surface
-   and still the thing most likely to be wrong. Nothing in the last round
-   touched it, which is not the same as it being agreed.
-2. **The wake-rate floor (§6.4)** needs a number. Minutes-to-hours
-   deadlines are what it is for; the floor should be well under that and
-   well over a rebuild loop, and nobody has proposed a value.
-3. **The pps ceiling for the guest UDP path (§3.1)** needs measuring
-   before the guest path ships, not after. Until there is a number, "this
-   is not the relay" is still a promise rather than a check.
-4. **`jwt.accept_unkeyed` default.** `true` ships without breaking
-   anything already issued, which is the argument for it. The argument
-   against is that a default-on compatibility switch is rarely turned off
-   later, and the case it exists for — retiring the default key — is one
-   nobody schedules until they have to.
+1. **Handle transfer (§3.2)** — still the only genuinely new API surface,
+   still the thing most likely to be wrong, and now through two review
+   rounds without anyone arguing with it. That is not the same as
+   agreement, and it is the one place a reader should spend a second pass.
+2. **Whether the guest datagram path has a launch consumer (§3.1).** The
+   contradiction is resolved — the per-room relay port is a next-release
+   path needing the node-scoped block, not a 0.7.0 one — so what is open
+   is narrower: is there control-plane datagram traffic at launch? If yes,
+   UDP earns its place in this release and its pps ceiling gets measured
+   against that rate. If no, **UDP slips to the next release alongside the
+   relay block**, and nothing else here changes. The consumer's own
+   answer, on review: the comparison number can be given "once finding 1
+   settles what that case actually is", which this section now does.
 
-Answered and closed since the last round, listed so nobody re-opens them
-by accident: the `sql` question (§11, risk 3 — yes, definitively), whether
-verification branches on the token (§5.3 — yes, and it is now bounded by a
-switch), whether a vital-handle kill is distinguishable (§3.3 — it is its
-own event variant), label lifetime (§4.3a — node scope, with the prefix
-scope as the real control), and whether anything in §10 was assumed to be
+Closed since the first round, listed so nobody re-opens them by accident:
+the wake-rate floor (§6.4 — 30 seconds, with the note that it is a proxy
+for aggregate wakes per second); `jwt.accept_unkeyed` (§5.3 — default
+`true`, and its first consumer sets it `false`); the `sql` question (§11,
+risk 3 — yes, definitively, and now a constraint in that connector's
+docs); whether verification branches on the token (§5.3 — yes, bounded by
+the switch); whether a vital-handle kill is distinguishable (§3.3 — its
+own event variant); label lifetime (§4.3a — node scope, with the prefix
+scope as the real control); and whether anything in §10 was assumed to be
 in (nothing was).
