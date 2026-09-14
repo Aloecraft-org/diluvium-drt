@@ -15,8 +15,8 @@ history is continuous through the rename.
 |---|---|---|
 | §2 | **The ownership dimension** — a host-held resource belongs to a node or to the root, and is released when its owner dies | the spine; everything below is a consumer of it |
 | §3 | **Node-owned sockets**, stream and datagram | one faulty client bounded to one node; parked services that hibernate |
-| §4 | **`crypto/derive { label }`** — a runtime name for a host-held subkey | a room made at 14:02 cannot have a config entry |
-| §5 | **`kid` in the JWT header**, algorithm from the named key | cheap now, a token-format break in a year |
+| §4 | **`crypto/derive { label }`** — a runtime name for a host-held subkey, with a prefix scope and per-consumer subkeys | a room made at 14:02 cannot have a config entry |
+| §5 | **`kid` in the JWT header**, algorithm from the named key, interop secrets refused | cheap now, a token-format break in a year |
 | §6 | **The park deadline outlives residency** | nothing fires on bytes *not* arriving |
 | §7 | Plugins: **deferred**, design settled | the dispatcher change does not belong in an expedited release |
 | §8 | Inter-root: **prerequisites only** | its blocker is a document, not code |
@@ -143,6 +143,13 @@ through a guest is a different thing wearing the same shape. The
 node-scoped relay block is the next release's headline, and until it
 exists the guest path carries that sentence in its own documentation.
 
+**A sentence will not hold that line on its own, so it ships with a
+number.** The guest path's measured packets-per-second ceiling goes in its
+own documentation, so "this is not the relay" is checkable rather than
+promised. A control-plane port at launch rates is far under it; a relay
+needs orders of magnitude more, and a measured ceiling makes that
+arithmetic rather than judgement.
+
 What UDP does **not** bring with it is the per-client isolation of §3.7.
 There are no connections, so there is no node per connection: one node
 owns the port and demultiplexes packets itself. Datagram sockets get
@@ -206,6 +213,12 @@ work against a snapshot rather than a running instance: there is no guest
 to notice, nothing to unwind, and the release path (§2.4) runs against a
 slot whose `inst` is already `None`. A vital handle that only fired on
 resident owners would have its gap exactly where this design leans on it.
+
+**A vital-handle kill is its own variant in the event a supervisor sees,
+never a reason string on a generic kill.** A supervisor restarting on
+abnormal exit has to tell "its socket closed, so the runtime ended it" —
+a *normal* end — from a trap. Folded into one event, it either
+restart-loops a service that ended correctly or misses a crash.
 
 This is the socket-owns-node arrangement, reached from the other side, and
 it costs one flag. A node may still hold ordinary handles it survives; a
@@ -331,27 +344,81 @@ in neither its heap nor its snapshot.
     crypto/hmac   { data = msg, key = "room:" .. room_id }
 ```
 
-**Returning nothing is the whole point.** The call registers a subkey
-derived from the configured master under a runtime label; the guest gets a
-name it can pass to `hmac`, and never the bytes.
+**Returning nothing is the whole point.** The guest gets a name it can
+pass to a signing call, and never the bytes.
 
 Both halves exist. Named-secret lookup is `keys.secrets.iter().find(...)`
 in the `hmac` path. Keyed derivation from a master is `Keys::derive`,
 which already computes `hmac_sha256(&master, KDF_LABEL_HMAC)` and the same
 for JWT. This is those two wired to a guest-callable name.
 
-### 4.3 A label has an owner, like every other resource
+### 4.2a A label registers a *master*, and never signs directly
 
-A derived label is a host-held resource, so §2.3 applies and it needs no
-new lifetime rule: **`node` by default, released when the owner dies**;
-`root` if declared. It survives hibernation exactly as a socket does
-(§2.4), so a parked node wakes with its labels intact.
+The connector's header already states the rule this must obey: *"The
+configured secret never signs directly. Two independent subkeys."* The
+reason is written three lines below it — a program holding only
+`host:crypto/hmac` could MAC a JWT signing-input itself and assemble a
+token, bypassing `host:crypto/jwt_sign` entirely. `do_hmac` signs with
+`k_hmac`, `jwt_sign` with `k_jwt`, and the two are independent.
 
-discofetch asked for process-scoped and said they re-derive on boot. Node
-scope is strictly better and costs nothing extra here: `room:<id>` dies
-with the node that made it rather than lingering until the process ends,
-and re-derivation on boot still works because a label is derived, not
-stored.
+**A label follows the same rule, one level down.** `derive` registers a
+label *master*; each consumer derives its own subkey from it under the
+existing labels:
+
+```
+    hmac   uses  hmac_sha256(label_master, KDF_LABEL_HMAC)
+    jwt    uses  hmac_sha256(label_master, KDF_LABEL_JWT)
+```
+
+One name, two non-interchangeable keys, the separation preserved
+per-label. It is the same two lines as `Keys::derive`.
+
+Without this the hole is exact and it is one call wide: a guest with
+`host:crypto/hmac` and no `jwt_sign` builds `"<header-with-kid>.<claims>"`
+itself, MACs it under the shared label, concatenates, and `jwt_verify`
+accepts it. That is the oracle the subkey split closed, re-entered through
+a name instead of a key.
+
+**A consequence that has to be said out loud:** the JWT key reached by
+`kid = "partner-x"` is *not* partner-x's shared secret. Nobody should read
+a `kid` as naming the bytes their peer knows.
+
+### 4.3 Derivation is deterministic, and that is forced
+
+`derive` is a **pure function of (master, label)**. It has to be: §3.6
+puts the mutating verbs on the root's queue and `park`/`advertise` on
+node-owned sockets, so **the signer and the verifier are different
+owners**, and cross-owner verification only works if both reach the same
+bytes from the same label. `Keys::derive` is already deterministic; this
+is the same property one level down.
+
+Two things follow, and the second is the one that matters.
+
+**A second `derive` of a live label is idempotent, not a refusal.** A
+refusal would leave the second owner unable to reach the key at all.
+
+**The lifetime rule is bookkeeping; the scope on `derive` is the actual
+control.** A deterministic label is re-mintable by anyone permitted to
+name it, so `host:crypto/derive` without a scope on label strings means
+any node holding it can derive `room:2` and sign for a room that is not
+its own. A per-room key whose blast radius any sibling can cross is not
+buying the isolation §5 offers it for.
+
+### 4.3a A label has an owner, and `derive` has a scope
+
+**Lifetime**, from §2.3, with no new rule needed: `node` by default,
+released when the owner dies, `root` if declared, surviving hibernation
+exactly as a socket does (§2.4).
+
+**Reach**, which is the security-relevant half: `host:crypto/derive`
+carries a **prefix scope**, the `allow` shape §3.1 already cites from
+`connectors/exec`. The node owning `room:2` may derive `room:2`; a room
+manager gets `room:*`; nothing else may name either.
+
+Node lifetime was chosen over the process scope that was asked for, and it
+is the better default — but not on security grounds, and the earlier draft
+of this section was wrong to say so. Re-derivation on boot still works
+because a label is derived rather than stored.
 
 ### 4.4 The refusals
 
@@ -363,6 +430,12 @@ stored.
   label reads as unknown, which is the same sentence.
 - `derive` is its own capability, `host:crypto/derive`. Holding
   `host:crypto/hmac` does not imply the right to mint new keys.
+- **A label outside the capability's prefix scope is refused** (§4.3a),
+  and the refusal names the scope rather than whether the label exists.
+  Whether `room:3` has been derived is not `room:2`'s owner's business.
+- **`jwt_sign` naming a `crypto.secrets` entry is refused** (§5.2). Those
+  bytes are shared with a peer by definition, and no derivation from them
+  is safe against the party that holds them.
 
 ## 5. `kid` in the JWT header, and the algorithm from the named key
 
@@ -400,15 +473,46 @@ Two properties held, and the first is the one that matters:
   indirection in front of it: still no field a token can set to change how
   it is checked. An unknown `kid` refuses; a header that does not match
   the rebuilt one refuses.
-- **`key` accepts a `crypto.secrets` name or a §4 label**, so a per-room
-  or per-issuer signing key is reachable at runtime.
+- **`key` accepts a §4 label, and never a `crypto.secrets` name.** A label
+  reaches its JWT subkey (§4.2a); a per-room or per-issuer signing key is
+  therefore reachable at runtime, which is the point of the ask.
 
-### 5.3 Tokens already issued keep working
+**Why a `crypto.secrets` name is refused, and why per-consumer derivation
+is not enough on its own.** Those entries are *by definition* bytes a
+third party holds — `do_hmac`'s own comment says so: "a peer computes with
+the same bytes — a webhook signature." Deriving a JWT subkey from them
+does not help, because `KDF_LABEL_JWT` is a public constant in
+open-source code, so the peer can compute `hmac_sha256(their_bytes,
+KDF_LABEL_JWT)` themselves and mint tokens this host would accept. The
+subkey split protects a key from a *guest* that never sees the bytes; it
+cannot protect one from a party that already has them. So `jwt_sign` with
+a `crypto.secrets` name is refused by name, saying that those bytes are
+shared with a peer and cannot back a token this host trusts.
+
+**Two properties the rebuild-and-compare gives for free, worth stating
+rather than leaving as consequences.** Because verification rebuilds the
+header the named key would produce and compares bytes, a token carrying
+two `kid` keys and a token whose header members are in a different order
+both fail — without any parsing rule about duplicates or ordering, which
+is where that class of bug usually lives.
+
+### 5.3 Tokens already issued keep working, behind a switch
 
 A token with no `kid` rebuilds to exactly today's constant header and
-verifies against the default derived key — so the migration window this
-release exists to avoid needing is not needed for this release either.
-That fallback is removable later; it is not load-bearing.
+verifies against the default derived key, so nothing already issued
+breaks.
+
+**That fallback ships as config, not as a promise to remove it later.**
+`jwt.accept_unkeyed`, default `true`. The earlier draft called it
+"removable later", which walked straight into the thing §5.1 exists to
+avoid: removing it *is* a migration window, for the exact case `kid` was
+wanted for — retiring the default key. One boolean now makes that a config
+change rather than a release.
+
+It is also the one place §5.2's "never branch on what the token said" is
+not quite true: `kid` present versus absent is a branch on the token, and
+it selects a key. The switch is what bounds it — with `accept_unkeyed`
+off, the branch is gone and every token names its key.
 
 ### 5.4 Asymmetric is not in this release
 
@@ -453,7 +557,21 @@ eagerly wakes a node that should have stayed parked. Here, no deadline at
 all parks a node forever. Both are the same mechanism read from opposite
 ends, which is why they belong in one release.
 
-### 6.4 What fires
+### 6.4 A deadline is a guest-chosen wake rate
+
+With the deadline surviving hibernation, **a guest's own choice of
+deadline becomes a wake rate for a parked node**, and `enforce_residency`
+re-hibernates it straight after. A short recurring deadline is a
+rebuild loop, and §3.8's affordability argument assumes parked nodes stay
+parked. It is a footgun one guest can point at the whole root.
+
+It is still the right feature and it is asked for. It ships with a
+**configured floor** on how short a deadline a parked instance may arm,
+and §11 carries it as a risk rather than leaving it to be discovered. The
+deadlines this is for are minutes to hours; a floor costs their author
+nothing.
+
+### 6.5 What fires
 
 The deadline **wakes** its owner; it does not kill it. A guest sees the
 timeout on its own wait and decides what that means — unlike a vital
@@ -617,22 +735,40 @@ subprocess first, in a release that was not blocked on it.
 13. A node that hibernates and wakes **keeps both its queue handles and
    its socket**, and reuses each without re-resolving anything. This pins
    §3.5 against the upstream behaviour rather than against §10.8's
-   superseded wording, so a change on either side is caught here.
+   superseded wording, so a change on either side is caught here. **The
+   test names the diluvium revision it passed against**, because the fact
+   it rests on is an implementation note rather than a documented
+   contract, and this repository already pins diluvium by revision.
 14. An acceptor spawns a child per connection and the child joins its
    subject by message; no second listener is bound per subject.
 15. `crypto/derive` registers a label, `crypto/hmac` signs with it, and
    **the key is nowhere in the guest** — the test snapshots the node after
    signing and searches the whole stream for the derived bytes.
-16. A derived label dies with its owner, survives its owner's hibernation,
+16. **The negative that makes 15 mean anything:** a token assembled by
+   hand and MAC'd through `crypto/hmac` under the same label **does not
+   verify**. The positive test passes with or without the subkey split
+   (§4.2a); only this one fails without it.
+17. `jwt_sign` naming a `crypto.secrets` entry is **refused**, saying
+   those bytes are shared with a peer.
+18. Two different owners deriving the same label reach the same key, so a
+   token signed by one verifies in the other — the cross-owner case §3.6
+   forces — and a second `derive` of a live label is idempotent.
+19. A node whose `derive` scope allows `room:2` **cannot** derive
+   `room:3`, and the refusal names the scope rather than the label's
+   existence.
+20. A derived label dies with its owner, survives its owner's hibernation,
    and a label colliding with a `crypto.secrets` name is refused at the
    `derive` naming both.
-17. A token signed under `kid = <label>` verifies; the same token with its
-   header swapped for another key's refuses; an unknown `kid` refuses; and
-   a token carrying **no** `kid` still verifies against the default key,
-   so nothing already issued breaks.
-18. A hibernated instance's park deadline still fires, waking it rather
-   than killing it, and the guest sees a timeout on its own wait.
-19. Every refusal in `doc/Peers.md` still refuses, unchanged.
+21. A token signed under `kid = <label>` verifies; the same token with its
+   header swapped for another key's refuses; an unknown `kid` refuses; a
+   token with two `kid` keys refuses; and a token with **no** `kid`
+   verifies with `jwt.accept_unkeyed` on and **refuses with it off**.
+22. A hibernated instance's park deadline still fires, waking it rather
+   than killing it, and the guest sees a timeout on its own wait. A
+   deadline under the configured floor is refused when it is armed.
+23. A vital-handle kill reaches a supervisor as **its own event variant**,
+   distinguishable from a trap without parsing a reason string.
+24. Every refusal in `doc/Peers.md` still refuses, unchanged.
 
 ## 10. Not here, named so nobody builds it early
 
@@ -658,21 +794,32 @@ subprocess first, in a release that was not blocked on it.
    touches the path every hostcall takes. It wants the tightest test.
 2. **Handle transfer (§3.2)** is new surface with no precedent in this
    repository, and it is a deliberate hole in an invariant.
-3. **`sql`'s path-keyed cache.** Not this release's to change, and §2.3
-   is why it does not have to be: `sql` is `root`-scoped, and the fix is
-   to *say so* rather than to rework it. What stays open is narrower and
-   worth answering before an incident answers it — whether two nodes can
-   name one database today, and therefore share one transaction.
+3. **`sql`'s path-keyed cache — answered, and now a constraint rather
+   than a risk.** Two nodes *can* name one database. One
+   `SqlConnector::new()` is wired for the root
+   (`crates/drt/src/cli.rs:769`) with one scope from config; `resolve_db`
+   joins a name under that one root and the cache is
+   `Mutex<HashMap<PathBuf, Connection>>`, never evicted. Two nodes naming
+   the same database get the same `Connection`, so a `BEGIN` in one and
+   writes in another interleave on one transaction.
 
-   Until it is answered, anything building on this should take the rule
-   rather than the risk: **one database file per node, or single-statement
-   writes only.** A shared file plus an interleaved `BEGIN` is the failure
-   `Connector::finish` exists to describe, and it reports at teardown,
-   which is far too late to be the first anyone hears of it.
+   §2.3 says what it is — `sql` is `root`-scoped and the fix is to state
+   that rather than rework it — but stating it in this plan is not enough.
+   **The constraint goes in the sql connector's own documentation in this
+   release: one database file per node, or single-statement writes only.**
+   The failure reports through `finish` at teardown, which is where anyone
+   would first hear of it, and that is far too late.
+
 4. **A parked node that never wakes.** Readiness push (§3.4) is the only
    thing standing between a hibernating service and a connection that
    silently goes unserved. It wants a test with a real socket, not a
    loopback.
+
+5. **A guest-chosen deadline is a wake rate (§6.4).** A short recurring
+   deadline on a parked node is a rebuild loop, and §3.8's affordability
+   argument assumes parked nodes stay parked. The configured floor is the
+   mitigation; the risk is that the floor is set once, generously, and
+   never revisited.
 
 ## 12. The order of work
 
@@ -698,34 +845,48 @@ Each step ends green and nothing depends on a step after it.
 9. **The `Channel` generalisation** (§8), which is `ProcessChannel` minus
    the fork and lands nothing user-visible.
 
+0. **File the `doc/Messaging.md` §10.8 correction upstream**, before
+   release rather than after. Until it lands, two public documents
+   disagree about whether queue handles survive, and anyone building a
+   service node from §10.8 writes the re-`lookup` prologue §3.5 says is
+   unnecessary. Not this repository's to change, which is why it is step
+   zero rather than a step: it blocks nothing here and should not wait on
+   anything here either.
+
 Steps 1 and 2 are the ones to get right; 3 through 6 are where the
 schedule actually goes; 7 and 8 are small and separable, which makes them
 the right things to hand to a second pair of hands.
 
-## 13. Open for this review round
+**If anything slips, slip §3.** Steps 2, 7 and 8 — `derive`, `kid` and the
+park deadline — unblock consumer work the day they land. §3 lands into a
+Rooms design with unbuilt pieces on the consumer side regardless, so a week
+there costs least. That is the consumer's own judgement and it matches how
+§12 was already ordered.
 
-Named so reviewers argue with the right things rather than the whole
-document.
+## 13. Open, after the first review round
 
-1. **Handle transfer (§3.2)** is the only genuinely new API surface and a
-   deliberate hole in the §2.2 invariant. If one thing in here is wrong,
-   the prior says it is this.
-2. **Vital handles (§3.3)** add a second way a node dies. Is "the runtime
-   killed it because its socket closed" distinguishable enough, in the
-   event a supervisor sees, from a trap or a budget kill?
-3. **Label lifetime (§4.3).** Node scope was chosen over the
-   process-scoped one that was asked for. Anyone holding a label across a
-   node boundary would be surprised by it, and nobody should be holding a
-   label across a node boundary.
-4. **`kid` without asymmetric (§5.4).** The claim is that adding a key
-   type later is additive. Worth one adversarial read: is there a case
-   where a verifier selected from the named key still has to branch on
-   something the token said?
-5. **The UDP fork (§3.1).** It is written as a commitment that the
-   guest-shuffled path is not the relay. If anyone thinks it will become
-   the relay anyway, say so now rather than after it ships.
-6. **`sql` (§11, risk 3).** Not this release's to change. The open
-   question is narrower: can two nodes name one database today, and so
-   share one transaction?
-7. **Anything in §10** that a reader assumed was in and is not — that list
-   exists to be argued with.
+Six of the seven questions the first draft asked came back answered, and
+the answers are folded in above rather than left here. What remains:
+
+1. **Handle transfer (§3.2)** — still the only genuinely new API surface
+   and still the thing most likely to be wrong. Nothing in the last round
+   touched it, which is not the same as it being agreed.
+2. **The wake-rate floor (§6.4)** needs a number. Minutes-to-hours
+   deadlines are what it is for; the floor should be well under that and
+   well over a rebuild loop, and nobody has proposed a value.
+3. **The pps ceiling for the guest UDP path (§3.1)** needs measuring
+   before the guest path ships, not after. Until there is a number, "this
+   is not the relay" is still a promise rather than a check.
+4. **`jwt.accept_unkeyed` default.** `true` ships without breaking
+   anything already issued, which is the argument for it. The argument
+   against is that a default-on compatibility switch is rarely turned off
+   later, and the case it exists for — retiring the default key — is one
+   nobody schedules until they have to.
+
+Answered and closed since the last round, listed so nobody re-opens them
+by accident: the `sql` question (§11, risk 3 — yes, definitively), whether
+verification branches on the token (§5.3 — yes, and it is now bounded by a
+switch), whether a vital-handle kill is distinguishable (§3.3 — it is its
+own event variant), label lifetime (§4.3a — node scope, with the prefix
+scope as the real control), and whether anything in §10 was assumed to be
+in (nothing was).
