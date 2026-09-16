@@ -786,3 +786,66 @@ fn random_bounds_are_refusals() {
     .unwrap();
     assert_ne!(text(&a), text(&b));
 }
+
+// ---------------------------------------------------------------------------
+// `crypto/hash`: the default, the interop digest, and the refusal
+// ---------------------------------------------------------------------------
+
+/// The digest a caller gets without asking is the one it always got, and
+/// naming it explicitly reaches the same bytes.
+#[test]
+fn hash_defaults_to_sha256_and_says_so_when_asked() {
+    let c = CryptoConnector::new();
+    let sc = scope();
+    let want = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    assert_eq!(
+        call(&c, &sc, "crypto/hash", args(vec![("data", "abc".into())])).unwrap(),
+        rmpv::Value::from(want)
+    );
+    assert_eq!(
+        call(
+            &c,
+            &sc,
+            "crypto/hash",
+            args(vec![("data", "abc".into()), ("alg", "sha256".into())]),
+        )
+        .unwrap(),
+        rmpv::Value::from(want)
+    );
+}
+
+/// SHA-1 against the vector everyone knows, because the point of having it
+/// is agreeing with something external.
+#[test]
+fn hash_sha1_matches_the_published_vector() {
+    let c = CryptoConnector::new();
+    let sc = scope();
+    assert_eq!(
+        call(
+            &c,
+            &sc,
+            "crypto/hash",
+            args(vec![("data", "abc".into()), ("alg", "sha1".into())]),
+        )
+        .unwrap(),
+        rmpv::Value::from("a9993e364706816aba3e25717850c26c9cd0d89d")
+    );
+}
+
+/// An algorithm this host does not know is a named refusal, never the
+/// default quietly: a program comparing hex would read the substitution as
+/// a mismatch and blame its input.
+#[test]
+fn hash_refuses_an_algorithm_it_does_not_know() {
+    let c = CryptoConnector::new();
+    let sc = scope();
+    let err = call(
+        &c,
+        &sc,
+        "crypto/hash",
+        args(vec![("data", "abc".into()), ("alg", "md5".into())]),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("md5"), "{err}");
+    assert!(err.to_string().contains("sha256"), "{err}");
+}

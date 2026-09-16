@@ -16,7 +16,8 @@ drt-connector = { workspace = true }
 drt-platform = { workspace = true }
 # Every one of these is already in the tree behind `ssh` (russh pulls the
 # same versions), so on the `full` profile this connector is close to free.
-# `sha1` is here for TURN only -- see the warning at `turn_credential`.
+# `sha1` backs TURN's HMAC (see the warning at `turn_credential`) and
+# `crypto/hash`'s interop digest, which signs nothing.
 sha2 = "0.10"
 sha1 = "0.10"
 hmac = "0.12"

@@ -9,7 +9,7 @@
 //!
 //! ```text
 //! crypto/random          {bytes=N}                 -> N CSPRNG bytes, hex
-//! crypto/hash            {data}                    -> lowercase hex, SHA-256
+//! crypto/hash            {data, alg?}              -> lowercase hex; sha256 (default) or sha1
 //! crypto/hmac            {data, key?, expect?}     -> hex, or {valid}
 //! crypto/jwt_sign        {claims, ttl?, key?}      -> a JWT-HS256 string; `key` is a label, carried as `kid`
 //! crypto/jwt_verify      {token}                   -> {valid, claims?|reason}; `kid` selects the key
@@ -666,11 +666,42 @@ fn do_random(args: Option<&rmpv::Value>) -> CallResult {
     Ok(rmpv::Value::from(to_hex(&buf)))
 }
 
+/// `crypto/hash {data, alg?}`, lowercase hex, SHA-256 unless `alg` says
+/// otherwise.
+///
+/// **SHA-1 is here for interop and not as a choice.** Protocols that
+/// predate its collapse still demand it -- a git object id, a WebSocket
+/// accept key, an old webhook signature -- and a program that must speak
+/// one of them otherwise reimplements SHA-1 in Lua, badly, inside the
+/// sandbox. It is not a security primitive any more and nothing here
+/// treats it as one: `hmac`, `jwt_sign` and `derive` are untouched, the
+/// only SHA-1 this connector signs with is TURN's, and the sole way to
+/// reach this one is to name it.
+///
+/// An `alg` this host does not know is refused by name rather than
+/// falling back to the default: a program that asked for a digest it did
+/// not get would compare hex against the wrong thing and call it a
+/// mismatch.
 fn do_hash(args: Option<&rmpv::Value>) -> CallResult {
     let data = field(args, "data")
         .and_then(as_str)
         .ok_or_else(|| CallError::new("crypto/hash: args.data must be a string"))?;
-    Ok(rmpv::Value::from(to_hex(&Sha256::digest(data.as_bytes()))))
+    let alg = match field(args, "alg") {
+        None => "sha256",
+        Some(named) => as_str(named).ok_or_else(|| {
+            CallError::new("crypto/hash: args.alg must be a string, 'sha256' or 'sha1'")
+        })?,
+    };
+    let hex = match alg {
+        "sha256" => to_hex(&Sha256::digest(data.as_bytes())),
+        "sha1" => to_hex(&sha1::Sha1::digest(data.as_bytes())),
+        other => {
+            return Err(CallError::new(format!(
+                "crypto/hash: unknown alg '{other}'; this host hashes with 'sha256' or 'sha1'"
+            )))
+        }
+    };
+    Ok(rmpv::Value::from(hex))
 }
 
 fn do_hmac(
