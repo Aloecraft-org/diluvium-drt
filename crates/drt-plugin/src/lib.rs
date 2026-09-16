@@ -3,6 +3,8 @@
 //! # Surface
 //!
 //! Entry points:
+//! - [`manifest`] — what a plugin declares about itself, read before
+//!   anything starts: its family, its transport, its scope, its limits.
 //! - [`frame`] — the wire: length-prefixed msgpack, request and reply.
 //! - [`channel`] — the byte stream under it, and its test double.
 //! - [`session`] — many calls over one stream, polled and never blocking.
@@ -35,6 +37,7 @@
 
 pub mod channel;
 pub mod frame;
+pub mod manifest;
 #[cfg(unix)]
 pub mod process;
 pub mod session;
