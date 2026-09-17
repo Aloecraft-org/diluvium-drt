@@ -96,10 +96,23 @@ package declaring `requires.features` is admitted or refused against that
 list by name, exactly as `requires.connectors` is against the connector
 list, and for the same reason: resemblance is not a check.
 
-`diluvium_build` sits beside the revision for the half the revision cannot
-answer. A revision is exact but unordered — two of them cannot be asked
-which is newer — so a `requires.diluvium_build` range needs the number
-that `5.5.1_buildN` names. Both, because neither alone is the whole fact.
+`diluvium_version` sits beside the revision for the half the revision
+cannot answer. A revision is exact but unordered — two of them cannot be
+asked which is newer — so a `requires.diluvium_version` range needs
+something that orders. Both, because neither alone is the whole fact.
+
+**It was `diluvium_build` through v0.7.0-rc.1, and the field changed
+because upstream's version scheme did.** Diluvium versioned as Lua's
+number with a build counter welded on until `0.15.0` took its own; the
+fourteen builds became fourteen minors and `build14` was the last of
+them. A semantic version orders at least as well as a counter and says
+more, so the counter is retired rather than carried. Entries up to
+v0.7.0-rc.1 keep `diluvium_build`, because those releases really did
+embed a numbered build, and `buildinfo` on a v0.7.0-rc.2 or later binary
+prints `diluvium_version` and no longer prints the old key at all. A
+consumer reading it finds nothing, which is the failure worth having:
+printing `14` for a build that is not build 14 is the quiet kind of
+wrong this whole file exists to prevent.
 
 ## Versioning: independent, with the coupling recorded
 

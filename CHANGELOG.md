@@ -12,6 +12,79 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
+## [0.7.0-rc.2] - unreleased (prerelease)
+
+`v0.7.0-rc.2` &middot; dv ABI 1 &middot; diluvium `7f952d86ec7f` (v0.15.1)
+
+**A newer language inside, and the version fact that goes with it.**
+The embedded core moves to diluvium 0.15.1, which brings `continue`
+in every loop form and a `_DILUVIUM` version global. The dv ABI is
+unchanged at 1, so nothing a package requires of the ABI moves.
+
+Diluvium stopped versioning as Lua's number plus a build counter,
+and this release follows: the compatibility fact beside the embedded
+revision is `diluvium_version` now, where it was `diluvium_build`.
+A version orders at least as well as a counter and says more, which
+was the whole job of the field.
+
+### Connectors
+
+- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `data`, `socket`, `listen`
+- `slim`: `time`, `fs`, `crypto`, `listen`
+- `wasi`: `time`, `fs`, `crypto`, `sql`, `listen`
+- `web`: `time`, `fs`, `crypto`
+
+### Core features
+
+- `full`: `regex`
+- `slim`: `regex`
+- `wasi`: `regex`
+- `web`: `regex`
+
+### Added
+
+- **`crypto/hash` takes an `alg`.** `sha256` stays the default and
+  every existing caller is unchanged; `sha1` is reachable by naming
+  it. The `sha1` crate was already compiled into the connector and
+  reachable only as TURN's HMAC, so the code shipped and the
+  capability did not, and a program needing a git object id or a
+  WebSocket accept key wrote SHA-1 in Lua inside the sandbox. It is
+  an interop digest and signs nothing: `hmac`, `jwt_sign` and
+  `derive` are untouched. An `alg` this host does not know is
+  refused by name rather than falling back, because a program
+  comparing hex against an external value would read a substituted
+  digest as a mismatch and blame its own input.
+- **A plugin manifest type, still wired to nothing.** `drt-plugin`
+  can now read a `<name>.plugin.json`: the family it answers, how
+  its byte stream is obtained, which instance its process belongs
+  to, and the limits it asks for. Absent scope means `node`, so a
+  plugin that says nothing about sharing does not get shared. A
+  `tcp` manifest carries no address, since where a service listens
+  is the deployment's fact. Nothing in a deployment reaches this
+  yet; `doc/Plan-0.7.0.md` §7 is the sequence.
+
+### Fixed
+
+- **A flake in the socket tests, not in the runtime.** The
+  descriptor baseline counted a file glibc opens once at the
+  previous test thread's teardown, after that thread had released
+  the lock the tests serialise on. The tests count sockets now,
+  which is what every assertion in that file is about.
+
+### Upgrading
+
+- **`drt buildinfo` no longer prints `diluvium_build`**, in either
+  the plain or the JSON form; it prints `diluvium_version` instead,
+  and `BUILDINFO.txt` in the release carries the same line. A
+  consumer reading the old key finds nothing rather than a stale
+  number, which is the failure worth having: this build is not
+  build 14, and saying `14` would have been the quiet kind of wrong.
+- **A package declaring `requires.diluvium_build` needs
+  `requires.diluvium_version`.** Releases up to v0.7.0-rc.1 keep
+  the old key in the changelog, because they really did embed a
+  numbered build.
+
+
 ## [0.7.0-rc.1] - 2026-09-14 (prerelease)
 
 `v0.7.0-rc.1` &middot; dv ABI 1 &middot; diluvium `2c2f920d7fcf` (build14)

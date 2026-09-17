@@ -14,6 +14,78 @@
   ],
   "releases": [
     {
+      "version": "0.7.0-rc.2",
+      "tag": "v0.7.0-rc.2",
+      "date": null,
+      "status": "unreleased",
+      "stable": false,
+      "mirror": false,
+      "dv_abi": 1,
+      "diluvium": "7f952d86ec7f5c860c4bdf99ed6be64d2b0d917b",
+      "diluvium_build": null,
+      "diluvium_version": "0.15.1",
+      "connectors": {
+        "full": [
+          "time",
+          "fs",
+          "crypto",
+          "sql",
+          "ssh",
+          "rest",
+          "ssmtp",
+          "exec",
+          "data",
+          "socket",
+          "listen"
+        ],
+        "slim": [
+          "time",
+          "fs",
+          "crypto",
+          "listen"
+        ],
+        "wasi": [
+          "time",
+          "fs",
+          "crypto",
+          "sql",
+          "listen"
+        ],
+        "web": [
+          "time",
+          "fs",
+          "crypto"
+        ]
+      },
+      "features": {
+        "full": [
+          "regex"
+        ],
+        "slim": [
+          "regex"
+        ],
+        "wasi": [
+          "regex"
+        ],
+        "web": [
+          "regex"
+        ]
+      },
+      "summary": "**A newer language inside, and the version fact that goes with it.**\nThe embedded core moves to diluvium 0.15.1, which brings `continue`\nin every loop form and a `_DILUVIUM` version global. The dv ABI is\nunchanged at 1, so nothing a package requires of the ABI moves.\n\nDiluvium stopped versioning as Lua's number plus a build counter,\nand this release follows: the compatibility fact beside the embedded\nrevision is `diluvium_version` now, where it was `diluvium_build`.\nA version orders at least as well as a counter and says more, which\nwas the whole job of the field.\n",
+      "upgrading": "- **`drt buildinfo` no longer prints `diluvium_build`**, in either\n  the plain or the JSON form; it prints `diluvium_version` instead,\n  and `BUILDINFO.txt` in the release carries the same line. A\n  consumer reading the old key finds nothing rather than a stale\n  number, which is the failure worth having: this build is not\n  build 14, and saying `14` would have been the quiet kind of wrong.\n- **A package declaring `requires.diluvium_build` needs\n  `requires.diluvium_version`.** Releases up to v0.7.0-rc.1 keep\n  the old key in the changelog, because they really did embed a\n  numbered build.\n",
+      "latest": false,
+      "sections": {
+        "added": [
+          "**`crypto/hash` takes an `alg`.** `sha256` stays the default and\nevery existing caller is unchanged; `sha1` is reachable by naming\nit. The `sha1` crate was already compiled into the connector and\nreachable only as TURN's HMAC, so the code shipped and the\ncapability did not, and a program needing a git object id or a\nWebSocket accept key wrote SHA-1 in Lua inside the sandbox. It is\nan interop digest and signs nothing: `hmac`, `jwt_sign` and\n`derive` are untouched. An `alg` this host does not know is\nrefused by name rather than falling back, because a program\ncomparing hex against an external value would read a substituted\ndigest as a mismatch and blame its own input.\n",
+          "**A plugin manifest type, still wired to nothing.** `drt-plugin`\ncan now read a `<name>.plugin.json`: the family it answers, how\nits byte stream is obtained, which instance its process belongs\nto, and the limits it asks for. Absent scope means `node`, so a\nplugin that says nothing about sharing does not get shared. A\n`tcp` manifest carries no address, since where a service listens\nis the deployment's fact. Nothing in a deployment reaches this\nyet; `doc/Plan-0.7.0.md` \u00a77 is the sequence.\n"
+        ],
+        "fixed": [
+          "**A flake in the socket tests, not in the runtime.** The\ndescriptor baseline counted a file glibc opens once at the\nprevious test thread's teardown, after that thread had released\nthe lock the tests serialise on. The tests count sockets now,\nwhich is what every assertion in that file is about.\n"
+        ]
+      },
+      "notes_md": "## [0.7.0-rc.2] - unreleased (prerelease)\n\n`v0.7.0-rc.2` &middot; dv ABI 1 &middot; diluvium `7f952d86ec7f` (v0.15.1)\n\n**A newer language inside, and the version fact that goes with it.**\nThe embedded core moves to diluvium 0.15.1, which brings `continue`\nin every loop form and a `_DILUVIUM` version global. The dv ABI is\nunchanged at 1, so nothing a package requires of the ABI moves.\n\nDiluvium stopped versioning as Lua's number plus a build counter,\nand this release follows: the compatibility fact beside the embedded\nrevision is `diluvium_version` now, where it was `diluvium_build`.\nA version orders at least as well as a counter and says more, which\nwas the whole job of the field.\n\n### Connectors\n\n- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `data`, `socket`, `listen`\n- `slim`: `time`, `fs`, `crypto`, `listen`\n- `wasi`: `time`, `fs`, `crypto`, `sql`, `listen`\n- `web`: `time`, `fs`, `crypto`\n\n### Core features\n\n- `full`: `regex`\n- `slim`: `regex`\n- `wasi`: `regex`\n- `web`: `regex`\n\n### Added\n\n- **`crypto/hash` takes an `alg`.** `sha256` stays the default and\n  every existing caller is unchanged; `sha1` is reachable by naming\n  it. The `sha1` crate was already compiled into the connector and\n  reachable only as TURN's HMAC, so the code shipped and the\n  capability did not, and a program needing a git object id or a\n  WebSocket accept key wrote SHA-1 in Lua inside the sandbox. It is\n  an interop digest and signs nothing: `hmac`, `jwt_sign` and\n  `derive` are untouched. An `alg` this host does not know is\n  refused by name rather than falling back, because a program\n  comparing hex against an external value would read a substituted\n  digest as a mismatch and blame its own input.\n- **A plugin manifest type, still wired to nothing.** `drt-plugin`\n  can now read a `<name>.plugin.json`: the family it answers, how\n  its byte stream is obtained, which instance its process belongs\n  to, and the limits it asks for. Absent scope means `node`, so a\n  plugin that says nothing about sharing does not get shared. A\n  `tcp` manifest carries no address, since where a service listens\n  is the deployment's fact. Nothing in a deployment reaches this\n  yet; `doc/Plan-0.7.0.md` \u00a77 is the sequence.\n\n### Fixed\n\n- **A flake in the socket tests, not in the runtime.** The\n  descriptor baseline counted a file glibc opens once at the\n  previous test thread's teardown, after that thread had released\n  the lock the tests serialise on. The tests count sockets now,\n  which is what every assertion in that file is about.\n\n### Upgrading\n\n- **`drt buildinfo` no longer prints `diluvium_build`**, in either\n  the plain or the JSON form; it prints `diluvium_version` instead,\n  and `BUILDINFO.txt` in the release carries the same line. A\n  consumer reading the old key finds nothing rather than a stale\n  number, which is the failure worth having: this build is not\n  build 14, and saying `14` would have been the quiet kind of wrong.\n- **A package declaring `requires.diluvium_build` needs\n  `requires.diluvium_version`.** Releases up to v0.7.0-rc.1 keep\n  the old key in the changelog, because they really did embed a\n  numbered build.\n"
+    },
+    {
       "version": "0.7.0-rc.1",
       "tag": "v0.7.0-rc.1",
       "date": "2026-09-14",
@@ -23,6 +95,7 @@
       "dv_abi": 1,
       "diluvium": "2c2f920d7fcfacd72e396e13b8ece5cd11f6d60d",
       "diluvium_build": 14,
+      "diluvium_version": null,
       "connectors": {
         "full": [
           "time",
@@ -117,6 +190,7 @@
       "dv_abi": 1,
       "diluvium": "2c2f920d7fcfacd72e396e13b8ece5cd11f6d60d",
       "diluvium_build": 14,
+      "diluvium_version": null,
       "connectors": {
         "full": [
           "time",
@@ -187,6 +261,7 @@
       "dv_abi": 1,
       "diluvium": "2c2f920d7fcfacd72e396e13b8ece5cd11f6d60d",
       "diluvium_build": 14,
+      "diluvium_version": null,
       "connectors": {
         "full": [
           "time",
@@ -256,6 +331,7 @@
       "dv_abi": 1,
       "diluvium": "2c2f920d7fcfacd72e396e13b8ece5cd11f6d60d",
       "diluvium_build": 14,
+      "diluvium_version": null,
       "connectors": {
         "full": [
           "time",
@@ -336,6 +412,7 @@
       "dv_abi": 1,
       "diluvium": "2c2f920d7fcfacd72e396e13b8ece5cd11f6d60d",
       "diluvium_build": 14,
+      "diluvium_version": null,
       "connectors": {
         "full": [
           "time",
@@ -461,6 +538,7 @@
       "dv_abi": 1,
       "diluvium": "850e00d73220427be68ae8f909f83b06cb2095bd",
       "diluvium_build": 13,
+      "diluvium_version": null,
       "connectors": {
         "full": [
           "time",
@@ -533,6 +611,7 @@
       "dv_abi": 1,
       "diluvium": "850e00d73220427be68ae8f909f83b06cb2095bd",
       "diluvium_build": 13,
+      "diluvium_version": null,
       "connectors": {
         "full": [
           "time",
@@ -612,6 +691,7 @@
       "dv_abi": 1,
       "diluvium": "850e00d73220427be68ae8f909f83b06cb2095bd",
       "diluvium_build": null,
+      "diluvium_version": null,
       "connectors": {
         "full": [
           "time",
@@ -664,6 +744,7 @@
       "dv_abi": 1,
       "diluvium": "850e00d73220427be68ae8f909f83b06cb2095bd",
       "diluvium_build": null,
+      "diluvium_version": null,
       "connectors": {
         "full": [
           "time",
@@ -726,6 +807,7 @@
       "dv_abi": 1,
       "diluvium": "850e00d73220427be68ae8f909f83b06cb2095bd",
       "diluvium_build": null,
+      "diluvium_version": null,
       "connectors": {
         "full": [
           "time",
@@ -812,6 +894,7 @@
       "dv_abi": 1,
       "diluvium": "f4d52516380c9be1e868da9d23764a9aa2a7dd2c",
       "diluvium_build": null,
+      "diluvium_version": null,
       "connectors": {
         "full": [
           "time",
@@ -886,6 +969,7 @@
       "dv_abi": 1,
       "diluvium": "f4d52516380c9be1e868da9d23764a9aa2a7dd2c",
       "diluvium_build": null,
+      "diluvium_version": null,
       "connectors": {
         "full": [
           "time",
@@ -960,6 +1044,7 @@
       "dv_abi": 1,
       "diluvium": "f4d52516380c9be1e868da9d23764a9aa2a7dd2c",
       "diluvium_build": null,
+      "diluvium_version": null,
       "connectors": {
         "full": [
           "time",
@@ -1031,6 +1116,7 @@
       "dv_abi": 1,
       "diluvium": "515160f645874fc82de001fea7f68803f47bbc58",
       "diluvium_build": null,
+      "diluvium_version": null,
       "connectors": {
         "full": [
           "time",
@@ -1074,6 +1160,7 @@
       "dv_abi": 1,
       "diluvium": "515160f645874fc82de001fea7f68803f47bbc58",
       "diluvium_build": null,
+      "diluvium_version": null,
       "connectors": {
         "full": [
           "time",
@@ -1116,6 +1203,7 @@
       "dv_abi": 1,
       "diluvium": "515160f645874fc82de001fea7f68803f47bbc58",
       "diluvium_build": null,
+      "diluvium_version": null,
       "connectors": {
         "full": [
           "time",
@@ -1184,6 +1272,7 @@
       "dv_abi": 1,
       "diluvium": "f137b308c4dce917b24c71ab41add61606945e58",
       "diluvium_build": null,
+      "diluvium_version": null,
       "connectors": {
         "full": [
           "time",
@@ -1248,6 +1337,7 @@
       "dv_abi": 1,
       "diluvium": "f137b308c4dce917b24c71ab41add61606945e58",
       "diluvium_build": null,
+      "diluvium_version": null,
       "connectors": {
         "full": [
           "time",
@@ -1307,6 +1397,7 @@
       "dv_abi": 1,
       "diluvium": "f137b308c4dce917b24c71ab41add61606945e58",
       "diluvium_build": null,
+      "diluvium_version": null,
       "connectors": {
         "full": [
           "time",
@@ -1350,6 +1441,7 @@
       "dv_abi": 1,
       "diluvium": "f137b308c4dce917b24c71ab41add61606945e58",
       "diluvium_build": null,
+      "diluvium_version": null,
       "connectors": {
         "full": [
           "time",
@@ -1383,6 +1475,7 @@
       "dv_abi": 1,
       "diluvium": "f137b308c4dce917b24c71ab41add61606945e58",
       "diluvium_build": null,
+      "diluvium_version": null,
       "connectors": {
         "full": [
           "time",

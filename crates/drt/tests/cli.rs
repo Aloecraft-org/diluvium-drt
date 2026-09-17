@@ -548,14 +548,14 @@ fn profile_matches_its_manifest() {
 /// The two hard-coded compatibility facts agree with the changelog, which
 /// agrees with `Cargo.lock`.
 ///
-/// `features` and `diluvium_build` are stated in `cli.rs` rather than read
+/// `features` and `diluvium_version` are stated in `cli.rs` rather than read
 /// off the core, because the core does not yet answer either question —
-/// `dv_features()` and `dv_build()` arrive with session A's A0 milestone
+/// `dv_features()` and `dv_version()` arrive with session A's A0 milestone
 /// (`doc/Plan-2026-09.md` §3.1), and `TODO(A0)` marks both tables. A fact a
 /// binary states about bytes it did not compile is a fact that can be
 /// wrong, and the way this one goes wrong is quiet: someone moves the pin,
-/// `buildinfo` keeps saying `build13`, and a package's
-/// `requires.diluvium_build` is checked against a number from two pins ago.
+/// `buildinfo` keeps saying the version before it, and a package's
+/// `requires.diluvium_version` is checked against a pin two moves ago.
 ///
 /// So the chain is closed instead: `script/changelog.py check` ties the
 /// changelog's `diluvium` revision to `Cargo.lock`, and this ties the
@@ -592,9 +592,9 @@ fn the_hard_coded_core_facts_agree_with_the_changelog() {
     };
 
     assert_eq!(
-        says("diluvium_build"),
-        field("diluvium_build"),
-        "DILUVIUM_BUILD in cli.rs and diluvium_build in CHANGELOG.yaml \
+        says("diluvium_version"),
+        field("diluvium_version").trim_matches('"').to_string(),
+        "DILUVIUM_VERSION in cli.rs and diluvium_version in CHANGELOG.yaml \
          disagree. If the pin moved, both move; the changelog's revision is \
          already checked against Cargo.lock by `script/changelog.py check`."
     );

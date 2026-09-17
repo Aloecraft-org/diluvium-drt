@@ -70,7 +70,8 @@ SECTIONS = [
 ]
 STATUSES = {"released", "unreleased", "tagged"}
 SCALARS = {"version", "tag", "date", "status", "stable", "latest", "mirror",
-           "dv_abi", "diluvium", "diluvium_build", "summary", "upgrading"}
+           "dv_abi", "diluvium", "diluvium_build", "diluvium_version",
+           "summary", "upgrading"}
 # Not scalars: mappings of profile name -> a list this build carries for
 # that profile.
 #
@@ -300,9 +301,14 @@ def render_release(r):
         meta.append("dv ABI %s" % r["dv_abi"])
     if r.get("diluvium"):
         rev = "diluvium `%s`" % str(r["diluvium"])[:12]
-        # The build number reads as part of the revision rather than beside
-        # it: they are one fact said two ways, exact and ordered.
-        if r.get("diluvium_build") is not None:
+        # The version reads as part of the revision rather than beside it:
+        # they are one fact said two ways, exact and ordered. Entries up to
+        # v0.7.0-rc.1 carry `diluvium_build` instead, because diluvium
+        # versioned as Lua's number plus a counter until 0.15.0 and those
+        # releases really did embed a numbered build.
+        if r.get("diluvium_version"):
+            rev += " (v%s)" % r["diluvium_version"]
+        elif r.get("diluvium_build") is not None:
             rev += " (build%s)" % r["diluvium_build"]
         meta.append(rev)
     if meta:
@@ -360,7 +366,8 @@ def render_json(doc):
     for r in doc["releases"]:
         entry = {k: r.get(k) for k in
                  ("version", "tag", "date", "status", "stable", "mirror",
-                  "dv_abi", "diluvium", "diluvium_build", "connectors",
+                  "dv_abi", "diluvium", "diluvium_build", "diluvium_version",
+                  "connectors",
                   "features", "summary", "upgrading")}
         # PyYAML gives an unquoted yyyy-mm-dd back as a datetime.date; the
         # mirror wants a plain ISO string.

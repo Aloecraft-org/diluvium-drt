@@ -658,9 +658,11 @@ jobs:
           fi
           DV_ABI=$(bi drt_linux_x86_64_musl dv_abi)
           # The build number beside the revision: the revision is exact but
-          # unordered, and a `requires.diluvium_build` range needs a number.
+          # unordered, and a `requires.diluvium_version` range needs one
+          # that orders. Read off the artifact for the same reason the
+          # revision is.
           # Read off the artifact for the same reason the revision is.
-          DILUVIUM_BUILD=$(bi drt_linux_x86_64_musl diluvium_build)
+          DILUVIUM_VERSION=$(bi drt_linux_x86_64_musl diluvium_version)
           FULL_CONNECTORS=$(bi drt_linux_x86_64_musl connectors)
           SLIM_CONNECTORS=$(bi drt_linux_x86_64_musl_slim connectors)
           # What the core inside each profile carries. Same question as the
@@ -692,7 +694,7 @@ jobs:
             # `requires.dv_abi` is checked against, so it belongs in the
             # release rather than being inferred from the diluvium rev.
             echo "dv_abi: ${DV_ABI:-unknown}"
-            echo "diluvium_build: ${DILUVIUM_BUILD:-unknown}"
+            echo "diluvium_version: ${DILUVIUM_VERSION:-unknown}"
             # Which binary carries what. `full` and `slim` differ precisely
             # in their connector set, so a package declaring
             # `requires.connectors` can be admitted or refused by name

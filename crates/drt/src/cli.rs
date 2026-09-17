@@ -104,18 +104,29 @@ const CORE_FEATURES_WEB: &[&str] = &["regex"];
 /// empty list would read as "carries none", which is a different claim.
 const CORE_FEATURES_CUSTOM: &[&str] = &[];
 
-/// The N in `5.5.1_buildN`: which diluvium build is inside, as a number a
-/// `requires.diluvium_build` range can be compared against. The revision
-/// beside it is exact but unordered -- two revisions cannot be asked which
-/// is newer -- and that is what this field adds.
+/// Which diluvium is inside, as something two builds can be *ordered* by.
+/// The revision beside it is exact but unordered -- two revisions cannot be
+/// asked which is newer -- and that is the whole job of this field.
+///
+/// **It used to be the N in `5.5.1_buildN`, and that scheme is gone.**
+/// Through build14 diluvium's version was Lua's, with a build counter
+/// welded on for everything diluvium itself had to say; `0.15.0` is where
+/// it took its own number, and the fourteen builds became fourteen minors.
+/// A semantic version orders at least as well as a counter did and says
+/// more, so the counter is retired rather than carried. `build14` was the
+/// last of them and keeps its name upstream; nothing rewrites it.
+///
+/// A consumer reading the old `diluvium_build` key off this binary now
+/// finds nothing, which is the right failure: the alternative was printing
+/// `14` for a build that is not build 14.
 ///
 /// TODO(A0): hard-coded for the same reason and with the same fix as
-/// [`CORE_FEATURES_FULL`]; A0 adds `dv_build()`. Until then the number is
-/// written down once, here, and `diluvium_build_agrees_with_the_changelog`
+/// [`CORE_FEATURES_FULL`]; A0 adds `dv_version()`. Until then it is
+/// written down once, here, and `the_hard_coded_core_facts_agree_with_the_changelog`
 /// in `tests/cli.rs` is what stops it going stale when the pin moves: the
 /// changelog records the pin, the pin is checked against `Cargo.lock` by
 /// `script/changelog.py check`, and this is checked against the changelog.
-const DILUVIUM_BUILD: u32 = 14;
+const DILUVIUM_VERSION: &str = "0.15.1";
 
 /// What `drt wg` does. All three are diagnostics or key handling, and the
 /// serving that used to sit beside them is `drt start` now.
@@ -630,7 +641,7 @@ pub fn buildinfo(json: bool) -> String {
     if json {
         format!(
             "{{\"version\":\"{}\",\"tag\":{},\"profile\":\"{}\",\"dv_abi\":{},\
-             \"dv_abi_expected\":{},\"diluvium\":\"{}\",\"diluvium_build\":{},\
+             \"dv_abi_expected\":{},\"diluvium\":\"{}\",\"diluvium_version\":\"{}\",\
              \"features\":[{}],\
              \"connectors\":[{}],\"verbs\":[{}]}}\n",
             env!("CARGO_PKG_VERSION"),
@@ -639,7 +650,7 @@ pub fn buildinfo(json: bool) -> String {
             abi.map_or("null".into(), |(l, _)| l.to_string()),
             abi.map_or("null".into(), |(_, e)| e.to_string()),
             diluvium_rev,
-            DILUVIUM_BUILD,
+            DILUVIUM_VERSION,
             features
                 .iter()
                 .map(|f| format!("\"{f}\""))
@@ -659,7 +670,7 @@ pub fn buildinfo(json: bool) -> String {
     } else {
         format!(
             "version: {}\n{}profile: {}\ndv_abi: {}\ndv_abi_expected: {}\n\
-             diluvium: {}\ndiluvium_build: {}\nfeatures: {}\n\
+             diluvium: {}\ndiluvium_version: {}\nfeatures: {}\n\
              connectors: {}\nverbs: {}\n",
             env!("CARGO_PKG_VERSION"),
             tag.map_or(String::new(), |t| format!("tag: {t}\n")),
@@ -667,7 +678,7 @@ pub fn buildinfo(json: bool) -> String {
             abi.map_or("unknown".into(), |(l, _)| l.to_string()),
             abi.map_or("unknown".into(), |(_, e)| e.to_string()),
             diluvium_rev,
-            DILUVIUM_BUILD,
+            DILUVIUM_VERSION,
             features.join(","),
             connectors.join(","),
             verbs.join(","),

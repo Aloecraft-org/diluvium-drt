@@ -3,13 +3,14 @@
     "major": 0,
     "minor": 7,
     "patch": 0,
-    "pre": { "kind": "rc", "n": 1 }
+    "pre": { "kind": "rc", "n": 2 }
   },
   "TECHNO_CHANGELOG": {
     "project": "DRT",
     "intro_extra": "\nDRT versions independently of diluvium and *records* the coupling\nrather than encoding it: each entry names the dv ABI it speaks and\nthe diluvium revision it embeds, the same facts `BUILDINFO.txt`\ncarries in the release. See `doc/Release.md`.\n",
     "facts": [
       { "id": "dv_abi", "keys": ["dv_abi"], "fmt": "dv ABI {dv_abi}" },
+      { "id": "dil", "keys": ["diluvium", "diluvium_version"], "fmt": "diluvium `{diluvium!s:.12}` (v{diluvium_version})" },
       { "id": "dil", "keys": ["diluvium", "diluvium_build"], "fmt": "diluvium `{diluvium!s:.12}` (build{diluvium_build})" },
       { "id": "dil", "keys": ["diluvium"], "fmt": "diluvium `{diluvium!s:.12}`" }
     ],

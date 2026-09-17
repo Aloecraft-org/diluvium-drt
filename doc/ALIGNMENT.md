@@ -235,6 +235,8 @@ what differs per repository is declared, in a `TECHNO_CHANGELOG` block:
   "intro_extra": "\nDRT versions independently of diluvium...\n",
   "facts": [
     {"id": "dv_abi", "keys": ["dv_abi"], "fmt": "dv ABI {dv_abi}"},
+    {"id": "dil", "keys": ["diluvium", "diluvium_version"],
+     "fmt": "diluvium `{diluvium!s:.12}` (v{diluvium_version})"},
     {"id": "dil", "keys": ["diluvium", "diluvium_build"],
      "fmt": "diluvium `{diluvium!s:.12}` (build{diluvium_build})"},
     {"id": "dil", "keys": ["diluvium"], "fmt": "diluvium `{diluvium!s:.12}`"}
