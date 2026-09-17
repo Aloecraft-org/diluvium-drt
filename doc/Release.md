@@ -595,10 +595,11 @@ BUILDINFO.txt                  SHA256SUMS.txt
 
 Releases before v0.6.0-rc.2 spelled these `drt_linux_static_x86_64`,
 `drt_slim_<platform>` and `drt_wasip2.wasm`. A consumer that fetches by
-name breaks at its own runtime rather than at anyone's build, so rc.2
-carries both names, both in `SHA256SUMS.txt`, and the release after it
-drops the old ones; `install.sh` tries the new name and falls back to the
-old, so a pinned older tag still installs.
+name breaks at its own runtime rather than at anyone's build, so
+v0.6.0-rc.2 through v0.7.0-rc.2 carried both names, both in
+`SHA256SUMS.txt`, and from v0.7.0-rc.3 only the new ones ship;
+`install.sh` tries the new name and falls back to the old, so a pinned
+older tag still installs.
 
 Windows ships no `full`: `exec` is unix-only. So the unprefixed Windows
 binary is the `windows` profile -- `full` minus `exec`, which cross-builds

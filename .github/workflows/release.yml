@@ -150,12 +150,11 @@ jobs:
           # not need to be target-specific.
           #
           # Names are doc/ALIGNMENT.md §4's, <os>_<arch>[_<libc>] with the
-          # profile last. `legacy` is the token the releases before
-          # v0.6.0-rc.2 used: rc.2 carries the old name beside the new one,
-          # and the release after it drops the step that copies it.
+          # profile last. Releases before v0.6.0-rc.2 spelled them the older
+          # way, v0.6.0-rc.2 through v0.7.0-rc.2 carried both spellings for
+          # the overlap §4 asks for, and from here only these ship.
           linux = {
               "name": "linux_x86_64_musl",
-              "legacy": "linux_static_x86_64",
               "os": "ubuntu-latest",
               "target": "x86_64-unknown-linux-musl",
               "setup": "sudo apt-get update && sudo apt-get install -y musl-tools cmake"
@@ -168,21 +167,17 @@ jobs:
           # the machine that built it, and the C core and the bundled
           # sqlite compile for the host with the host's tools instead of
           # needing a cross C toolchain rehearsed. Static musl like x86_64,
-          # so it installs on any
-          # 64-bit Linux -- a Raspberry Pi running a 64-bit OS included --
-          # with no glibc version to match. `legacy` is empty: no earlier
-          # release spelled this artifact any other way, and the step that
-          # copies old names skips it.
+          # so it installs on any 64-bit Linux -- a Raspberry Pi running a
+          # 64-bit OS included -- with no glibc version to match.
           arm64 = {
               "name": "linux_arm64_musl",
-              "legacy": "",
               "os": "ubuntu-24.04-arm",
               "target": "aarch64-unknown-linux-musl",
               "setup": linux["setup"],
           }
           darwin = [
-              {"name": "darwin_arm64", "legacy": "darwin_arm64", "os": "macos-latest", "target": "aarch64-apple-darwin", "setup": "true"},
-              {"name": "darwin_x86_64", "legacy": "darwin_x86_64", "os": "macos-15-intel", "target": "x86_64-apple-darwin", "setup": "true"},
+              {"name": "darwin_arm64", "os": "macos-latest", "target": "aarch64-apple-darwin", "setup": "true"},
+              {"name": "darwin_x86_64", "os": "macos-15-intel", "target": "x86_64-apple-darwin", "setup": "true"},
           ]
           # Windows is not in this matrix because it cannot build `full`:
           # it is `build-windows` below -- the `windows` profile and
@@ -302,18 +297,6 @@ jobs:
           else
             ! ./drt_${{ matrix.name }} buildinfo | grep -q '^tag:'
           fi
-      # One release with both names (doc/ALIGNMENT.md §4): a consumer that
-      # fetches by name breaks at its own runtime, not at anyone's build,
-      # so v0.6.0-rc.2 carries the names the release before it used and
-      # the release after it deletes this step. Not for a dev build, which
-      # nobody ever fetched by the old name, and not for a leg whose
-      # `legacy` is empty, which never had one.
-      - name: The names the previous release used
-        if: needs.preflight.outputs.dev != 'true' && matrix.legacy != ''
-        run: |
-          set -eu
-          [ drt_${{ matrix.legacy }} = drt_${{ matrix.name }} ] || cp drt_${{ matrix.name }} drt_${{ matrix.legacy }}
-          cp drt_${{ matrix.name }}_slim drt_slim_${{ matrix.legacy }}
       - uses: actions/upload-artifact@v4
         with:
           name: drt-${{ matrix.name }}
@@ -393,16 +376,10 @@ jobs:
           set -eu
           export DRT_WASM="$PWD/drt_wasi.wasm"
           cd examples && DRT="$GITHUB_WORKSPACE/script/drt-wasip2.sh" ./run-all.sh
-      # Both names for one release (doc/ALIGNMENT.md §4); the release after
-      # v0.6.0-rc.2 deletes this step.
-      - name: The name the previous release used
-        run: cp drt_wasi.wasm drt_wasip2.wasm
       - uses: actions/upload-artifact@v4
         with:
           name: drt-wasip2
-          path: |
-            drt_wasi.wasm
-            drt_wasip2.wasm
+          path: drt_wasi.wasm
           if-no-files-found: error
           retention-days: 30
 
@@ -546,17 +523,12 @@ jobs:
           cp target/x86_64-pc-windows-gnu/release-small/drt.exe drt_windows_x86_64_slim.exe
           file drt_windows_x86_64.exe | grep -q 'PE32+ executable'
           file drt_windows_x86_64_slim.exe | grep -q 'PE32+ executable'
-      # Both names for one release (doc/ALIGNMENT.md §4); the release after
-      # v0.6.0-rc.2 deletes this step.
-      - name: The name the previous release used
-        run: cp drt_windows_x86_64_slim.exe drt_slim_windows_x86_64.exe
       - uses: actions/upload-artifact@v4
         with:
           name: drt-windows_x86_64
           path: |
             drt_windows_x86_64.exe
             drt_windows_x86_64_slim.exe
-            drt_slim_windows_x86_64.exe
           if-no-files-found: error
           retention-days: 30
 

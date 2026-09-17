@@ -71,8 +71,9 @@ chmod +x drt_linux_static_x86_64 && ./drt_linux_static_x86_64 --version
 ```
 
 From v0.6.0-rc.2 that file is `drt_linux_x86_64_musl` (`doc/ALIGNMENT.md`
-§4); `latest` still resolves to a release that spells it as above, and the
-candidate carries both names.
+§4); `latest` still resolves to a release that spells it as above. The
+candidates through v0.7.0-rc.2 carried both names; later ones carry only
+the new one.
 
 Or let the script do it, which is the same download plus the checksum check
 and a `PATH` note:

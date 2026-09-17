@@ -12,6 +12,43 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
+## [0.7.0-rc.3] - unreleased (prerelease)
+
+`v0.7.0-rc.3` &middot; dv ABI 1 &middot; diluvium `7f952d86ec7f` (v0.15.1)
+
+**The old asset names stop shipping.** v0.6.0-rc.2 renamed every
+artifact to `doc/ALIGNMENT.md` §4's spelling and carried the old
+name beside the new one for the overlap the rule asks for. That
+overlap ran three candidates, and this one ends it.
+
+### Connectors
+
+- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `data`, `socket`, `listen`
+- `slim`: `time`, `fs`, `crypto`, `listen`
+- `wasi`: `time`, `fs`, `crypto`, `sql`, `listen`
+- `web`: `time`, `fs`, `crypto`
+- `windows`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `data`, `socket`, `listen`
+
+### Core features
+
+- `full`: `regex`
+- `slim`: `regex`
+- `wasi`: `regex`
+- `web`: `regex`
+- `windows`: `regex`
+
+### Removed
+
+- **`drt_linux_static_x86_64`, `drt_slim_<platform>` and
+  `drt_wasip2.wasm`.** The release carries only the §4 names:
+  `drt_<os>_<arch>[_<libc>]`, the profile last, `drt_wasi.wasm`
+  for the portable build. A consumer that still fetches by an old
+  name gets a 404 at its own runtime, which is the failure the
+  overlap existed to defer and not to prevent forever.
+  `install.sh` keeps its fallback to the old name, since a pinned
+  tag older than v0.6.0-rc.2 has only that one.
+
+
 ## [0.7.0-rc.2] - 2026-09-17 (prerelease)
 
 `v0.7.0-rc.2` &middot; dv ABI 1 &middot; diluvium `7f952d86ec7f` (v0.15.1)

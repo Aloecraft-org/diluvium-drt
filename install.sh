@@ -40,10 +40,10 @@ esac
 # looked for, rather than handing over a binary that cannot exec here.
 
 # The name a release uses (doc/ALIGNMENT.md §4): <os>_<arch>[_<libc>], the
-# profile last. Releases before v0.6.0-rc.2 spelled it the older way, rc.2
-# carries both, and a pinned older tag has only the old one -- so the old
-# name is the fallback at every source. OLD goes away when no release
-# anyone pins lacks the new name.
+# profile last. Releases before v0.6.0-rc.2 spelled it the older way,
+# v0.6.0-rc.2 through v0.7.0-rc.2 carried both, and a pinned older tag has
+# only the old one -- so the old name is the fallback at every source. OLD
+# goes away when no release anyone pins lacks the new name.
 LIBC=""; OLD_OS="$OS"
 if [ "$OS" = linux ]; then LIBC=_musl; OLD_OS=linux_static; fi
 ASSET="drt_${OS}_${ARCH}${LIBC}"
