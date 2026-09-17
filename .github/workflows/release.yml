@@ -141,7 +141,7 @@ jobs:
           # core is compiled by the host glibc gcc -- whose fortify and LFS
           # symbols (__fprintf_chk, fopen64) do not exist in musl, as the
           # first rehearsal proved at link time. The cc-crate users
-          # (aws-lc-sys, bundled sqlite) honour the same variable. AR for
+          # (the bundled sqlite among them) honour the same variable. AR for
           # the same reason as CC, one step later: the build script archives
           # the C core itself, and with no `AR` it asks for
           # `x86_64-unknown-linux-musl-ar`, which `musl-tools` does not ship
@@ -165,9 +165,10 @@ jobs:
           # Linux arm64, natively on GitHub's arm64 runner rather than
           # cross-compiled from x86_64, so the leg is the x86_64 leg with
           # two fields changed: the binary is built, smoked and gated on
-          # the machine that built it, and aws-lc-sys compiles for the host
-          # with the host's tools instead of needing a cross C toolchain
-          # rehearsed. Static musl like x86_64, so it installs on any
+          # the machine that built it, and the C core and the bundled
+          # sqlite compile for the host with the host's tools instead of
+          # needing a cross C toolchain rehearsed. Static musl like x86_64,
+          # so it installs on any
           # 64-bit Linux -- a Raspberry Pi running a 64-bit OS included --
           # with no glibc version to match. `legacy` is empty: no earlier
           # release spelled this artifact any other way, and the step that
@@ -505,15 +506,14 @@ jobs:
     # linux_static leg does not also need.
     #
     # Two binaries, as every native leg ships two. `full` is not one of
-    # them: `exec` is unix-only by `compile_error!`, and `full` carries
-    # aws-lc-sys through russh, whose windows-gnu build wants NASM on this
-    # leg (crates/drt/Cargo.toml, at `windows`, says what moves it). So
-    # the unprefixed `drt_windows_x86_64.exe` is the `windows` profile --
-    # `slim` plus `tunnel`, `relay` and `wireguard`, the tokio-backed verbs
-    # that build for the target -- because doc/ALIGNMENT.md §4 makes the
-    # unprefixed name the largest profile a platform gets, and on Windows
-    # that is not `full`. `drt_windows_x86_64_slim.exe` is `slim`, the
-    # distribution-size profile, as on every other platform.
+    # them: `exec` is unix-only by `compile_error!`. So the unprefixed
+    # `drt_windows_x86_64.exe` is the `windows` profile -- `full` minus
+    # `exec`, everything else cross-building with mingw-w64 alone now that
+    # ego-transport has russh on `ring` and aws-lc-sys is out of the tree
+    # (crates/drt/Cargo.toml, at `windows`) -- because doc/ALIGNMENT.md §4
+    # makes the unprefixed name the largest profile a platform gets, and
+    # on Windows that is not `full`. `drt_windows_x86_64_slim.exe` is
+    # `slim`, the distribution-size profile, as on every other platform.
     #
     # A cross-built binary cannot be run here, and a binary nothing ran is
     # what the smoke steps exist to prevent -- so both are uploaded and
@@ -566,12 +566,13 @@ jobs:
     # the conformance oracle on every other target and is one here too.
     # Git Bash is the shell because run-all.sh is bash and the examples'
     # own demo.sh files are too; the runner ships it, with the coreutils,
-    # sed, diff and curl the gate needs. Every example a `slim` build can
-    # run runs, on both binaries; the ones that need `full` are skipped by
-    # name, as they are for a slim or a windows binary anywhere -- the
-    # tunnel and WireGuard examples declare `needs_build: full`, so the
-    # `windows` profile's three verbs are built and smoked here, not
-    # driven.
+    # sed, diff and curl the gate needs. Every example a binary can run
+    # runs on it: `needs_build` lists the profiles an example's feature
+    # set is in, and `windows` is on nearly every list `full` is on, so
+    # the tunnel, relay, STUN, TURN, WireGuard, ssh, sql, rest and mail
+    # examples are driven here, on Windows, and the three that are
+    # `full`'s alone (`00-install-methods`, `16-exec`,
+    # `22-wireguard-interface`) are skipped by name.
     name: Smoke (windows_x86_64)
     needs: [preflight, build-windows]
     if: needs.preflight.outputs.dev != 'true'
@@ -605,11 +606,11 @@ jobs:
           done
           ./drt_windows_x86_64.exe buildinfo | grep -qx 'profile: windows'
           ./drt_windows_x86_64_slim.exe buildinfo | grep -qx 'profile: slim'
-          # The one thing the three verbs can do with no peer, no privilege
-          # and no wintun.dll: a key pair, and its public half derived again
-          # from the private one over stdin. That the binary answers both is
-          # the measurement doc/Platforms.md wants for `wireguard` here; the
-          # tunnel and the device need a far end the runner does not have.
+          # The one thing `wg` can do with no peer, no privilege and no
+          # wintun.dll: a key pair, and its public half derived again from
+          # the private one over stdin. The examples gate below drives the
+          # rest on loopback; the interface half needs wintun.dll, which
+          # the runner does not have.
           keys=$(./drt_windows_x86_64.exe wg keygen)
           [ "$(printf '%s\n' "$keys" | wc -l)" -eq 2 ]
           derived=$(printf '%s\n' "$keys" | head -1 | ./drt_windows_x86_64.exe wg pubkey)
@@ -763,9 +764,9 @@ jobs:
             # instead of by guessing from the artifact filename.
             echo "profile.full.connectors: ${FULL_CONNECTORS:-unknown}"
             echo "profile.slim.connectors: ${SLIM_CONNECTORS:-unknown}"
-            # `drt_windows_x86_64.exe` is the `windows` profile: `slim` plus
-            # the verbs Windows can build (see build-windows), so its
-            # connector set is `slim`'s and its feature set is not. It
+            # `drt_windows_x86_64.exe` is the `windows` profile: `full` minus
+            # `exec` (see build-windows), so its connector set is `full`'s
+            # less one and its feature set is its own. It
             # answered `buildinfo` on a Windows runner in smoke-windows
             # before it was allowed here. `drt_windows_x86_64_slim.exe` is
             # the slim feature set, and the line above describes it.

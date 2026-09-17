@@ -12,7 +12,7 @@ not: spawning, plugins, connectors and verbs.
 
 | | native linux, macOS | native Windows | wasip2, under wasmtime | browser, `drt-web` |
 |---|---|---|---|---|
-| **status** | released: linux x86_64 and arm64 (static musl), darwin arm64 and x86_64 (`doc/Release.md`) | `windows` (`slim` plus `tunnel`, `relay`, `wireguard`) and `slim`, built and gated: cross-built from Linux with mingw-w64, run on a Windows runner through the examples gate (`drt_windows_x86_64.exe`, `drt_windows_x86_64_slim.exe`; `drt_slim_windows_x86_64.exe` from v0.5.0rc4 to v0.6.0-rc.2); `full` blocked on `exec` (unix-only) and on `aws-lc-sys` through russh, whose windows-gnu build wants NASM (ego-transport#5) | released: `drt_wasi.wasm` (`drt_wasip2.wasm` before v0.6.0-rc.2), gated through the examples in CI (M1, M6) | released: `drt_web.tar.gz`, gated in Chromium (M4) |
+| **status** | released: linux x86_64 and arm64 (static musl), darwin arm64 and x86_64 (`doc/Release.md`) | `windows` (`full` minus `exec`) and `slim`, built and gated: cross-built from Linux with mingw-w64, run on a Windows runner through the examples gate (`drt_windows_x86_64.exe`, `drt_windows_x86_64_slim.exe`; `drt_slim_windows_x86_64.exe` from v0.5.0rc4 to v0.6.0-rc.2); `full` itself blocked on `exec` (unix-only) | released: `drt_wasi.wasm` (`drt_wasip2.wasm` before v0.6.0-rc.2), gated through the examples in CI (M1, M6) | released: `drt_web.tar.gz`, gated in Chromium (M4) |
 | **threads** | yes | yes, measured (`listen`'s thread per connection, example 17) | **no**, measured: `thread::spawn` is `Unsupported` | no |
 | **blocking sleep** | `thread::sleep` | `thread::sleep`, measured | `thread::sleep` works, measured | **impossible** on the thread; the driver returns what it waits for and the page sleeps (D6) |
 | **wall clock, monotonic** | `std::time` | `std::time`, measured | `std::time` over wasi clocks, measured | `Date.now`, `performance.now` via `web-time` |
@@ -23,8 +23,8 @@ not: spawning, plugins, connectors and verbs.
 | **instance spawn** (`host.spawn`, the swarm) | yes | yes, expected | **yes**, measured: `08-spawn-and-hibernation` passes under wasmtime | **yes**, measured: `08` passes in Chromium |
 | **process spawn** (`exec/run`, `socketpair` plugins) | yes | yes, expected, with no fd 3: spawn and dial back over loopback (`doc/Plugins.md` §4) | **no**: WASI has no process API and none is on the standardization track; a native launcher plugin restores it (`doc/Plugins.md` §4.5) | no |
 | **tokio** | full | full, expected | `sync`, `macros`, `io-util`, `rt`, `time` only, measured | the same five |
-| **connectors** | `full`: time, fs, crypto, sql, ssh, rest, ssmtp, exec, listen (plus `cli`, the line editor); `slim`: time, fs, crypto, listen | `slim`'s set, measured (the `windows` profile carries the same four: its additions are verbs, not connectors); `sql` expected; `ssh` waits on the `aws-lc-sys` build (ego-transport#5), `rest` and `ssmtp` on nobody having tried | `wasi`: time, fs, crypto, sql, listen | `web`: time, fs, crypto |
-| **verbs** | run, start, repl, buildinfo, ps stub, relay, stun, tunnel, netcheck | run, start, repl, buildinfo, ps stub, measured (the examples gate, on both binaries); relay, tunnel and wg built and smoked (`wg keygen` and `wg pubkey` on the runner), not yet driven there; stun and netcheck wait on the `aws-lc-sys` build | run, start, repl, buildinfo, ps stub | run, repl, start without listeners, through the terminal contract |
+| **connectors** | `full`: time, fs, crypto, sql, ssh, rest, ssmtp, exec, listen (plus `cli`, the line editor); `slim`: time, fs, crypto, listen | `windows`: time, fs, crypto, sql, ssh, rest, ssmtp, data, socket, listen -- `full` less `exec`, measured by the examples gate on a Windows runner; `slim`: time, fs, crypto, listen, measured the same way | `wasi`: time, fs, crypto, sql, listen | `web`: time, fs, crypto |
+| **verbs** | run, start, repl, buildinfo, ps stub, relay, stun, tunnel, netcheck | run, start, repl, buildinfo, ps stub, tunnel, netcheck, wg, and the relay, stun and turn blocks: measured by the examples gate on a Windows runner, by the same loopback examples that measure them on Linux; the interface half of WireGuard needs `wintun.dll` and is not driven there | run, start, repl, buildinfo, ps stub | run, repl, start without listeners, through the terminal contract |
 | **plugin transports** (`doc/Plugins.md` §4.1) | `socketpair`, `spawn` with dial-back, `tcp` | `spawn` with dial-back, `tcp` | `tcp` only; spawning through a launcher plugin | WebSocket and Worker, later |
 | **`exec/run`** | builtin, `full` only, announced when wired | builtin once built | served by a native launcher plugin, never in the module | never |
 | **the C core** | linked, `cc` | linked; `diluvium-sys` calls `$CC` directly, so a mingw or MSVC compiler for the target is the unknown | linked, wasi-sdk, `-W exceptions=y` at run time | linked, wasi-sdk plus wasi-libc, seventeen syscalls defined in the module (D4) |
@@ -33,9 +33,11 @@ not: spawning, plugins, connectors and verbs.
 
 ## Reading the columns
 
-**Native Windows was a build question, and it is answered for `slim`.**
-Every row it needs exists in Rust's std on Windows; the two unknowns were
-the C core's compiler and `aws-lc-sys`. The first is mingw-w64, which
+**Native Windows was a build question, and it is answered.** Every row
+it needs exists in Rust's std on Windows; the two unknowns were the C
+core's compiler and `aws-lc-sys`, and the second is gone (ego-transport
+0.1.4 put russh on `ring`, and nothing else built it). The first is
+mingw-w64, which
 diluvium-sys derives from the target triple on a Linux host and refuses
 MSVC for by name, and the `x86_64-pc-windows-gnu` cross-build rehearsed
 in `release.yml`'s dispatch mode the day it was tried. The rehearsal found
@@ -47,23 +49,23 @@ binary mode once at startup, and the examples gate passes byte for byte
 on a Windows runner -- which is the gate that proves the artifact before
 it is uploaded (`smoke-windows`). So Windows gets a native `drt` that
 spawns, serves and reads files, and wasmtime is not needed there. The
-unprefixed Windows binary is the `windows` profile: `slim` plus `tunnel`,
-`relay` and `wireguard`, the tokio-backed verbs whose cross-build is
-clean, smoked on the runner and gated by the examples a slim build can
-run -- the tunnel and WireGuard examples declare `needs_build: full`, so
-those verbs are built and smoked there, not yet driven. `full` stays
-blocked: `exec` is unix-only by `compile_error!`, and `aws-lc-sys`
-through russh is a C-and-assembly toolchain the cross leg has to carry;
-on windows-gnu it is NASM the builder wants, and with NASM installed the
-`stun` cross-check passes, so the four are a toolchain decision rather
-than a wall. ego-transport#5 moves russh onto `ring`, which is already
-in that tree, and `stun`, `netcheck`, `turn` and `ssh` follow it into
-the profile when it lands -- or before, at the price of NASM on the leg.
+unprefixed Windows binary is the `windows` profile: `full` minus `exec`,
+cross-built with mingw-w64 alone and gated on the runner by every
+example whose `needs_build` lists the profile -- every `full` example
+but the three that are `full`'s alone (`00-install-methods` snapshots
+`full`'s own `buildinfo`; `16-exec` is the connector Windows lacks;
+`22-wireguard-interface` creates a kernel interface, which on Windows is
+`wintun.dll`'s job). `full` stays off Windows for one reason: `exec` is
+unix-only by `compile_error!`. It was two reasons until ego-transport
+0.1.4 moved russh onto `ring`: `aws-lc-sys`, which `stun`, `netcheck`,
+`turn` and `ssh` reached through russh's default backend, wanted NASM on
+the windows-gnu cross leg, and it is out of the tree on every target now.
 
 **WireGuard is a privilege question, not a platform one.** `drt wg` and
 the `wireguard` block build and run wherever `full` does, and the
-`windows` profile carries them to `x86_64-pc-windows-gnu`, smoked on a
-Windows runner (`wg keygen`, `wg pubkey`) before the binary ships --
+`windows` profile carries them to `x86_64-pc-windows-gnu`, where the
+examples gate drives the userspace half on a Windows runner before the
+binary ships --
 what they need is not a platform feature but permission to create a
 tunnel interface: CAP_NET_ADMIN or root on Linux, root on macOS,
 `wintun.dll` beside the binary on Windows -- in kernel mode. In

@@ -609,9 +609,9 @@ Four measurements, all from this machine on 2026-09-06.
 **No new C toolchain.** `default-features = false` drops gotatun's
 default `aws-lc-rs` for `ring`, which rustls already links. That matters
 beyond size: `aws-lc-sys` needs cmake and a C toolchain per target, and
-that is precisely what keeps `full` off Windows and linux aarch64 today.
-Taking it on for WireGuard would have spread the problem instead of
-containing it.
+that is what kept `full` off Windows and linux aarch64 at the time --
+since ego-transport 0.1.4 nothing in the tree builds it at all. Taking it
+on for WireGuard would have spread the problem instead of containing it.
 
 **It cross-compiles to Windows.** `slim,wireguard` for
 `x86_64-pc-windows-gnu` with mingw builds clean, which was not obvious
@@ -708,11 +708,11 @@ and the report shows the handshake —
   `CAP_NET_ADMIN`, and that is now a choice rather than the only option.
   That was §8's "reliable stream over the UDP hole" from
   `doc/Ask-Discofetch-Reply.md`, answered with WireGuard instead of QUIC.
-- **Not on Windows yet.** The cross-build works, but `full` does not
-  build for Windows for unrelated reasons (`exec` is unix-only,
-  aws-lc-sys through russh). `wintun.dll` beside the binary is a
-  kernel-mode need only: the userspace mode makes a Windows artifact
-  useful without it, which is a reason to schedule the artifact, not a
-  substitute for it. `doc/Platforms.md` has the state of that.
+- **On Windows, in userspace mode.** `drt_windows_x86_64.exe` (the
+  `windows` profile, `full` minus `exec`) carries `wg` and the
+  `wireguard` block, and the examples gate drives the userspace example
+  on a Windows runner before the binary ships. `wintun.dll` beside the
+  binary is a kernel-mode need only: the userspace mode makes the
+  artifact useful without it. `doc/Platforms.md` has the state of that.
 - **Not in `wasi` or `web`.** Neither has a tunnel interface, and the
   wasm targets have no threads to drive one.

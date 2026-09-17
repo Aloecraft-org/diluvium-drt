@@ -324,11 +324,11 @@ configuration that wants the program sandboxed and every capability
 outside it. On a native `drt` the `spawn` transport starts plugins
 directly and there is no helper at all. The decisions in §5 stay open.
 
-**And the other answer for Windows is not wasmtime.** `slim` carries no
-tokio, no russh and no `aws-lc-sys`; a `x86_64-pc-windows-gnu`
-cross-build with mingw as `$CC` for the C core is a day to rehearse in
-`release.yml`'s dispatch mode. A native `drt slim` on Windows spawns its
-plugins through the `spawn` transport and needs no launcher.
+**And the other answer for Windows is not wasmtime.** The
+`x86_64-pc-windows-gnu` cross-build, with mingw as `$CC` for the C core,
+ships from `release.yml` as `drt_windows_x86_64.exe` (`full` minus
+`exec`) and `drt_windows_x86_64_slim.exe`. A native `drt` on Windows
+spawns its plugins through the `spawn` transport and needs no launcher.
 `doc/Platforms.md` has the matrix.
 
 What stays impossible under wasmtime, so nobody plans around it:

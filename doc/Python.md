@@ -334,11 +334,11 @@ md` marks the native-Windows column the same way. Each is the kind of thing
 that costs an afternoon, so they are written down rather than rediscovered.
 
 - **WSL is Linux, so the released binary is the binary.**
-  `drt_linux_x86_64_musl` from the release page runs as-is; there is no
-  Windows build (`doc/Platforms.md`: not built, `full` blocked on
-  cross-compiling `aws-lc-sys` through russh). `exec` in particular refuses
-  to compile off unix — it is process groups and pipes — so WSL is not a
-  convenience here, it is the supported path.
+  `drt_linux_x86_64_musl` from the release page runs as-is. There is a
+  native Windows build too (`drt_windows_x86_64.exe`, `doc/Platforms.md`:
+  `full` minus `exec`), but `exec` refuses to compile off unix — it is
+  process groups and pipes — so for anything that spawns a process WSL is
+  not a convenience here, it is the supported path.
 - **Keep the working set on the Linux filesystem.** `/mnt/c/…` crosses a
   9P/`drvfs` boundary: slow, and its permission bits are synthesized, which
   makes `allow`'s realpath comparison and the executable bit on a wrapper

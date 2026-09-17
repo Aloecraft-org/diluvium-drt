@@ -922,9 +922,10 @@ async fn fetch(
         // `builder()` resolves the crypto provider from rustls's own enabled
         // features and panics if more than one is on. Checked, not assumed:
         // `cargo tree -e features -i rustls` shows exactly `ring`, `std`,
-        // `tls12` on this workspace. `aws-lc-rs` IS in the graph -- russh
-        // pulls it -- but not as a rustls provider feature, so there is no
-        // ambiguity to resolve and no panic to hit.
+        // `tls12` on this workspace. `aws-lc-rs` is not in the graph at
+        // all since ego-transport 0.1.4 put russh on `ring`; while russh
+        // pulled it, it was never a rustls provider feature either, so
+        // there is no ambiguity to resolve and no panic to hit.
         //
         // It would become one the moment something enables rustls's
         // `aws-lc-rs` feature, and the failure would be a runtime panic in a

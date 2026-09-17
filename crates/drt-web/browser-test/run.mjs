@@ -180,8 +180,10 @@ for (const name of examples) {
     noSocket.push(name);
     continue;
   }
-  if (meta.needs_build && meta.needs_build !== profile && profile !== 'unknown') {
-    console.log(`skipped  ${name.padEnd(24)} (needs a ${meta.needs_build} build; this drt is ${profile})`);
+  // One profile name or a list of them, read the way run-all.sh reads it.
+  const builds = meta.needs_build == null ? [] : [].concat(meta.needs_build);
+  if (builds.length > 0 && !builds.includes(profile) && profile !== 'unknown') {
+    console.log(`skipped  ${name.padEnd(24)} (needs a ${builds.join(' or ')} build; this drt is ${profile})`);
     wrongBuild.push(name);
     continue;
   }

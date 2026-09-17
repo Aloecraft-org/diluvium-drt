@@ -95,7 +95,7 @@ releases:
       slim: [time, fs, crypto, listen]
       wasi: [time, fs, crypto, sql, listen]
       web: [time, fs, crypto]
-      windows: [time, fs, crypto, listen]
+      windows: [time, fs, crypto, sql, ssh, rest, ssmtp, data, socket, listen]
     features:
       full: [regex]
       slim: [regex]
@@ -148,29 +148,33 @@ releases:
         yet; `doc/Plan-0.7.0.md` §7 is the sequence.
       - |
         **A `windows` profile, and an unprefixed Windows binary.**
-        `drt_windows_x86_64.exe` is `slim` plus `tunnel`, `relay` and
-        `wireguard`: the three tokio-backed verbs that build for
-        `x86_64-pc-windows-gnu` today, so a Windows box gets `drt tunnel`
-        and a relay from a release binary rather than from a checkout.
-        Named rather than left as `custom`, because a profile is what
-        `requires.connectors` is admitted against and what the examples
-        gate skips by; the connector set is `slim`'s, since the three are
-        verbs and not connectors. `drt_windows_x86_64_slim.exe` continues
-        as the distribution-size profile, as on every other platform, and
-        `BUILDINFO.txt` gains `profile.windows.connectors` and
-        `profile.windows.features`, read off the binary on a Windows
-        runner. Both binaries are run there before they are uploaded:
-        `--version`, a program, `buildinfo`, a WireGuard key pair and its
-        public half derived again, and the examples gate. The tunnel and
-        the relay are built and smoked there, not driven: the gate's
-        tunnel and WireGuard examples still declare `needs_build: full`.
-        What keeps the profile short of `full` is two facts, not a
-        policy: `exec` is unix-only, and `stun`, `netcheck`, `turn` and
-        `ssh` reach `aws-lc-sys` through russh's default crypto backend,
-        whose windows-gnu build wants NASM on the cross leg
-        (ego-transport#5 moves russh onto `ring`, already in that tree;
-        the four join the profile when it lands, or earlier at the price
-        of NASM on the cross leg).
+        `drt_windows_x86_64.exe` is `full` minus `exec`: every connector
+        and verb `full` carries except the one that is unix-only by
+        `compile_error!`, so a Windows box gets `drt tunnel`, `drt
+        netcheck`, `drt wg`, the relay, STUN and TURN blocks, and the
+        ssh, sql, rest, ssmtp, data and socket connectors from a release
+        binary rather than from a checkout. Named rather than left as
+        `custom`, because a profile is what `requires.connectors` is
+        admitted against and what the examples gate skips by.
+        `drt_windows_x86_64_slim.exe` continues as the distribution-size
+        profile, as on every other platform, and `BUILDINFO.txt` gains
+        `profile.windows.connectors` and `profile.windows.features`, read
+        off the binary on a Windows runner. Both binaries are run there
+        before they are uploaded: `--version`, a program, `buildinfo`, a
+        WireGuard key pair and its public half derived again, and the
+        examples gate. The gate's `needs_build` now takes a list of the
+        profiles an example's feature set is in (a lone string still
+        names one), and fourteen examples that said `full` say `full` or
+        `windows`, so the tunnel, relay, STUN, TURN, WireGuard, ssh, sql,
+        rest, mail and parquet examples are driven on Windows rather than
+        skipped by name; the three that stay `full`'s alone are
+        `00-install-methods`, `16-exec` and `22-wireguard-interface`.
+        What made the profile this wide is ego-transport 0.1.4, which
+        moved russh onto the `ring` backend already in that tree:
+        `aws-lc-sys` leaves DRT's dependency tree on every target, the
+        four features that reached it through russh (`stun`, `netcheck`,
+        `turn`, `ssh`) cross-build for windows-gnu with mingw-w64 alone,
+        and no leg needs NASM or cmake.
       - |
         **Linux arm64, static musl.** `drt_linux_arm64_musl` and
         `drt_linux_arm64_musl_slim`: the `full` and `slim` profiles built
@@ -179,6 +183,12 @@ releases:
         OS gets the binary the x86_64 release is. `install.sh` installs
         it; before this it refused a Linux arm64 box by name, which was
         the right answer while there was nothing to hand it.
+      - |
+        **One crypto stack.** The ssh scheme rides ego-transport 0.1.4,
+        which puts russh on `ring` rather than `aws-lc-rs`, so `full`
+        links one crypto library for TLS and SSH instead of two, and no
+        build on any target needs cmake or a C-and-assembly toolchain for
+        `aws-lc-sys` any more. Six crates leave the lockfile.
     fixed:
       - |
         **The fidelity gate compares exactly now, and says what it is

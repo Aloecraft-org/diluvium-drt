@@ -79,9 +79,11 @@ meta.json:
     "teaches":       "...",               # informational
     "cmd":           "drt run app.dlua",  # run by bash, stdout+stderr captured
     "needs_network": false,               # true => skipped unless --net
-    "needs_build":   "full",              # skipped unless `drt buildinfo`
-                                          # reports that profile.  `cargo
-                                          # build` with no flags is SLIM.
+    "needs_build":   ["full", "windows"], # skipped unless `drt buildinfo`
+                                          # reports one of these profiles
+                                          # (a lone string names one).
+                                          # `cargo build` with no flags
+                                          # is SLIM.
     "needs_features": ["numeric"],        # skipped unless `drt buildinfo`
                                           # lists every one of them under
                                           # `features` -- what the CORE
@@ -194,14 +196,40 @@ j_skip() {
     j_fail "unterminated array or object"
 }
 
+# Reads an array of strings at the cursor into J_ARR.  The key is for the
+# error message only.
+j_strings() {
+    local key=$1
+    J_ARR=()
+    [ "${_j_s:$_j_i:1}" = '[' ] || { j_err="\"$key\" is not an array"; return 1; }
+    _j_i=$((_j_i + 1))
+    j_ws
+    if [ "${_j_s:$_j_i:1}" = ']' ]; then
+        _j_i=$((_j_i + 1))
+        return 0
+    fi
+    while :; do
+        j_ws
+        j_string || return 1
+        J_ARR[${#J_ARR[@]}]=$REPLY
+        j_ws
+        case ${_j_s:$_j_i:1} in
+            ',') _j_i=$((_j_i + 1)) ;;
+            ']') _j_i=$((_j_i + 1)); return 0 ;;
+            *) j_err="expected ',' or ']' in \"$key\""; return 1 ;;
+        esac
+    done
+}
+
 # ---------------------------------------------------------------------------
-# meta.json -> meta_cmd, meta_net, meta_name, meta_norm[], meta_feat[]
+# meta.json -> meta_cmd, meta_net, meta_name, meta_build[], meta_norm[],
+# meta_feat[]
 # ---------------------------------------------------------------------------
 
 parse_meta() {
     local file=$1 key
     meta_cmd=""; meta_net="false"; meta_name=""; meta_norm=(); j_err=""
-    meta_build=""; meta_priv=""; meta_feat=()
+    meta_build=(); meta_priv=""; meta_feat=()
 
     _j_s=$(cat -- "$file") || { j_err="cannot read it"; return 1; }
     _j_n=${#_j_s}; _j_i=0
@@ -224,46 +252,24 @@ parse_meta() {
             cmd)           j_string  || return 1; meta_cmd=$REPLY ;;
             name)          j_string  || return 1; meta_name=$REPLY ;;
             needs_network) j_literal || return 1; meta_net=$REPLY ;;
-            needs_build)   j_string  || return 1; meta_build=$REPLY ;;
+            needs_build)
+                # One profile name, or a list of them: the profiles whose
+                # feature set this example needs.  A lone "full" was the
+                # only shape until `windows` -- `full` minus `exec` -- could
+                # run nearly everything `full` runs.
+                if [ "${_j_s:$_j_i:1}" = '[' ]; then
+                    j_strings "$key" || return 1
+                    meta_build=(${J_ARR[@]+"${J_ARR[@]}"})
+                else
+                    j_string || return 1; meta_build=("$REPLY")
+                fi ;;
             needs_privilege) j_string || return 1; meta_priv=$REPLY ;;
             needs_features)
-                [ "${_j_s:$_j_i:1}" = '[' ] || { j_err="\"$key\" is not an array"; return 1; }
-                _j_i=$((_j_i + 1))
-                j_ws
-                if [ "${_j_s:$_j_i:1}" = ']' ]; then
-                    _j_i=$((_j_i + 1))
-                else
-                    while :; do
-                        j_ws
-                        j_string || return 1
-                        meta_feat[${#meta_feat[@]}]=$REPLY
-                        j_ws
-                        case ${_j_s:$_j_i:1} in
-                            ',') _j_i=$((_j_i + 1)) ;;
-                            ']') _j_i=$((_j_i + 1)); break ;;
-                            *) j_err="expected ',' or ']' in \"$key\""; return 1 ;;
-                        esac
-                    done
-                fi ;;
+                j_strings "$key" || return 1
+                meta_feat=(${J_ARR[@]+"${J_ARR[@]}"}) ;;
             normalise|normalize)
-                [ "${_j_s:$_j_i:1}" = '[' ] || { j_err="\"$key\" is not an array"; return 1; }
-                _j_i=$((_j_i + 1))
-                j_ws
-                if [ "${_j_s:$_j_i:1}" = ']' ]; then
-                    _j_i=$((_j_i + 1))
-                else
-                    while :; do
-                        j_ws
-                        j_string || return 1
-                        meta_norm[${#meta_norm[@]}]=$REPLY
-                        j_ws
-                        case ${_j_s:$_j_i:1} in
-                            ',') _j_i=$((_j_i + 1)) ;;
-                            ']') _j_i=$((_j_i + 1)); break ;;
-                            *) j_err="expected ',' or ']' in \"$key\""; return 1 ;;
-                        esac
-                    done
-                fi ;;
+                j_strings "$key" || return 1
+                meta_norm=(${J_ARR[@]+"${J_ARR[@]}"}) ;;
             *) j_skip || return 1 ;;
         esac
         j_ws
@@ -494,10 +500,22 @@ for name in ${examples[@]+"${examples[@]}"}; do
     # real content was "this build does not carry that".
     #
     # Skipped, named, and never a pass.  Same rule as the network skip.
-    if [ -n "$meta_build" ] && [ "$meta_build" != "$drt_profile" ] \
-       && [ "$drt_profile" != unknown ]; then
+    #
+    # `needs_build` names the profile whose feature set the example needs,
+    # or lists the profiles that carry it.  `windows` is `full` less
+    # `exec`, so nearly every example that needs `full` runs there too and
+    # says so; the ones that do not are `full`'s alone and say only that.
+    fits=1
+    if [ ${#meta_build[@]} -gt 0 ] && [ "$drt_profile" != unknown ]; then
+        fits=0
+        for p in "${meta_build[@]}"; do
+            [ "$p" = "$drt_profile" ] && fits=1
+        done
+    fi
+    if [ "$fits" = 0 ]; then
+        printf -v wanted '%s or ' "${meta_build[@]}"
         printf 'skipped  %-24s (needs a %s build; this drt is %s)\n' \
-            "$name" "$meta_build" "$drt_profile"
+            "$name" "${wanted% or }" "$drt_profile"
         wrong_build[${#wrong_build[@]}]=$name
         continue
     fi
@@ -611,7 +629,7 @@ if [ ${#skipped[@]} -gt 0 ]; then
     printf 'run with --net to include them.\n'
 fi
 if [ ${#wrong_build[@]} -gt 0 ]; then
-    printf 'skipped for needing a full build (NOT a pass): %s\n' "${wrong_build[*]}"
+    printf 'skipped for needing a fuller build (NOT a pass): %s\n' "${wrong_build[*]}"
     printf 'rebuild with --all-features to include them.\n'
 fi
 if [ ${#wrong_features[@]} -gt 0 ]; then

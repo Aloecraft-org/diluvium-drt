@@ -169,7 +169,8 @@ emulator to get wrong.
 with a `meta.json` is seeded into the page under `/examples/NN-*`, its
 `cmd` is run through `shell.js` with stdout and stderr merged, its
 `normalise` (sed, translated to JavaScript one expression at a time) is
-applied to both sides, and the two are diffed. `needs_build: full` and
+applied to both sides, and the two are diffed. `needs_build` (a profile,
+or the list of profiles an example's feature set is in) and
 `needs_network` skip by name and are never counted as passes, as in the
 shell version, and so does `needs_listener` -- a page has no socket to
 bind. `buildinfo` inside the page reports `profile: web`, and that is
