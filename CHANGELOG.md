@@ -12,7 +12,7 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
-## [0.7.0-rc.2] - unreleased (prerelease)
+## [0.7.0-rc.2] - 2026-09-17 (prerelease)
 
 `v0.7.0-rc.2` &middot; dv ABI 1 &middot; diluvium `7f952d86ec7f` (v0.15.1)
 
