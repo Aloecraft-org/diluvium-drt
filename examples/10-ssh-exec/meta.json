@@ -4,5 +4,7 @@
   "cmd": "echo '$ drt run --config deploy.json'; drt run --config deploy.json; echo \"exit $?\"; echo; echo '$ drt run app.dlua'; drt run app.dlua; echo \"exit $?\"",
   "needs_network": false,
   "needs_build": ["full", "windows"],
-  "normalise": []
+  "normalise": [
+    "s|The system cannot find the file specified\\. (os error 2)|No such file or directory (os error 2)|"
+  ]
 }
