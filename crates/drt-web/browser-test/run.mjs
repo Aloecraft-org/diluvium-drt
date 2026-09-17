@@ -280,6 +280,15 @@ for (const name of examples) {
     // with a "try this" button calls, and it resolves when the command is
     // over rather than leaving the host to guess.
     const status = await xterm.evaluate(() => window.drtXtermTest.run('drt buildinfo'));
+    // `run` resolves when the command is over; what the terminal shows
+    // arrives on xterm.js's own write schedule, and on a slow runner the
+    // screen read the instant the promise settled was two characters into
+    // the echo. Waited for by content, as above, with the same ceiling.
+    await xterm
+      .waitForFunction(() => window.drtXtermTest.screen().includes('profile: web'), null, {
+        timeout: 15000,
+      })
+      .catch(() => {});
     const screen = await xterm.evaluate(() => window.drtXtermTest.screen());
     await xterm.close();
 
