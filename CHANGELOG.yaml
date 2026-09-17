@@ -146,6 +146,22 @@ releases:
         yet; `doc/Plan-0.7.0.md` §7 is the sequence.
     fixed:
       - |
+        **The fidelity gate compares exactly now, and says what it is
+        comparing.** Its "exact" band was `max(1, 0.1%)`, ninety-two
+        bytes at the size of a guest heap, which had quietly absorbed a
+        real difference since the pin moved to build14: DRT opens every
+        source instance text-only, and from build14 the core answers that
+        flag by wrapping the guest's own `load` in one C closure, 48 bytes
+        the C swarm bench never pays because it cannot set the flag. The
+        0.15.1 core then grew every sealed guest by `_DILUVIUM`, the sum
+        crossed the band, and the gate went red for two reasons at once.
+        The baseline is re-captured on 0.15.1 (`bench/README.md` says
+        from what), the 48 bytes are a named term in `check-fidelity.py`
+        rather than a tolerance, and a byte figure now has to match to
+        the byte. DRT's per-agent heap equals the C swarm's in DRT's
+        configuration on both cores, measured by patching the C bench to
+        open its workers text-only.
+      - |
         **A flake in the socket tests, not in the runtime.** The
         descriptor baseline counted a file glibc opens once at the
         previous test thread's teardown, after that thread had released
