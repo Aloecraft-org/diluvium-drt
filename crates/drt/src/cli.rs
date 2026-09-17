@@ -53,6 +53,17 @@ const PROFILE_WASI: &[&str] = &[
     "listen",
 ];
 const PROFILE_WEB: &[&str] = &["cli", "connector-crypto", "connector-fs", "connector-time"];
+const PROFILE_WINDOWS: &[&str] = &[
+    "cli",
+    "connector-crypto",
+    "connector-fs",
+    "connector-time",
+    "listen",
+    "relay",
+    "tunnel",
+    "turn-client",
+    "wireguard",
+];
 const PROFILE_FULL: &[&str] = &[
     "cli",
     "connector-crypto",
@@ -83,7 +94,7 @@ const PROFILE_FULL: &[&str] = &[
 ///
 /// TODO(A0): hard-coded, because the core does not yet say. Session A's A0
 /// milestone adds `dv_features()` -- a newline-separated list, stable for
-/// the life of the process -- and when that pin lands these four tables go
+/// the life of the process -- and when that pin lands these five tables go
 /// away and the list is read off the linked core instead. That is
 /// `doc/Release.md`'s rule: the compatibility fact travels with the bytes,
 /// and a fact this file states about bytes it did not compile is a fact
@@ -98,6 +109,7 @@ const CORE_FEATURES_FULL: &[&str] = &["regex"];
 const CORE_FEATURES_SLIM: &[&str] = &["regex"];
 const CORE_FEATURES_WASI: &[&str] = &["regex"];
 const CORE_FEATURES_WEB: &[&str] = &["regex"];
+const CORE_FEATURES_WINDOWS: &[&str] = &["regex"];
 /// A build whose feature set matches no named profile still embeds a core,
 /// and `unknown` is the honest answer about which features it carries --
 /// the same answer `diluvium: unknown` gives for an unpinned revision. An
@@ -736,6 +748,8 @@ fn profile_name(features: &[&str]) -> &'static str {
         "wasi"
     } else if features == PROFILE_WEB {
         "web"
+    } else if features == PROFILE_WINDOWS {
+        "windows"
     } else {
         "custom"
     }
@@ -750,6 +764,7 @@ fn core_features(profile: &str) -> &'static [&'static str] {
         "slim" => CORE_FEATURES_SLIM,
         "wasi" => CORE_FEATURES_WASI,
         "web" => CORE_FEATURES_WEB,
+        "windows" => CORE_FEATURES_WINDOWS,
         _ => CORE_FEATURES_CUSTOM,
     }
 }

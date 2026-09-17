@@ -381,6 +381,7 @@ fn every_profile_name_is_a_feature_the_binary_probes() {
         "PROFILE_SLIM",
         "PROFILE_WASI",
         "PROFILE_WEB",
+        "PROFILE_WINDOWS",
     ] {
         let head = format!("const {table}: &[&str] = &[");
         let at = source
@@ -399,13 +400,13 @@ fn every_profile_name_is_a_feature_the_binary_probes() {
     }
     assert!(
         checked > 20,
-        "only {checked} names checked across four tables"
+        "only {checked} names checked across five tables"
     );
 }
 
 #[test]
 fn profile_matches_its_manifest() {
-    const PROFILES: [&str; 4] = ["full", "slim", "wasi", "web"];
+    const PROFILES: [&str; 5] = ["full", "slim", "wasi", "web", "windows"];
     const LEAVES: [&str; 20] = [
         "cli",
         "connector-crypto",

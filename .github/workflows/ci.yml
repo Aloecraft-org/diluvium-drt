@@ -65,6 +65,14 @@ jobs:
     # `wireguard` is absent on purpose -- gotatun needs a newer rustc than
     # the rest of this matrix pins, and `--all-features` in the release
     # workflow is where it is built.
+    #
+    # `windows` is a profile, not a lone feature, and is here for the
+    # profile's own reason: it is the one feature set that carries
+    # `wireguard` without `stun` and `turn`, and the day it was named,
+    # `tests/wireguard.rs` called both and did not compile on it. Nothing
+    # else builds that set with `--all-targets`; the release leg builds it
+    # without tests. This is where the profile's tests are gated on the
+    # feature set they will be run with.
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -90,6 +98,7 @@ jobs:
           - netcheck
           - turn
           - turn-client
+          - windows
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

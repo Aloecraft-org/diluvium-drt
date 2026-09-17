@@ -296,6 +296,7 @@ Fields separated by `_`, read positionally.
 dollup_darwin_arm64
 drt_linux_x86_64_musl
 drt_linux_x86_64_musl_slim
+drt_windows_x86_64.exe
 drt_windows_x86_64_slim.exe
 diluvium_compiler_linux_x86_64_musl
 aloelite_fuse_linux_arm64_gnu
@@ -399,9 +400,11 @@ org before you start; `latest/`-shaped URLs are the ones that break silently.
 
 Everything the name cannot carry goes in `BUILDINFO.txt`, and **BUILDINFO is
 what gets checked** — never the filename. DRT demonstrates the leak:
-`drt_slim_windows_x86_64.exe` is the only Windows build there is and the name
-cannot say so, so a workflow comment says it instead. DRT's package admission
-already checks `requires.connectors` against BUILDINFO by name.
+`drt_windows_x86_64.exe` is the unprefixed Windows build and it is not
+`full` — there is no `full` for Windows, so the unprefixed name is the
+`windows` profile, the largest that platform gets — and the name cannot say
+so; BUILDINFO's `profile.windows.connectors` line does. DRT's package
+admission already checks `requires.connectors` against BUILDINFO by name.
 
 ---
 

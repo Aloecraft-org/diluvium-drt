@@ -162,16 +162,32 @@ jobs:
                        " && echo \"CC=musl-gcc\" >> \"$GITHUB_ENV\""
                        " && echo \"AR=ar\" >> \"$GITHUB_ENV\"",
           }
+          # Linux arm64, natively on GitHub's arm64 runner rather than
+          # cross-compiled from x86_64, so the leg is the x86_64 leg with
+          # two fields changed: the binary is built, smoked and gated on
+          # the machine that built it, and aws-lc-sys compiles for the host
+          # with the host's tools instead of needing a cross C toolchain
+          # rehearsed. Static musl like x86_64, so it installs on any
+          # 64-bit Linux -- a Raspberry Pi running a 64-bit OS included --
+          # with no glibc version to match. `legacy` is empty: no earlier
+          # release spelled this artifact any other way, and the step that
+          # copies old names skips it.
+          arm64 = {
+              "name": "linux_arm64_musl",
+              "legacy": "",
+              "os": "ubuntu-24.04-arm",
+              "target": "aarch64-unknown-linux-musl",
+              "setup": linux["setup"],
+          }
           darwin = [
               {"name": "darwin_arm64", "legacy": "darwin_arm64", "os": "macos-latest", "target": "aarch64-apple-darwin", "setup": "true"},
               {"name": "darwin_x86_64", "legacy": "darwin_x86_64", "os": "macos-15-intel", "target": "x86_64-apple-darwin", "setup": "true"},
           ]
-          # linux aarch64 is next, not promised: the full profile carries
-          # aws-lc-sys through russh, and cross-compiling that is a job to
-          # rehearse, not to assume. Windows is not in this matrix because
-          # it cannot build both halves: it is `build-windows` below, slim
-          # only, and proven on a real Windows runner by `smoke-windows`.
-          include = [linux] if os.environ["DEV"] == "true" else [linux] + darwin
+          # Windows is not in this matrix because it cannot build `full`:
+          # it is `build-windows` below -- the `windows` profile and
+          # `slim` -- and proven on a real Windows runner by
+          # `smoke-windows`. A dev build is the x86_64 leg alone.
+          include = [linux] if os.environ["DEV"] == "true" else [linux, arm64] + darwin
           print("matrix=" + json.dumps({"include": include}))
           EOF
       # The changelog is a release gate, not a formality: CHANGELOG.yaml is
@@ -289,9 +305,10 @@ jobs:
       # fetches by name breaks at its own runtime, not at anyone's build,
       # so v0.6.0-rc.2 carries the names the release before it used and
       # the release after it deletes this step. Not for a dev build, which
-      # nobody ever fetched by the old name.
+      # nobody ever fetched by the old name, and not for a leg whose
+      # `legacy` is empty, which never had one.
       - name: The names the previous release used
-        if: needs.preflight.outputs.dev != 'true'
+        if: needs.preflight.outputs.dev != 'true' && matrix.legacy != ''
         run: |
           set -eu
           [ drt_${{ matrix.legacy }} = drt_${{ matrix.name }} ] || cp drt_${{ matrix.name }} drt_${{ matrix.legacy }}
@@ -479,23 +496,28 @@ jobs:
           retention-days: 30
 
   build-windows:
-    # The Windows leg: `slim` for x86_64-pc-windows-gnu, cross-built from
-    # Linux with mingw-w64 the way doc/Platforms.md said to rehearse it.
-    # Cross rather than native for two reasons that are the same reason:
+    # The Windows leg, for x86_64-pc-windows-gnu, cross-built from Linux
+    # with mingw-w64 the way doc/Platforms.md said to rehearse it. Cross
+    # rather than native for two reasons that are the same reason:
     # diluvium-sys drives a GCC-style compiler and refuses MSVC by name,
     # and on a Linux host it derives `x86_64-w64-mingw32-gcc` from the
     # target triple itself, so the build needs nothing told to it that the
-    # linux_static leg does not also need. `full` is not built: `exec` is
-    # unix-only by `compile_error!`, and `full` carries aws-lc-sys through
-    # russh, which is the linux aarch64 problem again. So the artifact is
-    # `drt_windows_x86_64_slim.exe` and there is no unprefixed one -- a
-    # Windows box gets the distribution-size profile, which spawns, serves
-    # and reads files, and the connectors that need a runtime stay on the
-    # platforms that build them.
+    # linux_static leg does not also need.
+    #
+    # Two binaries, as every native leg ships two. `full` is not one of
+    # them: `exec` is unix-only by `compile_error!`, and `full` carries
+    # aws-lc-sys through russh, whose windows-gnu build wants NASM on this
+    # leg (crates/drt/Cargo.toml, at `windows`, says what moves it). So
+    # the unprefixed `drt_windows_x86_64.exe` is the `windows` profile --
+    # `slim` plus `tunnel`, `relay` and `wireguard`, the tokio-backed verbs
+    # that build for the target -- because doc/ALIGNMENT.md §4 makes the
+    # unprefixed name the largest profile a platform gets, and on Windows
+    # that is not `full`. `drt_windows_x86_64_slim.exe` is `slim`, the
+    # distribution-size profile, as on every other platform.
     #
     # A cross-built binary cannot be run here, and a binary nothing ran is
-    # what the smoke steps exist to prevent -- so it is uploaded and then
-    # run for real in `smoke-windows`, on a Windows runner.
+    # what the smoke steps exist to prevent -- so both are uploaded and
+    # then run for real in `smoke-windows`, on a Windows runner.
     name: Build (windows_x86_64)
     needs: [preflight, test]
     if: needs.preflight.outputs.dev != 'true'
@@ -515,11 +537,14 @@ jobs:
           key: windows_x86_64
       - name: mingw-w64
         run: sudo apt-get update && sudo apt-get install -y mingw-w64
-      - name: Build slim
+      - name: Build windows and slim
         run: |
           set -eu
+          cargo build --profile release-small -p drt --target x86_64-pc-windows-gnu --no-default-features --features windows
+          cp target/x86_64-pc-windows-gnu/release-small/drt.exe drt_windows_x86_64.exe
           cargo build --profile release-small -p drt --target x86_64-pc-windows-gnu
           cp target/x86_64-pc-windows-gnu/release-small/drt.exe drt_windows_x86_64_slim.exe
+          file drt_windows_x86_64.exe | grep -q 'PE32+ executable'
           file drt_windows_x86_64_slim.exe | grep -q 'PE32+ executable'
       # Both names for one release (doc/ALIGNMENT.md §4); the release after
       # v0.6.0-rc.2 deletes this step.
@@ -529,20 +554,24 @@ jobs:
         with:
           name: drt-windows_x86_64
           path: |
+            drt_windows_x86_64.exe
             drt_windows_x86_64_slim.exe
             drt_slim_windows_x86_64.exe
           if-no-files-found: error
           retention-days: 30
 
   smoke-windows:
-    # The Windows binary, run on Windows: the same three checks the native
-    # legs make on themselves, and then the examples gate, which is the
-    # conformance oracle on every other target and is one here too. Git
-    # Bash is the shell because run-all.sh is bash and the examples' own
-    # demo.sh files are too; the runner ships it, with the coreutils, sed,
-    # diff and curl the gate needs. Every example a `slim` build can run
-    # runs; the ones that need `full` are skipped by name, as they are for
-    # the slim binary anywhere.
+    # The Windows binaries, run on Windows: the same three checks the
+    # native legs make on themselves, and then the examples gate, which is
+    # the conformance oracle on every other target and is one here too.
+    # Git Bash is the shell because run-all.sh is bash and the examples'
+    # own demo.sh files are too; the runner ships it, with the coreutils,
+    # sed, diff and curl the gate needs. Every example a `slim` build can
+    # run runs, on both binaries; the ones that need `full` are skipped by
+    # name, as they are for a slim or a windows binary anywhere -- the
+    # tunnel and WireGuard examples declare `needs_build: full`, so the
+    # `windows` profile's three verbs are built and smoked here, not
+    # driven.
     name: Smoke (windows_x86_64)
     needs: [preflight, build-windows]
     if: needs.preflight.outputs.dev != 'true'
@@ -560,23 +589,49 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: drt-windows_x86_64
-      - name: Smoke test
+      - name: Smoke test, both binaries
         run: |
           set -eu
-          ./drt_windows_x86_64_slim.exe --version
           echo 'local x = 1' > smoke.lua
-          ./drt_windows_x86_64_slim.exe run smoke.lua
+          for exe in drt_windows_x86_64.exe drt_windows_x86_64_slim.exe; do
+            ./$exe --version
+            ./$exe run smoke.lua
+            # A tagged build names its tag; a rehearsal has none and prints none.
+            if [ -n "${DRT_RELEASE_TAG:-}" ]; then
+              ./$exe buildinfo | grep -qx "tag: $DRT_RELEASE_TAG"
+            else
+              ! ./$exe buildinfo | grep -q '^tag:'
+            fi
+          done
+          ./drt_windows_x86_64.exe buildinfo | grep -qx 'profile: windows'
           ./drt_windows_x86_64_slim.exe buildinfo | grep -qx 'profile: slim'
-          # A tagged build names its tag; a rehearsal has none and prints none.
-          if [ -n "${DRT_RELEASE_TAG:-}" ]; then
-            ./drt_windows_x86_64_slim.exe buildinfo | grep -qx "tag: $DRT_RELEASE_TAG"
-          else
-            ! ./drt_windows_x86_64_slim.exe buildinfo | grep -q '^tag:'
-          fi
-      - name: The examples gate, on Windows
+          # The one thing the three verbs can do with no peer, no privilege
+          # and no wintun.dll: a key pair, and its public half derived again
+          # from the private one over stdin. That the binary answers both is
+          # the measurement doc/Platforms.md wants for `wireguard` here; the
+          # tunnel and the device need a far end the runner does not have.
+          keys=$(./drt_windows_x86_64.exe wg keygen)
+          [ "$(printf '%s\n' "$keys" | wc -l)" -eq 2 ]
+          derived=$(printf '%s\n' "$keys" | head -1 | ./drt_windows_x86_64.exe wg pubkey)
+          [ "$derived" = "$(printf '%s\n' "$keys" | sed -n 2p)" ]
+      - name: What the windows profile carries, read off the artifact
+        # publish runs on Linux and cannot ask a PE32+ binary anything; the
+        # answer it gave here, on Windows, travels as a file the way the
+        # browser module's does (build-web), and lands in the release
+        # beside it as `drt_windows.buildinfo.txt`.
+        run: ./drt_windows_x86_64.exe buildinfo > drt_windows.buildinfo.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drt-windows_x86_64-buildinfo
+          path: drt_windows.buildinfo.txt
+          if-no-files-found: error
+          retention-days: 30
+      - name: The examples gate, on Windows, both binaries
         run: |
           set -eu
-          cd examples && DRT="$GITHUB_WORKSPACE/drt_windows_x86_64_slim.exe" ./run-all.sh
+          cd examples
+          DRT="$GITHUB_WORKSPACE/drt_windows_x86_64.exe" ./run-all.sh
+          DRT="$GITHUB_WORKSPACE/drt_windows_x86_64_slim.exe" ./run-all.sh
 
   publish:
     name: Publish release
@@ -633,10 +688,11 @@ jobs:
           # workspace, so this cp failed the step under `set -eu`.
           cp ../install.sh install.sh
           # Asked of the artifact rather than guessed in YAML. The linux
-          # binaries are native here, so they can report the dv ABI they
-          # actually speak and the connectors actually compiled in; a
-          # cross-built darwin binary cannot be run, but both are the same
-          # cargo feature set, so the profile lines describe both.
+          # x86_64 binaries are native here, so they can report the dv ABI
+          # they actually speak and the connectors actually compiled in;
+          # the darwin and linux arm64 binaries cannot be run on this
+          # runner, but every native leg is the same cargo feature set, so
+          # the profile lines describe them all.
           chmod +x drt_linux_x86_64_musl drt_linux_x86_64_musl_slim || true
           # Read the plain form, not the JSON: `connectors` is a list, and a
           # sed that stops at the first comma silently reports only its
@@ -679,6 +735,12 @@ jobs:
           # is as close to "read off the artifact" as a page gets.
           WEB_CONNECTORS=$(sed -n 's/^connectors: //p' drt_web.buildinfo.txt 2>/dev/null || true)
           WEB_FEATURES=$(sed -n 's/^features: //p' drt_web.buildinfo.txt 2>/dev/null || true)
+          # The windows profile answered on a Windows runner in
+          # smoke-windows, which wrote the answer beside the binary for the
+          # same reason: this job runs on Linux and cannot ask a PE32+
+          # binary anything.
+          WINDOWS_CONNECTORS=$(sed -n 's/^connectors: //p' drt_windows.buildinfo.txt 2>/dev/null || true)
+          WINDOWS_FEATURES=$(sed -n 's/^features: //p' drt_windows.buildinfo.txt 2>/dev/null || true)
           # The five lines every Aloecraft release carries (doc/ALIGNMENT.md
           # §5), then this project's own facts. `version` is the tag body:
           # the tag is canonical and this is its one derived spelling.
@@ -701,10 +763,13 @@ jobs:
             # instead of by guessing from the artifact filename.
             echo "profile.full.connectors: ${FULL_CONNECTORS:-unknown}"
             echo "profile.slim.connectors: ${SLIM_CONNECTORS:-unknown}"
-            # `drt_windows_x86_64_slim.exe` is the slim feature set too, and
-            # the one profile Windows gets (see build-windows); the line
-            # above describes it. It answered `buildinfo` on a Windows
-            # runner in smoke-windows before it was allowed here.
+            # `drt_windows_x86_64.exe` is the `windows` profile: `slim` plus
+            # the verbs Windows can build (see build-windows), so its
+            # connector set is `slim`'s and its feature set is not. It
+            # answered `buildinfo` on a Windows runner in smoke-windows
+            # before it was allowed here. `drt_windows_x86_64_slim.exe` is
+            # the slim feature set, and the line above describes it.
+            echo "profile.windows.connectors: ${WINDOWS_CONNECTORS:-unknown}"
             # `drt_wasi.wasm`: run it with
             #   wasmtime run -W exceptions=y --dir . drt_wasi.wasm run app.dlua
             echo "profile.wasi.connectors: ${WASI_CONNECTORS:-unknown}"
@@ -717,6 +782,7 @@ jobs:
             # `requires.connectors` is against the four lines above.
             echo "profile.full.features: ${FULL_FEATURES:-unknown}"
             echo "profile.slim.features: ${SLIM_FEATURES:-unknown}"
+            echo "profile.windows.features: ${WINDOWS_FEATURES:-unknown}"
             echo "profile.wasi.features: ${WASI_FEATURES:-unknown}"
             echo "profile.web.features: ${WEB_FEATURES:-unknown}"
           } > BUILDINFO.txt

@@ -62,7 +62,7 @@ never as a mystifying `denied` at first call.
 One static binary, no runtime dependencies. Download it, `chmod +x`, go:
 
 ```sh
-# linux x86_64 — also drt_darwin_arm64, drt_darwin_x86_64
+# linux x86_64 — also drt_linux_arm64_musl, drt_darwin_arm64, drt_darwin_x86_64
 BASE=https://github.com/Aloecraft-org/diluvium-drt/releases/latest/download
 curl -fLO $BASE/drt_linux_static_x86_64
 curl -fLO $BASE/SHA256SUMS.txt

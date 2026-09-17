@@ -34,17 +34,10 @@ case "$(uname -m)" in
   *) echo "install.sh: $(uname -m) has no prebuilt DRT yet" >&2; exit 1 ;;
 esac
 
-# Refuse by name rather than by handing over a binary that cannot exec.
-# Linux ships x86_64 only today (doc/Release.md: aarch64 is next, and it is
-# not promised because `full` carries aws-lc-sys through russh). Before
-# this, an aarch64 Linux box downloaded the x86_64 static musl binary and
-# failed the --version guard below with "does not run here" — which is true
-# and tells you nothing about why.
-if [ "$OS" = linux ] && [ "$ARCH" != x86_64 ]; then
-  echo "install.sh: linux $ARCH has no prebuilt DRT yet — only x86_64." >&2
-  echo "  build it: cargo build --release --features full -p drt" >&2
-  exit 1
-fi
+# Linux ships x86_64 and arm64, both static musl (doc/Release.md), so every
+# architecture the case above admits has an asset. A release older than the
+# arm64 leg has none for arm64, and the fetch below then says which name it
+# looked for, rather than handing over a binary that cannot exec here.
 
 # The name a release uses (doc/ALIGNMENT.md §4): <os>_<arch>[_<libc>], the
 # profile last. Releases before v0.6.0-rc.2 spelled it the older way, rc.2

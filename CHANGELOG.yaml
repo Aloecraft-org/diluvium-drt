@@ -95,11 +95,13 @@ releases:
       slim: [time, fs, crypto, listen]
       wasi: [time, fs, crypto, sql, listen]
       web: [time, fs, crypto]
+      windows: [time, fs, crypto, listen]
     features:
       full: [regex]
       slim: [regex]
       wasi: [regex]
       web: [regex]
+      windows: [regex]
     summary: |
       **A newer language inside, and the version fact that goes with it.**
       The embedded core moves to diluvium 0.15.1, which brings `continue`
@@ -144,6 +146,39 @@ releases:
         `tcp` manifest carries no address, since where a service listens
         is the deployment's fact. Nothing in a deployment reaches this
         yet; `doc/Plan-0.7.0.md` §7 is the sequence.
+      - |
+        **A `windows` profile, and an unprefixed Windows binary.**
+        `drt_windows_x86_64.exe` is `slim` plus `tunnel`, `relay` and
+        `wireguard`: the three tokio-backed verbs that build for
+        `x86_64-pc-windows-gnu` today, so a Windows box gets `drt tunnel`
+        and a relay from a release binary rather than from a checkout.
+        Named rather than left as `custom`, because a profile is what
+        `requires.connectors` is admitted against and what the examples
+        gate skips by; the connector set is `slim`'s, since the three are
+        verbs and not connectors. `drt_windows_x86_64_slim.exe` continues
+        as the distribution-size profile, as on every other platform, and
+        `BUILDINFO.txt` gains `profile.windows.connectors` and
+        `profile.windows.features`, read off the binary on a Windows
+        runner. Both binaries are run there before they are uploaded:
+        `--version`, a program, `buildinfo`, a WireGuard key pair and its
+        public half derived again, and the examples gate. The tunnel and
+        the relay are built and smoked there, not driven: the gate's
+        tunnel and WireGuard examples still declare `needs_build: full`.
+        What keeps the profile short of `full` is two facts, not a
+        policy: `exec` is unix-only, and `stun`, `netcheck`, `turn` and
+        `ssh` reach `aws-lc-sys` through russh's default crypto backend,
+        whose windows-gnu build wants NASM on the cross leg
+        (ego-transport#5 moves russh onto `ring`, already in that tree;
+        the four join the profile when it lands, or earlier at the price
+        of NASM on the cross leg).
+      - |
+        **Linux arm64, static musl.** `drt_linux_arm64_musl` and
+        `drt_linux_arm64_musl_slim`: the `full` and `slim` profiles built
+        natively on an arm64 runner, smoked and gated there the way the
+        x86_64 leg is on its own machine, so a Raspberry Pi on a 64-bit
+        OS gets the binary the x86_64 release is. `install.sh` installs
+        it; before this it refused a Linux arm64 box by name, which was
+        the right answer while there was nothing to hand it.
     fixed:
       - |
         **The fidelity gate compares exactly now, and says what it is

@@ -584,9 +584,11 @@ a runtime that cannot serve a fetchpoint is the two-binary cliff again:
 ```
 drt_linux_x86_64_musl          # full: engine, connectors, listen, tunnel
 drt_linux_x86_64_musl_slim     # slim: the distribution-size profile
+drt_linux_arm64_musl           drt_linux_arm64_musl_slim
 drt_darwin_arm64               drt_darwin_arm64_slim
 drt_darwin_x86_64              drt_darwin_x86_64_slim
-drt_windows_x86_64_slim.exe    # slim only: doc/Platforms.md says why
+drt_windows_x86_64.exe         # windows: slim plus tunnel, relay, wireguard
+drt_windows_x86_64_slim.exe    # doc/Platforms.md says why there is no full
 drt_wasi.wasm                  drt_web.tar.gz
 BUILDINFO.txt                  SHA256SUMS.txt
 ```
@@ -598,14 +600,25 @@ carries both names, both in `SHA256SUMS.txt`, and the release after it
 drops the old ones; `install.sh` tries the new name and falls back to the
 old, so a pinned older tag still installs.
 
-Windows ships `slim` only: `exec` is unix-only, and `full` carries
-`aws-lc-sys` through russh. It is cross-built from a Linux runner with
-mingw-w64 and then run on a Windows runner -- `--version`, a smoke
-program, `buildinfo`, and the examples gate -- before it is uploaded,
-because a cross-built binary nothing ran is what the smoke steps exist to
-prevent. Linux aarch64 is next, not promised: cross-compiling
-`aws-lc-sys` is a thing to rehearse (the workflow's dispatch mode exists
-for exactly this), not to assume. The changelog-as-gate machinery diluvium's release carries is
+Windows ships no `full`: `exec` is unix-only, and `full` carries
+`aws-lc-sys` through russh, whose windows-gnu build wants NASM on the
+cross leg (ego-transport#5 moves russh onto `ring`). So the
+unprefixed Windows binary is the `windows` profile -- `slim` plus
+`tunnel`, `relay` and `wireguard`, the tokio-backed verbs that build for
+the target -- and `slim` ships beside it as on every other platform. Both
+are cross-built from a Linux runner with mingw-w64 and then run on a
+Windows runner -- `--version`, a smoke program, `buildinfo`, a WireGuard
+key pair, and the examples gate -- before they are uploaded, because a
+cross-built binary nothing ran is what the smoke steps exist to prevent.
+The `profile.windows.*` lines of `BUILDINFO.txt` are read off the binary
+there and travel as `drt_windows.buildinfo.txt`, the way the browser
+module's are read inside Chromium.
+
+Linux arm64 is built natively on GitHub's arm64 runner (`ubuntu-24.04-arm`),
+static musl like x86_64, and smoked and gated on the machine that built it,
+so `aws-lc-sys` compiles with the host's tools rather than a cross toolchain
+somebody has to rehearse; a Raspberry Pi on a 64-bit OS installs it with
+`install.sh`. The changelog-as-gate machinery diluvium's release carries is
 worth adopting once DRT has releases worth gating; it is deliberately not
 cargo-culted in on day one.
 

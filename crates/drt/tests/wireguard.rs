@@ -1292,6 +1292,12 @@ fn an_allowed_ip_no_route_will_reach_is_named_at_startup() {
 /// the same ones every other test in this file uses. Loopback, unprivileged,
 /// no NAT — so what this proves is the plumbing, not that it beats a real
 /// symmetric NAT. Same limit as the punch itself (`doc/WireGuard.md` §2).
+// The fallback runs through DRT's own TURN relay and measures the mapping
+// through DRT's own STUN server, so it needs both verbs compiled in. The
+// `windows` profile carries `wireguard` without either, and a test that
+// would not compile there is a test the profile cannot run, not a profile
+// bug.
+#[cfg(all(feature = "stun", feature = "turn"))]
 #[test]
 fn wireguard_traffic_can_fall_back_through_a_turn_allocation() {
     rt().block_on(async {
@@ -1893,6 +1899,8 @@ fn suspending_gives_the_port_back_and_resuming_takes_it_again() {
 /// device is up and holding its port, the program asks, and a fresh
 /// `wireguard_mapping` comes back — measured against two real STUN
 /// servers, through the port the device gave up and took again.
+// Measures against DRT's own STUN server, for the reason above.
+#[cfg(feature = "stun")]
 #[test]
 fn remap_measures_again_while_the_device_is_running() {
     rt().block_on(async {
