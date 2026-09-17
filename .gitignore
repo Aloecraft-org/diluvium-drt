@@ -3,4 +3,5 @@
 .nogit
 .xtr
 x.patch
-x.md
+x.md# script/changelog.py leaves one behind; it is nobody's source.
+__pycache__/
