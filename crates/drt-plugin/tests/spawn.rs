@@ -26,14 +26,15 @@ use std::time::{Duration, Instant};
 use drt_plugin::channel::ChannelError;
 use drt_plugin::frame::{ErrorClass, ReplyBody};
 use drt_plugin::session::{Session, SessionError};
-use drt_plugin::spawn::SpawnChannel;
+use drt_plugin::spawn::{SpawnChannel, DIAL_BACK_TIMEOUT};
 
 const DEADLINE: Duration = Duration::from_secs(20);
 const TICK: Duration = Duration::from_millis(2);
 
 fn fixture() -> Session<SpawnChannel> {
     let exec = Path::new(env!("CARGO_BIN_EXE_plugin-echo"));
-    let channel = SpawnChannel::start(exec, &[]).expect("the fixture dials back");
+    let channel =
+        SpawnChannel::start(exec, &[], DIAL_BACK_TIMEOUT).expect("the fixture dials back");
     Session::new(channel, 0)
 }
 
@@ -139,7 +140,8 @@ fn a_plugin_that_exits_is_seen_as_the_channel_closing() {
 #[test]
 fn dropping_the_channel_ends_the_plugin() {
     let exec = Path::new(env!("CARGO_BIN_EXE_plugin-echo"));
-    let channel = SpawnChannel::start(exec, &[]).expect("the fixture dials back");
+    let channel =
+        SpawnChannel::start(exec, &[], DIAL_BACK_TIMEOUT).expect("the fixture dials back");
     let pid = channel.pid();
     assert!(pid != 0, "a started plugin has a pid");
     drop(channel);
@@ -148,6 +150,7 @@ fn dropping_the_channel_ends_the_plugin() {
     // reaps, so this asserts the reachable thing: the port the plugin was
     // talking to is closed, and a fresh start on a fresh port still works
     // -- which it would not if the old plugin were still holding on.
-    let again = SpawnChannel::start(exec, &[]).expect("a second fixture dials back");
+    let again =
+        SpawnChannel::start(exec, &[], DIAL_BACK_TIMEOUT).expect("a second fixture dials back");
     assert!(again.pid() != pid, "the second plugin is a new process");
 }

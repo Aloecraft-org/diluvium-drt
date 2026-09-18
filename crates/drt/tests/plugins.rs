@@ -26,7 +26,7 @@ fn config_with(family: &str, manifest: &str) -> RootConfig {
         family.to_string(),
         PluginWiring {
             manifest: manifest.to_string(),
-            scope: None,
+            ..Default::default()
         },
     );
     config
@@ -317,4 +317,89 @@ fn every_refusal_names_the_family_it_is_about() {
             "the refusal for '{family}' does not name it: {err}"
         );
     }
+}
+
+/// A deployment may raise the three limits whose right value depends on
+/// the machine rather than on the plugin -- the overrides `doc/Plugins.md`
+/// promises, which until now were refused as unknown keys.
+///
+/// This is what lets an operator run a third-party plugin whose publisher
+/// wrote a 30-second ceiling on hardware where the model takes longer to
+/// load, without editing a file that shipped with someone else's program.
+#[test]
+fn a_deployment_raises_the_limits_a_manifest_asked_for() {
+    let dir = tempfile::tempdir().unwrap();
+    let exec = env!("CARGO_BIN_EXE_drt");
+    let file = manifest_file(
+        &dir,
+        "slow.plugin.json",
+        &format!(
+            r#"{{"family":"slow","transport":"spawn","scope":"root","exec":"{exec}",
+                 "max_inflight":2,"call_timeout_ms":30000,"dial_back_timeout_ms":10000}}"#
+        ),
+    );
+
+    // The manifest's own numbers, with nothing overridden.
+    let bytes = std::fs::read(&file).unwrap();
+    let plain = drt_plugin::manifest::Manifest::parse(&bytes).unwrap();
+    assert_eq!(plain.max_inflight, 2);
+    assert_eq!(plain.call_timeout_ms, 30_000);
+    assert_eq!(plain.dial_back_timeout_ms, 10_000);
+
+    let raised = plain
+        .clone()
+        .with_overrides(drt_plugin::manifest::Overrides {
+            max_inflight: Some(16),
+            call_timeout_ms: Some(300_000),
+            dial_back_timeout_ms: Some(120_000),
+        })
+        .expect("a deployment may raise them");
+    assert_eq!(raised.max_inflight, 16);
+    assert_eq!(raised.call_timeout_ms, 300_000);
+    assert_eq!(
+        raised.dial_back_timeout_ms, 120_000,
+        "the budget that locked a slow-starting plugin out entirely"
+    );
+
+    // Absent means "keep the manifest's", so overriding one leaves the
+    // other two exactly as the publisher wrote them.
+    let one = plain
+        .with_overrides(drt_plugin::manifest::Overrides {
+            call_timeout_ms: Some(90_000),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(one.call_timeout_ms, 90_000);
+    assert_eq!(one.max_inflight, 2, "untouched");
+    assert_eq!(one.dial_back_timeout_ms, 10_000, "untouched");
+
+    // And the whole thing loads through the real config path.
+    let mut config = config_with("slow", &file);
+    config.plugins.get_mut("slow").unwrap().call_timeout_ms = Some(90_000);
+    wire(&config).expect("a config carrying an override loads");
+}
+
+/// An operator's zero is refused exactly as a publisher's is, and says the
+/// same thing: the key, and what it would mean.
+#[test]
+fn a_zero_override_is_refused_by_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let exec = env!("CARGO_BIN_EXE_drt");
+    let file = manifest_file(
+        &dir,
+        "z.plugin.json",
+        &format!(r#"{{"family":"z","transport":"spawn","scope":"root","exec":"{exec}"}}"#),
+    );
+    let mut config = config_with("z", &file);
+    config.plugins.get_mut("z").unwrap().call_timeout_ms = Some(0);
+
+    let err = wire(&config).unwrap_err();
+    assert!(
+        err.contains("call_timeout_ms"),
+        "the refusal names the key: {err}"
+    );
+    assert!(
+        err.contains("never finish a call in time"),
+        "and what a zero would mean: {err}"
+    );
 }

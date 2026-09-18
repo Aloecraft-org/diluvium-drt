@@ -30,6 +30,8 @@
 //!   instance from another. Which is the only way to check scope: `root`
 //!   means two callers get one pid back and `node` means they get two.
 //! - `echo/fail` — answer with a `plugin`-class error.
+//! - `echo/stall` — stay alive and never answer, so the host's call
+//!   deadline is what ends the call.
 //! - `echo/quit` — exit without answering, so the host sees a plugin that
 //!   died mid-call.
 //! - `echo/junk` — write bytes that are not a frame, so the host sees a
@@ -157,6 +159,11 @@ fn answer<C: Read + Write>(channel: &mut C, request: Request) -> bool {
             },
         },
         "echo/quit" => return false,
+        // Alive, reading, and never answering: the plugin that is working
+        // on something and has not finished. `echo/quit` cannot stand in
+        // for this -- a plugin that exits is noticed at once, which is a
+        // different path from the one the deadline exists for.
+        "echo/stall" => return true,
         "echo/junk" => {
             // Not a frame: a length that promises far more than follows,
             // so the host's next decode is reading a body as a header.

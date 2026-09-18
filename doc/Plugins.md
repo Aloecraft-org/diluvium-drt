@@ -112,7 +112,8 @@ The distinction shows in three places and nowhere in behaviour:
 - **Config.** `plugins` beside `connectors`, not inside it, so a typo in a
   connector name still fails by name instead of becoming a plugin lookup.
   `manifest` resolves beside the config file, the way `program` does;
-  `max_inflight` and `call_timeout_ms` override the manifest's.
+  `max_inflight`, `call_timeout_ms` and `dial_back_timeout_ms` override
+  the manifest's (§4.6).
 - **`capabilities/list`.** Kind and owner, per the C host's shape.
 - **`buildinfo`.** It keeps describing the binary: a line naming the
   plugin *transports* the build carries (`process` natively), never the
@@ -182,6 +183,55 @@ run everywhere the stream does.
 | `spawn` | DRT listens on an ephemeral loopback port, spawns the plugin with the port and a secret as arguments, the plugin dials back | DRT, per deployment | native unix and native windows: no fd inheritance needed, `CreateProcess` is enough |
 | `tcp` | DRT dials an address, loopback by default | the operator: a service, a sidecar, a Windows service | native unix, native windows, **wasip2 under wasmtime** |
 | websocket | the page dials | the page | the browser tier, later |
+
+### 4.6 Two budgets, and which one a slow plugin spends
+
+A plugin has **two** separate waits, and confusing them is the most
+likely way to ship a plugin that mysteriously will not start.
+
+| budget | what it times | default |
+|---|---|---|
+| `dial_back_timeout_ms` | `spawn` only: from exec to the plugin saying hello | 10 s |
+| `call_timeout_ms` | from a call being sent to its answer arriving | 30 s |
+
+**A `spawn` plugin must dial back before it does any slow startup work.**
+The dial-back budget is small because it is meant to cover an interpreter
+starting cold, not a plugin doing its job. A plugin that loads a model,
+opens a database or warms a cache *before* dialing back spends that time
+against the wrong budget, and the host reports it as a plugin that failed
+to start rather than one that is still getting ready. Dial back first,
+load second, and the cost lands in `call_timeout_ms`, where an operator
+can see it and where the first call is what waits.
+
+**On `process`, cold start is already in the call budget.** That
+transport hands over fd 3 and returns immediately -- it does not wait for
+readiness -- so whatever the plugin does before reading its first request
+is paid by the first call. A plugin with a one-minute warm-up needs a
+`call_timeout_ms` that covers warm-up *plus* the slowest call it serves.
+
+Sizing one number for both has a cost worth stating: a budget set to 90 s
+to survive a cold start also means a genuinely wedged call takes 90 s to
+be noticed, forever after. A plugin that can do its warm-up outside the
+first call -- dialing back early on `spawn`, or answering a cheap
+readiness call first -- keeps its timeout honest.
+
+**A deployment may raise any of the three** (`max_inflight` too), because
+their right value depends on the machine and the publisher cannot know
+which machine an operator has. A zero is refused by name from either
+source. Nothing else in a manifest is overridable: the family, transport
+and scope are the publisher describing their own program, and a
+deployment that disagreed about those would be describing a different
+one.
+
+**A call that runs out of `call_timeout_ms` reaches the guest as
+`timeout`, not `error.`** The two ask different things: an error says the
+work was attempted and failed, a timeout says nobody knows and the work
+may still be running. A guest deciding whether to retry, fall back to
+another provider, or give up needs to tell them apart, and the reply's
+`detail` names the budget and its value so that decision can be recorded
+and read back later. Under `Status`'s growth rule a guest built before
+`timeout` existed reads it as an unknown status and treats it as an
+error, which is the old behaviour exactly.
 | worker | `postMessage` | the page | the browser tier, later |
 
 The frame bodies are identical on every row, which is the claim

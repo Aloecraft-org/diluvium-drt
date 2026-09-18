@@ -255,9 +255,15 @@ impl Connector for PluginConnector {
                     // Stop waiting, and make sure a late reply is not read
                     // as an answer to the next question.
                     session.abandon(id);
-                    return Err(CallError::new(format!(
-                        "the plugin '{}' did not answer '{call}' within {} ms, its \
-                         manifest's `call_timeout_ms`",
+                    // `timed_out`, not `new`: this reaches the guest as
+                    // `Status::Timeout` rather than `error`, because a
+                    // caller deciding whether to retry or fall back to
+                    // another provider needs to know the work may still be
+                    // running. The detail names the call and the budget so
+                    // that decision, and the record of it, can say why.
+                    return Err(CallError::timed_out(format!(
+                        "the plugin '{}' did not answer '{call}' within {} ms \
+                         (`call_timeout_ms`)",
                         self.family(),
                         self.manifest.call_timeout_ms
                     )));
@@ -361,8 +367,12 @@ impl PluginConnector {
             #[cfg(not(unix))]
             Transport::Process => return Err(CallError::new(process_is_unix_only(self.family()))),
             Transport::Spawn => Box::new(
-                crate::spawn::SpawnChannel::start(&self.exec()?, &[])
-                    .map_err(|e| self.would_not_start(e))?,
+                crate::spawn::SpawnChannel::start(
+                    &self.exec()?,
+                    &[],
+                    Duration::from_millis(self.manifest.dial_back_timeout_ms),
+                )
+                .map_err(|e| self.would_not_start(e))?,
             ),
             Transport::Tcp => return Err(CallError::new(tcp_has_no_address(self.family()))),
         };

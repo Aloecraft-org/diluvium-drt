@@ -310,7 +310,7 @@ mod tests {
                 family.to_string(),
                 drt_config::PluginWiring {
                     manifest: manifest.to_string(),
-                    scope: None,
+                    ..Default::default()
                 },
             );
         }

@@ -11,7 +11,8 @@
 //!
 //! Configurable values:
 //! - [`SECRET_BYTES`] — how much entropy the shared secret carries.
-//! - [`DIAL_BACK_TIMEOUT`] — how long a plugin has to come back.
+//! - [`DIAL_BACK_TIMEOUT`] — the default budget, when a manifest names
+//!   none. [`SpawnChannel::start`] takes the resolved one.
 //! - [`SECRET_ENV`] and [`DIAL_FLAG`] — how the plugin is told where to
 //!   dial and what to say. These two names are the plugin-facing contract
 //!   of this transport; changing either breaks every plugin written for it.
@@ -119,7 +120,13 @@ impl SpawnChannel {
     /// start, one that exits before dialing back, one that never dials at
     /// all, and one that dials but cannot prove it is the program this
     /// host started.
-    pub fn start(exec: &Path, argv: &[String]) -> Result<Self, ChannelError> {
+    /// `dial_back` is the manifest's `dial_back_timeout_ms`, already
+    /// resolved (default and any deployment override applied). It is a
+    /// parameter rather than a constant read here because the budget a
+    /// plugin needs to say hello is the plugin's own fact, and a plugin
+    /// with a cold interpreter and one with a model to load do not have
+    /// the same one.
+    pub fn start(exec: &Path, argv: &[String], dial_back: Duration) -> Result<Self, ChannelError> {
         // `process`'s first discipline, and for its reason: what a
         // deployment wired is what runs, and a `PATH` lookup would make
         // that depend on the environment DRT happened to start in.
@@ -171,7 +178,7 @@ impl SpawnChannel {
         // From here on every exit must take the plugin with it. `tree` is
         // moved into the returned channel on success and dropped -- which
         // sweeps -- on every error path below.
-        let stream = accept_the_plugin(&listener, &secret, &mut child, exec)?;
+        let stream = accept_the_plugin(&listener, &secret, &mut child, exec, dial_back)?;
 
         let inner = TcpChannel::from_stream(stream)?;
         Ok(Self {
@@ -240,8 +247,9 @@ fn accept_the_plugin(
     secret: &str,
     child: &mut std::process::Child,
     exec: &Path,
+    dial_back: Duration,
 ) -> Result<TcpStream, ChannelError> {
-    let deadline = Instant::now() + DIAL_BACK_TIMEOUT;
+    let deadline = Instant::now() + dial_back;
     let mut refused = 0usize;
     loop {
         match listener.accept() {
@@ -290,7 +298,7 @@ fn accept_the_plugin(
             return Err(ChannelError::Broken(format!(
                 "the plugin '{}' did not dial back within {:?}{refusals}",
                 exec.display(),
-                DIAL_BACK_TIMEOUT
+                dial_back
             )));
         }
         std::thread::sleep(POLL);
@@ -337,7 +345,8 @@ mod tests {
     /// naming the path and saying that `PATH` is not consulted.
     #[test]
     fn a_relative_exec_is_refused_by_name() {
-        let err = SpawnChannel::start(Path::new("plugin-echo"), &[]).unwrap_err();
+        let err =
+            SpawnChannel::start(Path::new("plugin-echo"), &[], DIAL_BACK_TIMEOUT).unwrap_err();
         let text = err.to_string();
         assert!(text.contains("absolute path"), "{text}");
         assert!(text.contains("plugin-echo"), "{text}");
@@ -351,7 +360,7 @@ mod tests {
             return;
         };
         let started = Instant::now();
-        let err = SpawnChannel::start(&exe, &argv).unwrap_err();
+        let err = SpawnChannel::start(&exe, &argv, DIAL_BACK_TIMEOUT).unwrap_err();
         let waited = started.elapsed();
         let text = err.to_string();
         assert!(

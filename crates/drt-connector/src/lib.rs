@@ -16,6 +16,12 @@ use std::sync::Arc;
 use drt_caps::{call_capability, CapSet, Scope, ScopeError, ScopeRegistry, ScopeType};
 use drt_hostcall::{salvage_token, Reply, Request, Token};
 
+/// Re-exported because [`CallError`] carries one: a consumer cannot match
+/// on a public field whose type it has no way to name, and a connector
+/// crate should not have to depend on `drt-hostcall` to read the status it
+/// was just handed.
+pub use drt_hostcall::Status;
+
 pub mod handles;
 pub use handles::{Caller, HandleId, Handles, NoSuchHandle};
 
@@ -54,13 +60,36 @@ pub struct Notice {
 /// diverge from a real backing on refusals.
 pub type CallResult = Result<rmpv::Value, CallError>;
 
+/// Why a call failed, and which reply status says so.
+///
+/// The status is carried rather than inferred because only the connector
+/// knows the difference. A dispatcher seeing a string cannot tell "the
+/// backing refused this" from "we stopped waiting", and those ask
+/// different things of the guest: the first is an answer, the second is
+/// an absence of one. [`CallError::new`] stays `error`, so every existing
+/// connector keeps the status it already produced.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{0}")]
-pub struct CallError(pub String);
+#[error("{detail}")]
+pub struct CallError {
+    pub detail: String,
+    pub status: Status,
+}
 
 impl CallError {
     pub fn new(detail: impl Into<String>) -> Self {
-        CallError(detail.into())
+        CallError {
+            detail: detail.into(),
+            status: Status::Error,
+        }
+    }
+
+    /// The host stopped waiting. See [`Status::Timeout`] for why this is
+    /// not an `error`.
+    pub fn timed_out(detail: impl Into<String>) -> Self {
+        CallError {
+            detail: detail.into(),
+            status: Status::Timeout,
+        }
     }
 }
 
@@ -696,7 +725,12 @@ impl PendingCall {
                 reply.blobs = blobs;
                 reply
             }
-            Err(CallError(detail)) => Reply::error(tok, detail),
+            // The connector's own status, not a blanket `error`: a
+            // timeout has to reach the guest as one.
+            Err(e) => match e.status {
+                Status::Timeout => Reply::timed_out(tok, e.detail),
+                _ => Reply::error(tok, e.detail),
+            },
         }
     }
 }

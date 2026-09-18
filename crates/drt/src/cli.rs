@@ -999,9 +999,20 @@ fn wire_plugins(config: &RootConfig, registry: &mut Registry) -> Result<(), Stri
                 wiring.manifest
             )
         })?;
-        let manifest = drt_plugin::manifest::Manifest::parse(&bytes).map_err(|e| {
-            format!("the plugin '{family}' has a manifest this host cannot read: {e}")
-        })?;
+        let manifest = drt_plugin::manifest::Manifest::parse(&bytes)
+            .and_then(|m| {
+                // The deployment's numbers over the publisher's, refused
+                // here with the rest so an operator's zero is named at
+                // load like a publisher's is.
+                m.with_overrides(drt_plugin::manifest::Overrides {
+                    max_inflight: wiring.max_inflight,
+                    call_timeout_ms: wiring.call_timeout_ms,
+                    dial_back_timeout_ms: wiring.dial_back_timeout_ms,
+                })
+            })
+            .map_err(|e| {
+                format!("the plugin '{family}' has a manifest this host cannot read: {e}")
+            })?;
         // The manifest's own family is the publisher's claim; the config
         // key is the operator's. Disagreeing is a mistake worth naming,
         // because a guest calls the key and the plugin answers the claim.

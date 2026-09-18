@@ -349,6 +349,15 @@ pub struct PluginWiring {
     /// behaviour: no scope at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<drt_caps::Scope>,
+    /// Calls one session may have outstanding, over the manifest's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_inflight: Option<usize>,
+    /// How long one call may take, over the manifest's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_timeout_ms: Option<u64>,
+    /// How long `spawn` waits to be greeted, over the manifest's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dial_back_timeout_ms: Option<u64>,
 }
 
 /// A listener: a network surface published on purpose (GUARANTEES.md). The

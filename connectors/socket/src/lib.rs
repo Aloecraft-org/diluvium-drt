@@ -183,7 +183,7 @@ impl Connector for SocketConnector {
         args: Option<rmpv::Value>,
         scope: Option<&Scope>,
     ) -> CallResult {
-        let scope = SocketScope::parse(scope).map_err(CallError)?;
+        let scope = SocketScope::parse(scope).map_err(CallError::new)?;
         let caller = asker.caller;
         match call {
             "socket/listen" => self.listen(caller, &scope, args),

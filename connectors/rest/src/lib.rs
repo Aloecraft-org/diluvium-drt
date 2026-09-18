@@ -1670,9 +1670,9 @@ mod tests {
         )]);
         let e = c.call("rest/get", Some(args), Some(&sc)).await.unwrap_err();
         assert!(
-            e.0.contains("outside this instance's granted origins"),
+            e.detail.contains("outside this instance's granted origins"),
             "{}",
-            e.0
+            e.detail
         );
     }
 
@@ -1680,7 +1680,7 @@ mod tests {
     async fn an_unknown_call_in_the_family_is_an_error_not_a_panic() {
         let c = RestConnector::new();
         let e = c.call("rest/put", None, None).await.unwrap_err();
-        assert!(e.0.contains("is not a rest call"), "{}", e.0);
+        assert!(e.detail.contains("is not a rest call"), "{}", e.detail);
     }
 
     /// Chunked responses were handed to the guest as framing.

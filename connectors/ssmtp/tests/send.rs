@@ -147,9 +147,9 @@ async fn recipients_outside_the_grant_are_refused_by_name() {
             .await
             .unwrap_err();
         assert!(
-            e.0.contains(bad) && e.0.contains("granted recipients"),
+            e.detail.contains(bad) && e.detail.contains("granted recipients"),
             "the refusal must name the address: {}",
-            e.0
+            e.detail
         );
     }
 
@@ -184,7 +184,7 @@ async fn a_newline_in_a_header_is_refused_rather_than_escaped() {
         )
         .await
         .unwrap_err();
-    assert!(e.0.contains("line ending"), "{}", e.0);
+    assert!(e.detail.contains("line ending"), "{}", e.detail);
 
     // And in a recipient, which would forge an envelope.
     let e = c
@@ -199,7 +199,7 @@ async fn a_newline_in_a_header_is_refused_rather_than_escaped() {
         )
         .await
         .unwrap_err();
-    assert!(e.0.contains("line ending"), "{}", e.0);
+    assert!(e.detail.contains("line ending"), "{}", e.detail);
 }
 
 /// A body line of a single `.` ends DATA. Without dot-stuffing a guest
@@ -392,7 +392,7 @@ async fn wire_of(args: rmpv::Value) -> Result<Vec<String>, String> {
             Some(&scope_for(port, &["@example.com"])),
         )
         .await
-        .map_err(|e| e.0)?;
+        .map_err(|e| e.detail)?;
     let sent = log.lock().unwrap().clone();
     Ok(sent)
 }

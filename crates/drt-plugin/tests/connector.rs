@@ -108,6 +108,44 @@ fn a_plugin_that_does_not_answer_ends_the_call_rather_than_hanging() {
     );
 }
 
+/// A timeout reaches the caller as a *timeout*, not a generic error.
+///
+/// This is the difference between a caller that can fall back to another
+/// provider and one that cannot. An `error` says the work was attempted
+/// and failed; a `timeout` says nobody knows, and the decision -- retry,
+/// fall back to a hosted service, give up -- belongs to the caller. The
+/// detail names the budget so that decision can be recorded and read back
+/// later, when someone is asking why a bill moved on a particular day.
+#[test]
+fn a_timeout_is_distinguishable_from_a_failure() {
+    let c = connector(r#","call_timeout_ms":300"#);
+    // `echo/stall`, not `echo/quit`: a plugin that exits is noticed at
+    // once and never reaches the deadline, so quitting would make this
+    // test pass without exercising the path it names.
+    let err = call(&c, "echo/stall", None).unwrap_err();
+    assert!(
+        err.detail.contains("did not answer"),
+        "the stalling fixture did not reach the deadline path: {}",
+        err.detail
+    );
+    assert_eq!(
+        err.status,
+        drt_connector::Status::Timeout,
+        "a deadline reached the caller as {:?}, which it cannot branch on",
+        err.status
+    );
+    assert!(
+        err.detail.contains("call_timeout_ms"),
+        "the detail does not name the budget that ran out: {}",
+        err.detail
+    );
+    assert!(
+        err.detail.contains("300"),
+        "nor its value, which is what a later reader needs: {}",
+        err.detail
+    );
+}
+
 /// `node` scope gives two callers two processes, which is the default and
 /// the whole reason the default is what it is: an implicitly shared
 /// process is the ambient singleton the node model exists to avoid.
