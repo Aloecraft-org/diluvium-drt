@@ -126,9 +126,11 @@ fn an_unfinished_line_gets_the_continuation_prompt() {
 #[test]
 fn control_c_abandons_the_line_and_the_repl_goes_on() {
     let (_, answered) = session("for i = 1, 2 do\r\u{3}'after'\r");
+    // Quoted: the line evaluates to a string, and the REPL shows a string
+    // as one so it cannot be mistaken for the value it spells.
     assert_eq!(
         answered.trim(),
-        "after",
+        r#""after""#,
         "the repl did not survive ^C, or the abandoned line came back: {answered:?}"
     );
 }

@@ -117,8 +117,17 @@ fn the_repl_is_an_instance_under_the_configs_ceiling() {
 #[test]
 fn unsafe_is_the_stdlib_seal_and_not_the_sandbox() {
     // Sealed: not there, and the banner does not claim otherwise.
+    //
+    // `"nil"` quoted, because `type()` returns a *string*. This line used
+    // to read `nil` and be indistinguishable from the value `nil` — which
+    // is the confusion quoting exists to remove, demonstrated by the one
+    // test that happened to trip over it.
     let (out, err) = repl("type(os)\ntype(io)\n", &[]);
-    assert_eq!(out.lines().collect::<Vec<_>>(), vec!["nil", "nil"], "{out}");
+    assert_eq!(
+        out.lines().collect::<Vec<_>>(),
+        vec![r#""nil""#, r#""nil""#],
+        "{out}"
+    );
     assert!(err.starts_with("drt repl — ^D to leave"), "{err}");
 
     // Unsealed: there, and the banner says so rather than looking the
@@ -126,7 +135,7 @@ fn unsafe_is_the_stdlib_seal_and_not_the_sandbox() {
     let (out, err) = unsealed("type(os)\ntype(io)\nos.time() > 0\n", &[]);
     assert_eq!(
         out.lines().collect::<Vec<_>>(),
-        vec!["table", "table", "true"],
+        vec![r#""table""#, r#""table""#, "true"],
         "{out}{err}"
     );
     assert!(
@@ -166,4 +175,121 @@ fn unsafe_does_not_widen_the_capability_ceiling() {
         "outside it, still refused: {out}{err}"
     );
     assert!(out.contains('2'), "and the repl goes on: {out}");
+}
+
+/// A table prints as its contents. Every table used to print as
+/// `table: 0x...`, `host` included — which made the Tab completion built
+/// so `host.<Tab>` works into half a feature, since asking what `host`
+/// *was* answered with an address.
+#[test]
+fn a_table_prints_as_its_contents() {
+    let (out, _) = repl("{1,2,3}\n{a=1, b={c=2}}\n{}\n", &[]);
+    assert_eq!(
+        out.lines().collect::<Vec<_>>(),
+        vec!["{1, 2, 3}", "{a = 1, b = {c = 2}}", "{}"],
+        "{out}"
+    );
+}
+
+/// The array part keeps its order and the rest is sorted. Lua's own key
+/// order is unspecified, so without the sort the same table could print
+/// two ways and a reader could not tell whether it had changed.
+#[test]
+fn keys_are_ordered_so_one_table_prints_one_way() {
+    let (out, _) = repl("{10, 20, zed=1, alpha=2, [3.5]='x'}\n", &[]);
+    assert_eq!(
+        out.lines().collect::<Vec<_>>(),
+        vec![r#"{10, 20, [3.5] = "x", alpha = 2, zed = 1}"#],
+        "{out}"
+    );
+}
+
+/// A table that holds itself is a cycle, not an infinite line. Rendering
+/// is bounded three ways and this is the one a REPL meets by accident.
+#[test]
+fn a_cycle_is_named_rather_than_followed() {
+    let (out, _) = repl("local t = {} t.self = t return t\n", &[]);
+    assert_eq!(
+        out.lines().collect::<Vec<_>>(),
+        vec!["{self = <cycle>}"],
+        "{out}"
+    );
+}
+
+/// Functions and userdata show their kind, not their address. An address
+/// is noise to a reader and changes every run, which would make any test
+/// of this output a test of the allocator.
+#[test]
+fn a_function_shows_its_kind_and_not_its_address() {
+    let (out, _) = repl("{f = print}\n", &[]);
+    assert_eq!(
+        out.lines().collect::<Vec<_>>(),
+        vec!["{f = <function>}"],
+        "{out}"
+    );
+    assert!(!out.contains("0x"), "an address reached the output: {out}");
+}
+
+/// `host` is the value this was built for: the whole wired surface, one
+/// dot deep, rather than an address.
+#[test]
+fn host_shows_what_it_carries() {
+    let (out, _) = repl("host\n", &[]);
+    assert!(out.contains("fs = {"), "no fs in {out}");
+    assert!(out.contains("read = <function>"), "no fs.read in {out}");
+    assert!(
+        !out.contains("table: 0x"),
+        "an address reached the output: {out}"
+    );
+}
+
+/// An error inside a function carries the frames that led to it. The
+/// message alone says `repl:1:` and nothing about `g`, which is the case
+/// a stack exists for.
+#[test]
+fn an_error_inside_a_function_carries_its_stack() {
+    let (_, err) = repl(
+        "function f() return g() end\nfunction g() error('deep') end\nf()\n",
+        &[],
+    );
+    assert!(err.contains("deep"), "{err}");
+    assert!(err.contains("stack traceback:"), "no stack in: {err}");
+    assert!(
+        !err.contains("xpcall"),
+        "the repl's own frames reached the user: {err}"
+    );
+    assert!(
+        !err.contains("in main chunk"),
+        "the repl's own main chunk reached the user: {err}"
+    );
+}
+
+/// An error raised at the prompt does not. Its message already says
+/// `repl:1:`, so frames under it would be three lines repeating what the
+/// first one said.
+#[test]
+fn an_error_at_the_prompt_is_one_line() {
+    let (_, err) = repl("error('boom')\n", &[]);
+    assert!(err.contains("boom"), "{err}");
+    assert!(
+        !err.contains("stack traceback:"),
+        "a top-level error grew a stack: {err}"
+    );
+}
+
+/// A string is quoted and a non-string is not, so the two are told apart.
+///
+/// This is the reason rendering quotes at all: without it the string
+/// `"nil"` and the value `nil` printed the same three characters, and so
+/// did `"42"` and `42`. It also keeps one value printing one way whether
+/// or not it is inside a table, which a quote-outside-only rule would
+/// break.
+#[test]
+fn a_string_is_quoted_so_it_is_not_its_own_value() {
+    let (out, _) = repl("'nil'\nnil\n'42'\n42\n{'x'}\n", &[]);
+    assert_eq!(
+        out.lines().collect::<Vec<_>>(),
+        vec![r#""nil""#, "nil", r#""42""#, "42", r#"{"x"}"#],
+        "{out}"
+    );
 }
