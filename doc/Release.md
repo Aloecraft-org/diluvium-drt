@@ -568,8 +568,21 @@ first second of life.
   changelog entry, always a prerelease, and the ten newest dev releases
   kept. `script/dev-tag.sh` prints the next free tag; the number is
   allocated from the tags that exist and never reused, so `dev.5` names
-  one build forever. There is no nightly yet; `script/dev-tag.sh
-  --if-changed` is the skip rule one would use.
+  one build forever.
+- **Nightly**, `.github/workflows/nightly.yml` → 06:17 UTC, and
+  `workflow_dispatch` so it can be rehearsed without waiting a day. It
+  decides and dispatches; it never builds. `script/dev-tag.sh
+  --if-changed` is the skip: exit 3 means HEAD is the commit the newest
+  dev tag already points at, so a quiet day ends green having built
+  nothing, and any other non-zero is a real failure rather than a quiet
+  one.
+
+  It **dispatches** `release.yml` rather than pushing the tag, and that is
+  correctness rather than taste: a tag pushed with `GITHUB_TOKEN` does not
+  start a workflow, because GitHub suppresses events raised by that token
+  so a workflow cannot trigger itself. Pushing the tag from here would
+  create it and build nothing, silently. `workflow_dispatch` is one of the
+  two documented exceptions, so this one arrives.
 
 `BUILDINFO.txt` opens with the five lines every Aloecraft release carries
 — `tag`, `version` (the tag body), `commit`, `branch` (derived, since a

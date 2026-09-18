@@ -1,0 +1,94 @@
+# The nightly `doc/ALIGNMENT.md` §7 asks for: "every 24 hours, and **skip
+# if HEAD is unchanged** since the last dev tag, or identical builds
+# accumulate."
+#
+# Everything the nightly needs already existed and nothing called it.
+# `script/dev-tag.sh` allocates the next free `-dev.<n>` from the tags that
+# exist, and its `--if-changed` is the skip, written for a caller that was
+# never added; `release.yml` has the `v*-dev.*` fast path, the dev release
+# body, and the prune to `DEV_KEEP`. This file is the alarm clock, and
+# deliberately nothing else: it decides whether to cut and hands the
+# decision to `release.yml`, which is where a release is built.
+#
+# `workflow_dispatch` beside the schedule so it can be rehearsed without
+# waiting a day, and so a skip can be observed on purpose.
+name: Nightly
+
+on:
+  schedule:
+    # 06:17 UTC. A minute nobody else picks, because a scheduled run on a
+    # busy minute is a run that waits for a runner.
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+# The dispatch below starts `release.yml`, which needs more than the
+# default read.
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  cut:
+    runs-on: ubuntu-latest
+    steps:
+      # Full history and every tag: `dev-tag.sh` reads the counter off the
+      # tags that exist rather than off anything in the tree, so a shallow
+      # clone would allocate `dev.1` every night.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: The next dev tag, if HEAD moved
+        id: tag
+        run: |
+          set -u
+          # Three outcomes, kept apart on purpose. `--if-changed` exits 3
+          # when HEAD is the commit the newest dev tag already points at,
+          # and that is the designed answer rather than a failure: a quiet
+          # day should end green having built nothing. Any other non-zero
+          # is a real failure and must not be read as "nothing to do",
+          # which is what a bare `|| true` here would have done.
+          set +e
+          TAG=$(script/dev-tag.sh --if-changed)
+          rc=$?
+          set -e
+          case "$rc" in
+            0)
+              echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+              echo "cutting $TAG"
+              ;;
+            3)
+              echo "HEAD is unchanged since the last dev tag; nothing to cut"
+              ;;
+            *)
+              echo "script/dev-tag.sh failed (exit $rc)" >&2
+              exit 1
+              ;;
+          esac
+
+      # Dispatched rather than tag-pushed, and that is a correctness
+      # point rather than a preference. A tag pushed with `GITHUB_TOKEN`
+      # does **not** start a workflow: GitHub suppresses events raised by
+      # that token so a workflow cannot trigger itself in a loop. Pushing
+      # `v0.7.0-dev.4` from here would therefore create the tag and build
+      # nothing, silently. `workflow_dispatch` and `repository_dispatch`
+      # are the two documented exceptions to that rule, so this one
+      # arrives.
+      - name: Cut it
+        if: steps.tag.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          gh workflow run release.yml \
+            --ref "${{ github.ref_name }}" \
+            -f ref="${{ github.sha }}" \
+            -f tag="${{ steps.tag.outputs.tag }}" \
+            -f publish=true
+          echo "dispatched release.yml for ${{ steps.tag.outputs.tag }} at ${{ github.sha }}"
