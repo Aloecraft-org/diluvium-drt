@@ -303,6 +303,21 @@ for (const name of examples) {
     // with a "try this" button calls, and it resolves when the command is
     // over rather than leaving the host to guess.
     const status = await xterm.evaluate(() => window.drtXtermTest.run('drt buildinfo'));
+    // Waited for by content here too, for the reason stated above the
+    // first wait. `run` resolving says the adapter is done with the
+    // command; it does not say xterm has finished rendering what the
+    // command wrote, and those are different moments on a slow runner.
+    // CI caught the screen mid-echo at `$ d` and reported a `profile: web`
+    // that was merely late as one that never came.
+    //
+    // Swallowing the timeout is deliberate: if the line genuinely never
+    // arrives, the `want` check below still fails and still dumps the
+    // whole screen, which is the failure worth reading.
+    await xterm
+      .waitForFunction(() => window.drtXtermTest.screen().includes('profile: web'), null, {
+        timeout: 15000,
+      })
+      .catch(() => {});
     const screen = await xterm.evaluate(() => window.drtXtermTest.screen());
     await xterm.close();
 
