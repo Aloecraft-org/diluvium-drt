@@ -6,9 +6,30 @@ is only meaningful **same-machine**, so this directory holds a captured run
 of diluvium's own `swarm_bench` from the machine DRT's numbers will be taken
 on.
 
-- [`c-swarm_bench-baseline.json`](c-swarm_bench-baseline.json) — `make
-  swarm_bench ARGS="--json --seed 7"` at `--scale 1`, from
-  `aloecraft-org/diluvium` at `7f952d86` (v0.15.1), gcc 13.3.0 `-O2`.
+- [`c-swarm_bench-baseline.json`](c-swarm_bench-baseline.json) — at
+  `--scale 1` and `--seed 7`, from `aloecraft-org/diluvium` at `e86417b8`
+  (v0.16.0), gcc 13.3.0 `-O2`, **built with `DV_NUMERIC`**.
+
+  **`make NUMERIC=1 swarm_bench` does not do it.** That recipe spells its
+  own `gcc` line and is the one target that does not pick up
+  `$(NUMERIC_CFLAGS)`, so `NUMERIC=1` is accepted and silently ignored.
+  The binary it produces looks right and reads 92576 where the numeric one
+  reads 98553, so the mismatch presents as a 6 KB regression in the port.
+  Compile it by hand until that is fixed upstream (reported):
+
+  ```
+  gcc -Wall -Wextra -O2 -std=c99 -DMAKE_LIB \
+      -DDV_NUMERIC -ffp-contract=off -fno-fast-math -fno-builtin \
+      -I.data -o dist/swarm_bench test/swarm_bench.c .data/dvs.c \
+      .data/onelua.c -lm
+  ```
+
+  The flags are the ones `diluvium-sys`'s `build.rs` puts on DRT's core.
+  **The two sides must agree on the feature**, because
+  `resident_bytes_per_agent` is the guest heap and the `array` library
+  lives in it. Numeric costs 5,977 bytes per agent, and it costs the same
+  on both sides -- which is the fidelity result, and is invisible if one
+  side is built without it.
   Machine: 4-vCPU Intel(R) Xeon(R) Processor @ 2.10GHz, Linux container.
   Re-captured 2026-09-17 when DRT's pin moved to that revision; the
   previous capture was `850e00d7` (v5.5.1_build13), and the one byte

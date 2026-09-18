@@ -12,6 +12,110 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
+## [0.8.0-rc.1] - unreleased (prerelease)
+
+`v0.8.0-rc.1` &middot; dv ABI 2 &middot; diluvium `e86417b8ad81` (v0.16.0)
+
+**Arrays reach a guest, and `dv_abi` is 2.** The embedded core moves
+to diluvium v0.16.0, which carries the numeric round: the `array`
+type, the reductions, the canonical orderings, the embedded libm,
+FFT and NTT. `numeric` is asked for in the manifest -- it is off by
+default in the core -- so `array` is a table a program can call
+rather than a nil it trips over.
+
+The ABI moves with it, and `doc/Release.md`'s rule decides what that
+costs: the ABI only grows, so a package compiled against ABI 1 is
+still admitted by a binary speaking 2. Nothing a package already
+requires stops being satisfied.
+
+No `rev` is pinned. The numeric round is on diluvium's own `main`
+now, so tracking the branch is enough and `Cargo.lock` records which
+revision that was.
+
+### Connectors
+
+- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `data`, `socket`, `listen`
+- `slim`: `time`, `fs`, `crypto`, `listen`
+- `wasi`: `time`, `fs`, `crypto`, `sql`, `listen`
+- `web`: `time`, `fs`, `crypto`
+- `windows`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `data`, `socket`, `listen`
+
+### Core features
+
+- `full`: `regex`, `json`, `msgpack`, `snapshot`, `numeric`
+- `slim`: `regex`, `json`, `msgpack`, `snapshot`, `numeric`
+- `wasi`: `regex`, `json`, `msgpack`, `snapshot`, `numeric`
+- `web`: `regex`, `json`, `msgpack`, `snapshot`, `numeric`
+- `windows`: `regex`, `json`, `msgpack`, `snapshot`, `numeric`
+
+### Added
+
+- **Three cross-target numeric examples**: `26-arrays`,
+  `27-reductions-and-grouping` and `28-fft`. Each prints IEEE bit
+  patterns rather than decimals, and each is gated by one
+  `expected.txt` diffed on **four targets** -- native x86-64
+  linux-gnu, `wasm32-wasip2` under wasmtime, `x86_64-pc-windows-gnu`
+  built by mingw, and `wasm32-unknown-unknown` in Chromium. All four
+  agree byte for byte, FFT twiddles included.
+
+  The mingw run is the contraction check: a build path that missed
+  `-ffp-contract=off` would fuse a multiply-add, round once instead
+  of twice, and disagree in the last digit on that target alone.
+  None of the three is `full`-only, deliberately -- Windows `full`
+  does not build, so a `full` example could not carry that check.
+- **The browser gate honours `needs_features`.** `run-all.sh` has
+  read that key for a while; its page-side twin never did, so an
+  example needing a core feature would have run in Chromium against
+  a module without it and reported a diff whose real content was
+  "this core does not carry that". Same shape as the native gate,
+  its own skip bucket, and never counted as a pass.
+
+### Changed
+
+- **The feature list is read off the core, not stated about it.**
+  Five hard-coded tables, one per profile, each carrying a
+  `TODO(A0)`, are replaced by `dv_features()` through the safe
+  crate. They were wrong as well as misplaced: every one read
+  `regex` while the core carried `regex`, `json`, `msgpack` and
+  `snapshot`. The profile was never the right key either, since two
+  binaries can share a profile and embed different cores -- which is
+  exactly what a compatibility fact has to tell apart.
+- **`diluvium_version` stays stated, and the note beside it now says
+  why.** Its `TODO(A0)` promised `dv_version()` alongside
+  `dv_features()`. A0 landed with only the second of those, so there
+  is still nothing to read: the merged `dv.h` exposes `dv_build()`
+  and `dv_features()` and no semantic version. `dv_build()` is not a
+  substitute -- it still answers `13`, the counter having been
+  retired at 0.15.0 rather than renumbered, so wiring it would print
+  a confident `build13` for a v0.16.0 core. The value moves to
+  `0.16.0` and the changelog gate keeps it honest.
+
+### Fixed
+
+- **`DOWN_TEXT` is gated to the acceptor that uses it**, so the
+  wasip2 build stops warning about a dead constant. Not a missing
+  case in the polled acceptor: its connections are stepped by the
+  drive loop's own thread, so "the drive loop is gone" leaves
+  nothing running to answer with, while the threaded acceptor has
+  per-connection threads that outlive it. The asymmetry is
+  structural and the comment now says so.
+
+### Known issues
+
+- **The hostcall blob lane still has one delivery.** The zero-copy
+  path wanted a guest-side fetch by index, which needed
+  `dv_reply_blob` -- correctly never added, since DRT compiles no C
+  and it would have had a caller on neither side. The merged core
+  offers a host-side push instead, `Instance::adopt`, and nothing in
+  `dv.h` makes the value it pushes reachable by a guest: every
+  guest-visible path is a queue carrying msgpack, and an adopted
+  value is on none of them. Measured against v0.16.0 in both
+  configurations and reported upstream. A column therefore still
+  crosses as a msgpack `bin` and a guest still reads it as a Lua
+  string, which is what the spec prescribes for a build without
+  `numeric` and remains correct rather than degraded.
+
+
 ## [0.7.0-rc.2] - 2026-09-17 (prerelease)
 
 `v0.7.0-rc.2` &middot; dv ABI 1 &middot; diluvium `7f952d86ec7f` (v0.15.1)

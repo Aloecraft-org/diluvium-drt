@@ -736,6 +736,14 @@ pub mod threaded {
 }
 
 const CAP_TEXT: &str = "the listener is at its connection cap\n";
+// Threaded-only, and not an oversight in the polled acceptor: there, a
+// connection is stepped by `polled::Bound::poll` from the drive loop's own
+// thread, so "the drive loop is gone" leaves nothing running to answer
+// with. Only the threaded acceptor has per-connection threads that outlive
+// it and can still write a refusal. Kept here with the other two rather
+// than moved next to its use, so the three texts a reader might change stay
+// in one place.
+#[cfg(not(target_os = "wasi"))]
 const DOWN_TEXT: &str = "the deployment is shutting down\n";
 const LATE_TEXT: &str = "the program did not answer within the deadline\n";
 

@@ -327,6 +327,29 @@ pub fn abi_versions() -> Option<(u32, u32)> {
     }
 }
 
+/// The core features the linked library reports, or `None` with no engine.
+///
+/// Here rather than in the `drt` binary for the same reason as
+/// [`abi_versions`]: `engine-diluvium` is this crate's feature, and a
+/// `cfg!` written in a consumer crate tests the consumer's features and
+/// quietly takes the fallback.
+///
+/// This exists so no binary has to *state* what its core carries. A
+/// hard-coded table is a claim about bytes the stating file did not
+/// compile, and it was wrong in exactly that way: it read `["regex"]` for
+/// a core carrying five features. `dv_features()` cannot be wrong about
+/// the library it is compiled into.
+pub fn core_features() -> Option<Vec<&'static str>> {
+    #[cfg(feature = "engine-diluvium")]
+    {
+        Some(diluvium::library_features())
+    }
+    #[cfg(not(feature = "engine-diluvium"))]
+    {
+        None
+    }
+}
+
 /// A producer of instances speaking one dv ABI version.
 pub trait Engine: MaybeSend + MaybeSync {
     /// `dv_abi_version`, checked before anything else.

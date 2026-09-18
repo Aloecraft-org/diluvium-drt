@@ -97,34 +97,21 @@ const PROFILE_FULL: &[&str] = &[
     "wireguard",
 ];
 
-/// What the embedded diluvium core carries, per profile: the other half of
-/// the compatibility fact `dv_abi` starts. A package that needs regular
-/// expressions, or later the `numeric` array library, can only be admitted
-/// or refused by name if the binary will say which of them are inside.
-///
-/// TODO(A0): hard-coded, because the core does not yet say. Session A's A0
-/// milestone adds `dv_features()` -- a newline-separated list, stable for
-/// the life of the process -- and when that pin lands these five tables go
-/// away and the list is read off the linked core instead. That is
-/// `doc/Release.md`'s rule: the compatibility fact travels with the bytes,
-/// and a fact this file states about bytes it did not compile is a fact
-/// that can be wrong. It is per profile already so that the day a profile
-/// carries a different core -- the web profile without `numeric`, say, if
-/// C1's size ledger says it costs too much -- nothing has to be reshaped
-/// to say so.
-///
-/// Sorted, like the profile tables above, and gated the same way by
-/// `core_features_agree_with_the_changelog` in `tests/cli.rs`.
-const CORE_FEATURES_FULL: &[&str] = &["regex"];
-const CORE_FEATURES_SLIM: &[&str] = &["regex"];
-const CORE_FEATURES_WASI: &[&str] = &["regex"];
-const CORE_FEATURES_WEB: &[&str] = &["regex"];
-const CORE_FEATURES_WINDOWS: &[&str] = &["regex"];
-/// A build whose feature set matches no named profile still embeds a core,
-/// and `unknown` is the honest answer about which features it carries --
-/// the same answer `diluvium: unknown` gives for an unpinned revision. An
-/// empty list would read as "carries none", which is a different claim.
-const CORE_FEATURES_CUSTOM: &[&str] = &[];
+// What the embedded diluvium core carries is READ, not stated: the
+// `core_features` fn below asks `drt_swarm::engine::core_features`, which
+// asks `dv_features()`.
+//
+// Five hard-coded tables used to live here, one per profile, with a
+// TODO(A0) on them. A0 has landed (dv ABI 2, diluvium v0.16.0) and the
+// tables are gone. They are worth a comment because of *how* they were
+// wrong rather than that they were: every one read `["regex"]` while the
+// core carried regex, json, msgpack, snapshot and, once asked for,
+// numeric. The profile was never the right key either -- two binaries can
+// share a profile and embed different cores, which is precisely what a
+// compatibility fact has to tell apart.
+//
+// doc/Release.md's rule, now literally true: the compatibility fact
+// travels with the bytes.
 
 /// Which diluvium is inside, as something two builds can be *ordered* by.
 /// The revision beside it is exact but unordered -- two revisions cannot be
@@ -142,13 +129,24 @@ const CORE_FEATURES_CUSTOM: &[&str] = &[];
 /// finds nothing, which is the right failure: the alternative was printing
 /// `14` for a build that is not build 14.
 ///
-/// TODO(A0): hard-coded for the same reason and with the same fix as
-/// [`CORE_FEATURES_FULL`]; A0 adds `dv_version()`. Until then it is
-/// written down once, here, and `the_hard_coded_core_facts_agree_with_the_changelog`
-/// in `tests/cli.rs` is what stops it going stale when the pin moves: the
-/// changelog records the pin, the pin is checked against `Cargo.lock` by
+/// **Still stated, and A0 did not fix this one.** The TODO here used to
+/// say `dv_version()` arrives with A0, next to the same promise for the
+/// feature list. A0 landed: `dv_features()` came with it and the feature
+/// tables above are gone, but no `dv_version()` did. The merged core's
+/// `dv.h` exposes `dv_build()` and `dv_features()` and nothing that
+/// answers the semantic version.
+///
+/// `dv_build()` is not a substitute. It still returns `13` -- the counter
+/// was retired at `0.15.0`, not renumbered -- so wiring it would print a
+/// confidently wrong `build13` for a v0.16.0 core. A stated fact that the
+/// changelog gate keeps honest beats a read one that is false.
+///
+/// So this stays written down once, here, and
+/// `the_hard_coded_core_facts_agree_with_the_changelog` in `tests/cli.rs`
+/// is what stops it going stale when the pin moves: the changelog records
+/// the pin, the pin is checked against `Cargo.lock` by
 /// `script/changelog.py check`, and this is checked against the changelog.
-const DILUVIUM_VERSION: &str = "0.15.1";
+const DILUVIUM_VERSION: &str = "0.16.0";
 
 /// What `drt wg` does. All three are diagnostics or key handling, and the
 /// serving that used to sit beside them is `drt start` now.
@@ -631,10 +629,9 @@ pub fn buildinfo(json: bool) -> String {
     let profile = profile_name(&enabled_features());
 
     // What the core inside carries, the other half of the `dv_abi` fact.
-    // Keyed off the profile because that is what decides which core was
-    // compiled -- see the note on `CORE_FEATURES_FULL`, and the TODO(A0)
-    // that ends this indirection.
-    let features = core_features(profile);
+    // Asked of the linked library rather than keyed off the profile: the
+    // profile says which connectors were compiled, never which core.
+    let features = core_features();
 
     // Asked of drt-swarm, which owns the engine feature — see the note on
     // `abi_versions` there. `null`/`unknown` is reported honestly rather
@@ -768,15 +765,10 @@ fn profile_name(features: &[&str]) -> &'static str {
 /// The core features a named profile carries.
 ///
 /// TODO(A0): replaced by one call to `dv_features()` once that pin lands.
-fn core_features(profile: &str) -> &'static [&'static str] {
-    match profile {
-        "full" => CORE_FEATURES_FULL,
-        "slim" => CORE_FEATURES_SLIM,
-        "wasi" => CORE_FEATURES_WASI,
-        "web" => CORE_FEATURES_WEB,
-        "windows" => CORE_FEATURES_WINDOWS,
-        _ => CORE_FEATURES_CUSTOM,
-    }
+/// What the linked core carries. Empty when this build has no engine --
+/// the honest answer, and the one a seams-only wasm build gives.
+fn core_features() -> Vec<&'static str> {
+    drt_swarm::engine::core_features().unwrap_or_default()
 }
 
 pub fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
