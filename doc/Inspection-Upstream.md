@@ -2,12 +2,22 @@
 
 **Audience: whoever picks this up in `Aloecraft-org/diluvium`.** This is a
 DRT document about the dv ABI, written here because DRT is where the need
-surfaced and because that repository has issues disabled. Copy it there or
-read it from here; nothing in it depends on DRT.
+surfaced. Nothing in it depends on DRT.
 
-**Status: open, and not urgent.** DRT is proceeding with what works today
-(below) and would rather not build around either gap if upstream intends
-to close them. Two questions, at the end, are the whole ask.
+**Status: filed and being looked at**, as
+[Aloecraft-org/diluvium#35](https://github.com/Aloecraft-org/diluvium/issues/35).
+This document is the brief behind it and stays here as the DRT-side
+record: what was measured, at which revision, and what DRT does in the
+meantime. The issue is where the answer goes.
+
+It was written before that issue existed because the repository had
+issues disabled at the time — a fork of Lua inherits the setting — which
+is why it takes the `*-Upstream.md` shape the other two in this directory
+do rather than being a link.
+
+Not urgent. DRT is proceeding with what works today (below) and would
+rather not build around either gap if upstream intends to close them. The
+two questions at the end are the whole ask.
 
 Facts are read off `src/dv.h` and `src/dlibs.c` at the revision this tree
 pins, `7f952d8`. Where this document reasons rather than quotes, it says
