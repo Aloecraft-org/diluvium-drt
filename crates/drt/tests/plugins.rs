@@ -224,3 +224,97 @@ fn the_capability_menu_names_the_plugin_behind_a_family() {
     // simply the family echoed back.
     assert_eq!(field("owner").as_str(), Some("greeter"));
 }
+
+/// A transport this build cannot serve is refused at load, like every
+/// other thing the `plugins` block refuses -- not on the first call.
+///
+/// `tcp` is the case that is unserviceable on every platform: the address
+/// is the deployment's to name and no deployment names one yet. The
+/// `process`-on-Windows case is the same refusal on one platform, spelled
+/// by the same function.
+#[test]
+fn a_transport_this_build_cannot_serve_is_refused_at_load() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = manifest_file(
+        &dir,
+        "far.plugin.json",
+        r#"{"family":"far","transport":"tcp","scope":"root"}"#,
+    );
+    let err = wire(&config_with("far", &file)).unwrap_err();
+    assert!(
+        err.contains("tcp"),
+        "the refusal names the transport: {err}"
+    );
+    assert!(
+        err.contains("address"),
+        "and says what is missing about it: {err}"
+    );
+}
+
+/// Every way the block can be refused, in one table, asserting the one
+/// property each individual test above does not: the message names the
+/// **family** it is about.
+///
+/// A deployment wires several plugins. "the manifest cannot be read" is a
+/// different message when it says which of the six it means, and a
+/// refusal added later that forgets to say so fails here rather than in
+/// an operator's terminal.
+#[test]
+fn every_refusal_names_the_family_it_is_about() {
+    let dir = tempfile::tempdir().unwrap();
+    let exec = env!("CARGO_BIN_EXE_drt");
+    let cases: Vec<(&str, String)> = vec![
+        ("gone", "/nonexistent/gone.plugin.json".to_string()),
+        (
+            "junk",
+            manifest_file(&dir, "junk.plugin.json", "{not json at all"),
+        ),
+        (
+            "mismatch",
+            manifest_file(
+                &dir,
+                "mismatch.plugin.json",
+                &format!(
+                    r#"{{"family":"other","transport":"spawn","scope":"root","exec":"{exec}"}}"#
+                ),
+            ),
+        ),
+        (
+            "far",
+            manifest_file(
+                &dir,
+                "far.plugin.json",
+                r#"{"family":"far","transport":"tcp","scope":"root"}"#,
+            ),
+        ),
+        (
+            "rel",
+            manifest_file(
+                &dir,
+                "rel.plugin.json",
+                r#"{"family":"rel","transport":"spawn","scope":"root","exec":"plugin-echo"}"#,
+            ),
+        ),
+        (
+            "oddscope",
+            manifest_file(
+                &dir,
+                "oddscope.plugin.json",
+                &format!(
+                    r#"{{"family":"oddscope","transport":"spawn","scope":"per-call","exec":"{exec}"}}"#
+                ),
+            ),
+        ),
+    ];
+
+    for (family, manifest) in cases {
+        let err = match wire(&config_with(family, &manifest)) {
+            Err(e) => e,
+            Ok(()) => panic!("'{family}' should be refused and was wired"),
+        };
+        assert!(
+            err.contains(family),
+            "the refusal for '{family}' does not name it: {err}"
+        );
+    }
+}

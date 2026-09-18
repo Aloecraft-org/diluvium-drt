@@ -101,6 +101,18 @@ impl PluginConnector {
                 manifest.family
             ));
         }
+        // A transport this build cannot serve is refused *here*, at load,
+        // for the same reason a missing `exec` is: an operator is watching
+        // now and will not be on the first call. `start` spells the same
+        // refusals for a connector built some other way, from the same
+        // two functions, so the two paths cannot drift apart.
+        if matches!(manifest.transport, Transport::Tcp) {
+            return Err(tcp_has_no_address(&manifest.family));
+        }
+        #[cfg(not(unix))]
+        if matches!(manifest.transport, Transport::Process) {
+            return Err(process_is_unix_only(&manifest.family));
+        }
         Ok(Self {
             name: name.into(),
             manifest,
@@ -316,6 +328,25 @@ fn lost(family: &str, key: &Caller, session: Session<Box<dyn Channel + Send>>) -
     )]
 }
 
+/// The `tcp` transport carries no address, and nothing in a deployment
+/// names one yet, so a manifest asking for it cannot be served.
+fn tcp_has_no_address(family: &str) -> String {
+    format!(
+        "the plugin '{family}' asks for the `tcp` transport, whose address is the \
+         deployment's to name and which nothing in a deployment names yet"
+    )
+}
+
+/// `process` hands the plugin its channel on fd 3, which is a unix idea.
+#[cfg(not(unix))]
+fn process_is_unix_only(family: &str) -> String {
+    format!(
+        "the plugin '{family}' asks for the `process` transport, which hands the \
+         plugin its channel on fd 3 and exists on unix only; `spawn` is the same \
+         thing on this platform, and a manifest may name it instead"
+    )
+}
+
 // depth: starting one, and relaying what it says
 
 impl PluginConnector {
@@ -328,25 +359,12 @@ impl PluginConnector {
                     .map_err(|e| self.would_not_start(e))?,
             ),
             #[cfg(not(unix))]
-            Transport::Process => {
-                return Err(CallError::new(format!(
-                    "the plugin '{}' asks for the `process` transport, which hands the \
-                     plugin its channel on fd 3 and exists on unix only; `spawn` is the \
-                     same thing on this platform, and a manifest may name it instead",
-                    self.family()
-                )))
-            }
+            Transport::Process => return Err(CallError::new(process_is_unix_only(self.family()))),
             Transport::Spawn => Box::new(
                 crate::spawn::SpawnChannel::start(&self.exec()?, &[])
                     .map_err(|e| self.would_not_start(e))?,
             ),
-            Transport::Tcp => {
-                return Err(CallError::new(format!(
-                    "the plugin '{}' asks for the `tcp` transport, whose address is the \
-                     deployment's to name and which nothing in a deployment names yet",
-                    self.family()
-                )))
-            }
+            Transport::Tcp => return Err(CallError::new(tcp_has_no_address(self.family()))),
         };
         Ok(Session::new(channel, self.manifest.max_inflight))
     }
