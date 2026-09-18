@@ -131,7 +131,12 @@ impl PushOutcome {
 }
 
 /// What an instance has spent against its budget, and what it holds.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+///
+/// `Serialize` because a host reports these: the same reason [`Budget`]
+/// carries it. A panel showing `bytes_now` against `memory_kb_peak` is
+/// showing what an idle agent actually costs, which is the number
+/// hibernation exists to move.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct UsageReport {
     /// VM instructions consumed.
     pub instructions: u64,
@@ -168,6 +173,28 @@ pub struct LoadSpec<'a> {
     /// it, never add it. Turning it on costs replayability and makes the
     /// budget approximate (dv.h says why).
     pub unsafe_stdlib: bool,
+    /// `DV_FLAG_UNSAFE_DEBUG`: the whole `debug` library rather than the
+    /// narrowed one.
+    ///
+    /// Sealed, an instance keeps `getinfo`, `getlocal`, `gethook` and
+    /// `traceback` -- the reading side, so a program may read its own
+    /// frames and report its own failure. This flag puts back the writing
+    /// side, and with it three escapes dv.h is explicit about:
+    /// `getregistry` hands back the metatable that makes an endpoint
+    /// reference unforgeable, `getmetatable` walks past `__metatable`, and
+    /// `sethook` takes the one hook slot the instruction budget is
+    /// enforced through -- so a program can switch its own budget off in
+    /// one line.
+    ///
+    /// It exists for a debugger: `setlocal` is how a tool changes a value
+    /// it is showing. Set it where the program is one you wrote, and read
+    /// dv.h's own sentence about the cost first -- with it set the
+    /// capability layer is a way of structuring a program rather than a
+    /// boundary around one.
+    ///
+    /// Attenuates exactly as `unsafe_stdlib` does: a child inherits and
+    /// may drop, never add.
+    pub unsafe_debug: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -184,6 +211,8 @@ pub struct RestoreSpec<'a> {
     /// Must match the set the snapshot was captured under — a snapshot does
     /// not cross the stdlib seal (the permanents fingerprint differs).
     pub unsafe_stdlib: bool,
+    /// The debug set to restore under, for the same reason.
+    pub unsafe_debug: bool,
 }
 
 /// How a queue is configured and how full it is — the introspection number
@@ -468,10 +497,13 @@ pub mod diluvium_engine {
     /// `load` before deleting it.
     static CREATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    fn config_for(budget: &Budget, unsafe_stdlib: bool) -> diluvium::Config {
+    fn config_for(budget: &Budget, unsafe_stdlib: bool, unsafe_debug: bool) -> diluvium::Config {
         let mut cfg = diluvium::Config::new();
         if unsafe_stdlib {
             cfg = cfg.unsafe_stdlib(true);
+        }
+        if unsafe_debug {
+            cfg = cfg.unsafe_debug(true);
         }
         // The counting hook goes on only when a bound is stated; 0 is the
         // ABI's "no limit", so an unstated half of a stated budget maps to it.
@@ -537,7 +569,7 @@ pub mod diluvium_engine {
             let _creating = CREATE_LOCK
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let cfg = config_for(&spec.budget, spec.unsafe_stdlib);
+            let cfg = config_for(&spec.budget, spec.unsafe_stdlib, spec.unsafe_debug);
             let inner = match spec.program {
                 ProgramBytes::Source(text) => {
                     // Source only unless bytecode was explicit: GUARANTEES.md,
@@ -557,7 +589,7 @@ pub mod diluvium_engine {
         }
 
         fn restore(&self, spec: RestoreSpec<'_>) -> Result<Box<dyn Instance>, EngineError> {
-            let inner = config_for(&spec.budget, spec.unsafe_stdlib)
+            let inner = config_for(&spec.budget, spec.unsafe_stdlib, spec.unsafe_debug)
                 .restore(spec.snapshot, spec.host_stamp)
                 .map_err(lift_error)?;
             // A restored instance takes the bounds its RestoreSpec states,

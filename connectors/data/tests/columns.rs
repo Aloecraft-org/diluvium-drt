@@ -358,7 +358,7 @@ fn an_f64_column_does_not_take_a_validity_mask() {
         ],
     )
     .unwrap_err();
-    assert!(err.0.contains("NaN"), "got: {}", err.0);
+    assert!(err.detail.contains("NaN"), "got: {}", err.detail);
 }
 
 /// Columns and a row range are the connector's arguments, not something a
@@ -435,11 +435,15 @@ fn an_unknown_column_is_refused_by_name() {
         ],
     )
     .unwrap_err();
-    assert!(err.0.contains("no column named 'nope'"), "got: {}", err.0);
     assert!(
-        err.0.contains('a'),
+        err.detail.contains("no column named 'nope'"),
+        "got: {}",
+        err.detail
+    );
+    assert!(
+        err.detail.contains('a'),
         "the message names what the file has: {}",
-        err.0
+        err.detail
     );
 }
 
@@ -459,13 +463,13 @@ fn the_four_codecs_round_trip_and_brotli_is_not_offered() {
                 ("compression", rmpv::Value::from(codec)),
             ],
         )
-        .unwrap_or_else(|e| panic!("{codec}: {}", e.0));
+        .unwrap_or_else(|e| panic!("{codec}: {}", e.detail));
         let answer = call(
             &scope(dir.path()),
             "data/read_parquet",
             vec![("path", rmpv::Value::from(path.as_str()))],
         )
-        .unwrap_or_else(|e| panic!("{codec}: {}", e.0));
+        .unwrap_or_else(|e| panic!("{codec}: {}", e.detail));
         assert_eq!(
             f64s(column(&answer, "a"))
                 .iter()
@@ -486,11 +490,11 @@ fn the_four_codecs_round_trip_and_brotli_is_not_offered() {
         ],
     )
     .unwrap_err();
-    assert!(err.0.contains("brotli"), "got: {}", err.0);
+    assert!(err.detail.contains("brotli"), "got: {}", err.detail);
     assert!(
-        err.0.contains("snappy"),
+        err.detail.contains("snappy"),
         "the refusal names what is offered: {}",
-        err.0
+        err.detail
     );
 }
 
@@ -591,9 +595,9 @@ fn the_scope_is_a_place_and_the_program_names_files_inside_it() {
         )
         .unwrap_err();
         assert!(
-            err.0.contains("outside the granted scope") || err.0.contains("absolute"),
+            err.detail.contains("outside the granted scope") || err.detail.contains("absolute"),
             "{path} was not refused: {}",
-            err.0
+            err.detail
         );
     }
 
@@ -606,7 +610,7 @@ fn the_scope_is_a_place_and_the_program_names_files_inside_it() {
         ],
     )
     .unwrap_err();
-    assert!(err.0.contains("readwrite"), "got: {}", err.0);
+    assert!(err.detail.contains("readwrite"), "got: {}", err.detail);
 
     // And no scope at all is a refusal, not a default place.
     let connector = DataConnector::new();
@@ -616,7 +620,11 @@ fn the_scope_is_a_place_and_the_program_names_files_inside_it() {
         None,
     ))
     .unwrap_err();
-    assert!(err.0.contains("scope is required"), "got: {}", err.0);
+    assert!(
+        err.detail.contains("scope is required"),
+        "got: {}",
+        err.detail
+    );
 }
 
 /// A call this connector does not answer says what it does answer.
@@ -629,7 +637,7 @@ fn an_unknown_call_names_the_four() {
         vec![("path", rmpv::Value::from("t.orc"))],
     )
     .unwrap_err();
-    assert!(err.0.contains("read_parquet"), "got: {}", err.0);
+    assert!(err.detail.contains("read_parquet"), "got: {}", err.detail);
 }
 
 /// The connector declares a scope-type, so an unresolvable directory is a
@@ -674,7 +682,7 @@ fn a_file_past_max_bytes_is_refused_in_both_directions() {
         ],
     )
     .unwrap_err();
-    assert!(err.0.contains("max_bytes"), "got: {}", err.0);
+    assert!(err.detail.contains("max_bytes"), "got: {}", err.detail);
 
     std::fs::write(dir.path().join("big.csv"), "a\n".repeat(100)).unwrap();
     let err = call(
@@ -683,7 +691,7 @@ fn a_file_past_max_bytes_is_refused_in_both_directions() {
         vec![("path", rmpv::Value::from("big.csv"))],
     )
     .unwrap_err();
-    assert!(err.0.contains("max_bytes"), "got: {}", err.0);
+    assert!(err.detail.contains("max_bytes"), "got: {}", err.detail);
 }
 
 /// Columns of different lengths are not a table, and saying so is better
@@ -707,7 +715,7 @@ fn columns_of_different_lengths_are_refused() {
         ],
     )
     .unwrap_err();
-    assert!(err.0.contains("same length"), "got: {}", err.0);
+    assert!(err.detail.contains("same length"), "got: {}", err.detail);
 }
 
 /// A byte count that is not a whole number of elements is the guest's bug,
@@ -733,5 +741,5 @@ fn a_partial_element_is_refused() {
         ],
     )
     .unwrap_err();
-    assert!(err.0.contains("eight-byte"), "got: {}", err.0);
+    assert!(err.detail.contains("eight-byte"), "got: {}", err.detail);
 }

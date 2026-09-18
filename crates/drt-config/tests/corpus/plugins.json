@@ -1,0 +1,17 @@
+{
+  "_comment": "The `plugins` block: a family served by a program this build has never seen, rather than by a connector compiled into it. One entry per family, each naming the manifest that describes it. The strict loader reads this file the way it reads every other, which is what this corpus entry is for; what the manifest itself says is drt-plugin's to judge, and is judged at wiring rather than here.",
+
+  "entry": "stdlib:noop",
+
+  "plugins": {
+    "_comment": "The key is the family a guest calls, so `greet/hello` reaches this plugin. It may not be a builtin's name -- `fs`, `sql`, `exec` and the rest are refused by name, on every build, so a config cannot quietly make `fs/read` mean a subprocess.",
+
+    "greet": {
+      "_manifest": "The `<name>.plugin.json` describing the program: its family, how its byte stream is obtained, which instance its process belongs to, and the limits it asks for. Read at load, so a manifest that is missing or malformed is a refusal while someone is watching.",
+      "manifest": "/opt/greet/greet.plugin.json",
+
+      "_scope": "example: omits scope. A scope handed to a plugin is a promise and not an enforcement -- the host makes a builtin's requests, so an allowlist binds the party doing the work, while a plugin makes its own and the same allowlist binds only a publisher who chose to honour it.",
+      "scope": { "greeting": "hello" }
+    }
+  }
+}

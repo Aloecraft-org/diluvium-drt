@@ -60,6 +60,12 @@ what the page shows, which is why `expected.txt` can be the oracle there.
   session.continuing()  -> boolean        the next line continues an unfinished one (prompt `>> `)
   session.isOver()      -> boolean
   session.free()
+
+  session.hasSwarm()    -> boolean        true only for `drt start`
+  session.ids() / .alive() / .slotsAllocated() / .parent(id)
+  session.resident(id) / .cachedSize(id) / .wakeOnMessage(id)
+  session.caps(id) / .holds(id, cap) / .mayGrant(parent, cap) / .budget(id) / .usage(id)
+  session.push(id, queue, bytes) / .kill(id) / .hibernate(id) / .wake(id)
 ```
 
 `tick()` is doc/Wasm.md D6's `Next`, marshalled. The page loop is:
@@ -265,6 +271,39 @@ sw.hibernate(id); sw.wake(id); sw.resident(id); sw.wakeOnMessage(id); sw.cachedS
 sw.allowHibernation(b); sw.allowBytecode(b); sw.allowUnsafeStdlib(b); sw.setHostIdentity(s);
 sw.free();
 ```
+
+### A session's own swarm
+
+The roster questions above appear twice on purpose. `DrtSwarm` is a
+deployment a page **makes**; the same questions on a `DrtSession` are the
+deployment a page is **running**, so an Instances panel beside a Terminal
+tool shows the agents that terminal started rather than a separate set of
+its own. Both call one implementation (`swarm::view`), so the two cannot
+answer the same question differently.
+
+`hasSwarm()` is false for `drt run` and `drt repl`: those drive a single
+instance through `Solo` and have no roster. The questions then answer
+emptily and the verbs refuse by name, rather than reporting a success
+that did not happen — a panel that killed nothing should hear so.
+
+`usage(id)` is new on both, and is the number that was previously
+host-invisible: instructions, peak kilobytes, and **bytes held right
+now**. It reached the outside only inside a lifecycle event a *guest*
+triggered by querying a descendant, so a page driving the swarm could not
+see what its own instances cost. `None` for a hibernated instance, which
+holds nothing — showing `bytes_now` against `memory_kb_peak` beside
+`cachedSize` is what makes hibernation's saving visible.
+
+`allowUnsafeDebug(b)` opens the whole `debug` library rather than the
+narrowed one. Sealed, an instance keeps `getinfo`, `getlocal`, `gethook`
+and `traceback` — the reading side, so a program may already read its own
+frames. This adds the writing side, which a debugger needs for
+`setlocal`, and with it the three escapes `dv.h` names: `getregistry`
+hands back the metatable that makes an endpoint reference unforgeable,
+`getmetatable` walks past `__metatable`, and `sethook` takes the one hook
+slot the instruction budget is enforced through. Set it for a program you
+wrote. With it set, the capability layer is a way of structuring a
+program rather than a boundary around one.
 
 `new DrtSwarm(max, spawns, configJson)` takes the JSON `drt run --config`
 takes, for a page that wants `fs` scoped somewhere; without one it gets

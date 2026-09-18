@@ -36,7 +36,8 @@ use drt_config::project::{BadNodePath, NodePath};
 use drt_config::{Budget, Numeric, Tier};
 
 use crate::engine::{
-    Engine, Instance, LoadSpec, ProgramBytes, PushOutcome, QueueHandle, RestoreSpec, WaitSet,
+    Engine, Instance, LoadSpec, ProgramBytes, PushOutcome, QueueHandle, RestoreSpec, UsageReport,
+    WaitSet,
 };
 use crate::InstanceId;
 
@@ -243,6 +244,7 @@ struct Slot {
     budget: Budget,
     numeric: Numeric,
     unsafe_stdlib: bool,
+    unsafe_debug: bool,
     wake_on_message: bool,
     alive: bool,
     /// Scratch, used only by `kill_subtree`.
@@ -272,6 +274,7 @@ impl Slot {
             budget: Budget::default(),
             numeric: Numeric::default(),
             unsafe_stdlib: false,
+            unsafe_debug: false,
             wake_on_message: false,
             alive: false,
             doomed: false,
@@ -300,6 +303,7 @@ pub struct Swarm<H: SwarmHost> {
     allow_hibernation: bool,
     allow_bytecode: bool,
     unsafe_stdlib: bool,
+    unsafe_debug: bool,
     host_identity: Option<String>,
 }
 
@@ -337,6 +341,7 @@ impl<H: SwarmHost> Swarm<H> {
             allow_hibernation: true,
             allow_bytecode: false,
             unsafe_stdlib: false,
+            unsafe_debug: false,
             host_identity: None,
         }
     }
@@ -357,6 +362,14 @@ impl<H: SwarmHost> Swarm<H> {
     /// `io`/`os`/`package` for this swarm's instances. The root takes this,
     /// children inherit and may narrow (`sealed = true` in a spawn request),
     /// never widen.
+    /// The whole `debug` library rather than the narrowed one, for
+    /// instances built after this call. See [`LoadSpec::unsafe_debug`] for
+    /// what it puts back and what that costs; a debugger wants it and a
+    /// deployment does not.
+    pub fn allow_unsafe_debug(&mut self, allow: bool) {
+        self.unsafe_debug = allow;
+    }
+
     pub fn allow_unsafe_stdlib(&mut self, allow: bool) {
         self.unsafe_stdlib = allow;
     }
@@ -415,6 +428,7 @@ impl<H: SwarmHost> Swarm<H> {
         let spec_budget = slot.budget;
         let spec_numeric = slot.numeric;
         let unsafe_stdlib = slot.unsafe_stdlib;
+        let unsafe_debug = slot.unsafe_debug;
         let program = match std::str::from_utf8(code) {
             Ok(text) => ProgramBytes::Source(text),
             Err(_) if self.allow_bytecode => ProgramBytes::Bytecode(code),
@@ -434,6 +448,7 @@ impl<H: SwarmHost> Swarm<H> {
                 budget: spec_budget,
                 numeric: spec_numeric,
                 unsafe_stdlib,
+                unsafe_debug,
             })
             .map_err(|e| format!("the program would not load: {e}"))?;
         let slot = &mut self.slots[index];
@@ -484,6 +499,7 @@ impl<H: SwarmHost> Swarm<H> {
             slot.budget = budget;
             slot.numeric = numeric;
             slot.unsafe_stdlib = self.unsafe_stdlib;
+            slot.unsafe_debug = self.unsafe_debug;
         }
         match self.build(index, code) {
             Ok(()) => Ok(InstanceId(self.slots[index].id)),
@@ -557,6 +573,23 @@ impl<H: SwarmHost> Swarm<H> {
         self.find(id)
             .map(|i| self.slots[i].alive && self.slots[i].inst.is_some())
             .unwrap_or(false)
+    }
+
+    /// What this instance has spent and holds right now.
+    ///
+    /// `None` for a hibernated instance, and that is an answer rather than
+    /// a gap: a parked instance is not running and holds no heap, so there
+    /// is no "now" to report. What it consumed before parking travels in
+    /// its snapshot and comes back with it, because a budget spans
+    /// residencies.
+    ///
+    /// Until this existed, these numbers reached the outside only inside a
+    /// lifecycle event a *guest* triggered by querying a descendant, so a
+    /// host driving the swarm could not see what its own instances cost.
+    pub fn usage(&self, id: InstanceId) -> Option<UsageReport> {
+        self.find(id)
+            .and_then(|i| self.slots[i].inst.as_deref())
+            .map(|inst| inst.usage())
     }
 
     /// Whether a message can bring this instance back from the cache. The
@@ -809,12 +842,14 @@ impl<H: SwarmHost> Swarm<H> {
         let budget = self.slots[index].budget;
         let numeric = self.slots[index].numeric;
         let unsafe_stdlib = self.slots[index].unsafe_stdlib;
+        let unsafe_debug = self.slots[index].unsafe_debug;
         let mut inst = match self.engine.restore(RestoreSpec {
             snapshot: &snap,
             host_stamp: identity.as_deref(),
             budget,
             numeric,
             unsafe_stdlib,
+            unsafe_debug,
         }) {
             Ok(inst) => inst,
             Err(e) => {
@@ -1242,6 +1277,9 @@ impl<H: SwarmHost> Swarm<H> {
         // Flags attenuate: inherit the parent's set; `sealed = true` drops
         // the stdlib, and nothing adds it.
         let child_stdlib = self.slots[parent_index].unsafe_stdlib && !field_bool(request, "sealed");
+        // `sealed` drops both: a child that asked to be sealed did not ask
+        // to keep the half of it that hands back unforgeable references.
+        let child_debug = self.slots[parent_index].unsafe_debug && !field_bool(request, "sealed");
         {
             let slot = &mut self.slots[child_index];
             slot.parent = parent_id;
@@ -1251,6 +1289,7 @@ impl<H: SwarmHost> Swarm<H> {
             slot.numeric = numeric;
             slot.wake_on_message = field_bool(request, "wake_on_message");
             slot.unsafe_stdlib = child_stdlib;
+            slot.unsafe_debug = child_debug;
         }
         match self.build(child_index, &code) {
             Ok(()) => {

@@ -108,6 +108,10 @@ impl Repl {
                 // sandbox; unsealed, that is what the caller asked for by
                 // name, and the caps and the budget still hold.
                 unsafe_stdlib,
+                // Not tied to the flag above: the debug set is a separate
+                // authority and a REPL has no more claim on `setlocal`
+                // than `drt run` does. A tool that wants it asks for it.
+                unsafe_debug: false,
             },
             caps,
             dispatcher,
@@ -379,6 +383,138 @@ impl ego_cli::extend::Completer for Names {
     }
 }
 
+/// Colour for the line being typed.
+///
+/// `ego_cli` has had the hook since DRT adopted it and nothing used it, so
+/// the prompt was one colour. The keywords are **Diluvium's**, read off
+/// `llex.c` rather than assumed from Lua: `global` is one and `continue`
+/// is not (it is contextual, §3.3 of the syntax proposals), and an
+/// f-string opens `$"` or `$'`.
+///
+/// `continue` is coloured anyway. It is contextual, so `continue = 1`
+/// gets a keyword's colour wrongly -- accepted on the grounds that a
+/// highlighter is a hint rather than a parser, that `continue` inside a
+/// loop is the case people meet, and that naming a variable `continue`
+/// is rare enough to be worth the trade. Every editor that colours
+/// contextual keywords makes the same one.
+///
+/// **The contract is escapes only.** The cursor is measured against the
+/// line the editor holds, so adding or dropping one printable character
+/// puts it in the wrong column. `strip(highlight(line)) == line` is the
+/// invariant, and it is the test.
+#[cfg(feature = "cli")]
+pub struct Syntax;
+
+#[cfg(feature = "cli")]
+const KEYWORDS: &[&str] = &[
+    "and", "break", "continue", "do", "else", "elseif", "end", "false", "for", "function",
+    "global", "goto", "if", "in", "local", "nil", "not", "or", "repeat", "return", "then", "true",
+    "until", "while",
+];
+
+#[cfg(feature = "cli")]
+impl ego_cli::extend::Highlighter for Syntax {
+    fn highlight<'l>(&self, line: &'l str) -> std::borrow::Cow<'l, str> {
+        use ego_cli::style::{fg, Color, RESET};
+
+        // Every token start is ASCII, and the bytes between are copied
+        // through untouched, so byte indices never land inside a char.
+        let b = line.as_bytes();
+        let mut out = String::with_capacity(line.len() + 32);
+        let mut i = 0;
+        // Nothing was coloured: hand back the borrow rather than a copy.
+        let mut touched = false;
+
+        let paint = |out: &mut String, text: &str, c: Color| {
+            out.push_str(fg(c));
+            out.push_str(text);
+            out.push_str(RESET);
+        };
+
+        while i < b.len() {
+            let start = i;
+            // A comment runs to the end of the line. Long comments are
+            // not special-cased: on one REPL line `--[[` reaches the end
+            // either way, and the colour is the same.
+            if b[i] == b'-' && i + 1 < b.len() && b[i + 1] == b'-' {
+                paint(&mut out, &line[i..], Color::BrightBlack);
+                touched = true;
+                break;
+            }
+            // A string, plain or an f-string's `$` prefix. Unterminated
+            // is the normal case here: the line is still being typed, so
+            // the colour simply runs to the end.
+            let fstring =
+                b[i] == b'$' && i + 1 < b.len() && (b[i + 1] == b'"' || b[i + 1] == b'\'');
+            if fstring || b[i] == b'"' || b[i] == b'\'' {
+                let quote = if fstring { b[i + 1] } else { b[i] };
+                i += if fstring { 2 } else { 1 };
+                while i < b.len() {
+                    if b[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if b[i] == quote {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+                paint(&mut out, &line[start..i.min(b.len())], Color::Green);
+                touched = true;
+                continue;
+            }
+            // A long string, `[[` or `[=[`. Same reasoning as comments:
+            // one line, so it reaches the end.
+            if b[i] == b'[' && i + 1 < b.len() && (b[i + 1] == b'[' || b[i + 1] == b'=') {
+                let mut j = i + 1;
+                while j < b.len() && b[j] == b'=' {
+                    j += 1;
+                }
+                if j < b.len() && b[j] == b'[' {
+                    paint(&mut out, &line[i..], Color::Green);
+                    touched = true;
+                    break;
+                }
+            }
+            if b[i].is_ascii_digit() {
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'.' || b[i] == b'_')
+                {
+                    i += 1;
+                }
+                paint(&mut out, &line[start..i], Color::Cyan);
+                touched = true;
+                continue;
+            }
+            if b[i].is_ascii_alphabetic() || b[i] == b'_' {
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                    i += 1;
+                }
+                let word = &line[start..i];
+                if KEYWORDS.contains(&word) {
+                    paint(&mut out, word, Color::Blue);
+                    touched = true;
+                } else {
+                    out.push_str(word);
+                }
+                continue;
+            }
+            // Anything else -- operators, spaces, punctuation -- through
+            // one character at a time. Multi-byte characters arrive here
+            // and are copied by their own length.
+            let ch = line[i..].chars().next().expect("index is on a boundary");
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+
+        if touched {
+            std::borrow::Cow::Owned(out)
+        } else {
+            std::borrow::Cow::Borrowed(line)
+        }
+    }
+}
+
 /// Bind a [`Repl`] to a line editor: set the completer, and hand back the
 /// session to drive with [`edit`].
 ///
@@ -391,6 +527,7 @@ pub fn editor<T: ego_cli::term::Terminal>(repl: &Repl, terminal: T) -> ego_cli::
     session.set_completer(Names {
         names: repl.names(),
     });
+    session.set_highlighter(Syntax);
     session
 }
 

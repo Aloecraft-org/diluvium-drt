@@ -72,6 +72,7 @@ fn load(program: &str) -> Solo {
             budget: Default::default(),
             numeric: Default::default(),
             unsafe_stdlib: false,
+            unsafe_debug: false,
         },
         CapSet::root(vec![Grant::grant("host:later")]),
         Arc::new(Dispatcher::new(registry)),

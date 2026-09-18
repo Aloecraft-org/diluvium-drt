@@ -66,13 +66,15 @@ jobs:
     # the rest of this matrix pins, and `--all-features` in the release
     # workflow is where it is built.
     #
-    # `windows` is a profile, not a lone feature, and is here for the
-    # profile's own reason: it is a shipped feature set (`full` minus
-    # `exec`) that nothing else builds with `--all-targets` -- the release
-    # leg builds it without tests. The day it was named it was narrower,
-    # `tests/wireguard.rs` called `stun` and `turn` without gating on
-    # either, and it did not compile; this is where a test that assumes a
-    # feature the profile lacks is caught before the profile ships.
+    # `windows` was one of these names, and it is gone with the profile it
+    # named: `exec` is no longer unix-only, so Windows builds `full` like
+    # every other native target and there is no reduced Windows feature set
+    # left for a leg to build. What that leg watched for is still real --
+    # the day it was named, `tests/wireguard.rs` called `stun` and `turn`
+    # without gating on either and the profile did not compile -- and
+    # `slim`, at the top of this list, is the shipped set that still gets
+    # built here with `--all-targets`, which is what catches a test
+    # assuming a feature its profile lacks.
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -98,7 +100,6 @@ jobs:
           - netcheck
           - turn
           - turn-client
-          - windows
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -345,6 +346,80 @@ jobs:
           grep -q '^profile: wasi$' "$RUNNER_TEMP/buildinfo.txt"
       - name: The examples gate, through wasmtime
         run: cd examples && DRT="$GITHUB_WORKSPACE/script/drt-wasip2.sh" ./run-all.sh
+
+  windows:
+    # The Windows code, run on Windows. Nothing did that until this job:
+    # every other job here is Linux, and release.yml cross-builds the
+    # Windows artifacts on Linux and then smokes the binaries -- a version,
+    # a script, the examples gate. So `process::Tree`'s Job Object and the
+    # Windows half of the exec connector had been compiled for this
+    # platform and never had a test executed against them on it. A platform
+    # whose code is never executed on that platform is a platform that is
+    # only claimed to work.
+    #
+    # `x86_64-pc-windows-gnu`, not the runner's default MSVC. That is the
+    # ABI every Windows artifact this repo ships is built for, and it is
+    # the one the C core leaves open: diluvium-sys drives a GCC-style
+    # compiler and refuses MSVC by name, because `cl.exe` accepts none of
+    # the flags it passes. Installed as the HOST toolchain rather than
+    # added as a target to the runner's MSVC one, which is what makes the
+    # C toolchain question go away here: rustup's `rust-mingw` component
+    # is in the minimal profile and carries its own
+    # `x86_64-w64-mingw32-gcc`, `ld` and mingw libraries, so the link
+    # needs nothing installed and nothing on PATH. The runner image does
+    # ship a mingw-w64 of its own at `C:\mingw64\bin`, and it is a UCRT
+    # build -- which is the one not to link Rust's msvcrt-based
+    # windows-gnu against.
+    #
+    # Two crates, because this is a gate and not the suite. `drt-platform`
+    # is where `process::Tree` lives, a Job Object here and a process group
+    # on unix. `drt-connector-exec` is the connector built on it, and its
+    # `tests/portable.rs` is the contract both platforms answer --
+    # `tests/run.rs` is `#![cfg(unix)]` and compiles to nothing here, which
+    # is exactly why a Windows run of the suite had to exist. Neither crate
+    # pulls in the C core, which is why this job needs no C compiler at
+    # all; widening it to a crate that embeds diluvium means bringing a
+    # mingw-w64 for the target and pointing `CC` at it, the way the musl
+    # legs in release.yml point `CC` at musl-gcc.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Pinned rather than left to the `rustup default` the toolchain action
+      # runs with continue-on-error: a default that quietly stayed MSVC
+      # would build an ABI nothing ships, and would meet the C core's
+      # refusal the first time this job is widened to a crate that has one.
+      RUSTUP_TOOLCHAIN: stable-x86_64-pc-windows-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows_gnu
+      # Asked of the toolchain rather than assumed, the way BUILDINFO is
+      # asked of the artifact: this job is worth something only if the ABI
+      # it tested is the one the release ships.
+      - name: The toolchain is the GNU one
+        # Read whole, then compared, rather than piped into `grep -q`.
+        # `grep -q` exits at the first match and closes the pipe under a
+        # writer that has not finished; on unix `rustc` takes a silent
+        # SIGPIPE, on Windows it gets "The pipe is being closed"
+        # (os error 232), prints a diagnostic, exits 101, and `pipefail`
+        # fails the step. The first run of this job died exactly there,
+        # with the toolchain it was checking perfectly correct.
+        run: |
+          set -eu
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          if [ "$host" != x86_64-pc-windows-gnu ]; then
+            echo "this job ran on $host; the release ships x86_64-pc-windows-gnu" >&2
+            exit 1
+          fi
+      - name: Test (drt-platform, drt-connector-exec)
+        run: cargo test -p drt-platform -p drt-connector-exec
 
   fidelity:
     # The benchmark's *deterministic* fields, checked against the committed

@@ -191,6 +191,146 @@ impl DrtSession {
     pub fn abandon(&mut self) {
         self.inner.abandon();
     }
+
+    // The roster of the deployment this session is driving, so an
+    // Instances panel can show the agents its own terminal started.
+    //
+    // Every one of these answers emptily for a session that is not `drt
+    // start`, because only that verb has a swarm -- `hasSwarm` is how a
+    // panel tells "no agents" from "not that kind of session" without
+    // guessing from an empty list. The bodies borrow the deployment for
+    // the length of one call and hand back owned values, which is what
+    // keeps a `&mut` from having to cross into JavaScript.
+
+    /// Whether this session drives a swarm at all.
+    #[wasm_bindgen(js_name = hasSwarm)]
+    pub fn has_swarm(&mut self) -> bool {
+        self.inner.deployment_mut().is_some()
+    }
+
+    pub fn ids(&mut self) -> Vec<u32> {
+        self.inner
+            .deployment_mut()
+            .map(|d| swarm::view::ids(d))
+            .unwrap_or_default()
+    }
+
+    pub fn alive(&mut self) -> usize {
+        self.inner
+            .deployment_mut()
+            .map(|d| swarm::view::alive(d))
+            .unwrap_or(0)
+    }
+
+    #[wasm_bindgen(js_name = slotsAllocated)]
+    pub fn slots_allocated(&mut self) -> usize {
+        self.inner
+            .deployment_mut()
+            .map(|d| swarm::view::slots_allocated(d))
+            .unwrap_or(0)
+    }
+
+    pub fn parent(&mut self, id: u32) -> Option<u32> {
+        self.inner
+            .deployment_mut()
+            .and_then(|d| swarm::view::parent(d, id))
+    }
+
+    pub fn resident(&mut self, id: u32) -> bool {
+        self.inner
+            .deployment_mut()
+            .map(|d| swarm::view::resident(d, id))
+            .unwrap_or(false)
+    }
+
+    #[wasm_bindgen(js_name = cachedSize)]
+    pub fn cached_size(&mut self, id: u32) -> usize {
+        self.inner
+            .deployment_mut()
+            .map(|d| swarm::view::cached_size(d, id))
+            .unwrap_or(0)
+    }
+
+    #[wasm_bindgen(js_name = wakeOnMessage)]
+    pub fn wake_on_message(&mut self, id: u32) -> bool {
+        self.inner
+            .deployment_mut()
+            .map(|d| swarm::view::wake_on_message(d, id))
+            .unwrap_or(false)
+    }
+
+    pub fn caps(&mut self, id: u32) -> Option<String> {
+        self.inner
+            .deployment_mut()
+            .and_then(|d| swarm::view::caps(d, id))
+    }
+
+    pub fn holds(&mut self, id: u32, cap: &str) -> bool {
+        self.inner
+            .deployment_mut()
+            .map(|d| swarm::view::holds(d, id, cap))
+            .unwrap_or(false)
+    }
+
+    #[wasm_bindgen(js_name = mayGrant)]
+    pub fn may_grant(&mut self, parent: u32, cap: &str) -> bool {
+        self.inner
+            .deployment_mut()
+            .map(|d| swarm::view::may_grant(d, parent, cap))
+            .unwrap_or(false)
+    }
+
+    pub fn budget(&mut self, id: u32) -> Option<String> {
+        self.inner
+            .deployment_mut()
+            .and_then(|d| swarm::view::budget(d, id))
+    }
+
+    /// What `id` has spent and holds right now, as JSON: instructions,
+    /// peak kilobytes, and bytes held at this moment. `None` for a
+    /// hibernated instance, which holds nothing.
+    pub fn usage(&mut self, id: u32) -> Option<String> {
+        self.inner
+            .deployment_mut()
+            .and_then(|d| swarm::view::usage(d, id))
+    }
+
+    /// The verbs. Each refuses by name for a session with no swarm rather
+    /// than reporting a success that did not happen.
+    pub fn push(&mut self, id: u32, queue: &str, msg: &[u8]) -> Result<(), JsValue> {
+        match self.inner.deployment_mut() {
+            Some(d) => swarm::view::push(d, id, queue, msg).map_err(|e| JsValue::from_str(&e)),
+            None => Err(JsValue::from_str(no_swarm())),
+        }
+    }
+
+    pub fn kill(&mut self, id: u32) -> Result<(), JsValue> {
+        match self.inner.deployment_mut() {
+            Some(d) => swarm::view::kill(d, id).map_err(|e| JsValue::from_str(&e)),
+            None => Err(JsValue::from_str(no_swarm())),
+        }
+    }
+
+    pub fn hibernate(&mut self, id: u32) -> Result<(), JsValue> {
+        match self.inner.deployment_mut() {
+            Some(d) => swarm::view::hibernate(d, id).map_err(|e| JsValue::from_str(&e)),
+            None => Err(JsValue::from_str(no_swarm())),
+        }
+    }
+
+    pub fn wake(&mut self, id: u32) -> Result<(), JsValue> {
+        match self.inner.deployment_mut() {
+            Some(d) => swarm::view::wake(d, id).map_err(|e| JsValue::from_str(&e)),
+            None => Err(JsValue::from_str(no_swarm())),
+        }
+    }
+}
+
+/// Said when a verb reaches a session that drives one instance, not a
+/// swarm. Named rather than silent: a panel that killed nothing should
+/// hear so.
+fn no_swarm() -> &'static str {
+    "this session drives no swarm; only `drt start` does"
 }
 
 /// The line editor over the page's own xterm.js `Terminal`.

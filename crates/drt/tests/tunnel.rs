@@ -67,7 +67,7 @@ async fn a_real_ssh_session_crosses_the_wss_bridge() {
             };
             let url = ws_url.clone();
             tokio::spawn(async move {
-                let _ = drt::tunnel::stream_to_ws(conn, &url, &[]).await;
+                let _ = drt::tunnel::stream_to_ws(conn, &url, &[], &[]).await;
             });
         }
     });
@@ -132,7 +132,7 @@ async fn bytes_cross_the_bridge_alone() {
     let entry_addr = entry.local_addr().unwrap();
     tokio::spawn(async move {
         let (conn, _) = entry.accept().await.unwrap();
-        let _ = drt::tunnel::stream_to_ws(conn, &ws_url, &[]).await;
+        let _ = drt::tunnel::stream_to_ws(conn, &ws_url, &[], &[]).await;
     });
     let mut client = tokio::net::TcpStream::connect(entry_addr).await.unwrap();
     client.write_all(b"marco").await.unwrap();
@@ -178,7 +178,7 @@ async fn a_local_listener_claims_one_leg_per_connection_and_refuses_by_closing()
     let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let local_addr = local.local_addr().unwrap();
     tokio::spawn(async move {
-        let _ = drt::tunnel::serve_local(local, &ws_url, &[]).await;
+        let _ = drt::tunnel::serve_local(local, &ws_url, &[], &[]).await;
     });
 
     // Two callers at once, each on its own leg; each answer lands on the
@@ -221,7 +221,7 @@ async fn a_local_listener_claims_one_leg_per_connection_and_refuses_by_closing()
     let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let local_addr = local.local_addr().unwrap();
     tokio::spawn(async move {
-        let _ = drt::tunnel::serve_local(local, &refusing_url, &[]).await;
+        let _ = drt::tunnel::serve_local(local, &refusing_url, &[], &[]).await;
     });
     let mut c = tokio::net::TcpStream::connect(local_addr).await.unwrap();
     let mut buf = [0u8; 16];
@@ -239,7 +239,7 @@ async fn a_local_listener_claims_one_leg_per_connection_and_refuses_by_closing()
     let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let local_addr = local.local_addr().unwrap();
     tokio::spawn(async move {
-        let _ = drt::tunnel::serve_local(local, &gone_url, &[]).await;
+        let _ = drt::tunnel::serve_local(local, &gone_url, &[], &[]).await;
     });
     let mut c = tokio::net::TcpStream::connect(local_addr).await.unwrap();
     let n = tokio::time::timeout(Duration::from_secs(5), c.read(&mut buf))
@@ -359,7 +359,7 @@ async fn a_real_ssh_session_crosses_a_wss_gate() {
     let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let local_addr = local.local_addr().unwrap().to_string();
     tokio::spawn(async move {
-        let _ = drt::tunnel::serve_local(local, &wss_url, &[gate_cert]).await;
+        let _ = drt::tunnel::serve_local(local, &wss_url, &[gate_cert], &[]).await;
     });
 
     let conn = SshClientConnection::connect(
@@ -408,7 +408,7 @@ async fn a_gate_signed_by_nobody_is_refused_on_trust() {
     });
     let (gate_port, _cert) = tls_gate(ws_addr).await;
 
-    let err = drt::tunnel::connect(&format!("wss://localhost:{gate_port}"), &[])
+    let err = drt::tunnel::connect(&format!("wss://localhost:{gate_port}"), &[], &[])
         .await
         .expect_err("a self-signed gate must not be trusted by the public roots");
     let lower = err.to_lowercase();
@@ -525,11 +525,11 @@ async fn a_tunnel_from_two_files_and_no_flags_carries_a_real_ssh_session() {
     );
 
     tokio::spawn(async move {
-        let _ = drt::tunnel::run(device_mode.mode, &[]).await;
+        let _ = drt::tunnel::run(device_mode.mode, &[], &[]).await;
     });
     until_listening(&listen).await;
     tokio::spawn(async move {
-        let _ = drt::tunnel::run(caller_mode.mode, &[]).await;
+        let _ = drt::tunnel::run(caller_mode.mode, &[], &[]).await;
     });
     until_listening(&bind).await;
 
@@ -567,6 +567,7 @@ async fn a_tunnel_from_two_files_and_no_flags_carries_a_real_ssh_session() {
             listen: held_addr.clone(),
             to: sshd_addr,
         },
+        &[],
         &[],
     )
     .await
@@ -738,4 +739,147 @@ fn a_key_from_another_mode_is_refused_rather_than_ignored() {
     let err = drt::tunnel::resolve(None, &none).unwrap_err();
     assert!(err.contains("--park with --to"), "{err}");
     assert!(err.contains("`tunnel` in the --config file"), "{err}");
+}
+
+/// Issue #33: a pair of small writes with a gap between them, through the
+/// bridge. With Nagle on any of the tunnel's own sockets the second write
+/// waits for the first one's ACK, which the far end delays -- 40 ms on
+/// Linux -- so the pair paid a delayed ACK per hop, on loopback, with the
+/// client itself already `TCP_NODELAY`. The far end answers one byte once
+/// it has read two; the median of nine rounds is the measurement, so one
+/// slow round on a busy runner is not a verdict.
+#[tokio::test(flavor = "multi_thread")]
+async fn two_small_writes_cross_the_bridge_without_a_delayed_ack() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let far = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let far_addr = far.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut c, _)) = far.accept().await else {
+                continue;
+            };
+            tokio::spawn(async move {
+                let mut two = [0u8; 2];
+                while c.read_exact(&mut two).await.is_ok() {
+                    if c.write_all(b"!").await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ws_url = format!("ws://{}", ws_listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _ = drt::tunnel::serve_ws_bridge(ws_listener, &far_addr).await;
+    });
+    let entry = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let entry_addr = entry.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (conn, _) = entry.accept().await.unwrap();
+        let _ = drt::tunnel::stream_to_ws(conn, &ws_url, &[], &[]).await;
+    });
+    let mut client = tokio::net::TcpStream::connect(entry_addr).await.unwrap();
+    client.set_nodelay(true).unwrap();
+    let mut rounds = Vec::new();
+    for _ in 0..9 {
+        let started = std::time::Instant::now();
+        client.write_all(b"a").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        client.write_all(b"b").await.unwrap();
+        let mut back = [0u8; 1];
+        client.read_exact(&mut back).await.unwrap();
+        assert_eq!(&back, b"!");
+        rounds.push(started.elapsed());
+    }
+    rounds.sort();
+    let median = rounds[4];
+    assert!(
+        median < Duration::from_millis(30),
+        "a two-write pair took {median:?} through the bridge: a delayed ACK is being paid"
+    );
+}
+
+/// A credential as a handshake header rather than in the URL: the file's
+/// `headers` map and `--header`, merged per name the way every other key
+/// merges -- a flag replaces the file's header of the same name (case
+/// aside, as HTTP reads names) and adds one the file did not name; the
+/// rest stand. A header that is not `Name: value` is refused by name, and
+/// a header beside a `listen` is refused as a key from another mode is,
+/// because a header is sent on a dial and a listen accepts.
+#[test]
+fn a_header_rides_the_handshake_and_a_flag_replaces_the_files_by_name() {
+    let file = drt_config::TunnelConfig {
+        claim: Some("wss://relay.example/s/xps".into()),
+        headers: [
+            (
+                "Authorization".to_string(),
+                "Bearer from-the-file".to_string(),
+            ),
+            ("X-Tenant".to_string(), "acme".to_string()),
+        ]
+        .into(),
+        ..Default::default()
+    };
+    let resolved = drt::tunnel::resolve(Some(&file), &drt::tunnel::Flags::default()).unwrap();
+    assert_eq!(
+        resolved.headers,
+        vec![
+            (
+                "Authorization".to_string(),
+                "Bearer from-the-file".to_string()
+            ),
+            ("X-Tenant".to_string(), "acme".to_string()),
+        ]
+    );
+
+    let flags = drt::tunnel::Flags {
+        header: vec![
+            "authorization: Bearer from-the-flag".into(),
+            "X-Trace: 7".into(),
+        ],
+        ..Default::default()
+    };
+    let resolved = drt::tunnel::resolve(Some(&file), &flags).unwrap();
+    assert_eq!(
+        resolved.headers,
+        vec![
+            (
+                "authorization".to_string(),
+                "Bearer from-the-flag".to_string()
+            ),
+            ("X-Tenant".to_string(), "acme".to_string()),
+            ("X-Trace".to_string(), "7".to_string()),
+        ]
+    );
+
+    let flags = drt::tunnel::Flags {
+        url: Some("wss://relay.example/s/xps".into()),
+        header: vec!["no-colon".into()],
+        ..Default::default()
+    };
+    let err = drt::tunnel::resolve(None, &flags).unwrap_err();
+    assert!(err.contains("`--header 'no-colon'`"), "{err}");
+    assert!(err.contains("`Name: value`"), "{err}");
+
+    let flags = drt::tunnel::Flags {
+        listen: Some("127.0.0.1:8022".into()),
+        to: Some("127.0.0.1:22".into()),
+        header: vec!["Authorization: Bearer x".into()],
+        ..Default::default()
+    };
+    let err = drt::tunnel::resolve(None, &flags).unwrap_err();
+    assert!(err.contains("`--header`"), "{err}");
+    assert!(err.contains("belongs with `claim` or `park`"), "{err}");
+
+    // The block reads the map as any other key, through the same strict
+    // loader shape.
+    let block: drt_config::TunnelConfig = serde_json::from_str(
+        r#"{"claim": "wss://relay.example/s/xps", "headers": {"Authorization": "Bearer k"}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        block.headers.get("Authorization").map(String::as_str),
+        Some("Bearer k")
+    );
 }

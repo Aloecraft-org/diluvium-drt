@@ -1,0 +1,117 @@
+# A dev build whenever `main` moves, and a daily backstop.
+#
+# `doc/ALIGNMENT.md` §7 asked for the nightly; publishing on every merge
+# is the stronger version of the same idea, and it is what removes the
+# need to cut a candidate just to get a commit into someone's hands.
+#
+# Everything this needs already existed and nothing called it.
+# `script/dev-tag.sh` allocates the next free `-dev.<n>` from the tags
+# that exist, and its `--if-changed` is the skip; `release.yml` has the
+# `v*-dev.*` fast path, the dev release body, and the prune to `DEV_KEEP`.
+# This file is the trigger, and deliberately nothing else: it decides
+# whether to cut, allocates the number, and hands off to `release.yml`,
+# which is where a release is built.
+#
+# The schedule stays as a backstop rather than the main event: if a push
+# run failed or was never queued, the daily one catches it, and on a quiet
+# day `--if-changed` ends it green having built nothing.
+name: Dev build
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # 06:17 UTC. A minute nobody else picks, because a scheduled run on a
+    # busy minute is a run that waits for a runner.
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+# The dispatch below starts `release.yml`, and the tag allocation pushes,
+# so this needs more than the default read.
+permissions:
+  contents: write
+  actions: write
+
+# **Queueing, not cancelling, and it is load-bearing.** `release.yml`
+# creates its tag at the *end* of a build that takes minutes, so two
+# merges landing close together would both read the same "newest dev tag"
+# and allocate the same number. Serialising here means the second run
+# computes its tag after the first has pushed one.
+concurrency:
+  group: dev-build
+  cancel-in-progress: false
+
+jobs:
+  cut:
+    runs-on: ubuntu-latest
+    steps:
+      # Full history and every tag: `dev-tag.sh` reads the counter off the
+      # tags that exist rather than off anything in the tree, so a shallow
+      # clone would allocate `dev.1` every night.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: The next dev tag, if HEAD moved
+        id: tag
+        run: |
+          set -u
+          # Three outcomes, kept apart on purpose. `--if-changed` exits 3
+          # when HEAD is the commit the newest dev tag already points at,
+          # and that is the designed answer rather than a failure: a quiet
+          # day should end green having built nothing. Any other non-zero
+          # is a real failure and must not be read as "nothing to do",
+          # which is what a bare `|| true` here would have done.
+          set +e
+          TAG=$(script/dev-tag.sh --if-changed)
+          rc=$?
+          set -e
+          case "$rc" in
+            0)
+              echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+              echo "cutting $TAG"
+              ;;
+            3)
+              echo "HEAD is unchanged since the last dev tag; nothing to cut"
+              ;;
+            *)
+              echo "script/dev-tag.sh failed (exit $rc)" >&2
+              exit 1
+              ;;
+          esac
+
+      # The number is allocated by *creating* the tag, before anything is
+      # built. `release.yml` tags at the end of its run, so until the tag
+      # exists the next caller would read the same newest one and pick the
+      # same number. Pushing it here is the atomic step: the concurrency
+      # group above already serialises the common case, and this makes the
+      # allocation safe even if something ever runs these in parallel.
+      - name: Claim the number
+        if: steps.tag.outputs.tag != ''
+        run: |
+          set -eu
+          git tag "${{ steps.tag.outputs.tag }}" "${{ github.sha }}"
+          git push origin "${{ steps.tag.outputs.tag }}"
+
+      # Dispatched rather than relying on that tag push to start it, and
+      # that is a correctness point rather than a preference. A tag pushed
+      # with `GITHUB_TOKEN` does **not** start a workflow: GitHub
+      # suppresses events raised by that token so a workflow cannot
+      # trigger itself in a loop. So the push above creates the tag and
+      # builds nothing, and this is what builds it.
+      # `workflow_dispatch` is one of the two documented exceptions to
+      # that suppression, so this one arrives.
+      - name: Cut it
+        if: steps.tag.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          gh workflow run release.yml \
+            --ref "${{ github.event.repository.default_branch }}" \
+            -f ref="${{ github.sha }}" \
+            -f tag="${{ steps.tag.outputs.tag }}" \
+            -f publish=true
+          echo "dispatched release.yml for ${{ steps.tag.outputs.tag }} at ${{ github.sha }}"

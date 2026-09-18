@@ -8,12 +8,15 @@
 //! - [`Scope`] — which instance a plugin process belongs to.
 //! - [`Transport`] — how its byte stream is obtained.
 //! - [`Wiring`] — what scope a deployment may hand it.
+//! - [`Overrides`] — the three limits a deployment may set over it.
 //! - [`ManifestError`] — every way a manifest is refused.
 //!
 //! Configurable values:
 //! - [`DEFAULT_MAX_INFLIGHT`] — calls one session may have outstanding.
 //! - [`DEFAULT_CALL_TIMEOUT_MS`] — how long a call may take before the
 //!   host stops waiting for it.
+//! - [`DEFAULT_DIAL_BACK_TIMEOUT_MS`] — how long `spawn` waits to be
+//!   greeted.
 //!
 //! Fan-out: [`Scope`] and [`Transport`] are closed sets, and each one's
 //! refusal names every spelling it accepts.
@@ -43,6 +46,14 @@ pub const DEFAULT_MAX_INFLIGHT: usize = 4;
 /// microseconds should say so in its own manifest rather than inherit a
 /// ceiling written for the slow case.
 pub const DEFAULT_CALL_TIMEOUT_MS: u64 = 30_000;
+
+/// How long the `spawn` transport waits for a plugin to dial back. Ten
+/// seconds, which was this budget's value when it was a constant in
+/// `spawn.rs` with no way to change it -- generous for an interpreter
+/// starting cold, and nowhere near enough for a plugin that loads a model
+/// before saying hello. It is a field now so that plugin has a way to say
+/// so, but dialing back first remains the better answer.
+pub const DEFAULT_DIAL_BACK_TIMEOUT_MS: u64 = 10_000;
 
 /// Which instance a plugin process belongs to (`doc/Plan-0.7.0.md` §7.1).
 ///
@@ -87,13 +98,24 @@ impl Scope {
 pub enum Transport {
     /// The host forks, execs and hands over one end of a socketpair.
     Process,
+    /// The host starts the program and it dials back over loopback,
+    /// proving itself with a secret the host minted. The native default:
+    /// it owns the plugin's lifetime the way `process` does, and inherits
+    /// nothing, which is what lets it run where there is no fd 3.
+    Spawn,
     /// The host dials an address the deployment names.
     Tcp,
 }
 
 impl Transport {
     /// Every spelling this host accepts, for a refusal to quote.
-    pub const SPELLINGS: &'static [&'static str] = &["process", "tcp"];
+    pub const SPELLINGS: &'static [&'static str] = &["process", "spawn", "tcp"];
+
+    /// Whether this transport starts the program itself, and therefore
+    /// needs `exec` to name one.
+    pub fn starts_the_program(self) -> bool {
+        matches!(self, Transport::Process | Transport::Spawn)
+    }
 }
 
 /// What wiring scope a deployment may hand this plugin.
@@ -182,6 +204,7 @@ struct Wire {
     scope: Option<String>,
     max_inflight: Option<usize>,
     call_timeout_ms: Option<u64>,
+    dial_back_timeout_ms: Option<u64>,
     #[serde(default)]
     wiring: Wiring,
 }
@@ -203,11 +226,78 @@ pub struct Manifest {
     pub max_inflight: usize,
     /// How long one call may take.
     pub call_timeout_ms: u64,
+    /// How long [`Transport::Spawn`] waits for the plugin to dial back.
+    ///
+    /// Separate from `call_timeout_ms`, and much smaller, because it is a
+    /// different wait: this one ends when the plugin says hello, and the
+    /// plugin has done no work yet. A plugin whose real startup cost is
+    /// loading a model should dial back *first* and load after, so the
+    /// cost lands in the call budget where an operator can see it, rather
+    /// than here where it looks like a plugin that failed to start.
+    pub dial_back_timeout_ms: u64,
     /// What wiring scope a deployment may hand it.
     pub wiring: Wiring,
 }
 
+/// What a deployment may raise or lower over the manifest's own numbers.
+///
+/// Three limits and nothing else. They are the values whose right setting
+/// depends on the machine the plugin runs on rather than on the plugin: a
+/// model that loads in two seconds on a workstation takes a minute on a
+/// small instance, and the publisher cannot know which one an operator
+/// has. Everything else in a manifest -- the family, the transport, the
+/// scope -- is the publisher describing their own program, and a
+/// deployment that disagreed about those would be describing a different
+/// program.
+///
+/// `None` keeps the manifest's value, so a deployment that overrides
+/// nothing behaves exactly as it did before this existed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Overrides {
+    pub max_inflight: Option<usize>,
+    pub call_timeout_ms: Option<u64>,
+    pub dial_back_timeout_ms: Option<u64>,
+}
+
 impl Manifest {
+    /// Apply a deployment's overrides, refusing a zero exactly as
+    /// [`Manifest::parse`] refuses one in the file.
+    ///
+    /// A zero is refused from either source because it means the same
+    /// thing from either: a plugin that can answer no calls, finish none
+    /// in time, or never be given time to dial back. An operator typing it
+    /// hears the same sentence a publisher would.
+    pub fn with_overrides(mut self, over: Overrides) -> Result<Self, ManifestError> {
+        if let Some(n) = over.max_inflight {
+            if n == 0 {
+                return Err(ManifestError::ZeroLimit {
+                    field: "max_inflight",
+                    consequence: "answer no calls",
+                });
+            }
+            self.max_inflight = n;
+        }
+        if let Some(ms) = over.call_timeout_ms {
+            if ms == 0 {
+                return Err(ManifestError::ZeroLimit {
+                    field: "call_timeout_ms",
+                    consequence: "never finish a call in time",
+                });
+            }
+            self.call_timeout_ms = ms;
+        }
+        if let Some(ms) = over.dial_back_timeout_ms {
+            if ms == 0 {
+                return Err(ManifestError::ZeroLimit {
+                    field: "dial_back_timeout_ms",
+                    consequence: "never be given time to dial back",
+                });
+            }
+            self.dial_back_timeout_ms = ms;
+        }
+        Ok(self)
+    }
+
     /// Read a `<name>.plugin.json`, refusing by name.
     ///
     /// Every refusal happens here, before a process is started or an
@@ -225,6 +315,7 @@ impl Manifest {
         let transport = match wire.transport.as_deref() {
             None => return Err(ManifestError::Missing("transport")),
             Some("process") => Transport::Process,
+            Some("spawn") => Transport::Spawn,
             Some("tcp") => Transport::Tcp,
             Some(found) => {
                 return Err(ManifestError::UnknownTransport {
@@ -247,7 +338,11 @@ impl Manifest {
             }
         };
 
-        if transport == Transport::Process {
+        // Both transports that start the program need one to start, and
+        // need it named absolutely: what a deployment wired is what runs,
+        // and a `PATH` lookup would make that depend on the environment
+        // DRT happened to start in.
+        if transport.starts_the_program() {
             let exec = wire
                 .exec
                 .as_deref()
@@ -272,6 +367,16 @@ impl Manifest {
             });
         }
 
+        let dial_back_timeout_ms = wire
+            .dial_back_timeout_ms
+            .unwrap_or(DEFAULT_DIAL_BACK_TIMEOUT_MS);
+        if dial_back_timeout_ms == 0 {
+            return Err(ManifestError::ZeroLimit {
+                field: "dial_back_timeout_ms",
+                consequence: "never be given time to dial back",
+            });
+        }
+
         Ok(Manifest {
             family,
             transport,
@@ -279,6 +384,7 @@ impl Manifest {
             scope,
             max_inflight,
             call_timeout_ms,
+            dial_back_timeout_ms,
             wiring: wire.wiring,
         })
     }

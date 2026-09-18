@@ -53,6 +53,21 @@ pub trait Channel {
     fn read_some(&mut self, out: &mut Vec<u8>) -> Result<usize, ChannelError>;
 }
 
+/// A boxed transport is a transport.
+///
+/// The connector holds whichever of the transports a manifest named, and
+/// cannot be generic over it: it is stored as `Arc<dyn Connector>` in the
+/// registry, so the choice has to be a value rather than a type.
+impl Channel for Box<dyn Channel + Send> {
+    fn write_some(&mut self, bytes: &[u8]) -> Result<usize, ChannelError> {
+        (**self).write_some(bytes)
+    }
+
+    fn read_some(&mut self, out: &mut Vec<u8>) -> Result<usize, ChannelError> {
+        (**self).read_some(out)
+    }
+}
+
 // depth: the test double.
 
 /// An in-memory channel with the peer's side exposed, so the frame state

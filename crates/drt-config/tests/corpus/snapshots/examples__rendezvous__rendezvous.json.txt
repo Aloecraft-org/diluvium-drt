@@ -17,6 +17,7 @@ RootConfig {
         },
     },
     connectors: {},
+    plugins: {},
     listeners: [],
     residency: None,
     relay: Some(

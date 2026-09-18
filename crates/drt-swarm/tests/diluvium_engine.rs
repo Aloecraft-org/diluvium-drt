@@ -20,6 +20,7 @@ fn load(engine: &DiluviumEngine, source: &str, name: &str) -> Box<dyn Instance> 
             budget: Budget::default(),
             numeric: Default::default(),
             unsafe_stdlib: false,
+            unsafe_debug: false,
         })
         .unwrap()
 }
@@ -138,6 +139,7 @@ fn a_snapshot_survives_the_process_and_continues() {
         budget: Budget::default(),
         numeric: Default::default(),
         unsafe_stdlib: false,
+        unsafe_debug: false,
     });
     assert!(matches!(wrong, Err(EngineError::SnapshotMismatch(_))));
 
@@ -148,6 +150,7 @@ fn a_snapshot_survives_the_process_and_continues() {
             budget: Budget::default(),
             numeric: Default::default(),
             unsafe_stdlib: false,
+            unsafe_debug: false,
         })
         .unwrap();
 
@@ -188,6 +191,7 @@ fn a_budget_bounds_a_runaway_program() {
             },
             numeric: Default::default(),
             unsafe_stdlib: false,
+            unsafe_debug: false,
         })
         .unwrap();
     match inst.run() {
@@ -220,6 +224,7 @@ fn numeric_bounds_reach_the_instance_and_no_fast_kernel_has_run() {
             budget: Budget::default(),
             numeric: bounds,
             unsafe_stdlib: false,
+            unsafe_debug: false,
         })
         .unwrap();
 
@@ -241,6 +246,7 @@ fn numeric_bounds_reach_the_instance_and_no_fast_kernel_has_run() {
             budget: Budget::default(),
             numeric: Numeric::default(),
             unsafe_stdlib: false,
+            unsafe_debug: false,
         })
         .unwrap();
     assert!(plain.numeric_bounds().is_unbounded());

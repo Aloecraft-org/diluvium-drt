@@ -2,6 +2,13 @@
 //! reply by reply, plus the allow list DRT adds. Every test is a plain
 //! `#[test]` under `pollster`, which is the caller every guest loop is
 //! (doc/Failure-Modes.md FM-3): nothing here may need a reactor.
+//!
+//! **Unix's vocabulary, deliberately.** `sh -c`, `setsid`, `pwd -P`, a
+//! death by signal reported as `128 + signo`: these test what unix
+//! genuinely does, and watering them down to run elsewhere would test
+//! less. `portable.rs` is the same contract asked through whatever shell
+//! the host has, and is what covers this connector on Windows.
+#![cfg(unix)]
 
 use std::time::{Duration, Instant};
 

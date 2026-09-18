@@ -447,6 +447,35 @@ mod tests {
         assert_eq!(s.take(id).unwrap(), None, "and it is not delivered");
     }
 
+    /// Junk on the wire ends the session by name rather than being
+    /// skipped. There is no resynchronising a length-prefixed stream: once
+    /// a length has been read wrong, every byte after it is in the wrong
+    /// place, so guessing where the next frame starts would turn one bad
+    /// frame into a plausible-looking wrong answer.
+    #[test]
+    fn junk_on_the_wire_ends_the_session_rather_than_being_skipped() {
+        let mut s = Session::new(Loopback::new(), 4);
+        let id = s.begin("greet/hello", None).expect("a call goes out");
+        // A well-formed length, and a body that is not msgpack behind it.
+        let junk = b"\xde\xad\xbe\xef";
+        let mut bytes = (junk.len() as u32).to_be_bytes().to_vec();
+        bytes.extend_from_slice(junk);
+        s.channel.peer_put(&bytes);
+
+        let e = s.poll().expect_err("junk is a failure, not a quiet skip");
+        assert!(
+            format!("{e}").contains("msgpack"),
+            "the refusal says what was wrong with it: {e}"
+        );
+        // And the caller is told, rather than waiting for an answer that
+        // cannot now arrive: a desynced stream is permanent.
+        let after = s.take(id);
+        assert!(
+            after.is_err(),
+            "a call outstanding on a dead session is an error, got {after:?}"
+        );
+    }
+
     #[test]
     fn a_reply_to_a_call_never_made_ends_the_session() {
         let mut s = Session::new(Loopback::new(), 0);

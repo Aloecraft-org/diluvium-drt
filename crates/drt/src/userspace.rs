@@ -574,6 +574,12 @@ async fn forward_loop(
         let Ok((conn, _)) = listener.accept().await else {
             continue;
         };
+        // Issue #33: the local half of a forward is one hop of an
+        // interactive session; TCP_NODELAY on every socket drt dials or
+        // accepts, as `tunnel::connect` explains.
+        if conn.set_nodelay(true).is_err() {
+            continue;
+        }
         tokio::spawn(forward_leg(stack.clone(), conn, bind, to));
     }
 }
@@ -652,7 +658,11 @@ async fn expose_leg(stack: Arc<Stack>, handle: SocketHandle, tunnel: SocketAddr,
             return stack.release(handle);
         }
     }
-    match tokio::net::TcpStream::connect(&to).await {
+    // Issue #33: the exposed service's own socket is the last hop.
+    let dialed = tokio::net::TcpStream::connect(&to)
+        .await
+        .and_then(|conn| conn.set_nodelay(true).map(|()| conn));
+    match dialed {
         Ok(conn) => pump(&stack, handle, conn).await,
         Err(e) => {
             stack.abort(handle);

@@ -82,6 +82,19 @@ pub enum Status {
     Error,
     /// A request the host could not read.
     Malformed,
+    /// The host stopped waiting for a connected call that had not answered.
+    ///
+    /// Distinct from `Error` because the two ask different things of a
+    /// caller. An `error` says the work was attempted and failed; a
+    /// `timeout` says nobody knows -- the call may still be running, and
+    /// whether to retry it, fall back to another provider, or give up is a
+    /// judgement only the caller can make. A guest that cannot tell them
+    /// apart has to treat every slow answer as a hard failure.
+    ///
+    /// Added under this enum's growth rule, so a guest built before it
+    /// existed reads `timeout` as an unknown status and treats it as an
+    /// error, which is exactly the old behaviour.
+    Timeout,
     /// A status this build does not know. Treat as an error.
     #[serde(untagged)]
     Other(String),
@@ -154,6 +167,19 @@ impl Reply {
         Reply {
             tok: Some(tok),
             status: Status::Error,
+            value: None,
+            detail: Some(detail.into()),
+            blobs: Vec::new(),
+        }
+    }
+
+    /// The host gave up waiting. `detail` names what was being waited on
+    /// and the budget that ran out, because a caller deciding whether to
+    /// fall back needs to know which limit it hit.
+    pub fn timed_out(tok: Token, detail: impl Into<String>) -> Self {
+        Reply {
+            tok: Some(tok),
+            status: Status::Timeout,
             value: None,
             detail: Some(detail.into()),
             blobs: Vec::new(),

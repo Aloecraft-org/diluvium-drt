@@ -81,6 +81,107 @@ schema: 1
 repo: Aloecraft-org/diluvium-drt
 
 releases:
+  - version: 0.7.0-rc.3
+    tag: v0.7.0-rc.3
+    date: null
+    status: unreleased
+    stable: false
+    mirror: false
+    dv_abi: 1
+    diluvium: 7f952d86ec7f5c860c4bdf99ed6be64d2b0d917b
+    diluvium_version: "0.15.1"
+    connectors:
+      full: [time, fs, crypto, sql, ssh, rest, ssmtp, exec, data, socket, listen]
+      slim: [time, fs, crypto, listen]
+      wasi: [time, fs, crypto, sql, listen]
+      web: [time, fs, crypto]
+    features:
+      full: [regex]
+      slim: [regex]
+      wasi: [regex]
+      web: [regex]
+    summary: |
+      **The old asset names stop shipping.** v0.6.0-rc.2 renamed every
+      artifact to `doc/ALIGNMENT.md` §4's spelling and carried the old
+      name beside the new one for the overlap the rule asks for. That
+      overlap ran three candidates, and this one ends it.
+    added:
+      - |
+        **`drt tunnel` sends a credential as a header.** `--header
+        'Authorization: Bearer …'`, repeatable, and `headers` in the
+        `tunnel` block put a key on the handshake of every leg the tunnel
+        dials instead of in the URL's `?k=`, so the URL carries no secret
+        into the request line every proxy and access log records. Flags
+        merge over the file per name, as every other tunnel key does, and
+        a header beside a `listen` is refused as a key from another mode
+        is. The relay reads `Authorization: Bearer <key>` at the same door
+        as `?k=`: the header is the credential when present, a URL key
+        that disagrees with it is refused, and a scheme it does not read
+        is a bad key rather than an absent one.
+    changed:
+      - |
+        **Windows stops being a reduced platform, and the `windows`
+        profile stops existing.** `exec` opened with a `compile_error!`
+        calling itself unix-only because it needed process groups; that
+        is now `drt_platform::process::Tree`, a process group on unix and
+        a Job Object with kill-on-close on Windows, swept on drop so
+        every exit path from a call that started a program is covered
+        without each path remembering. So `exec` cross-builds with
+        everything else, and Windows builds `full` and `slim` like every
+        other native target: `drt_windows_x86_64.exe` is `full` now. The
+        profile that existed only to mean "`full` minus `exec`" is
+        deleted rather than redefined as a synonym, because a platform
+        that needs its own profile is a platform that is behind, and the
+        honest way to record that it caught up is for the profile to stop
+        existing. Four differences are real and are named in the
+        connector rather than papered over: `argv` is bytes on unix and
+        UTF-8-checked text on Windows, with a refusal by name rather than
+        a lossy conversion, since a replacement character in a path is a
+        different path; `argv[0]` cannot be handed over separately from
+        the file the child was started from; there is no executable bit,
+        so the `PATH` search tries `PATHEXT`'s suffixes the way a shell
+        does; and an exit is a code, never a signal. The 127 contract
+        holds on both. CI also runs `cargo test` on Windows now, which
+        nothing did before: a platform whose code is never executed on
+        that platform is a platform that is only claimed to work.
+      - |
+        **`drt tunnel` says what it is doing.** A tunnel with nothing to
+        do was silent, which is what a broken one looks like. Each half
+        now says so on stderr: the device that it parked and to where,
+        once and again after a failure, never on the routine re-park a
+        claim or the relay's idle close brings; each leg claimed and each
+        session ended; the `--local` and `--listen` halves every
+        connection bridged or refused, by peer, where a refused one used
+        to close without a word; and the `ProxyCommand` half, when a
+        person runs it at a terminal, that it connected and what stdin is
+        for -- under ssh it stays silent, as every ProxyCommand tool
+        does. No line shows a URL's query, which is where a `?k=` key
+        lives, and the dial's own errors drop it too.
+    removed:
+      - |
+        **`drt_linux_static_x86_64`, `drt_slim_<platform>` and
+        `drt_wasip2.wasm`.** The release carries only the §4 names:
+        `drt_<os>_<arch>[_<libc>]`, the profile last, `drt_wasi.wasm`
+        for the portable build. A consumer that still fetches by an old
+        name gets a 404 at its own runtime, which is the failure the
+        overlap existed to defer and not to prevent forever.
+        `install.sh` keeps its fallback to the old name, since a pinned
+        tag older than v0.6.0-rc.2 has only that one.
+    fixed:
+      - |
+        **No socket drt dials or accepts keeps Nagle on** (#33). A tunnel
+        is interactive by definition, and every pair of small writes on a
+        socket with Nagle on paid a delayed ACK -- 40 ms on Linux, 200 on
+        Windows -- once per hop: an RDP session through a parked leg on a
+        LAN felt it as lag, and a two-write pair measured 48 ms on
+        loopback with the client itself already `TCP_NODELAY`. The option
+        is now set on every TCP stream the runtime creates or accepts:
+        the tunnel's dials and accepts and the stream it hands the
+        WebSocket client, the relay's accepts, the userspace WireGuard
+        forwards, the HTTP listener's connections, the sockets the
+        `socket` connector hands a program, and the `rest`, `ssmtp` and
+        `netcheck` dials. Two tests pin it, at the bridge and at the
+        socket connector, by measuring the pair.
   - version: 0.7.0-rc.2
     tag: v0.7.0-rc.2
     date: 2026-09-17

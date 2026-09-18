@@ -212,6 +212,11 @@ async fn connect_from(
         .connect(addr)
         .await
         .map_err(|e| format!("connect: {e}"))?;
+    // Issue #33: request and response are a small-write pair; no socket
+    // drt dials keeps Nagle on.
+    stream
+        .set_nodelay(true)
+        .map_err(|e| format!("connect: TCP_NODELAY: {e}"))?;
     let local_port = stream
         .local_addr()
         .map_err(|e| format!("socket: {e}"))?

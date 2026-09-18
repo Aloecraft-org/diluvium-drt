@@ -568,8 +568,35 @@ first second of life.
   changelog entry, always a prerelease, and the ten newest dev releases
   kept. `script/dev-tag.sh` prints the next free tag; the number is
   allocated from the tags that exist and never reused, so `dev.5` names
-  one build forever. There is no nightly yet; `script/dev-tag.sh
-  --if-changed` is the skip rule one would use.
+  one build forever.
+- **Every merge to `main`**, `.github/workflows/dev-build.yml` → a dev
+  build, published. That is what removes the need to cut a candidate just
+  to get a commit into someone's hands. The same workflow runs at 06:17
+  UTC as a backstop, in case a push run failed or was never queued, and
+  takes a `workflow_dispatch` so it can be rehearsed. It decides,
+  allocates a number, and dispatches; it never builds.
+
+  `script/dev-tag.sh --if-changed` is the skip: exit 3 means HEAD is the
+  commit the newest dev tag already points at, so a quiet day ends green
+  having built nothing, and any other non-zero is a real failure rather
+  than a quiet one.
+
+  **The number is allocated by creating the tag, before anything builds.**
+  `release.yml` tags at the *end* of a run that takes minutes, so until
+  that tag exists a second merge would read the same newest dev tag and
+  pick the same number — not an edge case, the window is a whole build.
+  So `dev-build.yml` pushes the tag itself, and its `concurrency` group
+  queues rather than cancels so two merges serialise. `release.yml`'s
+  "tag already exists" guard knows about this: a `v*-dev.*` tag arriving
+  by dispatch is expected and must name the commit being built, while any
+  other existing tag is still the re-release that guard exists to stop.
+
+  It **dispatches** `release.yml` rather than relying on that tag push to
+  start it, and that is correctness rather than taste: a tag pushed with
+  `GITHUB_TOKEN` does not start a workflow, because GitHub suppresses
+  events raised by that token so a workflow cannot trigger itself. The
+  push creates the tag and builds nothing; the dispatch is what builds it.
+  `workflow_dispatch` is one of the two documented exceptions.
 
 `BUILDINFO.txt` opens with the five lines every Aloecraft release carries
 — `tag`, `version` (the tag body), `commit`, `branch` (derived, since a
@@ -595,10 +622,11 @@ BUILDINFO.txt                  SHA256SUMS.txt
 
 Releases before v0.6.0-rc.2 spelled these `drt_linux_static_x86_64`,
 `drt_slim_<platform>` and `drt_wasip2.wasm`. A consumer that fetches by
-name breaks at its own runtime rather than at anyone's build, so rc.2
-carries both names, both in `SHA256SUMS.txt`, and the release after it
-drops the old ones; `install.sh` tries the new name and falls back to the
-old, so a pinned older tag still installs.
+name breaks at its own runtime rather than at anyone's build, so
+v0.6.0-rc.2 through v0.7.0-rc.2 carried both names, both in
+`SHA256SUMS.txt`, and from v0.7.0-rc.3 only the new ones ship;
+`install.sh` tries the new name and falls back to the old, so a pinned
+older tag still installs.
 
 Windows ships no `full`: `exec` is unix-only. So the unprefixed Windows
 binary is the `windows` profile -- `full` minus `exec`, which cross-builds

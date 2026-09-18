@@ -629,6 +629,12 @@ pub mod threaded {
         std::thread::spawn(move || {
             for conn in socket.incoming() {
                 let Ok(stream) = conn else { continue };
+                // Issue #33: no socket drt accepts keeps Nagle on. Not a
+                // failure a supported target produces on a connected
+                // socket, and a latency cost rather than a correctness one
+                // if it ever did -- so never a reason to refuse the
+                // connection.
+                let _ = stream.set_nodelay(true);
                 if conns.fetch_add(1, Ordering::SeqCst) >= rt.max_conns {
                     conns.fetch_sub(1, Ordering::SeqCst);
                     respond(&stream, &refusal_bytes(503, CAP_TEXT));
@@ -826,6 +832,9 @@ pub mod polled {
                     if stream.set_nonblocking(true).is_err() {
                         continue;
                     }
+                    // Issue #33, as in the threaded acceptor; wasi may not
+                    // know the option, which is the same latency cost.
+                    let _ = stream.set_nodelay(true);
                     let held = conns
                         .iter()
                         .filter(|c| c.counted && c.listener == idx)

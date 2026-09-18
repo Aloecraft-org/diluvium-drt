@@ -114,6 +114,7 @@ RootConfig {
             ),
         },
     },
+    plugins: {},
     listeners: [],
     residency: None,
     relay: None,

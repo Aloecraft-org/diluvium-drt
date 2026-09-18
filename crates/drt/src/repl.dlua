@@ -59,6 +59,121 @@ local function collect(names, seen, scope, prefix, depth)
   end
 end
 
+-- How a value is shown when a line evaluates to one.
+--
+-- `tostring` is what a REPL reaches for and it is wrong for the value
+-- people most want to look at: every table, `host` included, came back as
+-- `table: 0x55c8cdf767c0`. This REPL builds Tab completion so `host.<Tab>`
+-- works, so answering `host` with an address was half a feature.
+--
+-- Three bounds, because a REPL prints whatever it is handed and some of
+-- that is hostile: `_G` is enormous, a table can hold itself, and a deep
+-- tree is unreadable long before it is finite.
+local MAX_DEPTH = 4
+local MAX_ENTRIES = 64
+local MAX_TEXT = 2048
+
+-- Addresses are deliberately not shown for functions and userdata. They
+-- are noise to a reader, and they change every run, which would make any
+-- test of this output a test of the allocator.
+local function scalar(v)
+  local t = type(v)
+  if t == 'string' then return string.format('%q', v) end
+  if t == 'number' or t == 'boolean' or t == 'nil' then return tostring(v) end
+  return '<' .. t .. '>'
+end
+
+-- A key that can be written as `name =` is; anything else takes brackets,
+-- so the output stays something you could paste back.
+local function key(k)
+  if type(k) == 'string' and k:match('^[%a_][%w_]*$') then return k end
+  return '[' .. scalar(k) .. ']'
+end
+
+local function render(v, depth, seen)
+  if type(v) ~= 'table' then return scalar(v) end
+  depth, seen = depth or 1, seen or {}
+  -- A table that holds itself is a cycle, not infinite output.
+  if seen[v] then return '<cycle>' end
+  if depth > MAX_DEPTH then return '{...}' end
+  seen[v] = true
+
+  local parts, n = {}, 0
+  -- The array part first and in order, so `{1,2,3}` reads as itself.
+  local len = #v
+  for i = 1, len do
+    n = n + 1
+    if n > MAX_ENTRIES then break end
+    parts[#parts + 1] = render(v[i], depth + 1, seen)
+  end
+  -- Then the rest, sorted: Lua's own key order is unspecified, and a
+  -- REPL that printed the same table two ways would be a REPL you could
+  -- not trust to be showing you one thing.
+  local keys = {}
+  for k in pairs(v) do
+    if not (type(k) == 'number' and k >= 1 and k <= len and k % 1 == 0) then
+      keys[#keys + 1] = k
+    end
+  end
+  table.sort(keys, function(a, b)
+    if type(a) == type(b) and (type(a) == 'string' or type(a) == 'number') then
+      return a < b
+    end
+    return type(a) < type(b)
+  end)
+  for _, k in ipairs(keys) do
+    n = n + 1
+    if n > MAX_ENTRIES then break end
+    parts[#parts + 1] = key(k) .. ' = ' .. render(v[k], depth + 1, seen)
+  end
+
+  seen[v] = nil
+  if n > MAX_ENTRIES then parts[#parts + 1] = '...' end
+  if #parts == 0 then return '{}' end
+  return '{' .. table.concat(parts, ', ') .. '}'
+end
+
+-- The whole answer, bounded. A single enormous table should cost a
+-- screen, not a terminal.
+local function show(v)
+  local text = render(v)
+  if #text > MAX_TEXT then return text:sub(1, MAX_TEXT) .. '...' end
+  return text
+end
+
+-- An error's stack, not just its message.
+--
+-- `debug.traceback` is one of the four `debug` functions a sealed
+-- instance keeps -- the reading side, "a program may read its own
+-- frames" -- so this costs no flag and no capability. Before it, an error
+-- two calls deep said `repl:1: deep` and nothing about where.
+--
+-- Two things are trimmed, both because they would be noise every time.
+--
+-- The REPL's own frames: everything from the `xpcall` that ran the line
+-- downwards is this file, and an error in the user's code should not
+-- look like a bug in the thing running it. The cut is written against
+-- what this engine actually prints (`[C]: in global 'xpcall'`, where
+-- Lua's manual would suggest `in function`), and matches either spelling.
+--
+-- And the stack itself, when there is no stack worth having: an error
+-- raised straight at the prompt already carries `repl:1:` in its
+-- message, so three lines saying so again is worse than one. The frames
+-- earn their place once the error happened inside a function, which is
+-- exactly when the message alone stops saying where.
+local function on_error(err)
+  local msg = tostring(err)
+  local tb = debug.traceback(msg, 2)
+  local cut = tb:find("\n\t%[C%]: in %a+ 'xpcall'")
+  if cut then tb = tb:sub(1, cut - 1) end
+  for line in tb:gmatch('\n\t([^\n]*)') do
+    if line:match('^repl:%d+: in ') and not line:match('in main chunk$') then
+      return tb
+    end
+  end
+  return msg
+end
+
 local function names_in_scope()
   local names, seen = {}, {}
   collect(names, seen, env, '', 1)
@@ -82,13 +197,13 @@ while true do
       local incomplete = type(err) == 'string' and err:sub(-5) == '<eof>'
       queue.push(outq, {ok = false, more = incomplete, text = tostring(err)})
     else
-      local r = table.pack(pcall(chunk))
+      local r = table.pack(xpcall(chunk, on_error))
       if r[1] then
         -- Nothing returned prints nothing; a statement is not an
         -- expression with a nil value.
         if r.n > 1 then
           local parts = {}
-          for i = 2, r.n do parts[#parts + 1] = tostring(r[i]) end
+          for i = 2, r.n do parts[#parts + 1] = show(r[i]) end
           queue.push(outq, {ok = true, text = table.concat(parts, '\t')})
         else
           queue.push(outq, {ok = true})

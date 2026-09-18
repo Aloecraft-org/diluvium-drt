@@ -913,6 +913,11 @@ async fn fetch(
     let stream = tokio::net::TcpStream::connect(addr)
         .await
         .map_err(|e| format!("connect: {e}"))?;
+    // Issue #33: request and response are a small-write pair; no socket
+    // drt dials keeps Nagle on.
+    stream
+        .set_nodelay(true)
+        .map_err(|e| format!("connect: TCP_NODELAY: {e}"))?;
 
     if url.tls {
         let mut roots = tokio_rustls::rustls::RootCertStore::empty();
@@ -1665,9 +1670,9 @@ mod tests {
         )]);
         let e = c.call("rest/get", Some(args), Some(&sc)).await.unwrap_err();
         assert!(
-            e.0.contains("outside this instance's granted origins"),
+            e.detail.contains("outside this instance's granted origins"),
             "{}",
-            e.0
+            e.detail
         );
     }
 
@@ -1675,7 +1680,7 @@ mod tests {
     async fn an_unknown_call_in_the_family_is_an_error_not_a_panic() {
         let c = RestConnector::new();
         let e = c.call("rest/put", None, None).await.unwrap_err();
-        assert!(e.0.contains("is not a rest call"), "{}", e.0);
+        assert!(e.detail.contains("is not a rest call"), "{}", e.detail);
     }
 
     /// Chunked responses were handed to the guest as framing.

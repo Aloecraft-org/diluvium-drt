@@ -203,7 +203,27 @@ impl Pump {
         };
         match inst.push(replies, &bytes) {
             Ok(outcome) if outcome.is_accepted() => 1,
-            _ => {
+            // Unreachable, and held rather than dropped if it ever is not.
+            //
+            // `land` is only called inside `pump`'s `while room(..)`, and
+            // `room` has just established `enabled && len < capacity` on
+            // this very queue. Nothing runs the guest in between, so the
+            // slot `room` saw is still free: `Full` and `Disabled` cannot
+            // come back, and the engine's only error here is a queue it
+            // does not know, for a handle `pump` re-read from it moments
+            // ago.
+            //
+            // The assertion is how a future change that breaks that
+            // ordering announces itself in a test run rather than in a
+            // deployment. The release behaviour is deliberately the
+            // conservative one: hold the answer for a later pump. A reply
+            // held too long is a bounded cost; a reply dropped is a guest
+            // waiting forever for an answer that was thrown away.
+            other => {
+                debug_assert!(
+                    false,
+                    "a reply did not land on a queue `room` just found space on: {other:?}"
+                );
                 self.settled.push(Settled { id, bytes });
                 0
             }
@@ -337,8 +357,10 @@ impl<H: SwarmHost> SwarmHost for PumpHost<H> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::{EngineError, PushOutcome, QueueStatus, Step, UsageReport, WaitSet};
     use crate::swarm::StepHost;
     use drt_connector::{CallResult, Connector, Handles, Registry};
+    use drt_hostcall::Request;
     use std::sync::Mutex;
 
     /// A connector that holds one thing per node and records every release
@@ -410,6 +432,292 @@ mod tests {
         assert_eq!(lost[0].0, InstanceId(4));
         assert_eq!(lost[0].1, "instance 4 lost a quiet socket");
         assert!(host.take_lost().is_empty(), "taking drains");
+    }
+
+    // depth: the held-answer fixtures, for the four tests below
+
+    /// A connector that answers only once the test says so, which is the
+    /// one way an answer reaches the settled queue: the request is drained
+    /// and its future parked, and the answer arrives after the pump that
+    /// asked for it has already returned.
+    struct Slow {
+        ready: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl Connector for Slow {
+        async fn call(
+            &self,
+            _: &str,
+            args: Option<rmpv::Value>,
+            _: Option<&drt_caps::Scope>,
+        ) -> CallResult {
+            let ready = self.ready.clone();
+            std::future::poll_fn(move |_| {
+                if ready.load(std::sync::atomic::Ordering::SeqCst) {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await;
+            // Echoed so a test can tell one held answer from another.
+            Ok(args.unwrap_or(rmpv::Value::Nil))
+        }
+    }
+
+    /// One instance with the two queues `doc/Host.md` fixes. `replies` has
+    /// a capacity the test sets, so "there is room" and "there is not" are
+    /// both reachable without an engine.
+    struct Fake {
+        calls: Vec<Vec<u8>>,
+        replies: Vec<Vec<u8>>,
+        capacity: u32,
+    }
+
+    const H_CALLS: QueueHandle = QueueHandle(1);
+    const H_REPLIES: QueueHandle = QueueHandle(2);
+
+    impl Fake {
+        fn with(requests: Vec<Request>) -> Self {
+            Self {
+                calls: requests
+                    .into_iter()
+                    .map(|r| drt_hostcall::to_bytes(&r).unwrap())
+                    .collect(),
+                replies: Vec::new(),
+                capacity: 8,
+            }
+        }
+
+        /// The tokens landed so far, in the order they landed.
+        fn landed_toks(&self) -> Vec<u64> {
+            self.replies
+                .iter()
+                .filter_map(|b| drt_hostcall::from_bytes::<Reply>(b).unwrap().tok)
+                .collect()
+        }
+    }
+
+    impl Instance for Fake {
+        fn queue(&mut self, name: &str) -> Option<QueueHandle> {
+            match name {
+                CALLS => Some(H_CALLS),
+                REPLIES => Some(H_REPLIES),
+                _ => None,
+            }
+        }
+        fn queue_info(&mut self, queue: QueueHandle) -> Result<QueueStatus, EngineError> {
+            let (len, capacity) = match queue {
+                H_CALLS => (self.calls.len() as u32, 8),
+                _ => (self.replies.len() as u32, self.capacity),
+            };
+            Ok(QueueStatus {
+                len,
+                capacity,
+                enabled: true,
+                exported: false,
+            })
+        }
+        fn push(&mut self, queue: QueueHandle, msgpack: &[u8]) -> Result<PushOutcome, EngineError> {
+            if queue != H_REPLIES {
+                return Err(EngineError::Engine("not the reply queue".into()));
+            }
+            if self.replies.len() as u32 >= self.capacity {
+                return Ok(PushOutcome::Full);
+            }
+            self.replies.push(msgpack.to_vec());
+            Ok(PushOutcome::Accepted)
+        }
+        fn pop(&mut self, queue: QueueHandle) -> Result<Option<Vec<u8>>, EngineError> {
+            if queue != H_CALLS || self.calls.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(self.calls.remove(0)))
+        }
+        fn run(&mut self) -> Result<Step, EngineError> {
+            Ok(Step::Done)
+        }
+        fn resume(&mut self, _: QueueHandle) -> Result<Step, EngineError> {
+            Ok(Step::Done)
+        }
+        fn resume_timeout(&mut self) -> Result<Step, EngineError> {
+            Ok(Step::Done)
+        }
+        fn current_wait(&mut self) -> Option<WaitSet> {
+            None
+        }
+        fn usage(&self) -> UsageReport {
+            UsageReport::default()
+        }
+        fn exceeded(&self) -> bool {
+            false
+        }
+        fn snapshot(&mut self, _: Option<&str>) -> Result<Vec<u8>, EngineError> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// A pump wired to one slow connector, and the switch that answers it.
+    fn slow_pump() -> (
+        Pump,
+        Dispatcher,
+        Arc<CapSet>,
+        Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut reg = Registry::new();
+        reg.wire(
+            "slow",
+            Arc::new(Slow {
+                ready: ready.clone(),
+            }),
+            None,
+        )
+        .unwrap();
+        let caps = CapSet::root(vec![drt_caps::Grant::grant("host:slow/*")]);
+        (Pump::new(), Dispatcher::new(reg), caps, ready)
+    }
+
+    /// The whole reason `settled` exists, and the reason it is safe to let
+    /// it wait: an answer that arrives after its pump is held, is counted
+    /// while it waits, and lands on the next pump.
+    ///
+    /// The counting is the part worth pinning. `outstanding` is how an
+    /// operator sees held answers accumulating at all; without it the only
+    /// symptom of a guest that stopped reading its inbox is memory.
+    #[test]
+    fn an_answer_that_arrives_late_is_held_counted_and_then_landed() {
+        let (mut pump, disp, caps, ready) = slow_pump();
+        let mut inst = Fake::with(vec![Request {
+            tok: 7,
+            call: "slow/thing".into(),
+            args: None,
+        }]);
+
+        assert_eq!(pump.pump(InstanceId(1), &caps, &disp, &mut inst), 0);
+        assert_eq!(
+            pump.outstanding(InstanceId(1)),
+            1,
+            "in flight, not yet ready"
+        );
+        assert!(inst.replies.is_empty(), "nothing landed yet");
+
+        ready.store(true, std::sync::atomic::Ordering::SeqCst);
+        pump.poll();
+        assert_eq!(
+            pump.outstanding(InstanceId(1)),
+            1,
+            "settled now, still owed, still counted"
+        );
+        assert!(inst.replies.is_empty(), "poll does not deliver");
+
+        assert_eq!(pump.pump(InstanceId(1), &caps, &disp, &mut inst), 1);
+        assert_eq!(
+            pump.outstanding(InstanceId(1)),
+            0,
+            "delivered and forgotten"
+        );
+        assert_eq!(inst.landed_toks(), vec![7]);
+    }
+
+    /// The bound on how long an answer can be held: the instance's life.
+    ///
+    /// This is what makes holding safe rather than an unbounded promise.
+    /// A guest that dies owing answers does not strand them -- `released`
+    /// reaches `forget`, and what it was owed goes with it.
+    #[test]
+    fn answers_owed_to_a_dead_instance_are_dropped_with_it() {
+        let (mut pump, disp, caps, ready) = slow_pump();
+        let mut inst = Fake::with(vec![Request {
+            tok: 1,
+            call: "slow/thing".into(),
+            args: None,
+        }]);
+
+        pump.pump(InstanceId(3), &caps, &disp, &mut inst);
+        ready.store(true, std::sync::atomic::Ordering::SeqCst);
+        pump.poll();
+        assert_eq!(pump.outstanding(InstanceId(3)), 1, "held for a live node");
+
+        pump.forget(InstanceId(3));
+        assert_eq!(pump.outstanding(InstanceId(3)), 0);
+        assert_eq!(pump.in_flight(), 0, "nothing of a dead node's is retained");
+
+        // And the answer is not resurrected by a later pump.
+        assert_eq!(pump.pump(InstanceId(3), &caps, &disp, &mut inst), 0);
+        assert!(inst.replies.is_empty());
+    }
+
+    /// One node's death leaves another node's held answers alone. The
+    /// settled queue is shared, so this is the test that it is keyed.
+    #[test]
+    fn forgetting_one_node_leaves_another_nodes_held_answers() {
+        let (mut pump, disp, caps, ready) = slow_pump();
+        let mut a = Fake::with(vec![Request {
+            tok: 1,
+            call: "slow/thing".into(),
+            args: None,
+        }]);
+        let mut b = Fake::with(vec![Request {
+            tok: 2,
+            call: "slow/thing".into(),
+            args: None,
+        }]);
+
+        pump.pump(InstanceId(1), &caps, &disp, &mut a);
+        pump.pump(InstanceId(2), &caps, &disp, &mut b);
+        ready.store(true, std::sync::atomic::Ordering::SeqCst);
+        pump.poll();
+        assert_eq!(pump.in_flight(), 2);
+
+        pump.forget(InstanceId(1));
+        assert_eq!(pump.outstanding(InstanceId(2)), 1, "2's answer survives 1");
+        assert_eq!(pump.pump(InstanceId(2), &caps, &disp, &mut b), 1);
+        assert_eq!(b.landed_toks(), vec![2]);
+    }
+
+    /// Held answers land oldest-first. Order is part of the contract a
+    /// guest with several requests outstanding relies on, and `deliver`
+    /// stopping at the first that does not fit is what preserves it: the
+    /// rest wait behind it rather than overtaking it.
+    #[test]
+    fn held_answers_land_in_the_order_they_settled() {
+        let (mut pump, disp, caps, ready) = slow_pump();
+        let mut inst = Fake::with(vec![
+            Request {
+                tok: 10,
+                call: "slow/thing".into(),
+                args: Some(rmpv::Value::from(10)),
+            },
+            Request {
+                tok: 11,
+                call: "slow/thing".into(),
+                args: Some(rmpv::Value::from(11)),
+            },
+            Request {
+                tok: 12,
+                call: "slow/thing".into(),
+                args: Some(rmpv::Value::from(12)),
+            },
+        ]);
+
+        pump.pump(InstanceId(1), &caps, &disp, &mut inst);
+        assert_eq!(pump.outstanding(InstanceId(1)), 3, "all three parked");
+
+        ready.store(true, std::sync::atomic::Ordering::SeqCst);
+        pump.poll();
+
+        // Room for one. The other two wait, in order, behind it.
+        inst.capacity = 1;
+        assert_eq!(pump.pump(InstanceId(1), &caps, &disp, &mut inst), 1);
+        assert_eq!(inst.landed_toks(), vec![10], "the oldest went first");
+        assert_eq!(pump.outstanding(InstanceId(1)), 2);
+
+        inst.capacity = 8;
+        assert_eq!(pump.pump(InstanceId(1), &caps, &disp, &mut inst), 2);
+        assert_eq!(inst.landed_toks(), vec![10, 11, 12], "and then in order");
+        assert_eq!(pump.outstanding(InstanceId(1)), 0);
     }
 
     /// A node that held nothing releases nothing, and a sibling's holdings

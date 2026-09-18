@@ -51,7 +51,7 @@ This part needs the network, so it is not part of the run above.
 ```
 # example: omits the other published assets — drt_darwin_arm64,
 # drt_darwin_x86_64, and the _slim ones for the size profile.
-# From v0.6.0-rc.2 this file is drt_linux_x86_64_musl; that candidate carries both names.
+# From v0.6.0-rc.2 this file is drt_linux_x86_64_musl; latest still resolves to the old spelling.
 BASE=https://github.com/Aloecraft-org/diluvium-drt/releases/latest/download
 curl -fLO $BASE/drt_linux_static_x86_64
 curl -fLO $BASE/SHA256SUMS.txt

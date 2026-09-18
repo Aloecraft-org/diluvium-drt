@@ -15,6 +15,26 @@ repository.workspace = true
 # with a sentence naming it (doc/Wasm.md §2.1).
 getrandom = "0.3"
 
+# A kill aimed at a process GROUP, which std does not spell: the unix half
+# of `process::Tree`, so a deadline sweeps everything a child started and
+# not just the child.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# The Windows half of the same idea, and strictly stronger: a Job Object
+# with kill-on-close, which a child cannot leave. `Win32_Security` is not
+# optional decoration -- `CreateJobObjectW` takes a `SECURITY_ATTRIBUTES`
+# pointer and is gated behind that feature. Verified to cross-build for
+# `x86_64-pc-windows-gnu` with mingw-w64 alone, which every Windows
+# artifact this repo ships is built by.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom = { version = "0.3", features = ["wasm_js"] }
 # `Instant` and `SystemTime` over `performance.now()` and `Date.now()`.

@@ -53,27 +53,6 @@ const PROFILE_WASI: &[&str] = &[
     "listen",
 ];
 const PROFILE_WEB: &[&str] = &["cli", "connector-crypto", "connector-fs", "connector-time"];
-const PROFILE_WINDOWS: &[&str] = &[
-    "cli",
-    "connector-crypto",
-    "connector-data",
-    "connector-fs",
-    "connector-rest",
-    "connector-socket",
-    "connector-sql",
-    "connector-ssh",
-    "connector-ssmtp",
-    "connector-time",
-    "listen",
-    "netcheck",
-    "relay",
-    "runtime",
-    "stun",
-    "tunnel",
-    "turn",
-    "turn-client",
-    "wireguard",
-];
 const PROFILE_FULL: &[&str] = &[
     "cli",
     "connector-crypto",
@@ -119,7 +98,6 @@ const CORE_FEATURES_FULL: &[&str] = &["regex"];
 const CORE_FEATURES_SLIM: &[&str] = &["regex"];
 const CORE_FEATURES_WASI: &[&str] = &["regex"];
 const CORE_FEATURES_WEB: &[&str] = &["regex"];
-const CORE_FEATURES_WINDOWS: &[&str] = &["regex"];
 /// A build whose feature set matches no named profile still embeds a core,
 /// and `unknown` is the honest answer about which features it carries --
 /// the same answer `diluvium: unknown` gives for an unpinned revision. An
@@ -421,6 +399,15 @@ pub enum Command {
         /// the same reason `connectors.rest`'s `extra_roots` says so.
         #[arg(long = "extra-root", value_name = "PEM")]
         extra_root: Vec<std::path::PathBuf>,
+        /// Send this header on the handshake of every leg this tunnel
+        /// dials, `Name: value` -- a credential the relay reads instead of
+        /// the URL's `?k=`, typically `Authorization: Bearer …`, so the URL
+        /// carries no secret. Repeatable. The block's `headers` map in
+        /// --config is the same thing in a 0600 file, which is where a
+        /// credential belongs; a flag naming a header the file also names
+        /// replaces it.
+        #[arg(long = "header", value_name = "NAME: VALUE")]
+        header: Vec<String>,
     },
     /// What can this network do, and what should you do about it.
     ///
@@ -733,6 +720,12 @@ fn enabled_features() -> Vec<&'static str> {
     feature!("connector-time");
     feature!("listen");
     feature!("netcheck");
+    // Probed and reportable, and in no named profile yet: the plugin
+    // channel is built and reachable from a config, and the segments that
+    // make it worth shipping (`doc/Plan-0.7.0.md` §7) are not all in. A
+    // build that turns it on says so in `buildinfo`; `full` does not turn
+    // it on for anyone by accident.
+    feature!("plugins");
     feature!("relay");
     feature!("runtime");
     feature!("stun");
@@ -758,8 +751,6 @@ fn profile_name(features: &[&str]) -> &'static str {
         "wasi"
     } else if features == PROFILE_WEB {
         "web"
-    } else if features == PROFILE_WINDOWS {
-        "windows"
     } else {
         "custom"
     }
@@ -774,13 +765,18 @@ fn core_features(profile: &str) -> &'static [&'static str] {
         "slim" => CORE_FEATURES_SLIM,
         "wasi" => CORE_FEATURES_WASI,
         "web" => CORE_FEATURES_WEB,
-        "windows" => CORE_FEATURES_WINDOWS,
         _ => CORE_FEATURES_CUSTOM,
     }
 }
 
 pub fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
     let mut registry = Registry::new();
+    // The whole-config questions first: a family named twice is a mistake
+    // about the config, and answering it before either loop means the
+    // operator hears about the mistake they made rather than a consequence
+    // of it.
+    #[cfg(feature = "plugins")]
+    check_plugin_names(config)?;
     for (name, wiring) in &config.connectors {
         match name.as_str() {
             #[cfg(feature = "connector-time")]
@@ -919,7 +915,137 @@ pub fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
             }
         }
     }
+    wire_plugins(config, &mut registry)?;
     Ok(registry)
+}
+
+/// Family names the builtin connectors answer to.
+///
+/// Listed rather than derived from the match above, and listed in full
+/// rather than per feature, because the rule this serves has to be the
+/// same on every build: a plugin may never take one of these names. If it
+/// depended on the features compiled in, a config that worked on `slim`
+/// would start shadowing a builtin the day it ran on `full`, which is the
+/// quiet kind of wrong.
+const BUILTIN_FAMILIES: &[&str] = &[
+    "time", "fs", "sql", "crypto", "data", "ssh", "rest", "ssmtp", "exec", "socket",
+];
+
+/// Every plugin family's name, judged before anything is wired.
+///
+/// Before, not during: a name that collides is a fact about the config as
+/// a whole, and checking it inside the wiring loop would let the *other*
+/// loop's refusal answer first. An operator who wrote one mistake should
+/// be told about that mistake.
+fn check_plugin_names(config: &RootConfig) -> Result<(), String> {
+    for family in config.plugins.keys() {
+        // A plugin may not shadow a builtin. A config that could would
+        // make `fs/read` mean a subprocess somewhere, and a reader of that
+        // config would have no way to see it.
+        if BUILTIN_FAMILIES.contains(&family.as_str()) {
+            return Err(format!(
+                "config wires a plugin for '{family}', which is a builtin connector's \
+                 family; a plugin may not take one, because a guest calling \
+                 '{family}/...' could not tell that its call now leaves this process"
+            ));
+        }
+        if config.connectors.contains_key(family) {
+            return Err(format!(
+                "config wires both a connector and a plugin for '{family}'; one family \
+                 is served by one of them"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The plugin's name, for `capabilities/list`'s `owner`: the `<name>` in
+/// `<name>.plugin.json`, per `doc/Plugins.md`.
+///
+/// A manifest that is not spelled that way is **not** refused. The suffix
+/// is how plugins ship, not something the host depends on, and refusing a
+/// manifest an operator named `browser.json` would be pedantry that buys
+/// no safety. It falls back to the file stem, so the owner column says
+/// something true either way.
+#[cfg(feature = "plugins")]
+fn plugin_name(path: &std::path::Path) -> String {
+    let file = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    match file.strip_suffix(".plugin.json") {
+        Some(name) if !name.is_empty() => name.to_string(),
+        _ => path
+            .file_stem()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or(file),
+    }
+}
+
+/// Wire the `plugins` block: one entry per family, each naming a manifest.
+///
+/// Read at load, not at first call. A manifest that is missing, malformed,
+/// or describes something this host cannot serve is a refusal here, while
+/// an operator is watching, rather than an error on the first call at 3am.
+/// Nothing is started: `PluginConnector` starts its process on first use.
+#[cfg(feature = "plugins")]
+fn wire_plugins(config: &RootConfig, registry: &mut Registry) -> Result<(), String> {
+    check_plugin_names(config)?;
+    for (family, wiring) in &config.plugins {
+        let path = std::path::Path::new(&wiring.manifest);
+        let bytes = std::fs::read(path).map_err(|e| {
+            format!(
+                "the plugin '{family}' names the manifest '{}', which cannot be read: {e}",
+                wiring.manifest
+            )
+        })?;
+        let manifest = drt_plugin::manifest::Manifest::parse(&bytes)
+            .and_then(|m| {
+                // The deployment's numbers over the publisher's, refused
+                // here with the rest so an operator's zero is named at
+                // load like a publisher's is.
+                m.with_overrides(drt_plugin::manifest::Overrides {
+                    max_inflight: wiring.max_inflight,
+                    call_timeout_ms: wiring.call_timeout_ms,
+                    dial_back_timeout_ms: wiring.dial_back_timeout_ms,
+                })
+            })
+            .map_err(|e| {
+                format!("the plugin '{family}' has a manifest this host cannot read: {e}")
+            })?;
+        // The manifest's own family is the publisher's claim; the config
+        // key is the operator's. Disagreeing is a mistake worth naming,
+        // because a guest calls the key and the plugin answers the claim.
+        if manifest.family != *family {
+            return Err(format!(
+                "config wires the plugin at '{}' as '{family}', and its manifest calls \
+                 itself '{}'; one of the two is a typo",
+                wiring.manifest, manifest.family
+            ));
+        }
+        let connector = drt_plugin::connector::PluginConnector::new(plugin_name(path), manifest)?;
+        registry
+            .wire(
+                family.clone(),
+                std::sync::Arc::new(connector),
+                wiring.scope.clone(),
+            )
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// A build with no plugin channel refuses a `plugins` block by name rather
+/// than ignoring it, which is the rule the whole strict loader exists for.
+#[cfg(not(feature = "plugins"))]
+fn wire_plugins(config: &RootConfig, _registry: &mut Registry) -> Result<(), String> {
+    match config.plugins.keys().next() {
+        Some(family) => Err(format!(
+            "config wires a plugin for '{family}', and this build carries no plugin \
+             channel to serve it"
+        )),
+        None => Ok(()),
+    }
 }
 
 /// With no config file, a local run still gets the connectors this build
@@ -1704,6 +1830,7 @@ pub fn main(cli: Cli) -> ExitCode {
             to,
             park,
             extra_root,
+            header,
         } => {
             // The file's block and the flags, judged together and before
             // anything is bound: which mode this is, and which keys
@@ -1717,6 +1844,7 @@ pub fn main(cli: Cli) -> ExitCode {
                     to,
                     park,
                     extra_root,
+                    header,
                 },
             ) {
                 Ok(resolved) => resolved,
@@ -1740,7 +1868,8 @@ pub fn main(cli: Cli) -> ExitCode {
                 }
             };
             let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
-            let outcome = runtime.block_on(crate::tunnel::run(resolved.mode, &roots));
+            let outcome =
+                runtime.block_on(crate::tunnel::run(resolved.mode, &roots, &resolved.headers));
             // Leak the runtime rather than drop it. tokio 1.53.1 has a
             // use-after-free in runtime teardown — `BlockingPool::shutdown`
             // racing a worker's `park::Inner::unpark` into a freed Condvar

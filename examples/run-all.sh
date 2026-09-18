@@ -79,9 +79,10 @@ meta.json:
     "teaches":       "...",               # informational
     "cmd":           "drt run app.dlua",  # run by bash, stdout+stderr captured
     "needs_network": false,               # true => skipped unless --net
-    "needs_build":   ["full", "windows"], # skipped unless `drt buildinfo`
-                                          # reports one of these profiles
-                                          # (a lone string names one).
+    "needs_build":   "full",              # skipped unless `drt buildinfo`
+                                          # reports this profile.  A list
+                                          # names several, and any one of
+                                          # them will do.
                                           # `cargo build` with no flags
                                           # is SLIM.
     "needs_features": ["numeric"],        # skipped unless `drt buildinfo`
@@ -89,8 +90,15 @@ meta.json:
                                           # `features` -- what the CORE
                                           # inside carries, which a profile
                                           # name does not say
-    "needs_privilege": "CAP_NET_ADMIN",   # skipped unless DRT_PRIVILEGED=1;
+    "needs_privilege": "CAP_NET_ADMIN",   # skipped unless --privileged;
                                           # the string names what is needed
+    "needs_unix":    true,                # skipped, by name, on a host that
+                                          # is not unix.  No flag turns it
+                                          # on: the example is written in
+                                          # unix's own vocabulary, and no
+                                          # argument to this script can give
+                                          # a Windows host a /bin/sh to run
+                                          # it with.
     "needs_listener": true,               # binds a port: run here and under
                                           # wasmtime, skipped in the browser
     "normalise":     ["s|a|b|"]           # sed -e, applied to BOTH sides
@@ -222,14 +230,14 @@ j_strings() {
 }
 
 # ---------------------------------------------------------------------------
-# meta.json -> meta_cmd, meta_net, meta_name, meta_build[], meta_norm[],
-# meta_feat[]
+# meta.json -> meta_cmd, meta_net, meta_name, meta_priv, meta_unix,
+# meta_build[], meta_norm[], meta_feat[]
 # ---------------------------------------------------------------------------
 
 parse_meta() {
     local file=$1 key
     meta_cmd=""; meta_net="false"; meta_name=""; meta_norm=(); j_err=""
-    meta_build=(); meta_priv=""; meta_feat=()
+    meta_build=(); meta_priv=""; meta_feat=(); meta_unix="false"
 
     _j_s=$(cat -- "$file") || { j_err="cannot read it"; return 1; }
     _j_n=${#_j_s}; _j_i=0
@@ -254,9 +262,13 @@ parse_meta() {
             needs_network) j_literal || return 1; meta_net=$REPLY ;;
             needs_build)
                 # One profile name, or a list of them: the profiles whose
-                # feature set this example needs.  A lone "full" was the
-                # only shape until `windows` -- `full` minus `exec` -- could
-                # run nearly everything `full` runs.
+                # feature set this example needs.  A lone string was the
+                # only shape until v0.7.0-rc.2's `windows` profile -- `full`
+                # minus `exec` -- gave fourteen examples two profiles to
+                # name.  That profile is gone and every example names one
+                # again, but the list shape stays: reading it costs nothing,
+                # and the next profile that is a near-superset of another
+                # will want it.
                 if [ "${_j_s:$_j_i:1}" = '[' ]; then
                     j_strings "$key" || return 1
                     meta_build=(${J_ARR[@]+"${J_ARR[@]}"})
@@ -264,6 +276,12 @@ parse_meta() {
                     j_string || return 1; meta_build=("$REPLY")
                 fi ;;
             needs_privilege) j_string || return 1; meta_priv=$REPLY ;;
+            needs_unix)
+                # Read as a literal the way `needs_network` is, and for the
+                # same reason: it is a yes/no fact about the example, with
+                # nothing to name.  A privilege has a name worth printing --
+                # CAP_NET_ADMIN -- and a host either is unix or is not.
+                j_literal || return 1; meta_unix=$REPLY ;;
             needs_features)
                 j_strings "$key" || return 1
                 meta_feat=(${J_ARR[@]+"${J_ARR[@]}"}) ;;
@@ -445,6 +463,44 @@ if [ "$drt_profile" != full ] && [ "$drt_profile" != unknown ]; then
     printf '    cargo build --release --all-features\n'
     printf '    DRT=../target/release/drt ./%s\n' "$SELF"
 fi
+
+# Whether this host is unix, for the `needs_unix` gate below.  What that
+# gate is really asking is whether the commands an example spells --
+# /bin/sh, cat, sleep, an absolute path under /bin -- exist here to be run.
+#
+# Asked as "is this a Windows shell", not "is this unix", and anything
+# unrecognised is taken for unix.  The two mistakes are not the same size:
+# a host wrongly called unix runs the example and prints a diff, which is
+# loud and someone fixes it, while a host wrongly called Windows quietly
+# stops checking and says only "skipped" forever.  That is the same posture
+# as the unknown profile above, for the same reason.
+#
+# Both tells, because each has a hole.  $OSTYPE is fixed when bash itself is
+# compiled: Git Bash and MSYS2 say `msys`, Cygwin's bash says `cygwin`, and
+# older builds say `win32`.  uname(1) is coreutils, a separate program that
+# a stripped-down box might not have, and on those same boxes it answers
+# `MINGW64_NT-10.0-20348`, `MSYS_NT-10.0-20348` or `CYGWIN_NT-10.0`.
+# Neither tell can be produced by Linux (`linux-gnu`, `Linux`) or macOS
+# (`darwin24`, `Darwin`), which is the direction that has to be right.
+#
+# WSL is caught by neither, and must not be: it is Linux, it has a /bin/sh,
+# and an example that needs unix runs there properly.
+#
+# uname first, because its answer is the more specific one and is what the
+# skip line prints.  `host_kind` is only overwritten when $OSTYPE is the
+# tell that fired, so that line can never read "skipped ... this is Linux".
+host_unix=1
+host_kind=$(uname -s 2>/dev/null)
+host_kind=${host_kind:-unknown}
+case $host_kind in
+    MINGW*|MSYS*|CYGWIN*) host_unix=0 ;;
+esac
+if [ "$host_unix" = 1 ]; then
+    case ${OSTYPE:-} in
+        msys*|cygwin*|win32*) host_unix=0; host_kind=$OSTYPE ;;
+    esac
+fi
+
 printf '\n'
 
 # ---------------------------------------------------------------------------
@@ -459,6 +515,7 @@ skipped=()
 wrong_build=()
 wrong_features=()
 unprivileged=()
+non_unix=()
 
 for name in ${examples[@]+"${examples[@]}"}; do
     dir=$HERE/$name
@@ -492,6 +549,26 @@ for name in ${examples[@]+"${examples[@]}"}; do
         continue
     fi
 
+    # An example that needs a unix host and is not on one cannot run either,
+    # and unlike every other skip here there is no flag that turns it on:
+    # no argument to this script can give a Windows host a /bin/sh.
+    #
+    # This is not the same claim as "the feature is unix-only", and the
+    # example that needs it says so.  `exec` is portable from v0.7.0-rc.3:
+    # the connector builds and runs on Windows, on a Job Object where unix
+    # uses a process group.  What is not portable is 16-exec, which
+    # demonstrates it by spelling `sh -c 'exit 3'`, `yes` and
+    # `/usr/bin/yes`, and an example written in unix's own vocabulary wants
+    # a unix host whatever the connector underneath it can do.
+    #
+    # Named and never a pass, like the two above.
+    if [ "$meta_unix" = "true" ] && [ "$host_unix" != 1 ]; then
+        printf 'skipped  %-24s (needs a unix host; this is %s)\n' \
+            "$name" "$host_kind"
+        non_unix[${#non_unix[@]}]=$name
+        continue
+    fi
+
     # An example that needs connectors or verbs this binary does not carry
     # cannot be run, and running it anyway produces a diff that reads like a
     # regression.  `cargo build` with no flags is a SLIM build, and slim is
@@ -502,9 +579,12 @@ for name in ${examples[@]+"${examples[@]}"}; do
     # Skipped, named, and never a pass.  Same rule as the network skip.
     #
     # `needs_build` names the profile whose feature set the example needs,
-    # or lists the profiles that carry it.  `windows` is `full` less
-    # `exec`, so nearly every example that needs `full` runs there too and
-    # says so; the ones that do not are `full`'s alone and say only that.
+    # or lists the profiles that carry it.  Windows builds `full` now, the
+    # same as every other native target, so an example that names `full`
+    # runs there too -- which is why 16-exec is held off a Windows host by
+    # `needs_unix` above and not by a profile name.  A profile is what the
+    # binary carries; it was never a statement about the platform, and for
+    # one release it was being read as one.
     fits=1
     if [ ${#meta_build[@]} -gt 0 ] && [ "$drt_profile" != unknown ]; then
         fits=0
@@ -523,7 +603,7 @@ for name in ${examples[@]+"${examples[@]}"}; do
     # And the same for a feature of the core rather than a connector of the
     # binary.  `needs_build` gates on which connectors were compiled in;
     # this gates on what the embedded diluvium carries, which no profile
-    # name distinguishes.  Skipped, named, and never a pass, like the three
+    # name distinguishes.  Skipped, named, and never a pass, like the four
     # above.  An empty `features` line means the binary does not answer the
     # question, and an unanswered question does not skip anything.
     if [ ${#meta_feat[@]} -gt 0 ] && [ -n "$drt_features" ]; then
@@ -609,7 +689,8 @@ done
 # Summary
 # ---------------------------------------------------------------------------
 
-n_skip=$((${#skipped[@]} + ${#wrong_build[@]} + ${#wrong_features[@]} + ${#unprivileged[@]}))
+n_skip=$((${#skipped[@]} + ${#wrong_build[@]} + ${#wrong_features[@]} \
+    + ${#unprivileged[@]} + ${#non_unix[@]}))
 n_bare=${#uncovered[@]}
 
 for n in ${uncovered[@]+"${uncovered[@]}"}; do
@@ -640,6 +721,12 @@ fi
 if [ ${#unprivileged[@]} -gt 0 ]; then
     printf 'skipped for needing a privilege (NOT a pass): %s\n' "${unprivileged[*]}"
     printf 'run as a user that has it, with --privileged, to include them.\n'
+fi
+if [ ${#non_unix[@]} -gt 0 ]; then
+    printf 'skipped for needing a unix host (NOT a pass): %s\n' "${non_unix[*]}"
+    printf 'this host is %s, and no flag overrides that.  What such\n' "$host_kind"
+    printf 'an example teaches may work here perfectly well; the commands it\n'
+    printf 'spells to teach it do not.  Run it on Linux or macOS to include it.\n'
 fi
 if [ "$n_bare" -gt 0 ]; then
     printf 'no meta.json, so unchecked: %s\n' "${uncovered[*]}"
