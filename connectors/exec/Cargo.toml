@@ -12,8 +12,17 @@ serde = { workspace = true }
 rmpv = { workspace = true }
 drt-caps = { workspace = true }
 drt-connector = { workspace = true }
-# The one thing std does not spell: a kill aimed at a process GROUP, so a
-# deadline sweeps everything the child started and not just the child.
+# A spawned child and everything it starts, owned as one: the deadline
+# sweeps a tree, not a process. `drt-platform` spells it per target -- a
+# process group on unix, a Job Object on Windows -- which is what lets this
+# connector compile off unix at all.
+drt-platform = { workspace = true }
+
+# The errno table that tells "the program could not be started" (127) from
+# "the host failed" (an error). Unix-only because errno numbers are: the
+# same question is asked of `CreateProcess`'s own failures on Windows, in
+# this connector's platform block.
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]

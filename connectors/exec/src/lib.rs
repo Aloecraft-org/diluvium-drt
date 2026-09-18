@@ -53,20 +53,41 @@
 //!
 //! Replay: the reply is a message like any other, logged and replayed. A
 //! replay does **not** re-run the subprocess.
-
-#[cfg(not(unix))]
-compile_error!(
-    "the exec connector is unix-only: it needs process groups and pipes. \
-     Build `drt` without `connector-exec` on this target"
-);
+//!
+//! # Windows, and the four places it is not unix
+//!
+//! This connector was unix-only until the deadline's kill became
+//! `drt_platform::process::Tree` -- a process group there, a Job Object
+//! here -- which was the whole of the `compile_error!` that used to stand
+//! at the top of this file. What remains are four differences that are
+//! real rather than incidental, each spelled once in the block below and
+//! nowhere else, so the body of the connector reads the same on both:
+//!
+//! 1. **`argv` is bytes on unix and text on Windows.** `exec` takes bytes
+//!    and a path is not text, so the wire type stays `bin`. Windows passes
+//!    a program UTF-16, so an entry that is not UTF-8 is refused by name
+//!    rather than guessed at: a host that guessed would start a different
+//!    program than the one it was given.
+//! 2. **`argv[0]` is not separable from the program.** Unix hands the
+//!    child whatever name the guest wrote, as `execvp` does. Windows has
+//!    no such call: the child sees the file it was started from. A guest
+//!    that inspects `argv[0]` sees the resolved path there and the name it
+//!    asked for on unix.
+//! 3. **There is no executable bit.** Unix checks `0o111`. Windows decides
+//!    by extension, so the check is "a file that exists", and the `PATH`
+//!    search tries `PATHEXT`'s suffixes the way the shell does -- which is
+//!    also why `allow` naming `foo` and a call asking for `foo` can resolve
+//!    to `foo.exe`, compared after canonicalisation as every other entry is.
+//! 4. **An exit is a code, never a signal.** `128 + signo` is a unix
+//!    answer; on Windows a terminated child reports the code its killer
+//!    passed, and a swept tree reports `Tree`'s.
 
 use std::ffi::{OsStr, OsString};
 use std::io::{ErrorKind, Read, Write};
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+
+use drt_platform::process::Tree;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -81,6 +102,10 @@ use drt_connector::{CallError, CallResult, Connector};
 // Surface. [`ExecConnector`] answers exactly one call, `exec/run`, under the
 // scope [`ExecScopeType`] describes; there is no dispatch beyond that call.
 // The values below are the bounds a deployment tunes.
+//
+// Fan-out: `platform`, below, is the one place this file is `cfg`-gated --
+// the four differences the header lists, one function each. Nothing else in
+// this file may name a target.
 // ---------------------------------------------------------------------------
 
 /// The ceiling on a call's wall-clock deadline when the scope states none:
@@ -103,8 +128,12 @@ const REAP_POLL: Duration = Duration::from_millis(2);
 /// is that, with one scheduler's worth of slack.
 const EXIT_DRAIN_GRACE: Duration = Duration::from_millis(50);
 /// Where a program is looked up when the environment names no `PATH`, the
-/// way `execvp` falls back.
+/// way `execvp` falls back. Windows always has one, and the fallback there
+/// is the pair of directories a bare system guarantees.
+#[cfg(unix)]
 const DEFAULT_PATH: &str = "/usr/bin:/bin";
+#[cfg(windows)]
+const DEFAULT_PATH: &str = r"C:\Windows\system32;C:\Windows";
 
 /// The connector. Stateless: every bound comes from the scope on each call.
 #[derive(Default)]
@@ -271,7 +300,9 @@ fn parse_args(args: Option<rmpv::Value>, scope: &ExecScope) -> Result<RunArgs, S
             // An empty cwd is no cwd, as `dhost_exec.c` reads it.
             Some([]) => None,
             Some(bytes) if !bytes.contains(&0) => {
-                Some(PathBuf::from(OsString::from_vec(bytes.to_vec())))
+                Some(PathBuf::from(os_arg(bytes, 0).map_err(|_| {
+                    "cwd is not UTF-8, and this platform takes a path as text".to_string()
+                })?))
             }
             _ => return Err("cwd must be a plain string".into()),
         },
@@ -311,8 +342,9 @@ enum Resolved {
 }
 
 fn resolve_program(args: &RunArgs, scope: &ExecScope) -> Result<Resolved, String> {
-    let argv0 = Path::new(OsStr::from_bytes(&args.argv[0]));
-    let program = if args.argv[0].contains(&b'/') {
+    let argv0_os = os_arg(&args.argv[0], 1)?;
+    let argv0 = Path::new(&argv0_os);
+    let program = if looks_like_path(&args.argv[0]) {
         // A path. `dhost_exec.c` chdirs and then execs, so a relative one
         // is relative to `cwd`; joining here is that, spelled out.
         match (&args.cwd, argv0.is_relative()) {
@@ -353,19 +385,76 @@ fn resolve_program(args: &RunArgs, scope: &ExecScope) -> Result<Resolved, String
 fn find_on_path(name: &Path) -> Option<PathBuf> {
     let path = std::env::var_os("PATH").unwrap_or_else(|| OsString::from(DEFAULT_PATH));
     std::env::split_paths(&path)
-        .map(|dir| dir.join(name))
+        .flat_map(|dir| candidates_in(&dir, name))
         .find(|candidate| is_executable_file(candidate))
 }
 
+// depth: the platform block -- the four differences, and nothing else in
+// this file may name a target.
+
+/// One `argv` entry as this platform hands it to a program.
+///
+/// `which` is the guest's own index, so a refusal names the entry the
+/// guest wrote rather than the one this loop is on.
+#[cfg(unix)]
+fn os_arg(bytes: &[u8], _which: usize) -> Result<OsString, String> {
+    use std::os::unix::ffi::OsStringExt;
+    Ok(OsString::from_vec(bytes.to_vec()))
+}
+
+#[cfg(windows)]
+fn os_arg(bytes: &[u8], which: usize) -> Result<OsString, String> {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => Ok(OsString::from(text)),
+        // Refused rather than lossily converted. A replacement character
+        // in a path is a different path, and starting a different program
+        // than the one named is the one outcome this connector must never
+        // have.
+        Err(_) => Err(format!(
+            "argv[{which}] is not UTF-8, and this platform passes a program UTF-16 rather \
+             than bytes; a host that guessed at an encoding could start a different \
+             program than the one named"
+        )),
+    }
+}
+
+/// `argv[0]`, which unix hands over as the guest wrote it and Windows
+/// cannot separate from the file the child was started from.
+#[cfg(unix)]
+fn set_arg0(command: &mut Command, argv0: &OsStr) {
+    use std::os::unix::process::CommandExt;
+    command.arg0(argv0);
+}
+
+#[cfg(windows)]
+fn set_arg0(_command: &mut Command, _argv0: &OsStr) {
+    // Nothing to do, and nothing to refuse: `CreateProcess` takes one
+    // command line and the child parses its own name out of it. A guest
+    // that reads `argv[0]` sees the resolved program here.
+}
+
+/// Whether a file can be started. Unix asks the mode; Windows has no
+/// executable bit and decides by extension, so the honest question there
+/// is whether the file is there at all.
+#[cfg(unix)]
 fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path)
         .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn is_executable_file(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .map(|m| m.is_file())
         .unwrap_or(false)
 }
 
 /// The errors `execvp` (or the `chdir` before it) fails with, which
 /// `dhost_exec.c` answers as `_exit(127)`. Anything else -- no descriptors,
 /// no memory, no process -- is the host failing, and is an `error`.
+#[cfg(unix)]
 fn could_not_exec(e: &std::io::Error) -> bool {
     matches!(
         e.raw_os_error(),
@@ -382,6 +471,87 @@ fn could_not_exec(e: &std::io::Error) -> bool {
                 | libc::ETXTBSY
         )
     )
+}
+
+/// The same question on Windows, asked of `CreateProcess`'s failures.
+///
+/// By kind rather than by number where a kind exists, and by number for
+/// the two that have none: `ERROR_BAD_EXE_FORMAT` is a file that is not a
+/// program, which is `ENOEXEC`, and `ERROR_DIRECTORY_NOT_SUPPORTED` is
+/// `EISDIR`. Together these are the same sentence the unix list is: the
+/// program could not be started, so the answer is 127 and not an error.
+#[cfg(windows)]
+fn could_not_exec(e: &std::io::Error) -> bool {
+    /// `ERROR_BAD_EXE_FORMAT`: the file is not a program.
+    const BAD_EXE_FORMAT: i32 = 193;
+    /// `ERROR_DIRECTORY_NOT_SUPPORTED`: the name is a directory.
+    const DIRECTORY_NOT_SUPPORTED: i32 = 336;
+    matches!(e.kind(), ErrorKind::NotFound | ErrorKind::PermissionDenied)
+        || matches!(
+            e.raw_os_error(),
+            Some(BAD_EXE_FORMAT) | Some(DIRECTORY_NOT_SUPPORTED)
+        )
+}
+
+/// Whether `argv[0]` names a path rather than a program to look up.
+///
+/// Unix asks for a slash, as `execvp` does. Windows takes either
+/// separator and also a drive-qualified name, which has no separator at
+/// all in `C:foo`.
+#[cfg(unix)]
+fn looks_like_path(argv0: &[u8]) -> bool {
+    argv0.contains(&b'/')
+}
+
+#[cfg(windows)]
+fn looks_like_path(argv0: &[u8]) -> bool {
+    argv0.contains(&b'/') || argv0.contains(&b'\\') || matches!(argv0, [_, b':', ..])
+}
+
+/// The names to try for one `PATH` directory and one program name.
+///
+/// Unix tries the name. Windows tries the name and then each suffix in
+/// `PATHEXT`, which is how every Windows shell turns `foo` into `foo.exe`
+/// -- and skipping it would make a call for `foo` a 127 on a box where
+/// `foo.exe` is right there.
+#[cfg(unix)]
+fn candidates_in(dir: &Path, name: &Path) -> Vec<PathBuf> {
+    vec![dir.join(name)]
+}
+
+#[cfg(windows)]
+fn candidates_in(dir: &Path, name: &Path) -> Vec<PathBuf> {
+    /// What a bare Windows install sets, for the case where nothing does.
+    const DEFAULT_PATHEXT: &str = ".COM;.EXE;.BAT;.CMD";
+    let joined = dir.join(name);
+    let mut out = vec![joined.clone()];
+    let pathext = std::env::var_os("PATHEXT").unwrap_or_else(|| OsString::from(DEFAULT_PATHEXT));
+    for ext in pathext
+        .to_string_lossy()
+        .split(';')
+        .filter(|e| !e.is_empty())
+    {
+        let mut with = joined.clone().into_os_string();
+        with.push(ext);
+        out.push(PathBuf::from(with));
+    }
+    out
+}
+
+/// The exit a child reports. Unix may answer with a signal, which
+/// `dhost_exec.c` reports as `128 + signo`; Windows has only a code.
+#[cfg(unix)]
+fn status_of(exit: &std::process::ExitStatus) -> i64 {
+    use std::os::unix::process::ExitStatusExt;
+    exit.code()
+        .map(i64::from)
+        .or_else(|| exit.signal().map(|sig| 128 + i64::from(sig)))
+        .unwrap_or(-1)
+}
+
+#[cfg(windows)]
+fn status_of(exit: &std::process::ExitStatus) -> i64 {
+    exit.code().map(i64::from).unwrap_or(-1)
 }
 
 // depth: the run, under one deadline
@@ -450,16 +620,6 @@ fn tripped(out: &Capped, err: &Capped) -> Option<&'static str> {
     }
 }
 
-/// SIGKILL to the child's whole process group. `ESRCH` means it is already
-/// empty, which is the state every exit path leaves it in.
-fn sweep(pid: u32) {
-    // SAFETY: a plain syscall on a group this call created; no memory
-    // crosses.
-    unsafe {
-        libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
-    }
-}
-
 fn reap(child: &mut Child) {
     let _ = child.wait();
 }
@@ -472,26 +632,29 @@ fn run(scope: &ExecScope, args: RunArgs) -> Result<rmpv::Value, String> {
     };
 
     let mut command = Command::new(&program);
+    let argv0 = os_arg(&args.argv[0], 1)?;
+    // The program sees the name the guest gave it, where the platform can
+    // say it apart from the file; see the header's second difference.
+    set_arg0(&mut command, &argv0);
+    for (i, arg) in args.argv[1..].iter().enumerate() {
+        command.arg(os_arg(arg, i + 2)?);
+    }
     command
-        // The program sees the name the guest gave it, as under `execvp`.
-        .arg0(OsStr::from_bytes(&args.argv[0]))
-        .args(args.argv[1..].iter().map(|a| OsStr::from_bytes(a)))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        // Its own process group, so the deadline can kill the whole tree
-        // and not just the direct child. Set before exec, so a kill aimed
-        // at the group after `spawn` returns reaches everything it starts.
-        .process_group(0);
+        .stderr(Stdio::piped());
     if let Some(cwd) = &args.cwd {
         command.current_dir(cwd);
     }
-    let mut child = match command.spawn() {
-        Ok(child) => child,
+    // Started as a tree, so the deadline can kill everything the program
+    // starts and not just the program. Holding `tree` is what keeps that
+    // promise; dropping it sweeps, so every `return` below is covered
+    // whether or not it swept first.
+    let (mut child, tree) = match Tree::spawn(&mut command) {
+        Ok(started) => started,
         Err(e) if could_not_exec(&e) => return Ok(reply(EXIT_NOT_FOUND, Vec::new(), Vec::new())),
         Err(e) => return Err(format!("the child would not start: {e}")),
     };
-    let pid = child.id();
     let deadline = Instant::now() + Duration::from_millis(args.timeout_ms);
 
     // stdin on its own thread: a child that never reads must not hold the
@@ -513,7 +676,7 @@ fn run(scope: &ExecScope, args: RunArgs) -> Result<rmpv::Value, String> {
 
     let exit = loop {
         if let Some(stream) = tripped(&out, &err) {
-            sweep(pid);
+            tree.sweep();
             reap(&mut child);
             return Err(format!(
                 "{stream} passed this deployment's byte cap ({cap}); the child was killed, \
@@ -524,13 +687,13 @@ fn run(scope: &ExecScope, args: RunArgs) -> Result<rmpv::Value, String> {
             Ok(Some(status)) => break status,
             Ok(None) => {}
             Err(e) => {
-                sweep(pid);
+                tree.sweep();
                 reap(&mut child);
                 return Err(format!("waiting on the child failed: {e}"));
             }
         }
         if Instant::now() >= deadline {
-            sweep(pid);
+            tree.sweep();
             reap(&mut child);
             return Err(format!(
                 "the child was killed at the {} ms deadline",
@@ -540,10 +703,10 @@ fn run(scope: &ExecScope, args: RunArgs) -> Result<rmpv::Value, String> {
         thread::sleep(REAP_POLL);
     };
 
-    // The child is gone. Its group may still hold descendants writing to
+    // The child is gone. Its tree may still hold descendants writing to
     // its pipes -- `sh -c "server &"` -- and nothing exec/run starts
-    // outlives it, so the group is swept on this path as on every other.
-    sweep(pid);
+    // outlives it, so the tree is swept on this path as on every other.
+    tree.sweep();
     // Then what the pipes hold. End-of-file arrives at once when nothing
     // else has them open; a descendant that escaped the group keeps them,
     // and then the answer is what was buffered at exit, as the C host's is.
@@ -556,12 +719,7 @@ fn run(scope: &ExecScope, args: RunArgs) -> Result<rmpv::Value, String> {
             "{stream} passed this deployment's byte cap ({cap}); the output is refused"
         ));
     }
-    let status = exit
-        .code()
-        .map(i64::from)
-        .or_else(|| exit.signal().map(|sig| 128 + i64::from(sig)))
-        .unwrap_or(-1);
-    Ok(reply(status, out.take(), err.take()))
+    Ok(reply(status_of(&exit), out.take(), err.take()))
 }
 
 /// `{status, stdout, stderr}`. The streams travel as msgpack `str` when
