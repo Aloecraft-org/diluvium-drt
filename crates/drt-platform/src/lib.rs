@@ -33,6 +33,7 @@ pub mod fs;
 /// native, which is the honest failure -- a runtime refusal would imply
 /// the capability exists and was withheld.
 #[cfg(any(unix, windows))]
+pub mod privilege;
 pub mod process;
 pub mod stdio;
 

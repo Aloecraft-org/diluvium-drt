@@ -2101,12 +2101,16 @@ fn a_machine_with_no_tun_node_is_named_before_anything_is_created() {
     assert!(finding.contains("tun-that-is-not-there"), "{finding}");
     assert!(finding.contains("--device"), "{finding}");
 
-    // And the capability is asked separately, because a process can hold
+    // And the privilege is asked separately, because a process can hold
     // it and still not open the node — which is exactly the case that got
-    // read as "the capability isn't taking effect".
+    // read as "the capability isn't taking effect". It lives in
+    // `drt-platform` now and answers on every target; here it is definite,
+    // because reading `CapEff` establishes the privilege rather than a
+    // proxy for it.
+    use drt_platform::privilege::{held, Held, Privilege};
     assert!(
-        drt::wireguard::net_admin_here().is_some(),
-        "CapEff is readable wherever /proc is mounted; None is for where it is not"
+        matches!(held(Privilege::NetAdmin), Held::Yes | Held::No),
+        "CapEff is readable wherever /proc is mounted; Unknown is for where it is not"
     );
 }
 
