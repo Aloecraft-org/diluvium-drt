@@ -142,6 +142,32 @@ drt tunnel --extra-root /etc/pki/corp-ca.pem \
 Without it, `wss://` uses webpki's bundled roots, which is what a gate
 with a public certificate needs and wants.
 
+### What each half says
+
+One line per event on stderr, so a tunnel with nothing to do can be told
+from one that is broken. The device:
+
+```
+drt tunnel: parked at wss://rendezvous.example/park/xps?…, delivering to 127.0.0.1:22 when a caller claims it
+drt tunnel: leg claimed, session to 127.0.0.1:22
+drt tunnel: session to 127.0.0.1:22 ended
+```
+
+"parked" is said once, and again after a failure has been retried through,
+never on the routine re-park that follows a claim or the relay's idle
+close: between lines, silence means parked. The caller's `--local` says
+`local 127.0.0.1:2222 claiming a leg per connection at …` when it binds,
+then `leg claimed` and `leg ended` per connection, by peer address, and a
+refused claim by its reason. `--listen` says `ws on … bridging to …` when
+it binds, then `bridged to …` and `session ended` per connection, and
+each way a connection can fail -- not a WebSocket handshake, the target
+unreachable -- by name. The `ProxyCommand` form says `connected to …;
+stdin and stdout are the session` only when a person runs it at a
+terminal; under ssh it is silent, as every ProxyCommand tool is, since
+ssh relays that stderr to the terminal on every `rsync`. No line shows a
+URL's query, which is where a `?k=` key lives, and the dial's own errors
+drop it too.
+
 ## The URLs are the public surface
 
 Both legs are dumb pipes — `websocat` on either end works identically, and

@@ -51,6 +51,21 @@ overlap ran three candidates, and this one ends it.
   that disagrees with it is refused, and a scheme it does not read
   is a bad key rather than an absent one.
 
+### Changed
+
+- **`drt tunnel` says what it is doing.** A tunnel with nothing to
+  do was silent, which is what a broken one looks like. Each half
+  now says so on stderr: the device that it parked and to where,
+  once and again after a failure, never on the routine re-park a
+  claim or the relay's idle close brings; each leg claimed and each
+  session ended; the `--local` and `--listen` halves every
+  connection bridged or refused, by peer, where a refused one used
+  to close without a word; and the `ProxyCommand` half, when a
+  person runs it at a terminal, that it connected and what stdin is
+  for -- under ssh it stays silent, as every ProxyCommand tool
+  does. No line shows a URL's query, which is where a `?k=` key
+  lives, and the dial's own errors drop it too.
+
 ### Removed
 
 - **`drt_linux_static_x86_64`, `drt_slim_<platform>` and

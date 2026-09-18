@@ -171,6 +171,18 @@ fn spelled(key: &str, source: Source) -> String {
     }
 }
 
+/// A URL as a line on stderr shows it: without its query, which is
+/// where a `?k=` key lives. A device runs from a file precisely so the
+/// key is in a 0600 file and not in `ps` or a paste, and a line that
+/// echoed it would put it back; `--header` moves the key out of the URL
+/// altogether, and the URL form should not undo that in a log.
+pub fn shown(url: &str) -> String {
+    match url.split_once('?') {
+        Some((head, _)) => format!("{head}?…"),
+        None => url.to_string(),
+    }
+}
+
 /// One handshake header as the operator wrote it, checked the way the
 /// request will check it: a name HTTP allows, a value with no control
 /// bytes. Trimmed, since `Name: value` is how a person writes one.
@@ -384,14 +396,15 @@ pub async fn connect(
     // far end delays -- 40 ms on Linux, 200 on Windows -- once per hop.
     // TCP_NODELAY goes on before the stream is handed over, and every
     // other socket drt dials or accepts gets the same.
+    let seen = shown(url);
     let mut request = url
         .into_client_request()
-        .map_err(|e| format!("cannot reach {url}: {e}"))?;
+        .map_err(|e| format!("cannot reach {seen}: {e}"))?;
     for (name, value) in headers {
         let name = HeaderName::from_bytes(name.as_bytes())
-            .map_err(|_| format!("cannot reach {url}: `{name}` is not a header name"))?;
+            .map_err(|_| format!("cannot reach {seen}: `{name}` is not a header name"))?;
         let value = HeaderValue::from_str(value).map_err(|_| {
-            format!("cannot reach {url}: the value of `{name}` is not a header value")
+            format!("cannot reach {seen}: the value of `{name}` is not a header value")
         })?;
         request.headers_mut().insert(name, value);
     }
@@ -399,18 +412,18 @@ pub async fn connect(
         .uri()
         .host()
         .map(|h| h.trim_start_matches('[').trim_end_matches(']').to_string())
-        .ok_or_else(|| format!("cannot reach {url}: the url names no host"))?;
-    let mode = uri_mode(request.uri()).map_err(|e| format!("cannot reach {url}: {e}"))?;
+        .ok_or_else(|| format!("cannot reach {seen}: the url names no host"))?;
+    let mode = uri_mode(request.uri()).map_err(|e| format!("cannot reach {seen}: {e}"))?;
     let port = request.uri().port_u16().unwrap_or(match mode {
         Mode::Plain => 80,
         Mode::Tls => 443,
     });
     let stream = tokio::net::TcpStream::connect((host.as_str(), port))
         .await
-        .map_err(|e| format!("cannot reach {url}: {e}"))?;
+        .map_err(|e| format!("cannot reach {seen}: {e}"))?;
     stream
         .set_nodelay(true)
-        .map_err(|e| format!("cannot reach {url}: TCP_NODELAY: {e}"))?;
+        .map_err(|e| format!("cannot reach {seen}: TCP_NODELAY: {e}"))?;
     let connector = if extra_roots.is_empty() {
         None
     } else {
@@ -421,7 +434,7 @@ pub async fn connect(
     };
     let (ws, _) = tokio_tungstenite::client_async_tls_with_config(request, stream, None, connector)
         .await
-        .map_err(|e| format!("cannot reach {url}: {e}"))?;
+        .map_err(|e| format!("cannot reach {seen}: {e}"))?;
     Ok(ws)
 }
 
@@ -484,12 +497,27 @@ where
 
 /// The client half: dial the WSS url and pump this process's stdio through
 /// it — the OpenSSH `ProxyCommand` contract. Runs until either side closes.
+///
+/// A person who typed this at a terminal is told the dial worked and what
+/// this half is, because a bridge waiting on stdin looks exactly like one
+/// that hung. Under a `ProxyCommand` stdin is ssh's pipe and ssh's own
+/// banner is the sign; every ProxyCommand tool is silent there, and so is
+/// this one — a line per `rsync` would be noise on the terminal ssh
+/// relays stderr to.
 pub async fn stdio_to_ws(
     url: &str,
     extra_roots: &[CertificateDer<'static>],
     headers: &[(String, String)],
 ) -> Result<(), String> {
     let ws = connect(url, extra_roots, headers).await?;
+    if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        eprintln!(
+            "drt tunnel: connected to {}; stdin and stdout are the session \
+             (ssh -o ProxyCommand=\"drt tunnel …\" runs it that way; --local <addr> \
+             serves a port instead)",
+            shown(url)
+        );
+    }
     let stdio = tokio::io::join(tokio::io::stdin(), tokio::io::stdout());
     pump(stdio, ws).await
 }
@@ -516,25 +544,42 @@ pub async fn serve_ws_bridge(
     target: &str,
 ) -> Result<(), String> {
     loop {
-        let Ok((conn, _)) = listener.accept().await else {
+        let Ok((conn, peer)) = listener.accept().await else {
             continue;
         };
         // Issue #33: interactive on both of this hop's sockets; see `connect`.
-        if conn.set_nodelay(true).is_err() {
+        if let Err(e) = conn.set_nodelay(true) {
+            eprintln!("drt tunnel: {peer}: cannot set TCP_NODELAY: {e}");
             continue;
         }
         let target = target.to_string();
         tokio::spawn(async move {
-            let Ok(ws) = tokio_tungstenite::accept_async(conn).await else {
-                return;
+            // Each way a connection ends is said, by peer. A bridge in
+            // front of an sshd that dropped a caller for a reason it kept
+            // to itself was indistinguishable from one that was broken.
+            let ws = match tokio_tungstenite::accept_async(conn).await {
+                Ok(ws) => ws,
+                Err(e) => {
+                    eprintln!("drt tunnel: {peer}: not a websocket handshake: {e}");
+                    return;
+                }
             };
-            let Ok(tcp) = tokio::net::TcpStream::connect(&target).await else {
-                return;
+            let tcp = match tokio::net::TcpStream::connect(&target).await {
+                Ok(tcp) => tcp,
+                Err(e) => {
+                    eprintln!("drt tunnel: {peer}: cannot reach {target}: {e}");
+                    return;
+                }
             };
-            if tcp.set_nodelay(true).is_err() {
+            if let Err(e) = tcp.set_nodelay(true) {
+                eprintln!("drt tunnel: {peer}: cannot reach {target}: TCP_NODELAY: {e}");
                 return;
             }
-            let _ = pump(tcp, ws).await;
+            eprintln!("drt tunnel: {peer}: bridged to {target}");
+            if let Err(e) = pump(tcp, ws).await {
+                eprintln!("drt tunnel: {peer}: {e}");
+            }
+            eprintln!("drt tunnel: {peer}: session ended");
         });
     }
 }
@@ -564,8 +609,9 @@ pub async fn local_to_ws(
         .await
         .map_err(|e| format!("cannot bind {local}: {e}"))?;
     eprintln!(
-        "drt tunnel: local {} claiming a leg per connection at {url}",
-        listener.local_addr().map_err(|e| e.to_string())?
+        "drt tunnel: local {} claiming a leg per connection at {}",
+        listener.local_addr().map_err(|e| e.to_string())?,
+        shown(url)
     );
     serve_local(listener, url, extra_roots, headers).await
 }
@@ -591,13 +637,24 @@ pub async fn serve_local(
         let roots = extra_roots.to_vec();
         let headers = headers.to_vec();
         tokio::spawn(async move {
-            // Claim first, splice second. `stream_to_ws` dials before it
-            // pumps, so a refused claim returns here with `conn` unread
-            // and drops it -- that drop is the local close the caller
-            // sees, at once, in place of a leg that never came.
-            if let Err(e) = stream_to_ws(conn, &url, &roots, &headers).await {
+            // Claim first, splice second: a refused claim returns here
+            // with `conn` unread and drops it -- that drop is the local
+            // close the caller sees, at once, in place of a leg that never
+            // came. Each leg says when it is claimed and when it ends, so
+            // a client that connected and saw nothing can be told apart
+            // from a leg that never came.
+            let ws = match connect(&url, &roots, &headers).await {
+                Ok(ws) => ws,
+                Err(e) => {
+                    eprintln!("drt tunnel: {peer}: {e}");
+                    return;
+                }
+            };
+            eprintln!("drt tunnel: {peer}: leg claimed");
+            if let Err(e) = pump(conn, ws).await {
                 eprintln!("drt tunnel: {peer}: {e}");
             }
+            eprintln!("drt tunnel: {peer}: leg ended");
         });
     }
 }
@@ -649,22 +706,30 @@ pub async fn park(
     headers: &[(String, String)],
 ) -> Result<(), String> {
     let mut backoff = Duration::from_secs(1);
+    // "parked" is said when the leg first parks and again after a failure,
+    // never on the routine re-park a claim or the relay's idle close
+    // brings: that close comes every five minutes, and a line each time
+    // would be a heartbeat. Between lines, silence means parked.
+    let mut announce = true;
     loop {
-        match park_once(url, target, extra_roots, headers).await {
+        match park_once(url, target, extra_roots, headers, announce).await {
             // A claim happened: the session runs detached; park again now.
             Ok(Parked::Claimed) => {
                 backoff = Duration::from_secs(1);
+                announce = false;
             }
             // Idle-timeout close from the relay, or a clean drop: re-park
             // promptly — an unparked label is a device that is not home.
             Ok(Parked::Dropped) => {
                 backoff = Duration::from_secs(1);
+                announce = false;
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
             Err(e) => {
                 eprintln!("drt tunnel --park: {e}; retrying in {backoff:?}");
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_secs(60));
+                announce = true;
             }
         }
     }
@@ -680,13 +745,20 @@ async fn park_once(
     target: &str,
     extra_roots: &[CertificateDer<'static>],
     headers: &[(String, String)],
+    announce: bool,
 ) -> Result<Parked, String> {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message;
 
     let mut ws = connect(url, extra_roots, headers)
         .await
-        .map_err(|e| format!("cannot park at {url}: {e}"))?;
+        .map_err(|e| format!("cannot park at {}: {e}", shown(url)))?;
+    if announce {
+        eprintln!(
+            "drt tunnel: parked at {}, delivering to {target} when a caller claims it",
+            shown(url)
+        );
+    }
 
     // Hold, answering pings, until the first claimed bytes arrive.
     let first = loop {
@@ -703,11 +775,12 @@ async fn park_once(
 
     // Claimed. The session runs detached so the caller of park() can
     // re-park immediately — replenish-on-claim is this line.
+    eprintln!("drt tunnel: leg claimed, session to {target}");
     let target = target.to_string();
-    let url = url.to_string();
     tokio::spawn(async move {
-        if let Err(e) = run_session(ws, &target, first).await {
-            eprintln!("drt tunnel --park [{url}]: session ended: {e}");
+        match run_session(ws, &target, first).await {
+            Ok(()) => eprintln!("drt tunnel: session to {target} ended"),
+            Err(e) => eprintln!("drt tunnel: session to {target} ended: {e}"),
         }
     });
     Ok(Parked::Claimed)
@@ -781,7 +854,9 @@ async fn run_session(
 /// must not miss and `relay` has presence to announce; a tunnel's interesting
 /// events are the relay's, already on that bridge, and inventing a second
 /// stream of them here would mean two sources for one fact. Stated rather than
-/// left to be noticed.
+/// left to be noticed. What the verb says on stderr — bound, parked, a leg
+/// claimed and ended — it says here too, in the same lines: that is the
+/// tunnel talking to whoever is watching the process, not a report.
 pub struct TunnelBridge {
     /// The thread owning the runtime. Dropped when the deployment ends, which
     /// is when the process is exiting anyway.
@@ -815,5 +890,28 @@ impl TunnelBridge {
             std::mem::forget(rt);
         });
         Ok(TunnelBridge { _runtime: runtime })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shown;
+
+    /// The query is where a key lives, and no line shows it; a URL with
+    /// none is shown whole.
+    #[test]
+    fn a_shown_url_keeps_its_path_and_drops_its_query() {
+        assert_eq!(
+            shown("wss://rendezvous.example/park/xps?k=park-secret"),
+            "wss://rendezvous.example/park/xps?…"
+        );
+        assert_eq!(
+            shown("wss://rendezvous.example/s/xps"),
+            "wss://rendezvous.example/s/xps"
+        );
+        assert_eq!(
+            shown("ws://127.0.0.1:18490/s/fp?"),
+            "ws://127.0.0.1:18490/s/fp?…"
+        );
     }
 }
