@@ -179,10 +179,13 @@ jobs:
               {"name": "darwin_arm64", "os": "macos-latest", "target": "aarch64-apple-darwin", "setup": "true"},
               {"name": "darwin_x86_64", "os": "macos-15-intel", "target": "x86_64-apple-darwin", "setup": "true"},
           ]
-          # Windows is not in this matrix because it cannot build `full`:
-          # it is `build-windows` below -- the `windows` profile and
-          # `slim` -- and proven on a real Windows runner by
-          # `smoke-windows`. A dev build is the x86_64 leg alone.
+          # Windows is not in this matrix because its leg is not shaped
+          # like these, not because it is short of anything: it is
+          # cross-built from Linux with mingw-w64 in `build-windows`
+          # below -- `full` and `slim`, the same two every leg here
+          # ships -- and then run on a real Windows runner by
+          # `smoke-windows`, which is the smoke step these legs do inline.
+          # A dev build is the x86_64 leg alone.
           include = [linux] if os.environ["DEV"] == "true" else [linux, arm64] + darwin
           print("matrix=" + json.dumps({"include": include}))
           EOF
@@ -482,15 +485,27 @@ jobs:
     # target triple itself, so the build needs nothing told to it that the
     # linux_static leg does not also need.
     #
-    # Two binaries, as every native leg ships two. `full` is not one of
-    # them: `exec` is unix-only by `compile_error!`. So the unprefixed
-    # `drt_windows_x86_64.exe` is the `windows` profile -- `full` minus
-    # `exec`, everything else cross-building with mingw-w64 alone now that
-    # ego-transport has russh on `ring` and aws-lc-sys is out of the tree
-    # (crates/drt/Cargo.toml, at `windows`) -- because doc/ALIGNMENT.md §4
-    # makes the unprefixed name the largest profile a platform gets, and
-    # on Windows that is not `full`. `drt_windows_x86_64_slim.exe` is
-    # `slim`, the distribution-size profile, as on every other platform.
+    # Two binaries, and they are the two every native leg ships: `full`
+    # and `slim`. `full` was out of reach here for one connector's sake --
+    # `exec` opened with a `compile_error!` naming itself unix-only -- so
+    # the unprefixed artifact used to be a `windows` profile, `full` minus
+    # that one connector. What the refusal was really about was the kill:
+    # a deadline has to sweep everything the child started, and a process
+    # group is not a thing Windows has. `drt_platform::process::Tree`
+    # spells that per target -- a process group on unix, a Job Object with
+    # kill-on-close there -- and with it `exec` cross-builds like
+    # everything else. So the profile is gone and Windows builds `full`,
+    # and the unprefixed `drt_windows_x86_64.exe` is `full`:
+    # doc/ALIGNMENT.md §4 makes the unprefixed name the largest profile a
+    # platform gets, and on Windows that is now simply `full`, with
+    # nothing left to qualify. `drt_windows_x86_64_slim.exe` is `slim`,
+    # the distribution-size profile, as on every other platform.
+    #
+    # Everything `full` carries cross-builds with mingw-w64 alone, and
+    # that has been true since ego-transport 0.1.4 put russh on `ring` and
+    # took aws-lc-sys out of the tree: before that `stun`, `netcheck`,
+    # `turn` and `ssh` reached it through russh's default backend, and its
+    # windows-gnu build wanted NASM on this leg.
     #
     # A cross-built binary cannot be run here, and a binary nothing ran is
     # what the smoke steps exist to prevent -- so both are uploaded and
@@ -514,10 +529,10 @@ jobs:
           key: windows_x86_64
       - name: mingw-w64
         run: sudo apt-get update && sudo apt-get install -y mingw-w64
-      - name: Build windows and slim
+      - name: Build full and slim
         run: |
           set -eu
-          cargo build --profile release-small -p drt --target x86_64-pc-windows-gnu --no-default-features --features windows
+          cargo build --profile release-small -p drt --target x86_64-pc-windows-gnu --no-default-features --features full
           cp target/x86_64-pc-windows-gnu/release-small/drt.exe drt_windows_x86_64.exe
           cargo build --profile release-small -p drt --target x86_64-pc-windows-gnu
           cp target/x86_64-pc-windows-gnu/release-small/drt.exe drt_windows_x86_64_slim.exe
@@ -539,12 +554,24 @@ jobs:
     # Git Bash is the shell because run-all.sh is bash and the examples'
     # own demo.sh files are too; the runner ships it, with the coreutils,
     # sed, diff and curl the gate needs. Every example a binary can run
-    # runs on it: `needs_build` lists the profiles an example's feature
-    # set is in, and `windows` is on nearly every list `full` is on, so
-    # the tunnel, relay, STUN, TURN, WireGuard, ssh, sql, rest and mail
-    # examples are driven here, on Windows, and the three that are
-    # `full`'s alone (`00-install-methods`, `16-exec`,
-    # `22-wireguard-interface`) are skipped by name.
+    # runs on it, and the unprefixed binary is `full` now, so that is
+    # every example whose `needs_build` names `full`: the tunnel, relay,
+    # STUN, TURN, WireGuard, ssh, sql, rest and mail examples are driven
+    # here, on Windows, and so is `00-install-methods`, which snapshots
+    # `full`'s own `buildinfo` and was skipped for as long as this binary
+    # was a different profile.
+    #
+    # Two stay behind, and neither for the profile's sake. `16-exec` is
+    # marked `needs_unix` in its meta.json: the example is written in
+    # unix's own vocabulary (`sh -c`, `cat`, `yes`, `ls`), and no argument
+    # to run-all.sh can give a Windows host a /bin/sh, even though the
+    # connector it teaches now builds and runs here. The connector is
+    # covered on this platform by `cargo test` instead, in ci.yml's
+    # `windows` job, which is where a contract both platforms answer
+    # belongs -- an example has one transcript to print, and that
+    # transcript is unix's. `22-wireguard-interface` needs a privilege,
+    # which is what holds it off every runner, and on Windows it needs
+    # wintun.dll as well.
     name: Smoke (windows_x86_64)
     needs: [preflight, build-windows]
     if: needs.preflight.outputs.dev != 'true'
@@ -576,7 +603,7 @@ jobs:
               ! ./$exe buildinfo | grep -q '^tag:'
             fi
           done
-          ./drt_windows_x86_64.exe buildinfo | grep -qx 'profile: windows'
+          ./drt_windows_x86_64.exe buildinfo | grep -qx 'profile: full'
           ./drt_windows_x86_64_slim.exe buildinfo | grep -qx 'profile: slim'
           # The one thing `wg` can do with no peer, no privilege and no
           # wintun.dll: a key pair, and its public half derived again from
@@ -587,7 +614,7 @@ jobs:
           [ "$(printf '%s\n' "$keys" | wc -l)" -eq 2 ]
           derived=$(printf '%s\n' "$keys" | head -1 | ./drt_windows_x86_64.exe wg pubkey)
           [ "$derived" = "$(printf '%s\n' "$keys" | sed -n 2p)" ]
-      - name: What the windows profile carries, read off the artifact
+      - name: What the Windows binary carries, read off the artifact
         # publish runs on Linux and cannot ask a PE32+ binary anything; the
         # answer it gave here, on Windows, travels as a file the way the
         # browser module's does (build-web), and lands in the release
@@ -708,7 +735,7 @@ jobs:
           # is as close to "read off the artifact" as a page gets.
           WEB_CONNECTORS=$(sed -n 's/^connectors: //p' drt_web.buildinfo.txt 2>/dev/null || true)
           WEB_FEATURES=$(sed -n 's/^features: //p' drt_web.buildinfo.txt 2>/dev/null || true)
-          # The windows profile answered on a Windows runner in
+          # The Windows binaries answered on a Windows runner in
           # smoke-windows, which wrote the answer beside the binary for the
           # same reason: this job runs on Linux and cannot ask a PE32+
           # binary anything.
@@ -736,12 +763,17 @@ jobs:
             # instead of by guessing from the artifact filename.
             echo "profile.full.connectors: ${FULL_CONNECTORS:-unknown}"
             echo "profile.slim.connectors: ${SLIM_CONNECTORS:-unknown}"
-            # `drt_windows_x86_64.exe` is the `windows` profile: `full` minus
-            # `exec` (see build-windows), so its connector set is `full`'s
-            # less one and its feature set is its own. It
-            # answered `buildinfo` on a Windows runner in smoke-windows
-            # before it was allowed here. `drt_windows_x86_64_slim.exe` is
-            # the slim feature set, and the line above describes it.
+            # `drt_windows_x86_64.exe` is `full` (see build-windows):
+            # there is no `windows` profile any more, and this key names
+            # the platform rather than a profile. It stays because the two
+            # lines are two measurements and not one repeated:
+            # `profile.full.connectors` above was read off the linux musl
+            # binary on this runner, and this was read off the PE32+
+            # binary by a Windows runner in smoke-windows, before it was
+            # allowed here. They should now say the same thing, and a
+            # release where they do not is a release that says so.
+            # `drt_windows_x86_64_slim.exe` is the slim feature set, and
+            # the line above describes it.
             echo "profile.windows.connectors: ${WINDOWS_CONNECTORS:-unknown}"
             # `drt_wasi.wasm`: run it with
             #   wasmtime run -W exceptions=y --dir . drt_wasi.wasm run app.dlua

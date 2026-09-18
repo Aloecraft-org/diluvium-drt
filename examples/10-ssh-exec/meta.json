@@ -3,7 +3,7 @@
   "teaches": "host:ssh/exec runs a command on another machine, and the scope pins which one: host, user, key path, and a required host key or fingerprint, all validated at startup by name. Local exec is a separate connector, unwired here, so 'exec/run' answers denied the way any unwired family does; 16-exec wires it.",
   "cmd": "echo '$ drt run --config deploy.json'; drt run --config deploy.json; echo \"exit $?\"; echo; echo '$ drt run app.dlua'; drt run app.dlua; echo \"exit $?\"",
   "needs_network": false,
-  "needs_build": ["full", "windows"],
+  "needs_build": "full",
   "normalise": [
     "s|The system cannot find the file specified\\. (os error 2)|No such file or directory (os error 2)|"
   ]

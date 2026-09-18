@@ -95,13 +95,11 @@ releases:
       slim: [time, fs, crypto, listen]
       wasi: [time, fs, crypto, sql, listen]
       web: [time, fs, crypto]
-      windows: [time, fs, crypto, sql, ssh, rest, ssmtp, data, socket, listen]
     features:
       full: [regex]
       slim: [regex]
       wasi: [regex]
       web: [regex]
-      windows: [regex]
     summary: |
       **The old asset names stop shipping.** v0.6.0-rc.2 renamed every
       artifact to `doc/ALIGNMENT.md` §4's spelling and carried the old
@@ -121,6 +119,31 @@ releases:
         that disagrees with it is refused, and a scheme it does not read
         is a bad key rather than an absent one.
     changed:
+      - |
+        **Windows stops being a reduced platform, and the `windows`
+        profile stops existing.** `exec` opened with a `compile_error!`
+        calling itself unix-only because it needed process groups; that
+        is now `drt_platform::process::Tree`, a process group on unix and
+        a Job Object with kill-on-close on Windows, swept on drop so
+        every exit path from a call that started a program is covered
+        without each path remembering. So `exec` cross-builds with
+        everything else, and Windows builds `full` and `slim` like every
+        other native target: `drt_windows_x86_64.exe` is `full` now. The
+        profile that existed only to mean "`full` minus `exec`" is
+        deleted rather than redefined as a synonym, because a platform
+        that needs its own profile is a platform that is behind, and the
+        honest way to record that it caught up is for the profile to stop
+        existing. Four differences are real and are named in the
+        connector rather than papered over: `argv` is bytes on unix and
+        UTF-8-checked text on Windows, with a refusal by name rather than
+        a lossy conversion, since a replacement character in a path is a
+        different path; `argv[0]` cannot be handed over separately from
+        the file the child was started from; there is no executable bit,
+        so the `PATH` search tries `PATHEXT`'s suffixes the way a shell
+        does; and an exit is a code, never a signal. The 127 contract
+        holds on both. CI also runs `cargo test` on Windows now, which
+        nothing did before: a platform whose code is never executed on
+        that platform is a platform that is only claimed to work.
       - |
         **`drt tunnel` says what it is doing.** A tunnel with nothing to
         do was silent, which is what a broken one looks like. Each half

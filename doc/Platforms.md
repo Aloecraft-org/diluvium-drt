@@ -12,7 +12,7 @@ not: spawning, plugins, connectors and verbs.
 
 | | native linux, macOS | native Windows | wasip2, under wasmtime | browser, `drt-web` |
 |---|---|---|---|---|
-| **status** | released: linux x86_64 and arm64 (static musl), darwin arm64 and x86_64 (`doc/Release.md`) | `windows` (`full` minus `exec`) and `slim`, built and gated: cross-built from Linux with mingw-w64, run on a Windows runner through the examples gate (`drt_windows_x86_64.exe`, `drt_windows_x86_64_slim.exe`; `drt_slim_windows_x86_64.exe` from v0.5.0rc4 to v0.7.0-rc.2); `full` itself blocked on `exec` (unix-only) | released: `drt_wasi.wasm` (`drt_wasip2.wasm` before v0.6.0-rc.2), gated through the examples in CI (M1, M6) | released: `drt_web.tar.gz`, gated in Chromium (M4) |
+| **status** | released: linux x86_64 and arm64 (static musl), darwin arm64 and x86_64 (`doc/Release.md`) | `full` and `slim`, built and gated: cross-built from Linux with mingw-w64, run on a Windows runner through the examples gate (`drt_windows_x86_64.exe`, `drt_windows_x86_64_slim.exe`; `drt_slim_windows_x86_64.exe` from v0.5.0rc4 to v0.7.0-rc.2). There is no `windows` profile any more: it meant `full` minus `exec`, and `exec` builds here now | released: `drt_wasi.wasm` (`drt_wasip2.wasm` before v0.6.0-rc.2), gated through the examples in CI (M1, M6) | released: `drt_web.tar.gz`, gated in Chromium (M4) |
 | **threads** | yes | yes, measured (`listen`'s thread per connection, example 17) | **no**, measured: `thread::spawn` is `Unsupported` | no |
 | **blocking sleep** | `thread::sleep` | `thread::sleep`, measured | `thread::sleep` works, measured | **impossible** on the thread; the driver returns what it waits for and the page sleeps (D6) |
 | **wall clock, monotonic** | `std::time` | `std::time`, measured | `std::time` over wasi clocks, measured | `Date.now`, `performance.now` via `web-time` |
@@ -21,12 +21,12 @@ not: spawning, plugins, connectors and verbs.
 | **sockets, listen** | `std::net` plus a thread per connection (`listen`) | same code, measured (example 17) | `std::net` non-blocking, one state machine per connection polled from the drive loop (M6); needs `-S tcp=y -S inherit-network=y` | none |
 | **sockets, dial** | `std::net`, tokio | expected | `std::net` non-blocking, same flags; name lookup needs its own flag | `fetch` and `WebSocket` only, async |
 | **instance spawn** (`host.spawn`, the swarm) | yes | yes, expected | **yes**, measured: `08-spawn-and-hibernation` passes under wasmtime | **yes**, measured: `08` passes in Chromium |
-| **process spawn** (`exec/run`, `socketpair` plugins) | yes | yes, expected, with no fd 3: spawn and dial back over loopback (`doc/Plugins.md` §4) | **no**: WASI has no process API and none is on the standardization track; a native launcher plugin restores it (`doc/Plugins.md` §4.5) | no |
+| **process spawn** (`exec/run`, `socketpair` plugins) | yes | yes, with no fd 3: a child and its tree are owned by a Job Object with kill-on-close (`drt_platform::process::Tree`), and the `spawn` transport dials back over loopback (`doc/Plugins.md` §4). Cross-built and unit-tested; not yet observed sweeping a tree on a real Windows box | **no**: WASI has no process API and none is on the standardization track; a native launcher plugin restores it (`doc/Plugins.md` §4.5) | no |
 | **tokio** | full | full, expected | `sync`, `macros`, `io-util`, `rt`, `time` only, measured | the same five |
-| **connectors** | `full`: time, fs, crypto, sql, ssh, rest, ssmtp, exec, listen (plus `cli`, the line editor); `slim`: time, fs, crypto, listen | `windows`: time, fs, crypto, sql, ssh, rest, ssmtp, data, socket, listen -- `full` less `exec`, measured by the examples gate on a Windows runner; `slim`: time, fs, crypto, listen, measured the same way | `wasi`: time, fs, crypto, sql, listen | `web`: time, fs, crypto |
+| **connectors** | `full`: time, fs, crypto, sql, ssh, rest, ssmtp, exec, listen (plus `cli`, the line editor); `slim`: time, fs, crypto, listen | `full`: the same list, `exec` included, measured by the examples gate on a Windows runner; `slim`: time, fs, crypto, listen, measured the same way | `wasi`: time, fs, crypto, sql, listen | `web`: time, fs, crypto |
 | **verbs** | run, start, repl, buildinfo, ps stub, relay, stun, tunnel, netcheck | run, start, repl, buildinfo, ps stub, tunnel, netcheck, wg, and the relay, stun and turn blocks: measured by the examples gate on a Windows runner, by the same loopback examples that measure them on Linux; the interface half of WireGuard needs `wintun.dll` and is not driven there | run, start, repl, buildinfo, ps stub | run, repl, start without listeners, through the terminal contract |
-| **plugin transports** (`doc/Plugins.md` §4.1) | `socketpair`, `spawn` with dial-back, `tcp` | `spawn` with dial-back, `tcp` | `tcp` only; spawning through a launcher plugin | WebSocket and Worker, later |
-| **`exec/run`** | builtin, `full` only, announced when wired | builtin once built | served by a native launcher plugin, never in the module | never |
+| **plugin transports** (`doc/Plugins.md` §4.1) | `socketpair`, `spawn` with dial-back, `tcp` | `spawn` with dial-back, `tcp`; `socketpair` is refused by name here, pointing at `spawn` | `tcp` only; spawning through a launcher plugin | WebSocket and Worker, later |
+| **`exec/run`** | builtin, `full` only, announced when wired | builtin, in `full`, announced when wired | served by a native launcher plugin, never in the module | never |
 | **the C core** | linked, `cc` | linked; `diluvium-sys` calls `$CC` directly, so a mingw or MSVC compiler for the target is the unknown | linked, wasi-sdk, `-W exceptions=y` at run time | linked, wasi-sdk plus wasi-libc, seventeen syscalls defined in the module (D4) |
 | **the drive loop** | ticks, and the loop sleeps what a tick asks for (M3) | same | ticks; the deferred pump parks a slow connector (M3) | ticks from `setTimeout`; nothing may block |
 | **the gate** | fmt, clippy, both test profiles, the examples gate (18 of 19) | none yet | the examples gate through wasmtime: 8, `08` and the served fetchpoint among them | the examples in Chromium, the REPL parity transcript, and a real xterm.js typed into |
@@ -55,11 +55,27 @@ example whose `needs_build` lists the profile -- every `full` example
 but the three that are `full`'s alone (`00-install-methods` snapshots
 `full`'s own `buildinfo`; `16-exec` is the connector Windows lacks;
 `22-wireguard-interface` creates a kernel interface, which on Windows is
-`wintun.dll`'s job). `full` stays off Windows for one reason: `exec` is
-unix-only by `compile_error!`. It was two reasons until ego-transport
-0.1.4 moved russh onto `ring`: `aws-lc-sys`, which `stun`, `netcheck`,
-`turn` and `ssh` reached through russh's default backend, wanted NASM on
-the windows-gnu cross leg, and it is out of the tree on every target now.
+`wintun.dll`'s job). `full` used to stay off Windows for one reason: `exec` was unix-only by
+`compile_error!`, because it needed a process group to sweep a child's
+whole tree at the deadline. That group is now
+`drt_platform::process::Tree`, which is a process group on unix and a Job
+Object with kill-on-close on Windows, so `exec` cross-builds with
+everything else and Windows ships `full`. The reason before that was
+`aws-lc-sys`, which `stun`, `netcheck`, `turn` and `ssh` reached through
+russh's default backend and which wanted NASM on the windows-gnu cross
+leg; ego-transport 0.1.4 moved russh onto `ring` and it is out of the
+tree on every target now.
+
+What is measured, and what is not. The cross-build for
+`x86_64-pc-windows-gnu` is measured, with mingw-w64 alone and no NASM or
+cmake on any leg. The examples gate runs the release binaries on a
+Windows runner, and `cargo test` now runs there too, which nothing did
+before: `drt-platform` and `drt-connector-exec` are the crates it
+executes, so the Job Object and the exec port are exercised on Windows
+rather than only compiled for it. The examples gate still skips
+`16-exec`: the connector works there, but that example is written in
+unix's vocabulary (`sh -c`, `cat`, `yes`, `ls`), and `meta.json`'s
+`needs_unix` says so by name rather than the gate skipping it silently.
 
 **WireGuard is a privilege question, not a platform one.** `drt wg` and
 the `wireguard` block build and run wherever `full` does, and the

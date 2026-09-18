@@ -4,5 +4,6 @@
   "cmd": "echo '$ drt run --config deploy.json'; drt run --config deploy.json",
   "needs_network": false,
   "needs_build": "full",
+  "needs_unix": true,
   "normalise": []
 }

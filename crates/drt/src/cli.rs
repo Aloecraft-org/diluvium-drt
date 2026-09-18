@@ -53,27 +53,6 @@ const PROFILE_WASI: &[&str] = &[
     "listen",
 ];
 const PROFILE_WEB: &[&str] = &["cli", "connector-crypto", "connector-fs", "connector-time"];
-const PROFILE_WINDOWS: &[&str] = &[
-    "cli",
-    "connector-crypto",
-    "connector-data",
-    "connector-fs",
-    "connector-rest",
-    "connector-socket",
-    "connector-sql",
-    "connector-ssh",
-    "connector-ssmtp",
-    "connector-time",
-    "listen",
-    "netcheck",
-    "relay",
-    "runtime",
-    "stun",
-    "tunnel",
-    "turn",
-    "turn-client",
-    "wireguard",
-];
 const PROFILE_FULL: &[&str] = &[
     "cli",
     "connector-crypto",
@@ -119,7 +98,6 @@ const CORE_FEATURES_FULL: &[&str] = &["regex"];
 const CORE_FEATURES_SLIM: &[&str] = &["regex"];
 const CORE_FEATURES_WASI: &[&str] = &["regex"];
 const CORE_FEATURES_WEB: &[&str] = &["regex"];
-const CORE_FEATURES_WINDOWS: &[&str] = &["regex"];
 /// A build whose feature set matches no named profile still embeds a core,
 /// and `unknown` is the honest answer about which features it carries --
 /// the same answer `diluvium: unknown` gives for an unpinned revision. An
@@ -767,8 +745,6 @@ fn profile_name(features: &[&str]) -> &'static str {
         "wasi"
     } else if features == PROFILE_WEB {
         "web"
-    } else if features == PROFILE_WINDOWS {
-        "windows"
     } else {
         "custom"
     }
@@ -783,7 +759,6 @@ fn core_features(profile: &str) -> &'static [&'static str] {
         "slim" => CORE_FEATURES_SLIM,
         "wasi" => CORE_FEATURES_WASI,
         "web" => CORE_FEATURES_WEB,
-        "windows" => CORE_FEATURES_WINDOWS,
         _ => CORE_FEATURES_CUSTOM,
     }
 }

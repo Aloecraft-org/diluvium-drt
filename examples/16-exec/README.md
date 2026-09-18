@@ -4,6 +4,13 @@ A local command from inside the sandbox. `exec/run` takes a vector, answers
 with the exit status and both streams, and the deployment bounds it three
 ways, because the instruction budget cannot reach a subprocess.
 
+**This example is skipped on a host that is not unix**, and the gate names it
+in the summary. The connector is not the reason: `exec` builds and runs on
+Windows, over a Job Object where unix uses a process group. This *example* is
+the reason -- what it spells below is `sh -c`, `cat`, `yes` and an `allow`
+list of paths under `/bin`, which is unix's vocabulary rather than the
+connector's. A skip is never a pass.
+
 ## Run it
 
 ```

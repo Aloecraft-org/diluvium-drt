@@ -145,21 +145,15 @@ wasi = ["connector-time", "connector-fs", "connector-crypto", "connector-sql", "
 # reports `web` from inside the page and the examples gate can skip by
 # profile there as it does everywhere else.
 web = ["connector-time", "connector-fs", "connector-crypto", "cli"]
-# The Windows build (doc/Platforms.md): `full` minus `exec`, and the
-# unprefixed Windows artifact, because there is no `full` for that name
-# to be. Named rather than left as `custom` for `web`'s reason: a profile
-# is what a package's `requires.connectors` is admitted against and what
-# the examples gate skips by, and a binary calling itself `custom` reads
-# as an unusual feature set rather than as the one Windows ships. What
-# keeps it short of `full` is one fact, not a policy: `exec` is unix-only
-# by `compile_error!`, and everything else `full` carries cross-builds
-# for `x86_64-pc-windows-gnu` with mingw-w64 alone. It was two facts
-# until ego-transport 0.1.4 put russh on `ring`: before that, `stun`,
-# `netcheck`, `turn` and `ssh` reached `aws-lc-sys` through russh's
-# default backend, and its windows-gnu build wanted NASM on the cross
-# leg. Spelled as `full`'s list less one leaf rather than as `full`
-# minus anything, because cargo features only add.
-windows = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "connector-socket", "connector-data", "tunnel", "relay", "stun", "netcheck", "turn", "wireguard"]
+# There is no `windows` profile any more, and that is the point. It
+# existed from v0.7.0-rc.2 as `full` minus `exec`, because `exec` opened
+# with a `compile_error!` naming itself unix-only. The process group that
+# refusal was about is now `drt_platform::process::Tree` -- a group on
+# unix, a Job Object on Windows -- so `exec` cross-builds with everything
+# else, and Windows builds `full` like every other native target. A
+# platform that needs its own profile is a platform that is behind; the
+# honest way to record that it caught up is for the profile to stop
+# existing rather than to be redefined as a synonym.
 # Line editing for `drt repl` on a tty: history, word motions, undo, and
 # Tab over names the running instance answers with (doc/Wasm.md D8, M8,
 # §5). One editor for every target rather than one per host, which is
