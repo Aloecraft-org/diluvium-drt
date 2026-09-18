@@ -64,6 +64,7 @@ pub fn load(path: Option<&Path>) -> Result<RootConfig, String> {
     // says which file's `xps`.
     validate(&config).map_err(|e| format!("{}: {e}", path.display()))?;
     resolve_program(&mut config, path);
+    resolve_manifests(&mut config, path);
     Ok(config)
 }
 
@@ -127,6 +128,27 @@ fn resolve_program(config: &mut RootConfig, path: &Path) {
     }
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     config.root.program = Some(drt_config::Program::Path(dir.join(program)));
+}
+
+/// A relative plugin `manifest` is relative **to the config**, for the same
+/// reason a relative `program` is.
+///
+/// `doc/Plugins.md` §3.1 says it resolves beside the config file "the way
+/// `program` does", and it is the same deployment directory that moves: a
+/// `plugins` block naming `greeter.plugin.json` means the one next to the
+/// config, not the one next to wherever the operator was standing. Without
+/// this, a deployment that worked from its own directory would refuse with
+/// "cannot be read" from anywhere else -- the failure `resolve_program`'s
+/// comment describes, one release later and in a new key.
+fn resolve_manifests(config: &mut RootConfig, path: &Path) {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    for wiring in config.plugins.values_mut() {
+        let manifest = Path::new(&wiring.manifest);
+        if manifest.is_absolute() {
+            continue;
+        }
+        wiring.manifest = dir.join(manifest).to_string_lossy().into_owned();
+    }
 }
 
 /// Check every grant against the scope-types the wired connectors declare.
@@ -276,6 +298,30 @@ mod tests {
             Some(drt_config::Program::Path("/r/deploy/app.dlua".into()))
         );
         drop(seeded);
+    }
+
+    /// A plugin manifest moves with the deployment directory too, and an
+    /// absolute one is left alone.
+    #[test]
+    fn a_relative_manifest_resolves_against_the_config() {
+        let mut c = RootConfig::default();
+        for (family, manifest) in [("greet", "greeter.plugin.json"), ("far", "/opt/far.json")] {
+            c.plugins.insert(
+                family.to_string(),
+                drt_config::PluginWiring {
+                    manifest: manifest.to_string(),
+                    scope: None,
+                },
+            );
+        }
+        resolve_manifests(&mut c, Path::new("/r/deploy/app.json"));
+        assert_eq!(
+            c.plugins["greet"].manifest,
+            Path::new("/r/deploy/greeter.plugin.json")
+                .to_string_lossy()
+                .into_owned()
+        );
+        assert_eq!(c.plugins["far"].manifest, "/opt/far.json");
     }
 
     fn resolved(program: &str, config: &str) -> String {

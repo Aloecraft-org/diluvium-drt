@@ -77,10 +77,14 @@ a C API. Subprocess plus msgpack is the better design, not a workaround.
   wires plugins now loads and silently has none. The "swap the binary, edit
   no files" commitment is gone with that loader anyway; a C-host deployment
   moves to DRT by rewriting its config as JSON.
-- **The menu is designed and unbuilt.** SPEC.md §5 keeps
-  `capabilities/list`; nothing in DRT's Rust answers it. The C host's entry
-  shape is `{name, kind, owner, granted, visibility}`. That listing is
-  where a program sees the builtin/plugin distinction.
+- **The menu is built, and knows about plugins.**
+  `Dispatcher::capabilities` answers `capabilities/list` in the C host's
+  entry shape, `{name, kind, owner, granted, visibility}`, plus `held` and
+  `within_ceiling`. `kind` and `owner` come from the wired connector's
+  `Backing`: `builtin` with no owner, or `plugin` naming the `<name>` in
+  `<name>.plugin.json`. That listing is where a program sees the
+  builtin/plugin distinction, and it is the only place -- a *call* cannot
+  tell, which is the point of §3.1.
 - **The pump defers.** `Dispatcher::route` returns a
   `PendingCall` that owns everything the connector needs, and
   `drt_swarm::pump::Pump` polls its future once per pump with a no-op

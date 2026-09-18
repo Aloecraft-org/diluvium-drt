@@ -64,6 +64,43 @@ impl CallError {
     }
 }
 
+/// What backs a wired family, for `capabilities/list`'s `kind` and `owner`.
+///
+/// A guest cannot tell a plugin from a builtin at a call -- that is the
+/// point of a plugin being an ordinary [`Connector`] -- so this is the one
+/// place the difference is visible at all, and it is visible only to a
+/// program that asked for the menu. `doc/Plugins.md` §4.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Backing {
+    /// Compiled into this binary. There is nobody to name as its owner:
+    /// the family is the host's own.
+    #[default]
+    Builtin,
+    /// A plugin, named as the deployment's `plugins` block names it -- the
+    /// `<name>` in `<name>.plugin.json`, and deliberately not the family,
+    /// because a family that named itself as its own owner would say
+    /// nothing a reader did not already have.
+    Plugin { name: String },
+}
+
+impl Backing {
+    /// The C host's `kind` spelling (vera `DRT_ASKS.md` §14).
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Backing::Builtin => "builtin",
+            Backing::Plugin { .. } => "plugin",
+        }
+    }
+
+    /// The C host's `owner`: nil for a builtin, the plugin's name otherwise.
+    pub fn owner(&self) -> rmpv::Value {
+        match self {
+            Backing::Builtin => rmpv::Value::Nil,
+            Backing::Plugin { name } => name.as_str().into(),
+        }
+    }
+}
+
 /// A connector: answers the calls of one family (`time`, `fs/…`, `sql/…`).
 ///
 /// Typed via serde by convention: an impl deserializes `args` into its own
@@ -75,6 +112,13 @@ pub trait Connector: Send + Sync {
     /// its wiring at startup, by name. Default: no scope.
     fn scope_type(&self) -> Box<dyn ScopeType> {
         Box::new(drt_caps::NoScope)
+    }
+
+    /// What backs this family, reported by `capabilities/list` and nothing
+    /// else. Default: [`Backing::Builtin`], which every connector in
+    /// `connectors/` is and none of them has to say.
+    fn backing(&self) -> Backing {
+        Backing::Builtin
     }
 
     /// Answer one call. `call` is the full name (`"fs/read"`), already gated:
@@ -438,10 +482,12 @@ impl Dispatcher {
     /// listing cannot drift from what a call would do; a family is
     /// `granted` when the instance holds it or anything under it, since a
     /// program holding only `host:fs/read` reaches `fs` and should be told
-    /// so. `owner` is nil for a builtin and `visibility` is `public`: DRT
-    /// has no plugins to own a family yet and no visibility policy to
-    /// narrow one, and both fields are here so a program written against
-    /// the C host reads the same map (vera `DRT_ASKS.md` §14).
+    /// so. `kind` and `owner` come from the wired connector's
+    /// [`Backing`], so a plugin-backed family reads `plugin` and names the
+    /// plugin -- the one place a guest can tell the two apart at all.
+    /// `visibility` is still always `public`: DRT has no visibility policy
+    /// to narrow a family with, and the field is here so a program written
+    /// against the C host reads the same map (vera `DRT_ASKS.md` §14).
     fn capabilities(&self, caps: &CapSet) -> rmpv::Value {
         use drt_caps::Effect;
         let under_family = |family: &str| {
@@ -505,11 +551,11 @@ impl Dispatcher {
         // *added* keys: a program written against the C host reads the same
         // five and ignores these, which is why they are fields here rather
         // than a reshaped reply.
-        let entry = |name: &str, family: &str, is_granted: bool| {
+        let entry = |name: &str, family: &str, is_granted: bool, backing: Backing| {
             rmpv::Value::Map(vec![
                 ("name".into(), name.into()),
-                ("kind".into(), "builtin".into()),
-                ("owner".into(), rmpv::Value::Nil),
+                ("kind".into(), backing.kind().into()),
+                ("owner".into(), backing.owner()),
                 ("granted".into(), rmpv::Value::Boolean(is_granted)),
                 ("visibility".into(), "public".into()),
                 ("held".into(), held(family)),
@@ -522,13 +568,18 @@ impl Dispatcher {
         let mut out: Vec<rmpv::Value> = self
             .registry
             .wired
-            .keys()
-            .map(|family| entry(family, family, granted(family)))
+            .iter()
+            .map(|(family, wired)| {
+                entry(family, family, granted(family), wired.connector.backing())
+            })
             .collect();
+        // The menu itself is the dispatcher's own and cannot be wired, so
+        // it is a builtin by construction rather than by asking anyone.
         out.push(entry(
             "capabilities",
             "capabilities",
             caps.holds(&call_capability(CAPABILITIES_LIST)),
+            Backing::Builtin,
         ));
         rmpv::Value::Array(out)
     }
@@ -662,6 +713,7 @@ pub mod mock {
     #[derive(Default)]
     pub struct MockConnector {
         answers: BTreeMap<String, rmpv::Value>,
+        backing: Backing,
     }
 
     impl MockConnector {
@@ -673,10 +725,22 @@ pub mod mock {
             self.answers.insert(call.into(), value);
             self
         }
+
+        /// Claim a backing other than builtin. This exists so the capability
+        /// menu's `kind` and `owner` can be tested here: `drt-plugin`
+        /// depends on this crate, so a real `PluginConnector` cannot.
+        pub fn backed_by(mut self, backing: Backing) -> Self {
+            self.backing = backing;
+            self
+        }
     }
 
     #[async_trait::async_trait]
     impl Connector for MockConnector {
+        fn backing(&self) -> Backing {
+            self.backing.clone()
+        }
+
         async fn call(
             &self,
             call: &str,
@@ -711,6 +775,76 @@ mod tests {
 
     fn caps(names: &[&str]) -> Arc<CapSet> {
         CapSet::root(names.iter().map(|n| Grant::grant(*n)).collect())
+    }
+
+    /// A plugin-backed family says so, and names the plugin. The rest of
+    /// the row is a builtin's row: a guest that calls it cannot tell, and
+    /// only the menu can (`doc/Plugins.md` §4).
+    #[test]
+    fn the_menu_tells_a_plugin_backed_family_from_a_builtin() {
+        fn row(reply: &Reply, name: &str) -> Vec<(String, rmpv::Value)> {
+            let entries = match reply.value.as_ref().unwrap() {
+                rmpv::Value::Array(v) => v.clone(),
+                other => panic!("the menu is an array, got {other:?}"),
+            };
+            let found = entries
+                .iter()
+                .find(|e| match e {
+                    rmpv::Value::Map(m) => m
+                        .iter()
+                        .any(|(k, v)| k.as_str() == Some("name") && v.as_str() == Some(name)),
+                    _ => false,
+                })
+                .unwrap_or_else(|| panic!("no '{name}' row in the menu"));
+            match found {
+                rmpv::Value::Map(m) => m
+                    .iter()
+                    .map(|(k, v)| (k.as_str().unwrap_or_default().to_string(), v.clone()))
+                    .collect(),
+                _ => unreachable!(),
+            }
+        }
+        fn get<'a>(row: &'a [(String, rmpv::Value)], key: &str) -> &'a rmpv::Value {
+            &row.iter().find(|(k, _)| k == key).expect(key).1
+        }
+
+        let mut reg = Registry::new();
+        reg.wire("time", Arc::new(MockConnector::new()), None)
+            .unwrap();
+        reg.wire(
+            "browser",
+            Arc::new(MockConnector::new().backed_by(Backing::Plugin {
+                name: "chromium-driver".into(),
+            })),
+            None,
+        )
+        .unwrap();
+        let d = Dispatcher::new(reg);
+
+        let raw = to_bytes(&drt_hostcall::Request {
+            tok: 9,
+            call: "capabilities/list".into(),
+            args: None,
+        })
+        .unwrap();
+        let reply = pollster::block_on(
+            d.dispatch(&caps(&["host:capabilities/list", "host:browser"]), &raw),
+        );
+
+        let plugin = row(&reply, "browser");
+        assert_eq!(get(&plugin, "kind").as_str(), Some("plugin"));
+        assert_eq!(get(&plugin, "owner").as_str(), Some("chromium-driver"));
+        // The plugin row is otherwise an ordinary row: a family a guest
+        // holds reads `granted`, whoever answers it.
+        assert_eq!(get(&plugin, "granted"), &rmpv::Value::Boolean(true));
+        assert_eq!(get(&plugin, "visibility").as_str(), Some("public"));
+
+        // A builtin still has no owner to name, and the menu itself is one.
+        for family in ["time", "capabilities"] {
+            let builtin = row(&reply, family);
+            assert_eq!(get(&builtin, "kind").as_str(), Some("builtin"), "{family}");
+            assert_eq!(get(&builtin, "owner"), &rmpv::Value::Nil, "{family}");
+        }
     }
 
     /// The menu: what is wired, and whether this instance may reach it,

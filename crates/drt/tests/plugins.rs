@@ -166,3 +166,61 @@ fn a_manifest_with_a_relative_exec_is_refused() {
     let err = wire(&config_with("greet", &file)).unwrap_err();
     assert!(err.contains("absolute"), "{err}");
 }
+
+/// The whole point of the name: `capabilities/list` says a family is a
+/// plugin and says which one. This is the only place the difference is
+/// visible -- a guest that *calls* `greet/hello` cannot tell it left the
+/// process, which is what makes a plugin a connector backing rather than
+/// a second protocol (`doc/Plugins.md` §4).
+#[test]
+fn the_capability_menu_names_the_plugin_behind_a_family() {
+    let dir = tempfile::tempdir().unwrap();
+    let exec = env!("CARGO_BIN_EXE_drt");
+    let file = manifest_file(
+        &dir,
+        "greeter.plugin.json",
+        &format!(r#"{{"family":"greet","transport":"spawn","scope":"root","exec":"{exec}"}}"#),
+    );
+    let registry = drt::cli::wire_connectors(&config_with("greet", &file)).expect("a wired plugin");
+    let dispatcher = drt_connector::Dispatcher::new(registry);
+
+    let raw = drt_hostcall::to_bytes(&drt_hostcall::Request {
+        tok: 1,
+        call: "capabilities/list".into(),
+        args: None,
+    })
+    .unwrap();
+    let caps = drt_caps::CapSet::root(vec![drt_caps::Grant::grant("host:capabilities/list")]);
+    let reply = pollster::block_on(dispatcher.dispatch(&caps, &raw));
+
+    let rows = match reply.value.as_ref().expect("the menu answers") {
+        rmpv::Value::Array(v) => v.clone(),
+        other => panic!("the menu is an array, got {other:?}"),
+    };
+    let greet = rows
+        .iter()
+        .find_map(|row| match row {
+            rmpv::Value::Map(m) => {
+                let field = |k: &str| m.iter().find(|(key, _)| key.as_str() == Some(k));
+                match field("name") {
+                    Some((_, v)) if v.as_str() == Some("greet") => Some(m.clone()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .expect("a 'greet' row in the menu");
+    let field = |k: &str| {
+        greet
+            .iter()
+            .find(|(key, _)| key.as_str() == Some(k))
+            .map(|(_, v)| v.clone())
+            .unwrap_or(rmpv::Value::Nil)
+    };
+
+    assert_eq!(field("kind").as_str(), Some("plugin"));
+    // The manifest file is `greeter.plugin.json` and the family is
+    // `greet`: the owner is the plugin's name, which is why it is not
+    // simply the family echoed back.
+    assert_eq!(field("owner").as_str(), Some("greeter"));
+}

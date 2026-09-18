@@ -35,7 +35,7 @@ fn manifest(extra: &str) -> Manifest {
 }
 
 fn connector(extra: &str) -> PluginConnector {
-    PluginConnector::new(manifest(extra)).expect("a root manifest is served")
+    PluginConnector::new("echo", manifest(extra)).expect("a root manifest is served")
 }
 
 fn call(c: &PluginConnector, target: &str, args: Option<rmpv::Value>) -> drt_connector::CallResult {
@@ -182,7 +182,7 @@ fn node_connector() -> PluginConnector {
             .as_bytes(),
     )
     .expect("a node manifest parses");
-    PluginConnector::new(m).expect("a node manifest is served")
+    PluginConnector::new("echo", m).expect("a node manifest is served")
 }
 
 /// Which process serves `caller`, asked of the process itself.

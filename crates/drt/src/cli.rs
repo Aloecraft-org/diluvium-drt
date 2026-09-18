@@ -959,6 +959,29 @@ fn check_plugin_names(config: &RootConfig) -> Result<(), String> {
     Ok(())
 }
 
+/// The plugin's name, for `capabilities/list`'s `owner`: the `<name>` in
+/// `<name>.plugin.json`, per `doc/Plugins.md`.
+///
+/// A manifest that is not spelled that way is **not** refused. The suffix
+/// is how plugins ship, not something the host depends on, and refusing a
+/// manifest an operator named `browser.json` would be pedantry that buys
+/// no safety. It falls back to the file stem, so the owner column says
+/// something true either way.
+#[cfg(feature = "plugins")]
+fn plugin_name(path: &std::path::Path) -> String {
+    let file = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    match file.strip_suffix(".plugin.json") {
+        Some(name) if !name.is_empty() => name.to_string(),
+        _ => path
+            .file_stem()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or(file),
+    }
+}
+
 /// Wire the `plugins` block: one entry per family, each naming a manifest.
 ///
 /// Read at load, not at first call. A manifest that is missing, malformed,
@@ -989,7 +1012,7 @@ fn wire_plugins(config: &RootConfig, registry: &mut Registry) -> Result<(), Stri
                 wiring.manifest, manifest.family
             ));
         }
-        let connector = drt_plugin::connector::PluginConnector::new(manifest)?;
+        let connector = drt_plugin::connector::PluginConnector::new(plugin_name(path), manifest)?;
         registry
             .wire(
                 family.clone(),

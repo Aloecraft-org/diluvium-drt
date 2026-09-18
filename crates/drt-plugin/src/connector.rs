@@ -2,8 +2,8 @@
 //!
 //! ## surface block
 //!
-//! - Entry points: [`PluginConnector::new`], which takes a manifest and
-//!   starts nothing; and the [`Connector`] impl, whose `call` is the
+//! - Entry points: [`PluginConnector::new`], which takes a name and a
+//!   manifest and starts nothing; and the [`Connector`] impl, whose `call` is the
 //!   whole of the runtime behaviour. [`PluginConnector::family`] is what
 //!   the registry wires it under.
 //! - Configurable values: none of this file's own. Every bound -- the call
@@ -75,6 +75,10 @@ use crate::session::{Session, SessionError};
 
 /// A plugin family, served by one process this host starts on first use.
 pub struct PluginConnector {
+    /// What `capabilities/list` reports as the family's owner: the
+    /// `<name>` in `<name>.plugin.json`, which is how a deployment's
+    /// `plugins` block names this plugin.
+    name: String,
     manifest: Manifest,
     /// Scope key to the process serving it. Empty until the first call:
     /// one entry for a `root` plugin, one per calling node for a `node`
@@ -90,7 +94,7 @@ impl PluginConnector {
     /// that wires six plugins and uses two should pay for two. What is
     /// *not* deferred is the refusal -- a manifest this host cannot serve
     /// is rejected here, at load, rather than at 3am on the first call.
-    pub fn new(manifest: Manifest) -> Result<Self, String> {
+    pub fn new(name: impl Into<String>, manifest: Manifest) -> Result<Self, String> {
         if manifest.transport.starts_the_program() && manifest.exec.is_none() {
             return Err(format!(
                 "the plugin '{}' names no `exec` to start",
@@ -98,9 +102,16 @@ impl PluginConnector {
             ));
         }
         Ok(Self {
+            name: name.into(),
             manifest,
             instances: Mutex::new(BTreeMap::new()),
         })
+    }
+
+    /// The plugin's name, which is not its family: the family is what a
+    /// guest calls, and this is who answers it.
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Which instance serves `caller`.
@@ -149,6 +160,15 @@ impl std::fmt::Debug for PluginConnector {
 
 #[async_trait::async_trait]
 impl Connector for PluginConnector {
+    /// A plugin, named. This is the only method on the trait whose answer
+    /// differs from a builtin's, and the only place `capabilities/list`
+    /// can tell them apart -- a call cannot, by design.
+    fn backing(&self) -> drt_connector::Backing {
+        drt_connector::Backing::Plugin {
+            name: self.name.clone(),
+        }
+    }
+
     /// Answer one call from an unnamed caller.
     ///
     /// The trait's required method, and what a harness or the process's
