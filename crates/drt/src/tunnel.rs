@@ -284,9 +284,9 @@ pub async fn run(mode: Mode, extra_roots: &[CertificateDer<'static>]) -> Result<
 /// Dial a `ws://` or `wss://` URL, trusting `extra_roots` beside the
 /// public ones.
 ///
-/// With no extra roots this is plain `connect_async`, which is exactly
-/// what it was before — webpki's bundled roots, by way of
-/// tokio-tungstenite's `rustls-tls-webpki-roots`. Supplying roots swaps
+/// With no extra roots the connector is tokio-tungstenite's default,
+/// which is exactly what `connect_async` used — webpki's bundled roots,
+/// by way of `rustls-tls-webpki-roots`. Supplying roots swaps
 /// in a connector built from the same public set *plus* what was named:
 /// **added, never substituted**, which is the rule the `rest` connector's
 /// `extra_roots` already states and for its reason — a client that could
@@ -297,23 +297,46 @@ pub async fn connect(
     url: &str,
     extra_roots: &[CertificateDer<'static>],
 ) -> Result<WsClient, String> {
-    if extra_roots.is_empty() {
-        let (ws, _) = tokio_tungstenite::connect_async(url)
-            .await
-            .map_err(|e| format!("cannot reach {url}: {e}"))?;
-        return Ok(ws);
-    }
-    let config = tokio_rustls::rustls::ClientConfig::builder()
-        .with_root_certificates(crate::roots::store(extra_roots))
-        .with_no_client_auth();
-    let (ws, _) = tokio_tungstenite::connect_async_tls_with_config(
-        url,
-        None,
-        false,
-        Some(Connector::Rustls(Arc::new(config))),
-    )
-    .await
-    .map_err(|e| format!("cannot reach {url}: {e}"))?;
+    use tokio_tungstenite::tungstenite::client::{uri_mode, IntoClientRequest};
+    use tokio_tungstenite::tungstenite::stream::Mode;
+
+    // The socket is dialed here rather than inside `connect_async`, which
+    // has no hook between the connect and the handshake. Issue #33: a
+    // tunnel is interactive by definition, and a socket with Nagle on
+    // holds every second small write for the first one's ACK, which the
+    // far end delays -- 40 ms on Linux, 200 on Windows -- once per hop.
+    // TCP_NODELAY goes on before the stream is handed over, and every
+    // other socket drt dials or accepts gets the same.
+    let request = url
+        .into_client_request()
+        .map_err(|e| format!("cannot reach {url}: {e}"))?;
+    let host = request
+        .uri()
+        .host()
+        .map(|h| h.trim_start_matches('[').trim_end_matches(']').to_string())
+        .ok_or_else(|| format!("cannot reach {url}: the url names no host"))?;
+    let mode = uri_mode(request.uri()).map_err(|e| format!("cannot reach {url}: {e}"))?;
+    let port = request.uri().port_u16().unwrap_or(match mode {
+        Mode::Plain => 80,
+        Mode::Tls => 443,
+    });
+    let stream = tokio::net::TcpStream::connect((host.as_str(), port))
+        .await
+        .map_err(|e| format!("cannot reach {url}: {e}"))?;
+    stream
+        .set_nodelay(true)
+        .map_err(|e| format!("cannot reach {url}: TCP_NODELAY: {e}"))?;
+    let connector = if extra_roots.is_empty() {
+        None
+    } else {
+        let config = tokio_rustls::rustls::ClientConfig::builder()
+            .with_root_certificates(crate::roots::store(extra_roots))
+            .with_no_client_auth();
+        Some(Connector::Rustls(Arc::new(config)))
+    };
+    let (ws, _) = tokio_tungstenite::client_async_tls_with_config(request, stream, None, connector)
+        .await
+        .map_err(|e| format!("cannot reach {url}: {e}"))?;
     Ok(ws)
 }
 
@@ -407,6 +430,10 @@ pub async fn serve_ws_bridge(
         let Ok((conn, _)) = listener.accept().await else {
             continue;
         };
+        // Issue #33: interactive on both of this hop's sockets; see `connect`.
+        if conn.set_nodelay(true).is_err() {
+            continue;
+        }
         let target = target.to_string();
         tokio::spawn(async move {
             let Ok(ws) = tokio_tungstenite::accept_async(conn).await else {
@@ -415,6 +442,9 @@ pub async fn serve_ws_bridge(
             let Ok(tcp) = tokio::net::TcpStream::connect(&target).await else {
                 return;
             };
+            if tcp.set_nodelay(true).is_err() {
+                return;
+            }
             let _ = pump(tcp, ws).await;
         });
     }
@@ -461,6 +491,11 @@ pub async fn serve_local(
         let Ok((conn, peer)) = listener.accept().await else {
             continue;
         };
+        // Issue #33, as in `connect`: the caller's own socket is one hop.
+        if let Err(e) = conn.set_nodelay(true) {
+            eprintln!("drt tunnel: {peer}: cannot set TCP_NODELAY: {e}");
+            continue;
+        }
         let url = url.to_string();
         let roots = extra_roots.to_vec();
         tokio::spawn(async move {
@@ -598,6 +633,9 @@ async fn run_session(
     let mut tcp = tokio::net::TcpStream::connect(target)
         .await
         .map_err(|e| format!("cannot reach {target}: {e}"))?;
+    // Issue #33, as in `connect`: the service's own socket is the last hop.
+    tcp.set_nodelay(true)
+        .map_err(|e| format!("cannot reach {target}: TCP_NODELAY: {e}"))?;
     let (mut tcp_read, mut tcp_write) = tcp.split();
     tcp_write
         .write_all(&first.into())

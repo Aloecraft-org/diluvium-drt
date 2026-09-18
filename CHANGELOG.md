@@ -48,6 +48,22 @@ overlap ran three candidates, and this one ends it.
   `install.sh` keeps its fallback to the old name, since a pinned
   tag older than v0.6.0-rc.2 has only that one.
 
+### Fixed
+
+- **No socket drt dials or accepts keeps Nagle on** (#33). A tunnel
+  is interactive by definition, and every pair of small writes on a
+  socket with Nagle on paid a delayed ACK -- 40 ms on Linux, 200 on
+  Windows -- once per hop: an RDP session through a parked leg on a
+  LAN felt it as lag, and a two-write pair measured 48 ms on
+  loopback with the client itself already `TCP_NODELAY`. The option
+  is now set on every TCP stream the runtime creates or accepts:
+  the tunnel's dials and accepts and the stream it hands the
+  WebSocket client, the relay's accepts, the userspace WireGuard
+  forwards, the HTTP listener's connections, the sockets the
+  `socket` connector hands a program, and the `rest`, `ssmtp` and
+  `netcheck` dials. Two tests pin it, at the bridge and at the
+  socket connector, by measuring the pair.
+
 
 ## [0.7.0-rc.2] - 2026-09-17 (prerelease)
 

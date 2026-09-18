@@ -739,3 +739,62 @@ fn a_key_from_another_mode_is_refused_rather_than_ignored() {
     assert!(err.contains("--park with --to"), "{err}");
     assert!(err.contains("`tunnel` in the --config file"), "{err}");
 }
+
+/// Issue #33: a pair of small writes with a gap between them, through the
+/// bridge. With Nagle on any of the tunnel's own sockets the second write
+/// waits for the first one's ACK, which the far end delays -- 40 ms on
+/// Linux -- so the pair paid a delayed ACK per hop, on loopback, with the
+/// client itself already `TCP_NODELAY`. The far end answers one byte once
+/// it has read two; the median of nine rounds is the measurement, so one
+/// slow round on a busy runner is not a verdict.
+#[tokio::test(flavor = "multi_thread")]
+async fn two_small_writes_cross_the_bridge_without_a_delayed_ack() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let far = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let far_addr = far.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut c, _)) = far.accept().await else {
+                continue;
+            };
+            tokio::spawn(async move {
+                let mut two = [0u8; 2];
+                while c.read_exact(&mut two).await.is_ok() {
+                    if c.write_all(b"!").await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ws_url = format!("ws://{}", ws_listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _ = drt::tunnel::serve_ws_bridge(ws_listener, &far_addr).await;
+    });
+    let entry = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let entry_addr = entry.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (conn, _) = entry.accept().await.unwrap();
+        let _ = drt::tunnel::stream_to_ws(conn, &ws_url, &[]).await;
+    });
+    let mut client = tokio::net::TcpStream::connect(entry_addr).await.unwrap();
+    client.set_nodelay(true).unwrap();
+    let mut rounds = Vec::new();
+    for _ in 0..9 {
+        let started = std::time::Instant::now();
+        client.write_all(b"a").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        client.write_all(b"b").await.unwrap();
+        let mut back = [0u8; 1];
+        client.read_exact(&mut back).await.unwrap();
+        assert_eq!(&back, b"!");
+        rounds.push(started.elapsed());
+    }
+    rounds.sort();
+    let median = rounds[4];
+    assert!(
+        median < Duration::from_millis(30),
+        "a two-write pair took {median:?} through the bridge: a delayed ACK is being paid"
+    );
+}

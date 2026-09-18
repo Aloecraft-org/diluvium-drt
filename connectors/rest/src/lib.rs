@@ -913,6 +913,11 @@ async fn fetch(
     let stream = tokio::net::TcpStream::connect(addr)
         .await
         .map_err(|e| format!("connect: {e}"))?;
+    // Issue #33: request and response are a small-write pair; no socket
+    // drt dials keeps Nagle on.
+    stream
+        .set_nodelay(true)
+        .map_err(|e| format!("connect: TCP_NODELAY: {e}"))?;
 
     if url.tls {
         let mut roots = tokio_rustls::rustls::RootCertStore::empty();

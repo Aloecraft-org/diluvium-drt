@@ -433,3 +433,52 @@ fn a_read_asks_for_less_never_more() {
     .unwrap_err();
     assert!(err.contains("never more"), "{err}");
 }
+
+/// Issue #33: a socket a program is handed leaves Nagle off, so a pair of
+/// small writes with a gap between them is not held for the first one's
+/// delayed ACK -- 40 ms on Linux. The far end answers one byte once it
+/// has read two; the node writes one byte, waits, writes the other, and
+/// reads the answer. The median of nine rounds is the measurement.
+#[test]
+fn a_pair_of_small_writes_is_not_held_for_an_ack() {
+    let c = SocketConnector::new();
+    let node = Caller::Node(1);
+    let (l, addr) = listen(&c, node);
+    let mut client = TcpStream::connect(&addr).unwrap();
+    client.set_nodelay(true).unwrap();
+    let (conn, _) = accept(&c, node, l);
+    let far = std::thread::spawn(move || {
+        let mut two = [0u8; 2];
+        for _ in 0..9 {
+            client.read_exact(&mut two).unwrap();
+            client.write_all(b"!").unwrap();
+        }
+    });
+    let write = |byte: &str| {
+        call(
+            &c,
+            node,
+            None,
+            "socket/write",
+            args(vec![("handle", conn.into()), ("data", byte.into())]),
+        )
+        .unwrap();
+    };
+    let mut rounds = Vec::new();
+    for _ in 0..9 {
+        let started = std::time::Instant::now();
+        write("a");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        write("b");
+        let (data, _) = read(&c, node, conn);
+        assert_eq!(data, b"!");
+        rounds.push(started.elapsed());
+    }
+    far.join().unwrap();
+    rounds.sort();
+    let median = rounds[4];
+    assert!(
+        median < std::time::Duration::from_millis(30),
+        "a two-write pair took {median:?} on a socket the node was handed: a delayed ACK is being paid"
+    );
+}

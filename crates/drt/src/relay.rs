@@ -268,6 +268,13 @@ pub async fn serve(relay: Arc<Relay>) -> Result<(), String> {
         let Ok((stream, _)) = listener.accept().await else {
             continue;
         };
+        // Issue #33: a parked leg is one hop of an interactive session, and
+        // a socket with Nagle on holds every second small write for the
+        // first one's delayed ACK. Every socket drt dials or accepts has
+        // TCP_NODELAY set; `tunnel::connect` says why at length.
+        if stream.set_nodelay(true).is_err() {
+            continue;
+        }
         let relay = relay.clone();
         tokio::spawn(async move {
             let _ = handle(relay, stream).await;

@@ -732,6 +732,11 @@ async fn deliver(scope: &SsmtpScope, msg: &Message, stamp: &Stamp) -> Result<(),
     let stream = tokio::net::TcpStream::connect((scope.host.as_str(), scope.port()))
         .await
         .map_err(|e| format!("connect: {e}"))?;
+    // Issue #33: SMTP is a command-and-reply exchange, one small write a
+    // step; no socket drt dials keeps Nagle on.
+    stream
+        .set_nodelay(true)
+        .map_err(|e| format!("connect: TCP_NODELAY: {e}"))?;
 
     if scope.starttls() {
         let mut io = stream;

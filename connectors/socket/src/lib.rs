@@ -316,7 +316,7 @@ impl Socket {
                     return None;
                 }
                 while backlog.len() < ACCEPT_SWEEP {
-                    match listener.accept() {
+                    match accept_interactive(listener) {
                         Ok(accepted) => backlog.push_back(accepted),
                         Err(_) => break,
                     }
@@ -482,6 +482,20 @@ impl SocketScope {
 /// pump's cue to poll again next step.
 type Try<T> = Result<Option<T>, CallError>;
 
+/// Issue #33: a socket handed to a program is one hop of whatever that
+/// program splices, and a splice is interactive -- with Nagle on, every
+/// second small write waited for the first one's delayed ACK, 40 ms on
+/// Linux. TCP_NODELAY goes on at accept. A failure to set it is a latency
+/// cost rather than a refusal, and not one a supported target produces on
+/// a connected socket.
+fn accept_interactive(
+    listener: &std::net::TcpListener,
+) -> std::io::Result<(std::net::TcpStream, std::net::SocketAddr)> {
+    let accepted = listener.accept()?;
+    let _ = accepted.0.set_nodelay(true);
+    Ok(accepted)
+}
+
 fn not_yet<T>(e: std::io::Error, what: &str) -> Try<T> {
     match e.kind() {
         ErrorKind::WouldBlock | ErrorKind::Interrupted => Ok(None),
@@ -547,7 +561,7 @@ impl SocketConnector {
                     if let Some(taken) = backlog.pop_front() {
                         return Ok(Some(taken));
                     }
-                    match listener.accept() {
+                    match accept_interactive(listener) {
                         Ok(accepted) => Ok(Some(accepted)),
                         Err(e) => not_yet(e, "accept"),
                     }
