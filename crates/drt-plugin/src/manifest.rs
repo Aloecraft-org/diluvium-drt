@@ -87,13 +87,24 @@ impl Scope {
 pub enum Transport {
     /// The host forks, execs and hands over one end of a socketpair.
     Process,
+    /// The host starts the program and it dials back over loopback,
+    /// proving itself with a secret the host minted. The native default:
+    /// it owns the plugin's lifetime the way `process` does, and inherits
+    /// nothing, which is what lets it run where there is no fd 3.
+    Spawn,
     /// The host dials an address the deployment names.
     Tcp,
 }
 
 impl Transport {
     /// Every spelling this host accepts, for a refusal to quote.
-    pub const SPELLINGS: &'static [&'static str] = &["process", "tcp"];
+    pub const SPELLINGS: &'static [&'static str] = &["process", "spawn", "tcp"];
+
+    /// Whether this transport starts the program itself, and therefore
+    /// needs `exec` to name one.
+    pub fn starts_the_program(self) -> bool {
+        matches!(self, Transport::Process | Transport::Spawn)
+    }
 }
 
 /// What wiring scope a deployment may hand this plugin.
@@ -225,6 +236,7 @@ impl Manifest {
         let transport = match wire.transport.as_deref() {
             None => return Err(ManifestError::Missing("transport")),
             Some("process") => Transport::Process,
+            Some("spawn") => Transport::Spawn,
             Some("tcp") => Transport::Tcp,
             Some(found) => {
                 return Err(ManifestError::UnknownTransport {
@@ -247,7 +259,11 @@ impl Manifest {
             }
         };
 
-        if transport == Transport::Process {
+        // Both transports that start the program need one to start, and
+        // need it named absolutely: what a deployment wired is what runs,
+        // and a `PATH` lookup would make that depend on the environment
+        // DRT happened to start in.
+        if transport.starts_the_program() {
             let exec = wire
                 .exec
                 .as_deref()

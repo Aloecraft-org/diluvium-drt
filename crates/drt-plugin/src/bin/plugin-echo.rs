@@ -7,30 +7,33 @@
 //!
 //! Configurable values: none. Behaviour is chosen per call by `target`.
 //!
-//! Fan-out, two of them:
+//! Fan-out, two of them.
 //!
-//! - **How the stream is obtained**, which is the whole difference between
-//!   the transports this fixture serves:
-//!   * `fd 3` — the `process` transport put it there before exec. Unix
-//!     only, because there is no fd 3 anywhere else.
-//!   * dial-back — the `spawn` transport passed `--drt-plugin-dial
-//!     127.0.0.1:PORT` and a secret in the environment, and the plugin
-//!     connects and presents the secret. Every native target.
-//!   `doc/Plugins.md` §4.1 claims "a plugin written for fd 3 becomes a
-//!   `tcp` or `spawn` plugin by changing where it reads and writes and
-//!   nothing else". `serve` below is that claim: one function, generic
-//!   over `Read + Write`, and the two ways in are the only code that
-//!   differs.
-//! - **The `target` match** in `answer` —
-//!   * `echo/say` — answer with the args, unchanged.
-//!   * `echo/fail` — answer with a `plugin`-class error.
-//!   * `echo/quit` — exit without answering, so the host sees a plugin that
-//!     died mid-call.
-//!   * `echo/junk` — write bytes that are not a frame, so the host sees a
-//!     desynchronised stream.
-//!   * anything else — answer with a `capability`-class error, which is what
-//!     a plugin says about a target it does not serve. Never `denied`: that
-//!     word is the dispatcher's.
+//! **How the stream is obtained**, which is the whole difference between
+//! the transports this fixture serves:
+//!
+//! - `fd 3` — the `process` transport put it there before exec. Unix only,
+//!   because there is no fd 3 anywhere else.
+//! - dial-back — the `spawn` transport passed `--drt-plugin-dial
+//!   127.0.0.1:PORT` and a secret in the environment, and the plugin
+//!   connects and presents the secret. Every native target.
+//!
+//! `doc/Plugins.md` §4.1 claims "a plugin written for fd 3 becomes a `tcp`
+//! or `spawn` plugin by changing where it reads and writes and nothing
+//! else". `serve` below is that claim: one function, generic over
+//! `Read + Write`, and the two ways in are the only code that differs.
+//!
+//! **The `target` match** in `answer`:
+//!
+//! - `echo/say` — answer with the args, unchanged.
+//! - `echo/fail` — answer with a `plugin`-class error.
+//! - `echo/quit` — exit without answering, so the host sees a plugin that
+//!   died mid-call.
+//! - `echo/junk` — write bytes that are not a frame, so the host sees a
+//!   desynchronised stream.
+//! - anything else — answer with a `capability`-class error, which is what
+//!   a plugin says about a target it does not serve. Never `denied`: that
+//!   word is the dispatcher's.
 //!
 //! **This fixture blocks, and that is correct.** The non-blocking rule is
 //! the *host's*, because the host has a drive loop full of other guests to

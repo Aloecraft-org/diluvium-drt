@@ -8,6 +8,8 @@
 //! - [`frame`] — the wire: length-prefixed msgpack, request and reply.
 //! - [`channel`] — the byte stream under it, and its test double.
 //! - [`session`] — many calls over one stream, polled and never blocking.
+//! - [`connector`] — a plugin behind the `Connector` trait, which is the
+//!   point of all of it: a guest cannot tell a plugin from a builtin.
 //! - [`process`] — the unix transport: fork, exec, and keep fd 3. A
 //!   platform-bound module, `cfg(unix)`.
 //! - [`tcp`] — the dialed transport: `process` minus the fork
@@ -39,6 +41,12 @@
 //! where there are no threads at all.
 
 pub mod channel;
+/// A plugin behind the `Connector` trait, so a guest cannot tell.
+///
+/// Native only: every transport that starts a program is, and the two
+/// that do not are not yet reachable from a deployment.
+#[cfg(any(unix, windows))]
+pub mod connector;
 pub mod frame;
 pub mod manifest;
 #[cfg(unix)]
