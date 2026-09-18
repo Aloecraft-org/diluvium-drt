@@ -29,9 +29,38 @@ fn version_first() {
     let engine = DiluviumEngine::new().unwrap();
     assert_eq!(
         engine.abi_version(),
-        1,
-        "dv ABI v1 — a bump is a decision, not a surprise"
+        2,
+        "dv ABI v2 — a bump is a decision, not a surprise"
     );
+}
+
+/// What ABI 2 added, present and reachable.
+///
+/// The number moving is the decision `version_first` guards; this is what
+/// the number is *about*. A build that reports 2 while the feature list is
+/// a stub, or while a guest has no `array`, is reporting a version it does
+/// not speak — and the feature list in particular was wrong in exactly
+/// that way before it was read off the core.
+#[test]
+fn abi_two_carries_what_it_says_it_does() {
+    let features = drt_swarm::engine::core_features().expect("this build has an engine");
+    assert!(
+        features.contains(&"regex") && features.contains(&"numeric"),
+        "the list is the library's, not a table someone typed: {features:?}"
+    );
+    assert!(
+        !features.iter().any(|f| f.is_empty()),
+        "a blank feature name means the string was split wrong: {features:?}"
+    );
+
+    // And the thing the whole round is for: a guest can call `array`.
+    let engine = DiluviumEngine::new().unwrap();
+    let mut inst = load(
+        &engine,
+        "if type(array) ~= 'table' then error('no array') end",
+        "abi2",
+    );
+    assert!(matches!(inst.run().unwrap(), Step::Done));
 }
 
 #[test]

@@ -1,0 +1,46 @@
+-- Three rules decide what a reduction answers, and all three exist so the
+-- answer is the same on every target rather than merely close.
+--
+--   drt run app.dlua
+
+-- A reduction answers a Lua number, and a Lua number printed with %g is the
+-- thing these examples never do. One-element array, and bits does the rest.
+local function bits(x) return array.bits(array.from{x}) end
+
+-- Rule 1: the order is canonical, not left to right. 1e16 and eight 1.0s --
+-- summed left to right each 1.0 is too small to move the running total, so
+-- the ones vanish and the answer is 1e16. array.sum uses eight accumulators
+-- combined pairwise, so six of them survive.
+local hard = {1e16}
+for _ = 1, 8 do hard[#hard + 1] = 1.0 end
+
+local naive = 0.0
+for _, v in ipairs(hard) do naive = naive + v end
+
+print("a sum that depends on the order it is taken in")
+print("  left to right  " .. bits(naive))
+print("  array.sum      " .. bits(array.sum(array.from(hard))))
+
+-- Rule 2: one total order, with NaN last. So a NaN never wins min and
+-- always wins max. That is one rule rather than two conveniences: a max
+-- that skipped NaN would disagree with sort about the largest element.
+local nan = 0.0 / 0.0
+local withnan = array.from{nan, 2.0, 1.0}
+
+print("")
+print("NaN sorts last, so it loses min and wins max")
+print("  sorted  " .. array.bits(array.sort(withnan)))
+print("  min     " .. bits(array.min(withnan)))
+print("  max     " .. bits(array.max(withnan)))
+
+-- Rule 3: group ids are handed out in first-appearance order, so they do
+-- not depend on a hash seed or on how the keys happen to sort.
+local keys = array.from{10, 20, 10, 30, 20}
+local vals = array.from{1.0, 2.0, 4.0, 8.0, 16.0}
+local ids, n = array.group_index(keys)
+
+print("")
+print("grouping, by first appearance: " .. n .. " groups")
+print("  ids         " .. array.bits(ids))
+print("  group_sum   " .. array.bits(array.group_sum(vals, ids, n)))
+print("  group_mean  " .. array.bits(array.group_mean(vals, ids, n)))

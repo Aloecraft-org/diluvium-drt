@@ -1,9 +1,9 @@
 version: <version>
 profile: full
-dv_abi: 1
-dv_abi_expected: 1
+dv_abi: 2
+dv_abi_expected: 2
 diluvium: <revision>
-diluvium_version: 0.15.1
-features: regex
+diluvium_version: 0.16.0
+features: regex,json,msgpack,snapshot,numeric
 connectors: time,fs,crypto,sql,ssh,rest,ssmtp,exec,data,socket,listen
 verbs: buildinfo,commit,deploy,key,netcheck,ps,repl,rm,run,start,tunnel,wg
