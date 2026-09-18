@@ -12,6 +12,9 @@
 //!   platform-bound module, `cfg(unix)`.
 //! - [`tcp`] — the dialed transport: `process` minus the fork
 //!   (`doc/Plan-0.7.0.md` §8). Native and wasi, where `std::net` is.
+//! - [`spawn`] — the native default (`doc/Plugins.md` §4.1): DRT starts
+//!   the plugin and the plugin dials back, so DRT owns the lifetime the
+//!   way `process` does and inherits nothing, the way Windows requires.
 //!
 //! Configurable values: each module's own, named in its surface block.
 //!
@@ -41,5 +44,11 @@ pub mod manifest;
 #[cfg(unix)]
 pub mod process;
 pub mod session;
+/// DRT starts the plugin; the plugin dials back over loopback.
+///
+/// Native only, both halves of it: starting a process needs
+/// `drt_platform::process::Tree`, which neither wasm target has.
+#[cfg(any(unix, windows))]
+pub mod spawn;
 #[cfg(any(unix, windows, target_os = "wasi"))]
 pub mod tcp;

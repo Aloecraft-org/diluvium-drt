@@ -75,6 +75,7 @@ pub const SWEEP_EXIT_CODE: u32 = 1;
 /// a program -- the reply, the deadline, a cap tripping, an error, a
 /// panic unwinding through -- ends with the tree gone, without each path
 /// having to remember.
+#[derive(Debug)]
 pub struct Tree {
     #[cfg(unix)]
     inner: unix::Tree,
@@ -134,6 +135,7 @@ mod unix {
     use std::os::unix::process::CommandExt;
     use std::process::{Child, Command};
 
+    #[derive(Debug)]
     pub struct Tree {
         pid: u32,
     }
@@ -182,6 +184,7 @@ mod windows {
     /// The handle is the tree: closing it kills every member, because
     /// that is what `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` means, so `Drop`
     /// needs no second thought about whether a sweep already happened.
+    #[derive(Debug)]
     pub struct Tree {
         job: HANDLE,
     }
