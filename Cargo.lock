@@ -1373,7 +1373,12 @@ dependencies = [
 name = "drt-plugin"
 version = "0.7.0-rc.3"
 dependencies = [
+ "async-trait",
+ "drt-caps",
+ "drt-connector",
+ "drt-platform",
  "libc",
+ "pollster",
  "rmp-serde",
  "rmpv",
  "serde",
