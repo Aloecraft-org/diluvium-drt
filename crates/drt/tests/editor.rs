@@ -134,3 +134,69 @@ fn control_c_abandons_the_line_and_the_repl_goes_on() {
         "the repl did not survive ^C, or the abandoned line came back: {answered:?}"
     );
 }
+
+/// The highlighter's one hard rule: escapes only.
+///
+/// The cursor is measured against the line the editor holds, so adding or
+/// dropping a single printable character puts it in the wrong column —
+/// and the symptom would be a cursor that drifts as you type, which is
+/// miserable to diagnose from a bug report. Stripping the escapes must
+/// give back exactly what went in, for every shape a line can take.
+#[test]
+fn highlighting_only_ever_adds_escapes() {
+    use ego_cli::extend::Highlighter;
+    let hl = drt::repl::Syntax;
+    let corpus = [
+        "",
+        "x",
+        "local x = 1",
+        "if x then return 'a' else return \"b\" end",
+        "-- a comment",
+        "x = 1 -- trailing",
+        "'unterminated",
+        "\"also unterminated",
+        "$\"an f-string\"",
+        "$'single quoted'",
+        "[[a long string]]",
+        "[==[a long string with levels]==]",
+        "'escaped \\' quote'",
+        "0x1f + 3.14e-2 + 42",
+        "continue",
+        "global g = 1",
+        "-- unicode: héllo wörld ✓",
+        "s = 'héllo ✓ wörld'",
+        "f(a,b)[1].c:d()",
+        "a--[[inline]]b",
+        "~= <= >= // .. ... :: ??",
+    ];
+    for line in corpus {
+        let painted = hl.highlight(line);
+        assert_eq!(
+            ego_cli::style::strip(&painted),
+            line,
+            "highlighting changed the characters of {line:?} -> {painted:?}"
+        );
+    }
+}
+
+/// And it actually colours something, so the test above cannot be passed
+/// by a highlighter that does nothing.
+#[test]
+fn highlighting_colours_the_things_it_claims_to() {
+    use ego_cli::extend::Highlighter;
+    let hl = drt::repl::Syntax;
+    for line in [
+        "local x", "-- c", "'s'", "42", "$\"f\"", "[[l]]", "global g",
+    ] {
+        assert!(
+            hl.highlight(line).contains('\u{1b}'),
+            "nothing was coloured in {line:?}"
+        );
+    }
+    // A line with nothing to colour keeps its borrow rather than paying
+    // for a copy.
+    assert!(matches!(
+        hl.highlight("foo.bar(baz)"),
+        std::borrow::Cow::Borrowed(_)
+    ));
+}
