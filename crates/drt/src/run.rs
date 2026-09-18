@@ -77,6 +77,10 @@ pub fn prepare_source(
             budget,
             numeric,
             unsafe_stdlib: false,
+            // Sealed. `drt run` is not a debugger, and the reading half of
+            // `debug` -- a traceback, its own frames -- is there without
+            // this.
+            unsafe_debug: false,
         },
         caps,
         dispatcher,

@@ -108,6 +108,10 @@ impl Repl {
                 // sandbox; unsealed, that is what the caller asked for by
                 // name, and the caps and the budget still hold.
                 unsafe_stdlib,
+                // Not tied to the flag above: the debug set is a separate
+                // authority and a REPL has no more claim on `setlocal`
+                // than `drt run` does. A tool that wants it asks for it.
+                unsafe_debug: false,
             },
             caps,
             dispatcher,

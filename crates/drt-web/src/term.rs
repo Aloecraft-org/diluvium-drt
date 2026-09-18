@@ -287,6 +287,25 @@ enum Kind {
 }
 
 impl Session {
+    /// The deployment this session is driving, when it is driving one.
+    ///
+    /// `Some` only for `drt start`: that is the verb with a swarm. `drt
+    /// run` and `drt repl` drive a single instance through `Solo`, so
+    /// there is no roster to hand out and `None` is the honest answer
+    /// rather than an empty one.
+    ///
+    /// This exists so a page's Instances panel can show the agents someone
+    /// started in its terminal. Without it a `DrtSwarm` and a `DrtTerm`
+    /// are two separate worlds with two separate deployments, and a panel
+    /// beside a terminal shows everything except what the terminal is
+    /// running.
+    pub fn deployment_mut(&mut self) -> Option<&mut drt::start::Deployment> {
+        match &mut self.kind {
+            Kind::Start(driver) => Some(driver.deployment_mut()),
+            Kind::Run { .. } | Kind::Repl(_) | Kind::Exited(_) => None,
+        }
+    }
+
     fn exited(status: i32) -> Self {
         Session {
             kind: Kind::Exited(status),

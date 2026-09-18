@@ -212,3 +212,72 @@ fn the_command_line_is_the_binarys_own() {
     assert!(text(&seen, Fd::Stdout).contains("The Diluvium RunTime"));
     uninstall_sink();
 }
+
+/// The Terminal tool and the Instances panel can be one world: a running
+/// `drt start` hands out the deployment it is driving, so a panel beside
+/// the terminal shows the agents the terminal started rather than its own
+/// separate ones.
+#[test]
+fn a_start_session_hands_out_the_deployment_it_is_driving() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let _seen = capture();
+    let term = Term::new();
+    // A root that spawns a child and then parks, so both are in the
+    // roster while the panel looks.
+    term.fs().add_file(
+        "/d/app.json",
+        r#"{"program": {"source": "local sys = queue.declare('system/lifecycle', {capacity = 4})\nlocal ev = queue.declare('system/events', {capacity = 16})\nassert(queue.push(sys, {op = 'spawn', code = 'local q = queue.declare(\"in\", {capacity = 1}) while true do queue.wait({q}) end', caps = {}}))\nwhile true do queue.wait({ev}) end"},
+            "caps": [{"capability": "lifecycle"}, {"capability": "queue:*"}]}"#,
+    );
+    term.fs().set_cwd("/d");
+    let mut session = term.exec(&argv(&["drt", "start", "--config", "app.json"]));
+
+    // A spawn is rate-limited and lands on a later step, so drive a few
+    // rounds rather than assuming which one it arrives on. Both programs
+    // park forever, so once the child is in the roster it stays there.
+    let mut ids = Vec::new();
+    for _ in 0..8 {
+        let _ = session.tick();
+        if let Some(d) = session.deployment_mut() {
+            ids = drt_web::swarm::view::ids(d);
+            if ids.len() >= 2 {
+                break;
+            }
+        }
+    }
+    assert!(
+        ids.len() >= 2,
+        "the panel sees the root and what it spawned, got {ids:?}"
+    );
+    let d = session
+        .deployment_mut()
+        .expect("a `drt start` session drives a deployment");
+
+    // And the questions a panel asks answer for real instances.
+    let root = ids[0];
+    assert!(drt_web::swarm::view::resident(d, root), "the root is here");
+    assert!(
+        drt_web::swarm::view::caps(d, root).is_some(),
+        "a panel can show what the root may do"
+    );
+    assert!(
+        drt_web::swarm::view::usage(d, root).is_some(),
+        "and what it has spent, which is the number that was host-invisible"
+    );
+    uninstall_sink();
+}
+
+/// `drt run` drives one instance through `Solo`, not a swarm, so there is
+/// no roster to hand out. `None` rather than an empty one: a panel should
+/// be able to tell "not that kind of session" from "no agents yet".
+#[test]
+fn a_run_session_has_no_deployment_to_hand_out() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let _seen = capture();
+    let term = Term::new();
+    term.fs().add_file("/d/app.dlua", "local x = 1");
+    term.fs().set_cwd("/d");
+    let mut session = term.exec(&argv(&["drt", "run", "app.dlua"]));
+    assert!(session.deployment_mut().is_none());
+    uninstall_sink();
+}

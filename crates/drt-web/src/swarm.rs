@@ -51,6 +51,111 @@ use drt_swarm::InstanceId;
 /// `drt::config::ceiling` hands a program whose config lists none.
 pub const DEFAULT_CAPS: &str = r#"[{"capability":"host:*"}]"#;
 
+/// The roster questions and the verbs, over a **borrowed** deployment.
+///
+/// Free functions rather than methods because a page can hold a
+/// deployment two ways: [`Swarm`], which owns one, and a `drt start`
+/// session, which is driving one. Both answer the same questions, and a
+/// panel that could only see the first would be a panel that never showed
+/// the agents someone started in the terminal -- which was the state of
+/// things before this module existed.
+///
+/// Nothing here is browser-only; the marshalling lives in `bindings`.
+pub mod view {
+    use super::*;
+
+    pub fn alive(d: &Deployment) -> usize {
+        d.alive()
+    }
+
+    /// The roster, as ids: `dvs_instance` handed back a pointer and this
+    /// hands back the ids a page can hold on to.
+    pub fn ids(d: &Deployment) -> Vec<u32> {
+        d.ids().into_iter().map(|id| id.0).collect()
+    }
+
+    pub fn slots_allocated(d: &Deployment) -> usize {
+        d.slots_allocated()
+    }
+
+    /// Who spawned `id`: 0 for the root, whose parent is nobody, and
+    /// `None` for an id that is not in the roster -- a distinction
+    /// `dvs_parent` could not make, having only the one answer.
+    pub fn parent(d: &Deployment, id: u32) -> Option<u32> {
+        d.parent(InstanceId(id)).map(|p| p.0)
+    }
+
+    pub fn resident(d: &Deployment, id: u32) -> bool {
+        d.resident(InstanceId(id))
+    }
+
+    pub fn cached_size(d: &Deployment, id: u32) -> usize {
+        d.cached_size(InstanceId(id))
+    }
+
+    pub fn wake_on_message(d: &Deployment, id: u32) -> bool {
+        d.wake_on_message(InstanceId(id))
+    }
+
+    /// What `id` may hold, as the JSON a config would have written.
+    pub fn caps(d: &Deployment, id: u32) -> Option<String> {
+        d.caps(InstanceId(id))
+            .map(|set| serde_json::to_string(set.grants()).unwrap_or_else(|_| "[]".into()))
+    }
+
+    pub fn holds(d: &Deployment, id: u32, cap: &str) -> bool {
+        d.holds(InstanceId(id), cap)
+    }
+
+    /// Whether `parent` could pass `cap` to something it spawns -- the
+    /// question a panel asks before offering the button.
+    pub fn may_grant(d: &Deployment, parent: u32, cap: &str) -> bool {
+        d.may_grant(InstanceId(parent), cap)
+    }
+
+    pub fn budget(d: &Deployment, id: u32) -> Option<String> {
+        d.budget(InstanceId(id))
+            .map(|b| serde_json::to_string(&b).unwrap_or_else(|_| "{}".into()))
+    }
+
+    /// What `id` has spent and holds right now, as JSON.
+    ///
+    /// `None` for a hibernated instance, which is the answer rather than a
+    /// gap -- see `Swarm::usage` in `drt-swarm`. A panel showing
+    /// `bytes_now` beside `memory_kb_peak` is showing what an idle agent
+    /// costs against its high-water mark, which is what hibernation is
+    /// for.
+    pub fn usage(d: &Deployment, id: u32) -> Option<String> {
+        d.usage(InstanceId(id))
+            .map(|u| serde_json::to_string(&u).unwrap_or_else(|_| "{}".into()))
+    }
+
+    /// A msgpack message onto one of `id`'s queues.
+    ///
+    /// The page is the runtime here: a browser root has no `.drt_root/`
+    /// and so no id to name, and there are no peers to tell apart on the
+    /// no-root path. The message still carries a sender, because "every
+    /// delivered message carries one" is not a rule with a browser
+    /// exception.
+    pub fn push(d: &mut Deployment, id: u32, queue: &str, msg: &[u8]) -> Result<(), String> {
+        let from = drt_config::peer::Sender::runtime(drt_config::project::NodePath::root());
+        d.push(InstanceId(id), queue, &from, msg)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn kill(d: &mut Deployment, id: u32) -> Result<(), String> {
+        d.kill(InstanceId(id)).map_err(|e| e.to_string())
+    }
+
+    pub fn hibernate(d: &mut Deployment, id: u32) -> Result<(), String> {
+        d.hibernate(InstanceId(id)).map_err(|e| e.to_string())
+    }
+
+    pub fn wake(d: &mut Deployment, id: u32) -> Result<(), String> {
+        d.wake(InstanceId(id)).map_err(|e| e.to_string())
+    }
+}
+
 /// A deployment a page drives.
 pub struct Swarm {
     inner: Deployment,
@@ -112,59 +217,60 @@ impl Swarm {
     }
 
     pub fn alive(&self) -> usize {
-        self.inner.alive()
+        view::alive(&self.inner)
     }
 
     /// The roster, as ids: `dvs_instance` handed back a pointer and this
     /// hands back the ids a page can hold on to.
     pub fn ids(&self) -> Vec<u32> {
-        self.inner.ids().into_iter().map(|id| id.0).collect()
+        view::ids(&self.inner)
     }
 
     pub fn slots_allocated(&self) -> usize {
-        self.inner.slots_allocated()
+        view::slots_allocated(&self.inner)
     }
 
     /// Who spawned `id`: 0 for the root, whose parent is nobody, and
     /// `None` for an id that is not in the roster -- a distinction
     /// `dvs_parent` could not make, having only the one answer.
     pub fn parent(&self, id: u32) -> Option<u32> {
-        self.inner.parent(InstanceId(id)).map(|p| p.0)
+        view::parent(&self.inner, id)
     }
 
     pub fn resident(&self, id: u32) -> bool {
-        self.inner.resident(InstanceId(id))
+        view::resident(&self.inner, id)
     }
 
     pub fn cached_size(&self, id: u32) -> usize {
-        self.inner.cached_size(InstanceId(id))
+        view::cached_size(&self.inner, id)
     }
 
     pub fn wake_on_message(&self, id: u32) -> bool {
-        self.inner.wake_on_message(InstanceId(id))
+        view::wake_on_message(&self.inner, id)
     }
 
     /// What `id` may hold, as the JSON a config would have written.
     pub fn caps(&self, id: u32) -> Option<String> {
-        self.inner
-            .caps(InstanceId(id))
-            .map(|set| serde_json::to_string(set.grants()).unwrap_or_else(|_| "[]".into()))
+        view::caps(&self.inner, id)
     }
 
     pub fn holds(&self, id: u32, cap: &str) -> bool {
-        self.inner.holds(InstanceId(id), cap)
+        view::holds(&self.inner, id, cap)
     }
 
     /// Whether `parent` could pass `cap` to something it spawns -- the
     /// question a panel asks before offering the button.
     pub fn may_grant(&self, parent: u32, cap: &str) -> bool {
-        self.inner.may_grant(InstanceId(parent), cap)
+        view::may_grant(&self.inner, parent, cap)
     }
 
     pub fn budget(&self, id: u32) -> Option<String> {
-        self.inner
-            .budget(InstanceId(id))
-            .map(|b| serde_json::to_string(&b).unwrap_or_else(|_| "{}".into()))
+        view::budget(&self.inner, id)
+    }
+
+    /// What `id` has spent and holds right now, as JSON.
+    pub fn usage(&self, id: u32) -> Option<String> {
+        view::usage(&self.inner, id)
     }
 
     /// A msgpack message onto one of `id`'s queues.
@@ -175,24 +281,19 @@ impl Swarm {
     /// delivered message carries one" is not a rule with a browser
     /// exception.
     pub fn push(&mut self, id: u32, queue: &str, msg: &[u8]) -> Result<(), String> {
-        let from = drt_config::peer::Sender::runtime(drt_config::project::NodePath::root());
-        self.inner
-            .push(InstanceId(id), queue, &from, msg)
-            .map_err(|e| e.to_string())
+        view::push(&mut self.inner, id, queue, msg)
     }
 
     pub fn kill(&mut self, id: u32) -> Result<(), String> {
-        self.inner.kill(InstanceId(id)).map_err(|e| e.to_string())
+        view::kill(&mut self.inner, id)
     }
 
     pub fn hibernate(&mut self, id: u32) -> Result<(), String> {
-        self.inner
-            .hibernate(InstanceId(id))
-            .map_err(|e| e.to_string())
+        view::hibernate(&mut self.inner, id)
     }
 
     pub fn wake(&mut self, id: u32) -> Result<(), String> {
-        self.inner.wake(InstanceId(id)).map_err(|e| e.to_string())
+        view::wake(&mut self.inner, id)
     }
 
     pub fn allow_hibernation(&mut self, allow: bool) {
@@ -201,6 +302,13 @@ impl Swarm {
 
     pub fn allow_bytecode(&mut self, allow: bool) {
         self.inner.allow_bytecode(allow);
+    }
+
+    /// The whole `debug` library rather than the narrowed one. A debugger
+    /// wants it, a deployment does not: see `LoadSpec::unsafe_debug` for
+    /// the three escapes it puts back.
+    pub fn allow_unsafe_debug(&mut self, allow: bool) {
+        self.inner.allow_unsafe_debug(allow);
     }
 
     pub fn allow_unsafe_stdlib(&mut self, allow: bool) {
