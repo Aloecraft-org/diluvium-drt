@@ -938,28 +938,68 @@ pub fn interface_advice(errno: Option<i32>) -> &'static str {
 /// control socket with no node to stat, and Windows would mean loading
 /// wintun.dll. Silence here never means "this will work".
 pub fn interface_here() -> Vec<String> {
-    #[cfg(not(target_os = "linux"))]
-    {
-        Vec::new()
-    }
+    let mut findings = Vec::new();
+
+    // What this host has to stat or load before the kernel is even asked.
     #[cfg(target_os = "linux")]
-    {
-        let mut findings = Vec::new();
-        findings.extend(tun_node_here(std::path::Path::new(TUN_NODE)));
-        // Asked second, and separately, because it is the failure the
-        // other two get mistaken for. A process can hold the capability
-        // and still not open the node, which is exactly the hour issue
-        // #21 lost.
-        if let Some(false) = net_admin_here() {
-            findings.push(
-                "this process does not hold CAP_NET_ADMIN, so the kernel will \
-                 refuse the interface. Run it as root, or `setcap \
-                 cap_net_admin=ep` the binary."
-                    .into(),
-            );
-        }
-        findings
+    findings.extend(tun_node_here(std::path::Path::new(TUN_NODE)));
+    #[cfg(windows)]
+    findings.extend(wintun_here());
+
+    // The privilege, asked last and separately, because it is the failure
+    // the others get mistaken for. A process can hold it and still not
+    // open the node, which is exactly the hour issue #21 lost -- so this
+    // is composed with the findings above rather than standing in for
+    // them. Only a definite denial is worth a sentence: `Unknown` means
+    // this host could not be asked, and saying nothing is the honest
+    // answer to that.
+    if drt_platform::privilege::held(drt_platform::privilege::Privilege::NetAdmin).is_denied() {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        findings.push(
+            "this process does not hold CAP_NET_ADMIN, so the kernel will \
+             refuse the interface. Run it as root, or `setcap \
+             cap_net_admin=ep` the binary."
+                .into(),
+        );
+        #[cfg(target_os = "macos")]
+        findings.push(
+            "this process is not root, so the kernel will refuse the utun \
+             device. Run it with sudo."
+                .into(),
+        );
+        #[cfg(windows)]
+        findings.push(
+            "this process does not hold an elevated token, so wintun will \
+             refuse to create the adapter. Run it as Administrator."
+                .into(),
+        );
     }
+
+    findings
+}
+
+/// Whether `wintun.dll` is beside the binary, as a sentence or nothing.
+///
+/// Windows fails through wintun rather than through an errno, so this is
+/// the Windows half of what `tun_node_here` establishes on Linux: a file
+/// that has to be there before the privilege question is worth asking.
+/// Beside the *binary* rather than on the search path, because that is
+/// where `doc/Platforms.md` says to put it and a DLL found elsewhere is a
+/// DLL somebody else chose.
+#[cfg(windows)]
+pub fn wintun_here() -> Option<String> {
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("wintun.dll")))?;
+    if beside.exists() {
+        return None;
+    }
+    Some(format!(
+        "{}: not found. Kernel mode needs wintun.dll beside the binary; \
+         download it from wintun.net, or set `mode = \"userspace\"`, which \
+         needs no driver and no privilege.",
+        beside.display()
+    ))
 }
 
 /// Whether the tunnel device node is there and this process can open it,
@@ -989,25 +1029,6 @@ pub fn tun_node_here(path: &std::path::Path) -> Option<String> {
             interface_advice(e.raw_os_error())
         )),
     }
-}
-
-/// Whether this process holds CAP_NET_ADMIN, or `None` if the answer could
-/// not be read.
-///
-/// `CapEff` in `/proc/self/status` is the effective set as a hex mask, and
-/// it covers root without a separate uid check: root's effective set is
-/// full. `None` rather than a guess where `/proc` is not mounted — a
-/// deployment that cannot read the mask should be told nothing about it
-/// rather than told it is fine.
-#[cfg(target_os = "linux")]
-pub fn net_admin_here() -> Option<bool> {
-    let status = std::fs::read_to_string("/proc/self/status").ok()?;
-    let mask = status
-        .lines()
-        .find_map(|line| line.strip_prefix("CapEff:"))?
-        .trim();
-    let bits = u64::from_str_radix(mask, 16).ok()?;
-    Some(bits & (1 << CAP_NET_ADMIN) != 0)
 }
 
 /// What STUN saw of the socket this device is about to bind.

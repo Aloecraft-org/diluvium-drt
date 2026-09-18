@@ -25,6 +25,13 @@
 pub mod clock;
 pub mod entropy;
 pub mod fs;
+/// Whether this host will let us do a privileged thing.
+///
+/// Present on every target, unlike [`process`]: a privilege can be asked
+/// about anywhere, and the targets that have no such notion answer
+/// `Unknown` rather than failing to compile. The question is real on a
+/// page too -- the answer is just always the same one.
+pub mod privilege;
 /// Starting a child, and owning everything it starts.
 ///
 /// Absent on both wasm targets: WASI has no process API and none is on
