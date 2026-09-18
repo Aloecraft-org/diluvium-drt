@@ -16,11 +16,24 @@
 //! - [`stdio`]: `write`, `stdout`, `stderr`, the sink a page installs, and
 //!   `bytes_as_written`, the once-at-startup call that keeps Windows's C
 //!   runtime from rewriting the C core's line endings.
+//! - [`process`]: [`process::Tree`], a spawned child and everything it
+//!   starts, owned as one and swept as one. Native only -- neither wasm
+//!   target has a process API -- so a caller that spawns is gated on the
+//!   platform rather than told no at runtime.
 //! - [`detect`]: which of the three this build is.
 
 pub mod clock;
 pub mod entropy;
 pub mod fs;
+/// Starting a child, and owning everything it starts.
+///
+/// Absent on both wasm targets: WASI has no process API and none is on
+/// the standardization track (`doc/Platforms.md`), and a page has no
+/// processes at all. A caller that spawns therefore fails to compile off
+/// native, which is the honest failure -- a runtime refusal would imply
+/// the capability exists and was withheld.
+#[cfg(any(unix, windows))]
+pub mod process;
 pub mod stdio;
 
 /// The three platforms this crate knows.

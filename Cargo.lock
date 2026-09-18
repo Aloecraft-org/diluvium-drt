@@ -1363,7 +1363,9 @@ name = "drt-platform"
 version = "0.7.0-rc.3"
 dependencies = [
  "getrandom 0.3.4",
+ "libc",
  "web-time",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
