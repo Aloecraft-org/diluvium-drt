@@ -406,7 +406,7 @@ fn every_profile_name_is_a_feature_the_binary_probes() {
 #[test]
 fn profile_matches_its_manifest() {
     const PROFILES: [&str; 4] = ["full", "slim", "wasi", "web"];
-    const LEAVES: [&str; 20] = [
+    const LEAVES: [&str; 21] = [
         "cli",
         "connector-crypto",
         "connector-data",
@@ -420,6 +420,7 @@ fn profile_matches_its_manifest() {
         "connector-time",
         "listen",
         "netcheck",
+        "plugins",
         // A test dependency expressed as a feature: dev-dependencies cannot be
         // optional, and a shipping feature must not carry crates only its tests
         // use. `wireguard` names it for a real runtime reason -- its TURN
@@ -515,6 +516,7 @@ fn profile_matches_its_manifest() {
     feature!("connector-time");
     feature!("listen");
     feature!("netcheck");
+    feature!("plugins");
     feature!("relay");
     feature!("runtime");
     feature!("stun");

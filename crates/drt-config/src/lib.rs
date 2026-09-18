@@ -321,6 +321,36 @@ pub struct ConnectorWiring {
     pub scope: Option<drt_caps::Scope>,
 }
 
+/// A plugin family this deployment wires: which manifest describes it, and
+/// what place it is given to work in.
+///
+/// Separate from [`ConnectorWiring`] because the two say different things.
+/// A connector's wiring names a *backing* this build already carries; a
+/// plugin's names a *file on disk* describing a program this build has
+/// never seen. The manifest is the publisher's claim about their own
+/// program -- its family, its transport, its scope, its limits -- and the
+/// deployment's half is only where that file is and what scope, if any, to
+/// hand over.
+///
+/// **A scope handed to a plugin is a promise, not an enforcement**
+/// (`drt_plugin::manifest::Wiring` says it at length). For a builtin the
+/// host makes the request, so an allowlist binds the party doing the work;
+/// a plugin makes its own requests, so the same allowlist binds only a
+/// publisher who chose to honour it. The key is spelled the same for both
+/// so a config reads uniformly, and the difference is real and is stated
+/// rather than hidden by the spelling.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginWiring {
+    /// The `<name>.plugin.json` that describes this plugin, resolved the
+    /// way every other path in a config is.
+    pub manifest: String,
+    /// The wiring scope handed over, if any. Absent is the C host's
+    /// behaviour: no scope at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<drt_caps::Scope>,
+}
+
 /// A listener: a network surface published on purpose (GUARANTEES.md). The
 /// `http` scheme is `dhost_http.c`'s contract — a queue bridge, where
 /// requests land on a named root queue and replies drain from another —
@@ -1020,6 +1050,13 @@ pub struct RootConfig {
     pub root: InstanceConfig,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub connectors: BTreeMap<String, ConnectorWiring>,
+    /// Plugin families, by the family name a guest calls. Separate from
+    /// `connectors` because a plugin is a program this build has never
+    /// seen and a connector is a backing it carries, and because a reader
+    /// of a config should be able to see at a glance which calls leave
+    /// this process.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub plugins: BTreeMap<String, PluginWiring>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub listeners: Vec<Listener>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

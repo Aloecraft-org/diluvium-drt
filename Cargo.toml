@@ -35,6 +35,7 @@ drt-config = { path = "crates/drt-config", version = "0.7.0-rc.3" }
 drt-caps = { path = "crates/drt-caps", version = "0.7.0-rc.3" }
 drt-hostcall = { path = "crates/drt-hostcall", version = "0.7.0-rc.3" }
 drt-platform = { path = "crates/drt-platform", version = "0.7.0-rc.3" }
+drt-plugin = { path = "crates/drt-plugin", version = "0.7.0-rc.3" }
 drt-connector = { path = "crates/drt-connector", version = "0.7.0-rc.3" }
 drt-swarm = { path = "crates/drt-swarm", version = "0.7.0-rc.3" }
 drt-web = { path = "crates/drt-web", version = "0.7.0-rc.3" }

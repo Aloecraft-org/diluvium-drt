@@ -720,6 +720,12 @@ fn enabled_features() -> Vec<&'static str> {
     feature!("connector-time");
     feature!("listen");
     feature!("netcheck");
+    // Probed and reportable, and in no named profile yet: the plugin
+    // channel is built and reachable from a config, and the segments that
+    // make it worth shipping (`doc/Plan-0.7.0.md` §7) are not all in. A
+    // build that turns it on says so in `buildinfo`; `full` does not turn
+    // it on for anyone by accident.
+    feature!("plugins");
     feature!("relay");
     feature!("runtime");
     feature!("stun");
@@ -765,6 +771,12 @@ fn core_features(profile: &str) -> &'static [&'static str] {
 
 pub fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
     let mut registry = Registry::new();
+    // The whole-config questions first: a family named twice is a mistake
+    // about the config, and answering it before either loop means the
+    // operator hears about the mistake they made rather than a consequence
+    // of it.
+    #[cfg(feature = "plugins")]
+    check_plugin_names(config)?;
     for (name, wiring) in &config.connectors {
         match name.as_str() {
             #[cfg(feature = "connector-time")]
@@ -903,7 +915,103 @@ pub fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
             }
         }
     }
+    wire_plugins(config, &mut registry)?;
     Ok(registry)
+}
+
+/// Family names the builtin connectors answer to.
+///
+/// Listed rather than derived from the match above, and listed in full
+/// rather than per feature, because the rule this serves has to be the
+/// same on every build: a plugin may never take one of these names. If it
+/// depended on the features compiled in, a config that worked on `slim`
+/// would start shadowing a builtin the day it ran on `full`, which is the
+/// quiet kind of wrong.
+const BUILTIN_FAMILIES: &[&str] = &[
+    "time", "fs", "sql", "crypto", "data", "ssh", "rest", "ssmtp", "exec", "socket",
+];
+
+/// Every plugin family's name, judged before anything is wired.
+///
+/// Before, not during: a name that collides is a fact about the config as
+/// a whole, and checking it inside the wiring loop would let the *other*
+/// loop's refusal answer first. An operator who wrote one mistake should
+/// be told about that mistake.
+fn check_plugin_names(config: &RootConfig) -> Result<(), String> {
+    for family in config.plugins.keys() {
+        // A plugin may not shadow a builtin. A config that could would
+        // make `fs/read` mean a subprocess somewhere, and a reader of that
+        // config would have no way to see it.
+        if BUILTIN_FAMILIES.contains(&family.as_str()) {
+            return Err(format!(
+                "config wires a plugin for '{family}', which is a builtin connector's \
+                 family; a plugin may not take one, because a guest calling \
+                 '{family}/...' could not tell that its call now leaves this process"
+            ));
+        }
+        if config.connectors.contains_key(family) {
+            return Err(format!(
+                "config wires both a connector and a plugin for '{family}'; one family \
+                 is served by one of them"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Wire the `plugins` block: one entry per family, each naming a manifest.
+///
+/// Read at load, not at first call. A manifest that is missing, malformed,
+/// or describes something this host cannot serve is a refusal here, while
+/// an operator is watching, rather than an error on the first call at 3am.
+/// Nothing is started: `PluginConnector` starts its process on first use.
+#[cfg(feature = "plugins")]
+fn wire_plugins(config: &RootConfig, registry: &mut Registry) -> Result<(), String> {
+    check_plugin_names(config)?;
+    for (family, wiring) in &config.plugins {
+        let path = std::path::Path::new(&wiring.manifest);
+        let bytes = std::fs::read(path).map_err(|e| {
+            format!(
+                "the plugin '{family}' names the manifest '{}', which cannot be read: {e}",
+                wiring.manifest
+            )
+        })?;
+        let manifest = drt_plugin::manifest::Manifest::parse(&bytes).map_err(|e| {
+            format!("the plugin '{family}' has a manifest this host cannot read: {e}")
+        })?;
+        // The manifest's own family is the publisher's claim; the config
+        // key is the operator's. Disagreeing is a mistake worth naming,
+        // because a guest calls the key and the plugin answers the claim.
+        if manifest.family != *family {
+            return Err(format!(
+                "config wires the plugin at '{}' as '{family}', and its manifest calls \
+                 itself '{}'; one of the two is a typo",
+                wiring.manifest, manifest.family
+            ));
+        }
+        let connector = drt_plugin::connector::PluginConnector::new(manifest)?;
+        registry
+            .wire(
+                family.clone(),
+                std::sync::Arc::new(connector),
+                wiring.scope.clone(),
+            )
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// A build with no plugin channel refuses a `plugins` block by name rather
+/// than ignoring it, which is the rule the whole strict loader exists for.
+#[cfg(not(feature = "plugins"))]
+fn wire_plugins(config: &RootConfig, _registry: &mut Registry) -> Result<(), String> {
+    match config.plugins.keys().next() {
+        Some(family) => Err(format!(
+            "config wires a plugin for '{family}', and this build carries no plugin \
+             channel to serve it"
+        )),
+        None => Ok(()),
+    }
 }
 
 /// With no config file, a local run still gets the connectors this build

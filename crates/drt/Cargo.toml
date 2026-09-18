@@ -84,6 +84,7 @@ drt-connector-crypto = { workspace = true, optional = true }
 drt-connector-rest = { workspace = true, optional = true }
 drt-connector-ssmtp = { workspace = true, optional = true }
 drt-connector-exec = { workspace = true, optional = true }
+drt-plugin = { workspace = true, optional = true }
 drt-connector-socket = { workspace = true, optional = true }
 # `full` only: the parquet reader is the one dependency in this workspace
 # that would not fit a slim binary, and a browser has no file to read.
@@ -196,6 +197,10 @@ connector-ssmtp = ["dep:drt-connector-ssmtp", "runtime"]
 # on stderr when one does: granting it is leaving the sandbox
 # (GUARANTEES.md), and that is the loud flag the guarantee promises.
 connector-exec = ["dep:drt-connector-exec"]
+# The plugin channel: a connector backing that is a subprocess speaking
+# msgpack frames rather than code compiled in. Native only, because every
+# transport that starts a program is.
+plugins = ["dep:drt-plugin"]
 # Node-owned stream sockets: `host:socket/listen|accept|read|write|close`
 # (doc/Plan-0.7.0.md §3). A socket is held by the node that opened it,
 # closed when that node is released and kept across its hibernation. `full`

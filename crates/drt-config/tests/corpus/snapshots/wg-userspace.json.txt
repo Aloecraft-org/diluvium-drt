@@ -260,6 +260,7 @@ RootConfig {
             scope: None,
         },
     },
+    plugins: {},
     listeners: [],
     residency: None,
     relay: None,

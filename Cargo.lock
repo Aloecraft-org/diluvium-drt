@@ -1112,6 +1112,7 @@ dependencies = [
  "drt-connector-time",
  "drt-hostcall",
  "drt-platform",
+ "drt-plugin",
  "drt-swarm",
  "ego_cli",
  "ego_transport",

@@ -1,0 +1,64 @@
+parsed to:
+RootConfig {
+    root: InstanceConfig {
+        program: None,
+        caps: [],
+        budget: Budget {
+            instructions: None,
+            memory_kb: None,
+        },
+        numeric: Numeric {
+            max_elements: None,
+            max_tier: None,
+        },
+    },
+    connectors: {},
+    plugins: {
+        "greet": PluginWiring {
+            manifest: "/opt/greet/greet.plugin.json",
+            scope: Some(
+                Scope(
+                    Map(
+                        [
+                            (
+                                String(
+                                    Utf8String {
+                                        s: Ok(
+                                            "greeting",
+                                        ),
+                                    },
+                                ),
+                                String(
+                                    Utf8String {
+                                        s: Ok(
+                                            "hello",
+                                        ),
+                                    },
+                                ),
+                            ),
+                        ],
+                    ),
+                ),
+            ),
+        },
+    },
+    listeners: [],
+    residency: None,
+    relay: None,
+    stun: None,
+    turn: None,
+    wireguard: None,
+    tunnel: None,
+    netcheck: None,
+    identity: Identity {
+        host_key_path: None,
+    },
+    principals: [],
+    dlua_dir: None,
+    entry: Some(
+        Stdlib(
+            "noop",
+        ),
+    ),
+    args: {},
+}
