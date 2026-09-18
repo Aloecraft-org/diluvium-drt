@@ -26,6 +26,9 @@
 //! **The `target` match** in `answer`:
 //!
 //! - `echo/say` — answer with the args, unchanged.
+//! - `echo/pid` — answer with this process's id, so a test can tell one
+//!   instance from another. Which is the only way to check scope: `root`
+//!   means two callers get one pid back and `node` means they get two.
 //! - `echo/fail` — answer with a `plugin`-class error.
 //! - `echo/quit` — exit without answering, so the host sees a plugin that
 //!   died mid-call.
@@ -142,6 +145,9 @@ fn answer<C: Read + Write>(channel: &mut C, request: Request) -> bool {
     let body = match request.target.as_str() {
         "echo/say" => ReplyBody::Ok {
             value: request.args.unwrap_or(rmpv::Value::Nil),
+        },
+        "echo/pid" => ReplyBody::Ok {
+            value: rmpv::Value::from(std::process::id()),
         },
         "echo/fail" => ReplyBody::Err {
             error: PluginError {

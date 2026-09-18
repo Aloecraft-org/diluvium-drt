@@ -21,7 +21,7 @@
 use std::time::{Duration, Instant};
 
 use drt_caps::Scope;
-use drt_connector::Connector;
+use drt_connector::{Asker, Caller, Connector};
 use drt_plugin::connector::PluginConnector;
 use drt_plugin::manifest::Manifest;
 
@@ -108,18 +108,95 @@ fn a_plugin_that_does_not_answer_ends_the_call_rather_than_hanging() {
     );
 }
 
-/// A `node` manifest is refused when the connector is built, by name,
-/// rather than served as if it were `root` -- which would hand a
-/// deployment the shared process the node model exists to prevent.
+/// `node` scope gives two callers two processes, which is the default and
+/// the whole reason the default is what it is: an implicitly shared
+/// process is the ambient singleton the node model exists to avoid.
 #[test]
-fn a_node_scope_manifest_is_refused_rather_than_shared() {
+fn node_scope_gives_each_caller_its_own_process() {
+    let c = node_connector();
+    let a = pid_seen_by(&c, Caller::Node(1));
+    let b = pid_seen_by(&c, Caller::Node(2));
+    assert_ne!(a, b, "two nodes shared one plugin process");
+}
+
+/// `root` scope gives two callers one process, which is what it costs:
+/// the plugin serves both and cannot tell them apart.
+#[test]
+fn root_scope_gives_every_caller_the_same_process() {
+    let c = connector("");
+    let a = pid_seen_by(&c, Caller::Node(1));
+    let b = pid_seen_by(&c, Caller::Node(2));
+    assert_eq!(a, b, "one root plugin became two processes");
+}
+
+/// A node dying takes its own plugin and nobody else's.
+#[test]
+fn releasing_one_node_leaves_the_others_plugin_alone() {
+    let c = node_connector();
+    let one = pid_seen_by(&c, Caller::Node(1));
+    let two = pid_seen_by(&c, Caller::Node(2));
+
+    let lost = c.release(&Caller::Node(1));
+    assert!(lost.is_empty(), "an idle plugin lost something: {lost:?}");
+
+    // Node 2's plugin is untouched: same process, still answering.
+    assert_eq!(pid_seen_by(&c, Caller::Node(2)), two);
+    // Node 1 calling again starts a fresh one rather than reusing a
+    // process that was swept.
+    assert_ne!(pid_seen_by(&c, Caller::Node(1)), one);
+}
+
+/// A `root` plugin is not any one node's to end, so a node dying leaves
+/// it running for everyone else.
+#[test]
+fn releasing_a_node_does_not_end_a_root_plugin() {
+    let c = connector("");
+    let before = pid_seen_by(&c, Caller::Node(1));
+    assert!(c.release(&Caller::Node(1)).is_empty());
+    assert_eq!(
+        pid_seen_by(&c, Caller::Node(1)),
+        before,
+        "a root plugin was ended by one node dying"
+    );
+}
+
+/// Teardown ends every instance, and an empty report is a claim: these
+/// plugins really had nothing outstanding.
+#[test]
+fn finishing_ends_every_instance() {
+    let c = node_connector();
+    pid_seen_by(&c, Caller::Node(1));
+    pid_seen_by(&c, Caller::Node(2));
+    let lost = c.finish();
+    assert!(lost.is_empty(), "idle plugins lost something: {lost:?}");
+    // Nothing is left to end.
+    assert!(c.finish().is_empty());
+}
+
+// --- the helpers those need --------------------------------------------
+
+fn node_connector() -> PluginConnector {
     let exec = env!("CARGO_BIN_EXE_plugin-echo");
     let m = Manifest::parse(
         format!(r#"{{"family":"echo","transport":"spawn","scope":"node","exec":"{exec}"}}"#)
             .as_bytes(),
     )
-    .expect("it parses");
-    let err = PluginConnector::new(m).unwrap_err();
-    assert!(err.contains("`node` scope"), "{err}");
-    assert!(err.contains("only so far"), "{err}");
+    .expect("a node manifest parses");
+    PluginConnector::new(m).expect("a node manifest is served")
+}
+
+/// Which process serves `caller`, asked of the process itself.
+///
+/// The only honest way to check scope: the fixture answers `echo/pid`
+/// with its own process id, so two callers getting one id back is `root`
+/// and two ids is `node`.
+fn pid_seen_by(c: &PluginConnector, caller: Caller) -> u64 {
+    let asker = Asker {
+        caller,
+        grants: &[],
+    };
+    let answer = pollster::block_on(c.call_as(&asker, "echo/pid", None, None)).expect("an answer");
+    answer
+        .as_u64()
+        .unwrap_or_else(|| panic!("a pid, not {answer}"))
 }

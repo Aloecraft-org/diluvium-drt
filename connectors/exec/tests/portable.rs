@@ -70,15 +70,34 @@ fn text(value: &rmpv::Value, name: &str) -> String {
 
 // --- the same intent, spelled for the host ---------------------------------
 
-/// The host's shell, and the flag that means "run this line".
+/// The flag that means "run this line", for the host's shell.
+#[cfg(unix)]
+const SHELL_FLAG: &str = "-c";
+#[cfg(windows)]
+const SHELL_FLAG: &str = "/c";
+
+/// The host's shell, **absolutely**, because the allow list demands it.
 ///
 /// Named here once so a test below reads as its intent and not as a
 /// platform. `cmd.exe` is to Windows what `/bin/sh` is to unix: present on
 /// every install, which is the only property these tests need of it.
+///
+/// The absolute path is not tidiness. `allow` entries are absolute paths
+/// and the connector refuses a bare name by name -- which is how the
+/// Windows leg of CI first earned its keep: this test named `cmd.exe`,
+/// the connector said "allow entries are absolute paths; 'cmd.exe' is
+/// not", and it was the test that was wrong. `COMSPEC` is where Windows
+/// itself keeps the answer, with the canonical location as a fallback for
+/// an environment that has cleared it.
 #[cfg(unix)]
-const SHELL: [&str; 2] = ["/bin/sh", "-c"];
+fn shell_path() -> String {
+    "/bin/sh".to_string()
+}
+
 #[cfg(windows)]
-const SHELL: [&str; 2] = ["cmd.exe", "/c"];
+fn shell_path() -> String {
+    std::env::var("COMSPEC").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".to_string())
+}
 
 /// A line that writes `out` to stdout and exits cleanly.
 #[cfg(unix)]
@@ -110,7 +129,7 @@ const SPEWS: &str = "for /L %i in (1,1,200000) do @echo drt-spews-a-lot";
 const ECHOES_STDIN: &str = "sort";
 
 fn shell(line: &str) -> Vec<String> {
-    vec![SHELL[0].to_string(), SHELL[1].to_string(), line.to_string()]
+    vec![shell_path(), SHELL_FLAG.to_string(), line.to_string()]
 }
 
 fn shell_args(line: &str, extra: Vec<(&str, rmpv::Value)>) -> rmpv::Value {
@@ -234,7 +253,8 @@ fn a_call_may_ask_for_less_than_the_ceiling_never_more() {
 /// must never happen, on either, is that it runs.
 #[test]
 fn the_allow_list_decides_which_programs_a_call_may_start() {
-    let scope = map(vec![("allow", strings(&[SHELL[0]]))]);
+    let shell = shell_path();
+    let scope = map(vec![("allow", strings(&[shell.as_str()]))]);
 
     // Nowhere on PATH: 127, before the list is consulted.
     let answer = call(

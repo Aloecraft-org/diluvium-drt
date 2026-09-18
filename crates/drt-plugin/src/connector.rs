@@ -38,27 +38,35 @@
 //! it as a slow first call, which is honest, and never as a stalled loop
 //! afterwards.
 //!
-//! # Root scope only, so far
+//! # Scope is a key, and that is the whole of it
 //!
-//! `manifest::Scope` has two values and this file serves one. A `root`
-//! plugin is one process for the whole root, which is the case that needs
-//! no instance table: there is one key, so there is one instance.
+//! `doc/Plan-0.7.0.md` §7.3: the dispatcher routed **family → connector**,
+//! and this makes it **(family, scope key) → instance**. The family half
+//! is the registry's, above this file. The scope key is here, and it is
+//! one function: [`PluginConnector::key_for`], which maps a caller to the
+//! instance that serves it.
 //!
-//! A `node` manifest is **refused by name** rather than served as if it
-//! were root. That is the whole reason the refusal exists: `node` is the
-//! default, it means an instance per calling node, and quietly sharing one
-//! process between callers would hand a deployment the ambient singleton
-//! the node model exists to prevent -- silently, and exactly when the
-//! manifest asked for the opposite. `doc/Plan-0.7.0.md` §7.3 is the
-//! segment that adds the table, and until it lands the honest answer is a
-//! sentence saying so.
+//! - `root` — every caller maps to one key, so there is one process for
+//!   the whole root. It serves several nodes and **cannot tell them
+//!   apart**, which is the cost the manifest states in those words. Any
+//!   per-caller policy is the host's to enforce before the call.
+//! - `node` — each caller maps to itself, so there is a process per
+//!   calling node, and it dies when that node does. This is the default,
+//!   because an implicitly shared process is an ambient singleton and that
+//!   is the thing the node model exists to avoid.
+//!
+//! Instances start on first call, per key, and [`Connector::release`]
+//! takes one away when its owner dies. A `root` instance is not released
+//! by any one node dying, because it is not that node's; it goes at
+//! [`Connector::finish`] with everything else.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use drt_caps::Scope;
-use drt_connector::{CallError, CallResult, Connector};
+use drt_connector::{Asker, CallError, CallResult, Caller, Connector};
 
 use crate::channel::{Channel, ChannelError};
 use crate::frame::{ErrorClass, Reply, ReplyBody};
@@ -68,9 +76,11 @@ use crate::session::{Session, SessionError};
 /// A plugin family, served by one process this host starts on first use.
 pub struct PluginConnector {
     manifest: Manifest,
-    /// The running plugin, or nothing yet. One, because this serves `root`
-    /// scope only; the table that makes it many is its own segment.
-    instance: Mutex<Option<Session<Box<dyn Channel + Send>>>>,
+    /// Scope key to the process serving it. Empty until the first call:
+    /// one entry for a `root` plugin, one per calling node for a `node`
+    /// one, and a `BTreeMap` rather than a hash so that `finish`'s report
+    /// comes out in a stable order.
+    instances: Mutex<BTreeMap<Caller, Session<Box<dyn Channel + Send>>>>,
 }
 
 impl PluginConnector {
@@ -81,15 +91,6 @@ impl PluginConnector {
     /// *not* deferred is the refusal -- a manifest this host cannot serve
     /// is rejected here, at load, rather than at 3am on the first call.
     pub fn new(manifest: Manifest) -> Result<Self, String> {
-        if manifest.scope != PluginScope::Root {
-            return Err(format!(
-                "the plugin '{}' declares `node` scope, an instance per calling node, \
-                 and this host serves `root`-scope plugins only so far; it is refused \
-                 rather than shared between callers, which is what serving it as `root` \
-                 would silently do",
-                manifest.family
-            ));
-        }
         if manifest.transport.starts_the_program() && manifest.exec.is_none() {
             return Err(format!(
                 "the plugin '{}' names no `exec` to start",
@@ -98,8 +99,21 @@ impl PluginConnector {
         }
         Ok(Self {
             manifest,
-            instance: Mutex::new(None),
+            instances: Mutex::new(BTreeMap::new()),
         })
+    }
+
+    /// Which instance serves `caller`.
+    ///
+    /// The one place scope means anything at runtime. A `root` plugin
+    /// folds every caller onto [`Caller::Root`], which is what "one
+    /// process for the whole root" is when it is written down; a `node`
+    /// plugin keeps the caller it was given.
+    fn key_for(&self, caller: &Caller) -> Caller {
+        match self.manifest.scope {
+            PluginScope::Root => Caller::Root,
+            PluginScope::Node => *caller,
+        }
     }
 
     /// The family this connector answers, which is what it is wired under.
@@ -112,9 +126,9 @@ impl PluginConnector {
         &self.manifest
     }
 
-    /// Whether the plugin has been started yet.
-    fn started(&self) -> bool {
-        self.instance.lock().map(|h| h.is_some()).unwrap_or(false)
+    /// How many processes are running, for the `Debug` impl.
+    fn running(&self) -> usize {
+        self.instances.lock().map(|t| t.len()).unwrap_or(0)
     }
 }
 
@@ -127,43 +141,77 @@ impl std::fmt::Debug for PluginConnector {
         f.debug_struct("PluginConnector")
             .field("family", &self.manifest.family)
             .field("transport", &self.manifest.transport)
-            .field("started", &self.started())
+            .field("scope", &self.manifest.scope)
+            .field("running", &self.running())
             .finish()
     }
 }
 
 #[async_trait::async_trait]
 impl Connector for PluginConnector {
-    /// Answer one call.
+    /// Answer one call from an unnamed caller.
     ///
-    /// This and not `call_as`, deliberately: a `root`-scope plugin is one
-    /// process for every caller and *cannot tell them apart*, which the
-    /// manifest says in those words. Implementing the method that is not
-    /// given the asker is that fact in the type system. The segment that
-    /// adds `node` scope overrides `call_as` instead, and keys the
-    /// instance table by `asker.caller`.
+    /// The trait's required method, and what a harness or the process's
+    /// own bookkeeping reaches. It is [`Caller::Root`]'s call, which for a
+    /// `root` plugin is the only instance there is and for a `node` one is
+    /// the root's own.
     async fn call(
         &self,
         call: &str,
         args: Option<rmpv::Value>,
+        scope: Option<&Scope>,
+    ) -> CallResult {
+        let asker = Asker {
+            caller: Caller::Root,
+            grants: &[],
+        };
+        self.call_as(&asker, call, args, scope).await
+    }
+
+    /// Answer one call, routed to the instance that serves its caller.
+    ///
+    /// The asker decides which process answers and nothing else: a plugin
+    /// is not told who called it, because `root` scope could not honour
+    /// that and a `node` plugin does not need it -- it has a process to
+    /// itself, which is the same fact expressed where it cannot be got
+    /// wrong.
+    async fn call_as(
+        &self,
+        asker: &Asker<'_>,
+        call: &str,
+        args: Option<rmpv::Value>,
         _scope: Option<&Scope>,
     ) -> CallResult {
-        // Start on first use, and queue the call. Both happen under one
-        // lock and neither yields while holding it.
+        let key = self.key_for(&asker.caller);
+
+        // Start on first use for this key, and queue the call. Both happen
+        // under one lock and neither yields while holding it.
         let id = {
-            let mut held = self.instance.lock().map_err(|_| poisoned(self.family()))?;
-            if held.is_none() {
-                *held = Some(self.start()?);
-            }
-            let session = held.as_mut().expect("just started");
+            let mut table = self.instances.lock().map_err(|_| poisoned(self.family()))?;
+            let session = match table.entry(key) {
+                std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
+                // One lookup, and the start happens inside it: a second
+                // caller for the same key cannot race in and start a
+                // second process, because the table is locked throughout.
+                std::collections::btree_map::Entry::Vacant(e) => e.insert(self.start()?),
+            };
             session.begin(call, args).map_err(|e| self.said(e))?
         };
 
         let deadline = Instant::now() + Duration::from_millis(self.manifest.call_timeout_ms);
         loop {
             {
-                let mut held = self.instance.lock().map_err(|_| poisoned(self.family()))?;
-                let session = held.as_mut().expect("started above");
+                let mut table = self.instances.lock().map_err(|_| poisoned(self.family()))?;
+                // The instance can go while a call is outstanding: its
+                // owner died and `release` took it. That is not a hang and
+                // not a plugin failure, so it is said as what it is.
+                let Some(session) = table.get_mut(&key) else {
+                    return Err(CallError::new(format!(
+                        "the plugin '{}' serving {key} was released while '{call}' was \
+                         outstanding",
+                        self.family()
+                    )));
+                };
                 // A failed session is terminal, and the failure is the
                 // answer: the plugin is gone, and saying so beats waiting
                 // out a deadline for a process that will never reply.
@@ -186,6 +234,66 @@ impl Connector for PluginConnector {
             Yield::once().await;
         }
     }
+
+    /// One node is gone; its plugin goes with it.
+    ///
+    /// Only a `node` plugin has anything here. A `root` instance is not
+    /// this node's to end -- it serves every node, and ending it because
+    /// one caller died would take the others' plugin away -- so it is left
+    /// for [`Connector::finish`].
+    ///
+    /// Dropping the session drops its channel, which sweeps the process
+    /// tree. Calls that were still outstanding are reported, one line
+    /// each: the answer they were waiting for is not coming, and a
+    /// connector that can lose work at teardown has to say so.
+    fn release(&self, caller: &Caller) -> Vec<String> {
+        if self.manifest.scope != PluginScope::Node {
+            return Vec::new();
+        }
+        let Ok(mut table) = self.instances.lock() else {
+            return vec![format!(
+                "the plugin '{}' could not be released for {caller}: a panic left its \
+                 table in an unknown state",
+                self.family()
+            )];
+        };
+        match table.remove(caller) {
+            Some(session) => lost(self.family(), caller, session),
+            None => Vec::new(),
+        }
+    }
+
+    /// The process is going. Every plugin goes with it.
+    fn finish(&self) -> Vec<String> {
+        let Ok(mut table) = self.instances.lock() else {
+            return vec![format!(
+                "the plugin '{}' could not be shut down: a panic left its table in an \
+                 unknown state",
+                self.family()
+            )];
+        };
+        std::mem::take(&mut *table)
+            .into_iter()
+            .flat_map(|(key, session)| lost(self.family(), &key, session))
+            .collect()
+    }
+}
+
+/// What one ending instance did not finish.
+///
+/// An empty answer is a claim and not a shrug, which is what the trait
+/// asks for: a session with nothing outstanding really did lose nothing,
+/// because a plugin holds no state this host promised to keep.
+fn lost(family: &str, key: &Caller, session: Session<Box<dyn Channel + Send>>) -> Vec<String> {
+    let outstanding = session.in_flight();
+    drop(session);
+    if outstanding == 0 {
+        return Vec::new();
+    }
+    vec![format!(
+        "the plugin '{family}' serving {key} ended with {outstanding} call(s) \
+         outstanding; their answers are not coming"
+    )]
 }
 
 // depth: starting one, and relaying what it says
