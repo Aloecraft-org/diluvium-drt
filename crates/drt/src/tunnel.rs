@@ -131,6 +131,9 @@ pub struct Flags {
     pub park: Option<String>,
     /// `--extra-root`, repeatable: the block's `extra_roots`.
     pub extra_root: Vec<PathBuf>,
+    /// `--header`, repeatable, one `Name: value` each: the block's
+    /// `headers`.
+    pub header: Vec<String>,
 }
 
 /// What [`resolve`] settles: the mode, and the PEM files to trust beside
@@ -142,6 +145,9 @@ pub struct Resolved {
     pub mode: Mode,
     pub extra_roots: Vec<PathBuf>,
     pub extra_roots_key: &'static str,
+    /// Headers for the handshake of every leg this tunnel dials, merged
+    /// per name: the file's `headers` map, then each `--header` over it.
+    pub headers: Vec<(String, String)>,
 }
 
 /// Where a key came from, so a conflict can say which line and which flag
@@ -163,6 +169,23 @@ fn spelled(key: &str, source: Source) -> String {
             other => format!("`--{other}`"),
         },
     }
+}
+
+/// One handshake header as the operator wrote it, checked the way the
+/// request will check it: a name HTTP allows, a value with no control
+/// bytes. Trimmed, since `Name: value` is how a person writes one.
+fn header_pair(name: &str, value: &str) -> Result<(String, String), String> {
+    use tokio_tungstenite::tungstenite::http::{HeaderName, HeaderValue};
+    let name = name.trim();
+    let value = value.trim();
+    if name.is_empty() {
+        return Err("the header has no name".into());
+    }
+    HeaderName::from_bytes(name.as_bytes())
+        .map_err(|_| format!("`{name}` is not a header name"))?;
+    HeaderValue::from_str(value)
+        .map_err(|_| format!("the value of `{name}` is not a header value"))?;
+    Ok((name.to_string(), value.to_string()))
 }
 
 /// The file's `tunnel` block and the flags, merged into one [`Mode`].
@@ -201,6 +224,41 @@ pub fn resolve(file: Option<&drt_config::TunnelConfig>, flags: &Flags) -> Result
             file.map(|f| f.extra_roots.clone()).unwrap_or_default(),
             "tunnel.extra_roots",
         )
+    };
+
+    // Handshake headers, merged per name: the file's map, then each
+    // `--header` over it, a flag replacing the file's header of the same
+    // name (compared as HTTP compares them, case aside) and adding
+    // otherwise. Checked here, so a bad one is refused by name before
+    // anything is dialed.
+    let mut headers: Vec<(String, String)> = Vec::new();
+    if let Some(file) = file {
+        for (name, value) in &file.headers {
+            let pair = header_pair(name, value)
+                .map_err(|e| format!("tunnel: `tunnel.headers` in the config: {e}"))?;
+            headers.push(pair);
+        }
+    }
+    for spec in &flags.header {
+        let (name, value) = spec
+            .split_once(':')
+            .ok_or_else(|| format!("tunnel: `--header '{spec}'` is not `Name: value`"))?;
+        let (name, value) =
+            header_pair(name, value).map_err(|e| format!("tunnel: `--header '{spec}'`: {e}"))?;
+        match headers
+            .iter_mut()
+            .find(|(have, _)| have.eq_ignore_ascii_case(&name))
+        {
+            Some(entry) => *entry = (name, value),
+            None => headers.push((name, value)),
+        }
+    }
+    let headers_from = if !flags.header.is_empty() {
+        Some("`--header`")
+    } else if headers.is_empty() {
+        None
+    } else {
+        Some("`tunnel.headers` in the config")
     };
 
     // Two modes in one tunnel, named by the keys that chose them.
@@ -248,6 +306,13 @@ pub fn resolve(file: Option<&drt_config::TunnelConfig>, flags: &Flags) -> Result
         }
         (None, None, Some((listen, _))) => {
             belongs("bind", "`claim`", &bind)?;
+            // A header is sent on a dial; a listen accepts. Refused rather
+            // than ignored, for the file's reason.
+            if let Some(from) = headers_from {
+                return Err(format!(
+                    "tunnel: {from} belongs with `claim` or `park`, and this tunnel has none"
+                ));
+            }
             let to = needs("to", "listen", &to)?;
             Mode::Listen { listen, to }
         }
@@ -266,23 +331,33 @@ pub fn resolve(file: Option<&drt_config::TunnelConfig>, flags: &Flags) -> Result
         mode,
         extra_roots,
         extra_roots_key,
+        headers,
     })
 }
 
 /// Carry out a [`Mode`]: the one match on it, and what `drt tunnel` runs
 /// once [`resolve`] has spoken. Returns when the tunnel ends, which for
 /// `Park` is never.
-pub async fn run(mode: Mode, extra_roots: &[CertificateDer<'static>]) -> Result<(), String> {
+pub async fn run(
+    mode: Mode,
+    extra_roots: &[CertificateDer<'static>],
+    headers: &[(String, String)],
+) -> Result<(), String> {
     match mode {
-        Mode::Stdio { claim } => stdio_to_ws(&claim, extra_roots).await,
-        Mode::Local { claim, bind } => local_to_ws(&bind, &claim, extra_roots).await,
+        Mode::Stdio { claim } => stdio_to_ws(&claim, extra_roots, headers).await,
+        Mode::Local { claim, bind } => local_to_ws(&bind, &claim, extra_roots, headers).await,
         Mode::Listen { listen, to } => ws_to_tcp(&listen, &to).await,
-        Mode::Park { park: url, to } => park(&url, &to, extra_roots).await,
+        Mode::Park { park: url, to } => park(&url, &to, extra_roots, headers).await,
     }
 }
 
 /// Dial a `ws://` or `wss://` URL, trusting `extra_roots` beside the
-/// public ones.
+/// public ones, with `headers` on the handshake request.
+///
+/// A header is how a credential travels without being in the URL: the
+/// relay reads `Authorization: Bearer <key>` as it reads `?k=`, and a URL
+/// with no key in it puts none into the request line every proxy and
+/// access log between here and there records.
 ///
 /// With no extra roots the connector is tokio-tungstenite's default,
 /// which is exactly what `connect_async` used — webpki's bundled roots,
@@ -296,8 +371,10 @@ pub async fn run(mode: Mode, extra_roots: &[CertificateDer<'static>]) -> Result<
 pub async fn connect(
     url: &str,
     extra_roots: &[CertificateDer<'static>],
+    headers: &[(String, String)],
 ) -> Result<WsClient, String> {
     use tokio_tungstenite::tungstenite::client::{uri_mode, IntoClientRequest};
+    use tokio_tungstenite::tungstenite::http::{HeaderName, HeaderValue};
     use tokio_tungstenite::tungstenite::stream::Mode;
 
     // The socket is dialed here rather than inside `connect_async`, which
@@ -307,9 +384,17 @@ pub async fn connect(
     // far end delays -- 40 ms on Linux, 200 on Windows -- once per hop.
     // TCP_NODELAY goes on before the stream is handed over, and every
     // other socket drt dials or accepts gets the same.
-    let request = url
+    let mut request = url
         .into_client_request()
         .map_err(|e| format!("cannot reach {url}: {e}"))?;
+    for (name, value) in headers {
+        let name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| format!("cannot reach {url}: `{name}` is not a header name"))?;
+        let value = HeaderValue::from_str(value).map_err(|_| {
+            format!("cannot reach {url}: the value of `{name}` is not a header value")
+        })?;
+        request.headers_mut().insert(name, value);
+    }
     let host = request
         .uri()
         .host()
@@ -399,8 +484,12 @@ where
 
 /// The client half: dial the WSS url and pump this process's stdio through
 /// it — the OpenSSH `ProxyCommand` contract. Runs until either side closes.
-pub async fn stdio_to_ws(url: &str, extra_roots: &[CertificateDer<'static>]) -> Result<(), String> {
-    let ws = connect(url, extra_roots).await?;
+pub async fn stdio_to_ws(
+    url: &str,
+    extra_roots: &[CertificateDer<'static>],
+    headers: &[(String, String)],
+) -> Result<(), String> {
+    let ws = connect(url, extra_roots, headers).await?;
     let stdio = tokio::io::join(tokio::io::stdin(), tokio::io::stdout());
     pump(stdio, ws).await
 }
@@ -469,6 +558,7 @@ pub async fn local_to_ws(
     local: &str,
     url: &str,
     extra_roots: &[CertificateDer<'static>],
+    headers: &[(String, String)],
 ) -> Result<(), String> {
     let listener = tokio::net::TcpListener::bind(local)
         .await
@@ -477,7 +567,7 @@ pub async fn local_to_ws(
         "drt tunnel: local {} claiming a leg per connection at {url}",
         listener.local_addr().map_err(|e| e.to_string())?
     );
-    serve_local(listener, url, extra_roots).await
+    serve_local(listener, url, extra_roots, headers).await
 }
 
 /// The accept loop behind [`local_to_ws`], over a listener the caller
@@ -486,6 +576,7 @@ pub async fn serve_local(
     listener: tokio::net::TcpListener,
     url: &str,
     extra_roots: &[CertificateDer<'static>],
+    headers: &[(String, String)],
 ) -> Result<(), String> {
     loop {
         let Ok((conn, peer)) = listener.accept().await else {
@@ -498,12 +589,13 @@ pub async fn serve_local(
         }
         let url = url.to_string();
         let roots = extra_roots.to_vec();
+        let headers = headers.to_vec();
         tokio::spawn(async move {
             // Claim first, splice second. `stream_to_ws` dials before it
             // pumps, so a refused claim returns here with `conn` unread
             // and drops it -- that drop is the local close the caller
             // sees, at once, in place of a leg that never came.
-            if let Err(e) = stream_to_ws(conn, &url, &roots).await {
+            if let Err(e) = stream_to_ws(conn, &url, &roots, &headers).await {
                 eprintln!("drt tunnel: {peer}: {e}");
             }
         });
@@ -517,11 +609,12 @@ pub async fn stream_to_ws<S>(
     stream: S,
     url: &str,
     extra_roots: &[CertificateDer<'static>],
+    headers: &[(String, String)],
 ) -> Result<(), String>
 where
     S: AsyncRead + AsyncWrite + Send + 'static,
 {
-    let ws = connect(url, extra_roots).await?;
+    let ws = connect(url, extra_roots, headers).await?;
     pump(stream, ws).await
 }
 
@@ -553,10 +646,11 @@ pub async fn park(
     url: &str,
     target: &str,
     extra_roots: &[CertificateDer<'static>],
+    headers: &[(String, String)],
 ) -> Result<(), String> {
     let mut backoff = Duration::from_secs(1);
     loop {
-        match park_once(url, target, extra_roots).await {
+        match park_once(url, target, extra_roots, headers).await {
             // A claim happened: the session runs detached; park again now.
             Ok(Parked::Claimed) => {
                 backoff = Duration::from_secs(1);
@@ -585,11 +679,12 @@ async fn park_once(
     url: &str,
     target: &str,
     extra_roots: &[CertificateDer<'static>],
+    headers: &[(String, String)],
 ) -> Result<Parked, String> {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message;
 
-    let mut ws = connect(url, extra_roots)
+    let mut ws = connect(url, extra_roots, headers)
         .await
         .map_err(|e| format!("cannot park at {url}: {e}"))?;
 
@@ -708,8 +803,9 @@ impl TunnelBridge {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| format!("the tunnel needs a runtime: {e}"))?;
         let mode = resolved.mode;
+        let headers = resolved.headers;
         let runtime = std::thread::spawn(move || {
-            if let Err(e) = rt.block_on(run(mode, &roots)) {
+            if let Err(e) = rt.block_on(run(mode, &roots, &headers)) {
                 eprintln!("drt start: tunnel stopped: {e}");
             }
             // Leaked for the reason every other verb here leaks one: tokio

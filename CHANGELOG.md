@@ -37,6 +37,20 @@ overlap ran three candidates, and this one ends it.
 - `web`: `regex`
 - `windows`: `regex`
 
+### Added
+
+- **`drt tunnel` sends a credential as a header.** `--header
+  'Authorization: Bearer …'`, repeatable, and `headers` in the
+  `tunnel` block put a key on the handshake of every leg the tunnel
+  dials instead of in the URL's `?k=`, so the URL carries no secret
+  into the request line every proxy and access log records. Flags
+  merge over the file per name, as every other tunnel key does, and
+  a header beside a `listen` is refused as a key from another mode
+  is. The relay reads `Authorization: Bearer <key>` at the same door
+  as `?k=`: the header is the credential when present, a URL key
+  that disagrees with it is refused, and a scheme it does not read
+  is a bad key rather than an absent one.
+
 ### Removed
 
 - **`drt_linux_static_x86_64`, `drt_slim_<platform>` and

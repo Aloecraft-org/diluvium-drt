@@ -216,7 +216,7 @@ async fn the_full_triangle_and_replenish_on_claim() {
     // The device: parks, re-parks on claim, forever.
     let park_url = format!("ws://{addr}/park/xps?k=park-secret-0123456789");
     tokio::spawn(async move {
-        let _ = drt::tunnel::park(&park_url, &echo_addr, &[]).await;
+        let _ = drt::tunnel::park(&park_url, &echo_addr, &[], &[]).await;
     });
     parked(&relay, "xps", 1).await;
 
@@ -539,4 +539,71 @@ async fn a_claim_that_beats_the_park_is_told_not_home_and_the_leg_stays() {
         starved.is_err(),
         "the device should be left parked, got {starved:?}"
     );
+}
+
+/// A caller or a device may present its key as `Authorization: Bearer`
+/// on the handshake instead of `?k=` in the URL -- the same door, and the
+/// URL then carries no credential into any log. The header is the
+/// credential when present: a wrong one is the same 403 as a wrong URL
+/// key, a URL key that disagrees with it is refused rather than tried
+/// second, and a scheme the relay does not read is a bad key.
+#[cfg(feature = "tunnel")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_key_in_a_bearer_header_opens_the_same_door_as_the_url_key() {
+    let (addr, relay) = relay_on_port().await;
+    let bearer = |key: &str| vec![("Authorization".to_string(), format!("Bearer {key}"))];
+
+    // Right caller key in the header, none in the URL: the handshake
+    // completes, and with nothing parked the answer is "not home".
+    let mut caller = drt::tunnel::connect(
+        &format!("ws://{addr}/s/xps"),
+        &[],
+        &bearer("caller-secret-987654321"),
+    )
+    .await
+    .unwrap();
+    match caller.next().await.unwrap().unwrap() {
+        Message::Close(Some(frame)) => {
+            assert!(frame.reason.contains("not home"), "{frame:?}");
+        }
+        other => panic!("expected a close, got {other:?}"),
+    }
+
+    // Wrong key in the header: never upgrades.
+    let err = drt::tunnel::connect(&format!("ws://{addr}/s/xps"), &[], &bearer("wrong"))
+        .await
+        .unwrap_err();
+    assert!(err.contains("403"), "{err}");
+
+    // A right URL key beside a wrong header: the header is the credential,
+    // and two that disagree are neither.
+    let err = drt::tunnel::connect(
+        &format!("ws://{addr}/s/xps?k=caller-secret-987654321"),
+        &[],
+        &bearer("wrong"),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("403"), "{err}");
+
+    // A scheme the relay does not read is a bad key, not an absent one.
+    let basic = vec![("Authorization".to_string(), "Basic Y2FsbGVy".to_string())];
+    let err = drt::tunnel::connect(
+        &format!("ws://{addr}/s/xps?k=caller-secret-987654321"),
+        &[],
+        &basic,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("403"), "{err}");
+
+    // The device's half takes the header too: a leg parks under it.
+    let _device = drt::tunnel::connect(
+        &format!("ws://{addr}/park/xps"),
+        &[],
+        &bearer("park-secret-0123456789"),
+    )
+    .await
+    .unwrap();
+    parked(&relay, "xps", 1).await;
 }

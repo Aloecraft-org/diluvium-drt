@@ -933,6 +933,15 @@ pub struct TunnelConfig {
     /// internal CA in front of the gate, typically.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_roots: Vec<PathBuf>,
+    /// Headers for the handshake of every leg this tunnel dials, by name:
+    /// a credential the far end reads instead of the URL's `?k=`, typically
+    /// `{"Authorization": "Bearer …"}`, so the URL carries no secret into
+    /// the request line every proxy and access log records. `--header`
+    /// is the same one flag at a time, and a flag naming a header this
+    /// map also names replaces it. Sent on a dial only: a `listen` accepts,
+    /// and naming headers beside one is refused.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
 }
 
 /// Process identity. The host key doubles as the node identity and the

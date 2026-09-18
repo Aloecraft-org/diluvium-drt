@@ -95,6 +95,21 @@ key it names, and a flag naming a different mode than the file is
 refused as the conflict it is. `examples/19-a-tunnel-a-program-can-use`
 runs both halves this way.
 
+**Or with the key as a header, and none in the URL.** Either half may
+present its key as `Authorization: Bearer …` on the handshake instead of
+`?k=`, so the URL carries no secret into the request line proxies and
+access logs record:
+
+```json
+{ "tunnel": { "claim": "wss://rendezvous.example/s/xps", "bind": "127.0.0.1:2222",
+              "headers": { "Authorization": "Bearer …" } } }
+```
+
+`--header 'Authorization: Bearer …'` is the same, one flag at a time, and
+a flag naming a header the file also names replaces it. Headers ride a
+dial only; naming them beside `listen` is refused, as any key from another
+mode is.
+
 ### 3. The caller
 
 The OpenSSH `ProxyCommand` contract — bytes on stdin/stdout, nothing more:
@@ -136,7 +151,18 @@ shape, the HTTP status, and the raw bytes. Nothing else:
 ```text
   park a leg:    wss://<host>/park/<label>?k=<park_key>
   claim a leg:   wss://<host>/s/<label>?k=<caller_key>
+
+  either, with no key in the URL:   Authorization: Bearer <key>
 ```
+
+The header is the same key at the same door, for a side that would rather
+not put a credential in a URL -- where it is in the request line every
+proxy and access log between the two ends records. The header is the
+credential when it is present: a `?k=` beside it must agree, two that
+disagree are refused as one bad key is, and a scheme the relay does not
+read is a bad key rather than an absent one. `drt tunnel --header
+'Authorization: Bearer …'` sends it, and `headers` in the `tunnel` block
+is the same thing from a file.
 
 - **403** at the handshake: bad key, or unknown label — deliberately
   indistinguishable, so probing the relay tells you nothing. The WebSocket

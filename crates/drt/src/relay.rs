@@ -295,10 +295,33 @@ async fn handle(relay: Arc<Relay>, stream: TcpStream) -> Result<(), String> {
     let callback = move |req: &Request, response: Response| {
         let path = req.uri().path().to_string();
         let query = req.uri().query().unwrap_or("").to_string();
-        let key = query
+        let from_url = query
             .split('&')
             .find_map(|p| p.strip_prefix("k="))
             .map(|k| k.to_string());
+        // The same key as a handshake header, `Authorization: Bearer <key>`,
+        // for a side that would rather not put a credential in a URL --
+        // where it is in the request line every proxy and access log
+        // records. The header is the credential when it is present: a URL
+        // key beside it must agree, and two that disagree are neither,
+        // refused as one bad key is. A scheme this relay does not read is
+        // a bad key, not an absent one.
+        let from_header = req
+            .headers()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| match v.split_once(' ') {
+                Some((scheme, rest)) if scheme.eq_ignore_ascii_case("bearer") => {
+                    Some(rest.trim().to_string())
+                }
+                _ => None,
+            });
+        let key = match (from_header, from_url) {
+            (Some(Some(h)), Some(u)) if h != u => None,
+            (Some(Some(h)), _) => Some(h),
+            (Some(None), _) => None,
+            (None, u) => u,
+        };
         let parsed = Route::parse(&path);
         if let Some(r) = &parsed {
             if relay_cb.verify_key(&r.label, r.leg, key.as_deref()) {

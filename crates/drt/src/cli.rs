@@ -421,6 +421,15 @@ pub enum Command {
         /// the same reason `connectors.rest`'s `extra_roots` says so.
         #[arg(long = "extra-root", value_name = "PEM")]
         extra_root: Vec<std::path::PathBuf>,
+        /// Send this header on the handshake of every leg this tunnel
+        /// dials, `Name: value` -- a credential the relay reads instead of
+        /// the URL's `?k=`, typically `Authorization: Bearer …`, so the URL
+        /// carries no secret. Repeatable. The block's `headers` map in
+        /// --config is the same thing in a 0600 file, which is where a
+        /// credential belongs; a flag naming a header the file also names
+        /// replaces it.
+        #[arg(long = "header", value_name = "NAME: VALUE")]
+        header: Vec<String>,
     },
     /// What can this network do, and what should you do about it.
     ///
@@ -1704,6 +1713,7 @@ pub fn main(cli: Cli) -> ExitCode {
             to,
             park,
             extra_root,
+            header,
         } => {
             // The file's block and the flags, judged together and before
             // anything is bound: which mode this is, and which keys
@@ -1717,6 +1727,7 @@ pub fn main(cli: Cli) -> ExitCode {
                     to,
                     park,
                     extra_root,
+                    header,
                 },
             ) {
                 Ok(resolved) => resolved,
@@ -1740,7 +1751,8 @@ pub fn main(cli: Cli) -> ExitCode {
                 }
             };
             let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
-            let outcome = runtime.block_on(crate::tunnel::run(resolved.mode, &roots));
+            let outcome =
+                runtime.block_on(crate::tunnel::run(resolved.mode, &roots, &resolved.headers));
             // Leak the runtime rather than drop it. tokio 1.53.1 has a
             // use-after-free in runtime teardown — `BlockingPool::shutdown`
             // racing a worker's `park::Inner::unpark` into a freed Condvar
