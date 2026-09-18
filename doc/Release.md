@@ -569,20 +569,34 @@ first second of life.
   kept. `script/dev-tag.sh` prints the next free tag; the number is
   allocated from the tags that exist and never reused, so `dev.5` names
   one build forever.
-- **Nightly**, `.github/workflows/nightly.yml` → 06:17 UTC, and
-  `workflow_dispatch` so it can be rehearsed without waiting a day. It
-  decides and dispatches; it never builds. `script/dev-tag.sh
-  --if-changed` is the skip: exit 3 means HEAD is the commit the newest
-  dev tag already points at, so a quiet day ends green having built
-  nothing, and any other non-zero is a real failure rather than a quiet
-  one.
+- **Every merge to `main`**, `.github/workflows/dev-build.yml` → a dev
+  build, published. That is what removes the need to cut a candidate just
+  to get a commit into someone's hands. The same workflow runs at 06:17
+  UTC as a backstop, in case a push run failed or was never queued, and
+  takes a `workflow_dispatch` so it can be rehearsed. It decides,
+  allocates a number, and dispatches; it never builds.
 
-  It **dispatches** `release.yml` rather than pushing the tag, and that is
-  correctness rather than taste: a tag pushed with `GITHUB_TOKEN` does not
-  start a workflow, because GitHub suppresses events raised by that token
-  so a workflow cannot trigger itself. Pushing the tag from here would
-  create it and build nothing, silently. `workflow_dispatch` is one of the
-  two documented exceptions, so this one arrives.
+  `script/dev-tag.sh --if-changed` is the skip: exit 3 means HEAD is the
+  commit the newest dev tag already points at, so a quiet day ends green
+  having built nothing, and any other non-zero is a real failure rather
+  than a quiet one.
+
+  **The number is allocated by creating the tag, before anything builds.**
+  `release.yml` tags at the *end* of a run that takes minutes, so until
+  that tag exists a second merge would read the same newest dev tag and
+  pick the same number — not an edge case, the window is a whole build.
+  So `dev-build.yml` pushes the tag itself, and its `concurrency` group
+  queues rather than cancels so two merges serialise. `release.yml`'s
+  "tag already exists" guard knows about this: a `v*-dev.*` tag arriving
+  by dispatch is expected and must name the commit being built, while any
+  other existing tag is still the re-release that guard exists to stop.
+
+  It **dispatches** `release.yml` rather than relying on that tag push to
+  start it, and that is correctness rather than taste: a tag pushed with
+  `GITHUB_TOKEN` does not start a workflow, because GitHub suppresses
+  events raised by that token so a workflow cannot trigger itself. The
+  push creates the tag and builds nothing; the dispatch is what builds it.
+  `workflow_dispatch` is one of the two documented exceptions.
 
 `BUILDINFO.txt` opens with the five lines every Aloecraft release carries
 — `tag`, `version` (the tag body), `commit`, `branch` (derived, since a

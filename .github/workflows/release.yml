@@ -88,8 +88,27 @@ jobs:
               exit 1
             fi
             if [ -n "$TAG" ] && git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-              echo "::error::tag '$TAG' already exists."
-              exit 1
+              case "$TAG" in
+                # A dev tag arriving by dispatch was allocated by
+                # `dev-build.yml`, which allocates by *creating* the tag
+                # before dispatching -- that is what stops two merges
+                # landing on the same number while a build is in flight.
+                # So an existing dev tag is expected here. The tag must
+                # still name the commit being built, or this is some
+                # other run's number.
+                v*-dev.*)
+                  AT=$(git rev-parse -q --verify "refs/tags/$TAG^{commit}")
+                  if [ "$AT" != "$(git rev-parse HEAD)" ]; then
+                    echo "::error::dev tag '$TAG' is on $AT, not the commit being built."
+                    exit 1
+                  fi
+                  ;;
+                # Anything else is the re-release this guard exists to stop.
+                *)
+                  echo "::error::tag '$TAG' already exists."
+                  exit 1
+                  ;;
+              esac
             fi
           fi
           SHA=$(git rev-parse HEAD)
