@@ -404,9 +404,20 @@ jobs:
       # asked of the artifact: this job is worth something only if the ABI
       # it tested is the one the release ships.
       - name: The toolchain is the GNU one
+        # Read whole, then compared, rather than piped into `grep -q`.
+        # `grep -q` exits at the first match and closes the pipe under a
+        # writer that has not finished; on unix `rustc` takes a silent
+        # SIGPIPE, on Windows it gets "The pipe is being closed"
+        # (os error 232), prints a diagnostic, exits 101, and `pipefail`
+        # fails the step. The first run of this job died exactly there,
+        # with the toolchain it was checking perfectly correct.
         run: |
           set -eu
-          rustc -vV | grep -qx 'host: x86_64-pc-windows-gnu'
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          if [ "$host" != x86_64-pc-windows-gnu ]; then
+            echo "this job ran on $host; the release ships x86_64-pc-windows-gnu" >&2
+            exit 1
+          fi
       - name: Test (drt-platform, drt-connector-exec)
         run: cargo test -p drt-platform -p drt-connector-exec
 
