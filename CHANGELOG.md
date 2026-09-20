@@ -37,6 +37,20 @@ overlap ran three candidates, and this one ends it.
 
 ### Added
 
+- **Every release's notes carry the command that installs it.**
+  `curl -fsSL <mirror>/<tag>/install.sh | sh`, under an `Install`
+  heading beside the summary, rendered from the changelog like
+  everything else downstream of it. Releases published before this
+  one get the same command with `DRT_VERSION=<tag>` on the `sh`,
+  because their copy of the script predates the fix below and
+  would otherwise install something else -- the rendered command
+  is correct for every release in the file, not only the new ones.
+
+  The `DRT_VERSION=` goes on `sh` rather than in front of `curl`,
+  which is not a style choice: an environment prefix applies only
+  to the command it precedes, so `DRT_VERSION=… curl … | sh` sets
+  it for `curl` and the shell that reads the script never sees it.
+  That spelling fails by installing the wrong version silently.
 - **A dev build on every merge to `main`, published.** Which removes
   the reason to cut a candidate just to get a commit into someone's
   hands: `v<version>-dev.<n>` builds the Linux leg alone, skips the
@@ -159,6 +173,26 @@ overlap ran three candidates, and this one ends it.
 
 ### Fixed
 
+- **`install.sh` fetched from a release installs that release.**
+  It defaulted to `latest` regardless of the directory it was
+  served from, so `curl <mirror>/v0.7.0-rc.2/install.sh | sh`
+  installed v0.4.2 -- the URL named one version, the binary was
+  another, and nothing said so. The release workflow now stamps
+  the copy it uploads with its own tag, so the script published
+  with a release installs that release; the checkout's copy still
+  says `latest`, and `DRT_VERSION` still overrides both.
+
+  This also means `latest/install.sh` pins to whatever `latest`
+  resolves to at the moment it is fetched, rather than re-resolving
+  `latest` when it runs. For the `curl | sh` front door those are
+  the same thing. For a saved copy they are not, and pinning is
+  the better of the two: the script and the binary it fetches then
+  come from one release instead of two.
+
+  The stamp is checked in the workflow rather than assumed. A
+  `sed` that matched nothing would publish exactly the script this
+  replaces, so the step greps for the stamped line and fails the
+  release if it is not there.
 - **No socket drt dials or accepts keeps Nagle on** (#33). A tunnel
   is interactive by definition, and every pair of small writes on a
   socket with Nagle on paid a delayed ACK -- 40 ms on Linux, 200 on
@@ -188,6 +222,13 @@ and this release follows: the compatibility fact beside the embedded
 revision is `diluvium_version` now, where it was `diluvium_build`.
 A version orders at least as well as a counter and says more, which
 was the whole job of the field.
+
+### Install
+
+```sh
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.7.0-rc.2/install.sh \
+  | DRT_VERSION=v0.7.0-rc.2 sh
+```
 
 ### Connectors
 
@@ -333,6 +374,13 @@ is. `doc/Peers.md` says what is reserved and what refuses by name.
 
 Same core, same ABI as 0.6.1-rc.2. `full` gains the `socket`
 connector; the other profiles' connector lists are unchanged.
+
+### Install
+
+```sh
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.7.0-rc.1/install.sh \
+  | DRT_VERSION=v0.7.0-rc.1 sh
+```
 
 ### Connectors
 
@@ -529,6 +577,13 @@ in `labels` was refused as a label of the wrong shape.
 Same core, same ABI, same connector lists as rc.1. The old artifact
 names ride along once more, as rc.1's did and for the same reason.
 
+### Install
+
+```sh
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.6.1-rc.2/install.sh \
+  | DRT_VERSION=v0.6.1-rc.2 sh
+```
+
 ### Connectors
 
 - `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `data`, `listen`
@@ -604,6 +659,13 @@ discofetch fetch by the new names; the release after this one drops
 them once they do. Same core, same ABI, same connector lists as
 0.6.0-rc.2.
 
+### Install
+
+```sh
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.6.1-rc.1/install.sh \
+  | DRT_VERSION=v0.6.1-rc.1 sh
+```
+
 ### Connectors
 
 - `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `data`, `listen`
@@ -669,6 +731,13 @@ and it carries the newest candidate as well as the releases.
 suite, the Linux build, no changelog entry, always a prerelease.
 
 Same core, same ABI, same connector lists as rc1.
+
+### Install
+
+```sh
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.6.0-rc.2/install.sh \
+  | DRT_VERSION=v0.6.0-rc.2 sh
+```
 
 ### Connectors
 
@@ -785,6 +854,13 @@ Minor rather than patch, by the rule this file's header states: the
 config and verb surface changed, and the feature set is a new
 compatibility fact checked by name. The connector lists are rc9's.
 `dv_abi` stays 1.
+
+### Install
+
+```sh
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.6.0rc1/install.sh \
+  | DRT_VERSION=v0.6.0rc1 sh
+```
 
 ### Connectors
 
@@ -1605,6 +1681,13 @@ is the gap-release criterion as `doc/Gap-Release.md` §7 now states
 it. The compatibility facts are rc8's: no connector moved, no
 feature moved, the same core inside.
 
+### Install
+
+```sh
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.5.0rc9/install.sh \
+  | DRT_VERSION=v0.5.0rc9 sh
+```
+
 ### Connectors
 
 - `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `data`, `listen`
@@ -1770,6 +1853,13 @@ get the capability. `drt wg check` said `ok` on both. Four errnos
 now get four answers and an unmeasured one gets none, and `check`
 names what it can establish about the machine it is on without
 creating anything.
+
+### Install
+
+```sh
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.5.0rc8/install.sh \
+  | DRT_VERSION=v0.5.0rc8 sh
+```
 
 ### Connectors
 
@@ -1987,6 +2077,13 @@ Otherwise rc6, unchanged: the WireGuard block, its measurements and
 its caveats are all as that entry describes them. Not mirrored, not
 `latest`; `install.sh` keeps resolving to v0.4.2.
 
+### Install
+
+```sh
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.5.0rc7/install.sh \
+  | DRT_VERSION=v0.5.0rc7 sh
+```
+
 ### Connectors
 
 - `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `listen`
@@ -2070,6 +2167,13 @@ gate worked exactly as `doc/Release.md` says it should. Rather than
 move a tag that had already been pushed, the same tree is cut as
 rc6. rc5 is a tag with no release behind it and no content that is
 not here.
+
+### Install
+
+```sh
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.5.0rc6/install.sh \
+  | DRT_VERSION=v0.5.0rc6 sh
+```
 
 ### Connectors
 
@@ -2268,6 +2372,13 @@ blocks the process is measuring a different system from here on.
 
 Not mirrored, and not `latest`: `install.sh` keeps resolving to
 the newest stable release, which is v0.4.2.
+
+### Install
+
+```sh
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.5.0rc4/install.sh \
+  | DRT_VERSION=v0.5.0rc4 sh
+```
 
 ### Connectors
 
@@ -2620,6 +2731,13 @@ fix: the wasm surface is what v0.5.0 is for, and no consumer has
 built against it yet. Not mirrored, and not `latest`: `install.sh`
 keeps resolving to the newest stable release, which is v0.4.2.
 
+### Install
+
+```sh
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.5.0rc3/install.sh \
+  | DRT_VERSION=v0.5.0rc3 sh
+```
+
 ### Connectors
 
 - `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `listen`
@@ -2817,6 +2935,13 @@ it is still what no consumer has built against; that test is the
 one it has not had. Not mirrored, and not `latest`: `install.sh`
 keeps resolving to the newest stable release, which is v0.4.2.
 
+### Install
+
+```sh
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.5.0rc2/install.sh \
+  | DRT_VERSION=v0.5.0rc2 sh
+```
+
 ### Connectors
 
 - `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `listen`
@@ -2993,6 +3118,13 @@ surface has not had. v0.5.0 follows when it has.
 Not mirrored, and not `latest`: an `install.sh` still resolves
 to the newest stable release, which is v0.4.2.
 
+### Install
+
+```sh
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.5.0rc1/install.sh \
+  | DRT_VERSION=v0.5.0rc1 sh
+```
+
 ### Connectors
 
 - `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `listen`
@@ -3120,6 +3252,13 @@ against the version. That list is not v0.4.1's -- `full` gains
 `requires.connectors` with `exec` in it is admissible against the
 `full` artifact and refused by name against `slim`.
 
+### Install
+
+```sh
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.4.2/install.sh \
+  | DRT_VERSION=v0.4.2 sh
+```
+
 ### Connectors
 
 - `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `listen`
@@ -3188,6 +3327,13 @@ it did not.
 A patch, honestly: the connector set is v0.4.0's, so a package
 declaring `requires.connectors` sees nothing new. The call surface
 grew by two optional fields and nothing was removed.
+
+### Install
+
+```sh
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.4.1/install.sh \
+  | DRT_VERSION=v0.4.1 sh
+```
 
 ### Connectors
 
@@ -3274,6 +3420,13 @@ sends mail without the password and cannot forge its From line.
 **The diluvium pin moves to 5.5.1_build12p1**, which v0.4.0rc1
 deliberately deferred. It closes FM-2 and the instruction budget
 switching itself off; the pcall *loop* remains, and FM-4 says so.
+
+### Install
+
+```sh
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.4.0/install.sh \
+  | DRT_VERSION=v0.4.0 sh
+```
 
 ### Connectors
 
@@ -3735,6 +3888,13 @@ v0.3.1's was, and a package declaring `requires.connectors` is checked
 against that list by name. `netcheck` is a new verb on the same
 argument.
 
+### Install
+
+```sh
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.4.0rc1/install.sh \
+  | DRT_VERSION=v0.4.0rc1 sh
+```
+
 ### Connectors
 
 - `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `listen`
@@ -3914,6 +4074,13 @@ Tagged the same day v0.3.0 shipped and published three days later,
 after a repository ruleset on `v*` refused the workflow's App token
 with a 403 and the release had to be created by hand.
 
+### Install
+
+```sh
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.3.1/install.sh \
+  | DRT_VERSION=v0.3.1 sh
+```
+
 ### Connectors
 
 - `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `listen`
@@ -3994,6 +4161,13 @@ The rendezvous relay, end to end: a real `ssh` session over WSS
 through `drt tunnel`, 37 bytes metered, rehearsed against the release
 artifact.
 
+### Install
+
+```sh
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.3.0/install.sh \
+  | DRT_VERSION=v0.3.0 sh
+```
+
 ### Connectors
 
 - `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `listen`
@@ -4017,6 +4191,13 @@ artifact.
 
 Park mode: the device corner of the triangle.
 
+### Install
+
+```sh
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.2.0/install.sh \
+  | DRT_VERSION=v0.2.0 sh
+```
+
 ### Connectors
 
 - `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `listen`
@@ -4029,6 +4210,13 @@ Park mode: the device corner of the triangle.
 
 The first release: DRT as a static binary that runs sandboxed Lua
 under a capability model and serves fetchpoints.
+
+### Install
+
+```sh
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.1.0/install.sh \
+  | DRT_VERSION=v0.1.0 sh
+```
 
 ### Connectors
 

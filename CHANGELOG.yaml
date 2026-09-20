@@ -107,6 +107,21 @@ releases:
       overlap ran three candidates, and this one ends it.
     added:
       - |
+        **Every release's notes carry the command that installs it.**
+        `curl -fsSL <mirror>/<tag>/install.sh | sh`, under an `Install`
+        heading beside the summary, rendered from the changelog like
+        everything else downstream of it. Releases published before this
+        one get the same command with `DRT_VERSION=<tag>` on the `sh`,
+        because their copy of the script predates the fix below and
+        would otherwise install something else -- the rendered command
+        is correct for every release in the file, not only the new ones.
+
+        The `DRT_VERSION=` goes on `sh` rather than in front of `curl`,
+        which is not a style choice: an environment prefix applies only
+        to the command it precedes, so `DRT_VERSION=… curl … | sh` sets
+        it for `curl` and the shell that reads the script never sees it.
+        That spelling fails by installing the wrong version silently.
+      - |
         **A dev build on every merge to `main`, published.** Which removes
         the reason to cut a candidate just to get a commit into someone's
         hands: `v<version>-dev.<n>` builds the Linux leg alone, skips the
@@ -234,6 +249,27 @@ releases:
         `install.sh` keeps its fallback to the old name, since a pinned
         tag older than v0.6.0-rc.2 has only that one.
     fixed:
+      - |
+        **`install.sh` fetched from a release installs that release.**
+        It defaulted to `latest` regardless of the directory it was
+        served from, so `curl <mirror>/v0.7.0-rc.2/install.sh | sh`
+        installed v0.4.2 -- the URL named one version, the binary was
+        another, and nothing said so. The release workflow now stamps
+        the copy it uploads with its own tag, so the script published
+        with a release installs that release; the checkout's copy still
+        says `latest`, and `DRT_VERSION` still overrides both.
+
+        This also means `latest/install.sh` pins to whatever `latest`
+        resolves to at the moment it is fetched, rather than re-resolving
+        `latest` when it runs. For the `curl | sh` front door those are
+        the same thing. For a saved copy they are not, and pinning is
+        the better of the two: the script and the binary it fetches then
+        come from one release instead of two.
+
+        The stamp is checked in the workflow rather than assumed. A
+        `sed` that matched nothing would publish exactly the script this
+        replaces, so the step greps for the stamped line and fails the
+        release if it is not there.
       - |
         **No socket drt dials or accepts keeps Nagle on** (#33). A tunnel
         is interactive by definition, and every pair of small writes on a
