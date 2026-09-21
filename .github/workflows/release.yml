@@ -706,6 +706,18 @@ jobs:
           # read below reaches it; before the `cd` it was one level ABOVE the
           # workspace, so this cp failed the step under `set -eu`.
           cp ../install.sh install.sh
+          # Pin the shipped copy to THIS release. A script served from
+          # `<tag>/install.sh` that installs `latest` names one version in
+          # its URL and fetches another, which is how someone ends up with
+          # v0.4.2 believing they pinned a candidate. The grep is the point
+          # of the step: a sed that silently matched nothing would publish
+          # exactly the lying script this replaces.
+          STAMP_TAG='${{ needs.preflight.outputs.tag }}'
+          sed -i "s|^STAMPED_VERSION=.*|STAMPED_VERSION=$STAMP_TAG|" install.sh
+          grep -qx "STAMPED_VERSION=$STAMP_TAG" install.sh || {
+            echo "::error::install.sh was not stamped with '$STAMP_TAG'" >&2
+            exit 1
+          }
           # Asked of the artifact rather than guessed in YAML. The linux
           # x86_64 binaries are native here, so they can report the dv ABI
           # they actually speak and the connectors actually compiled in;

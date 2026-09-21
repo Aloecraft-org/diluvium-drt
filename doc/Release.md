@@ -713,6 +713,15 @@ curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/latest/install.s
 curl -fsSL https://github.com/Aloecraft-org/diluvium-drt/releases/latest/download/install.sh | sh
 ```
 
+The copy published **with** a release installs **that** release: the
+workflow stamps `STAMPED_VERSION` in the uploaded copy with the tag, and
+the script defaults to it. The checkout's copy says `latest`, and
+`DRT_VERSION` overrides either. Before that stamp existed, a script
+fetched from `<tag>/install.sh` still defaulted to `latest`, so the URL
+named one version and the binary was another with nothing saying so --
+which is why the install command rendered into each release's notes
+passes `DRT_VERSION=` for every release published before the stamp.
+
 The mirror is the intended front door and the one the script itself
 prefers when resolving binaries. Its layout is `doc/ALIGNMENT.md` §4's,
 `software.aloecraft.org/releases/<repo>/`, which replaced the

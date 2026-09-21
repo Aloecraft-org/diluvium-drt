@@ -58,6 +58,22 @@ SOURCE = os.path.join(ROOT, "CHANGELOG.yaml")
 MD = os.path.join(ROOT, "CHANGELOG.md")
 JSON = os.path.join(ROOT, "changelog.json")
 
+# Where the rendered install command points. The mirror rather than GitHub
+# Releases: it is the front door (`doc/Release.md`), and its per-version
+# directory is a stable path, where GitHub's `latest/download` is not a
+# version at all.
+MIRROR = "https://software.aloecraft.org/releases/diluvium-drt"
+
+# The first release whose published `install.sh` pins itself to its own tag
+# -- see `STAMPED_VERSION` in install.sh and the stamp step in the release
+# workflow. From this tag onward, `<tag>/install.sh | sh` installs the
+# version its URL names. Before it, the published script defaults to
+# `latest` whatever directory served it, so the rendered command has to
+# pass `DRT_VERSION=` to mean what its own URL says. Rendering the short
+# form for those older releases would hand someone a command that quietly
+# installs a different version, which is the bug this pairs with.
+SELF_PINNING_FROM = "v0.7.0"
+
 # keepachangelog's six, in the order it prints them, plus our two.
 SECTIONS = [
     ("added", "Added"),
@@ -148,6 +164,14 @@ def validate(doc):
     releases = doc.get("releases") or []
     if not releases:
         bad.append("no releases")
+    # Guard the rendering constant. If the tag it names is renamed --
+    # `v0.7.0-rc.3` becoming `v0.7.0` is exactly the pending decision --
+    # every rendered install command silently falls back to the long form.
+    # Silently is the problem; this makes it say so.
+    if releases and SELF_PINNING_FROM not in [r.get("tag") for r in releases]:
+        bad.append("SELF_PINNING_FROM is %r, which no entry carries; every "
+                   "install command renders the long way until it names a "
+                   "real tag (script/changelog.py)" % SELF_PINNING_FROM)
 
     seen_v, seen_t, latest = set(), set(), []
     for i, r in enumerate(releases):
@@ -267,6 +291,35 @@ def validate(doc):
     return bad
 
 
+def install_block(r, self_pinning):
+    """The copy-pasteable command that installs THIS release.
+
+    Only for a published release: an unreleased entry has no directory on
+    the mirror yet, and printing a command that 404s is worse than
+    printing none."""
+    if r.get("status") != "released" or not r.get("tag"):
+        return []
+    url = "%s/%s/install.sh" % (MIRROR, r["tag"])
+    if self_pinning:
+        cmd = ["curl -fsSL %s | sh" % url]
+    else:
+        cmd = ["curl -fsSL %s \\" % url,
+               "  | DRT_VERSION=%s sh" % r["tag"]]
+    return ["### Install", ""] + ["```sh"] + cmd + ["```", ""]
+
+
+def self_pinning(doc, tag):
+    """Whether the `install.sh` published with `tag` pins itself.
+
+    By position rather than by parsing versions: the file is ordered
+    newest-first and `validate` enforces that `SELF_PINNING_FROM` names a
+    real entry, so an index comparison is the whole question."""
+    tags = [x.get("tag") for x in doc["releases"]]
+    if SELF_PINNING_FROM not in tags or tag not in tags:
+        return False
+    return tags.index(tag) <= tags.index(SELF_PINNING_FROM)
+
+
 def heading(r):
     date = r.get("date") or "unreleased"
     text = "## [%s] - %s" % (r["version"], date)
@@ -292,7 +345,7 @@ def bullets(items):
     return out
 
 
-def render_release(r):
+def render_release(r, pinning=False):
     out = [heading(r), ""]
     meta = []
     if r.get("tag"):
@@ -315,6 +368,10 @@ def render_release(r):
         out += [" &middot; ".join(meta), ""]
     if r.get("summary"):
         out += [r["summary"].rstrip("\n"), ""]
+    # Above the connector lists rather than at the end: someone reading a
+    # release's notes to decide whether to take it wants the command near
+    # the summary, not past every section.
+    out += install_block(r, pinning)
     for key, title in (("connectors", "Connectors"),
                        ("features", "Core features")):
         if not r.get(key):
@@ -336,7 +393,7 @@ def render_md(doc, tag=None):
     if tag:
         for r in doc["releases"]:
             if r["tag"] == tag:
-                return render_release(r)
+                return render_release(r, self_pinning(doc, tag))
         sys.exit("changelog.py: no release with tag %r" % tag)
     head = (
         "# Changelog\n\n"
@@ -349,7 +406,9 @@ def render_md(doc, tag=None):
         "the diluvium revision it embeds, the same facts `BUILDINFO.txt`\n"
         "carries in the release. See `doc/Release.md`.\n"
     )
-    return head + "\n" + "\n\n".join(render_release(r) for r in doc["releases"])
+    return head + "\n" + "\n\n".join(
+        render_release(r, self_pinning(doc, r.get("tag")))
+        for r in doc["releases"])
 
 
 def render_json(doc):
@@ -374,7 +433,8 @@ def render_json(doc):
         entry["date"] = str(r["date"]) if r.get("date") else None
         entry["latest"] = bool(r.get("latest"))
         entry["sections"] = {k: r[k] for k, _ in SECTIONS if r.get(k)}
-        entry["notes_md"] = render_release(r)
+        entry["notes_md"] = render_release(
+            r, self_pinning(doc, r.get("tag")))
         out["releases"].append(entry)
     return json.dumps(out, indent=2) + "\n"
 

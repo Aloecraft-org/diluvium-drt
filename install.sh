@@ -21,7 +21,16 @@ set -eu
 
 MIRROR="${DRT_MIRROR:-https://software.aloecraft.org/releases/diluvium-drt}"
 GITHUB="https://github.com/Aloecraft-org/diluvium-drt/releases"
-VERSION="${DRT_VERSION:-latest}"
+# The release this copy of the script installs. The checkout's copy says
+# `latest`; the release workflow rewrites this one line in the copy it
+# uploads, so the script published WITH a release installs THAT release.
+# Before that, a script fetched from `<version>/install.sh` installed
+# whatever `latest` happened to be -- the URL named one version and the
+# binary was another, silently, which is the worst way for a front door to
+# be wrong. `DRT_VERSION` still overrides it, so a pinned install works
+# from any copy of the script, including the ones already published.
+STAMPED_VERSION=latest
+VERSION="${DRT_VERSION:-$STAMPED_VERSION}"
 
 case "$(uname -s)" in
   Linux)  OS=linux ;;
