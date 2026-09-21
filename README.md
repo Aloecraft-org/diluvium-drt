@@ -59,24 +59,39 @@ never as a mystifying `denied` at first call.
 
 ## Installing
 
-One static binary, no runtime dependencies. Download it, `chmod +x`, go:
+One static binary, no runtime dependencies. The front door is the release
+mirror, which carries every release, `latest/`, and `install.sh` itself:
 
 ```sh
-# linux x86_64 — also drt_linux_arm64_musl, drt_darwin_arm64, drt_darwin_x86_64
-BASE=https://github.com/Aloecraft-org/diluvium-drt/releases/latest/download
-curl -fLO $BASE/drt_linux_static_x86_64
-curl -fLO $BASE/SHA256SUMS.txt
-sha256sum --ignore-missing -c SHA256SUMS.txt      # shasum -a 256 -c on macOS
-chmod +x drt_linux_static_x86_64 && ./drt_linux_static_x86_64 --version
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/latest/install.sh | sh
 ```
 
-From v0.6.0-rc.2 that file is `drt_linux_x86_64_musl` (`doc/ALIGNMENT.md`
-§4); `latest` still resolves to a release that spells it as above. The
-candidates through v0.7.0-rc.2 carried both names; later ones carry only
-the new one.
+It picks the asset for this platform, verifies it against that release's
+`SHA256SUMS.txt`, and says where it put it and what is inside it. The copy
+published *with* a release installs that release, so pinning one is the
+same line with the version in it rather than a flag:
 
-Or let the script do it, which is the same download plus the checksum check
-and a `PATH` note:
+```sh
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.7.0/install.sh | sh
+```
+
+Every release's notes carry that line, already spelled for it.
+
+Or take the binary yourself. The names are `doc/ALIGNMENT.md` §4's —
+`drt_<os>_<arch>[_<libc>]`, the profile last:
+
+```sh
+# also drt_linux_arm64_musl, drt_darwin_arm64, drt_darwin_x86_64,
+# drt_windows_x86_64.exe, and each of those with _slim
+BASE=https://github.com/Aloecraft-org/diluvium-drt/releases/latest/download
+curl -fLO $BASE/drt_linux_x86_64_musl
+curl -fLO $BASE/SHA256SUMS.txt
+sha256sum --ignore-missing -c SHA256SUMS.txt      # shasum -a 256 -c on macOS
+chmod +x drt_linux_x86_64_musl && ./drt_linux_x86_64_musl --version
+```
+
+GitHub Releases is the fallback `install.sh` reaches for when the mirror
+does not answer, and it publishes the script too:
 
 ```sh
 curl -fsSL $BASE/install.sh | sh
@@ -97,13 +112,9 @@ names the diluvium revision inside the binary and the dv ABI it speaks —
 read off the artifact rather than inferred from a tag. See
 [`doc/Release.md`](doc/Release.md).
 
-The mirror at `https://software.aloecraft.org/releases/diluvium-drt/` is
-the front door and the one `install.sh` prefers. It carries every release,
-`latest/`, and `install.sh` itself, so the one-liner is:
-
-```sh
-curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/latest/install.sh | sh
-```
+`install.sh` resolves the mirror before GitHub Releases and verifies
+against whichever answered, so the two commands above differ only in which
+source is tried first. It prints the one it used.
 
 ## What you can do with it today
 

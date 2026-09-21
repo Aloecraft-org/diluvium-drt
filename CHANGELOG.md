@@ -12,14 +12,20 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
-## [0.7.0-rc.3] - unreleased (prerelease)
+## [0.7.0] - 2026-09-21
 
-`v0.7.0-rc.3` &middot; dv ABI 1 &middot; diluvium `7f952d86ec7f` (v0.15.1)
+`v0.7.0` &middot; dv ABI 1 &middot; diluvium `7f952d86ec7f` (v0.15.1)
 
 **The old asset names stop shipping.** v0.6.0-rc.2 renamed every
 artifact to `doc/ALIGNMENT.md` §4's spelling and carried the old
 name beside the new one for the overlap the rule asks for. That
 overlap ran three candidates, and this one ends it.
+
+### Install
+
+```sh
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.7.0/install.sh | sh
+```
 
 ### Connectors
 

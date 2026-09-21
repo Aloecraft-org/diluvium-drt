@@ -72,7 +72,7 @@ MIRROR = "https://software.aloecraft.org/releases/diluvium-drt"
 # pass `DRT_VERSION=` to mean what its own URL says. Rendering the short
 # form for those older releases would hand someone a command that quietly
 # installs a different version, which is the bug this pairs with.
-SELF_PINNING_FROM = "v0.7.0-rc.3"
+SELF_PINNING_FROM = "v0.7.0"
 
 # keepachangelog's six, in the order it prints them, plus our two.
 SECTIONS = [
