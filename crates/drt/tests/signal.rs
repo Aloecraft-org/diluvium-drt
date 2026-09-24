@@ -274,9 +274,17 @@ impl Host {
     }
 }
 
+/// Where the advertise token comes from: the program's `args.key`, or a
+/// header the `ws` scope injects, which the program never sees.
+#[derive(Clone, Copy)]
+enum Token {
+    Args,
+    Injected,
+}
+
 /// `drt start` with the signaling program, the socket at the stub, one
 /// target in scope, and whatever `webrtc` settings the test adds.
-fn host(stub: &Stub, dir: tempfile::TempDir, target: u16, webrtc: Value) -> Host {
+fn host(stub: &Stub, dir: tempfile::TempDir, target: u16, webrtc: Value, token: Token) -> Host {
     let mut block = json!({
         "bind": "127.0.0.1:0",
         "identity_file": dir.path().join("identity.json"),
@@ -287,6 +295,12 @@ fn host(stub: &Stub, dir: tempfile::TempDir, target: u16, webrtc: Value) -> Host
     for (k, v) in webrtc.as_object().unwrap() {
         block[k] = v.clone();
     }
+    let mut allow = json!({"origin": format!("wss://localhost:{}", stub.port)});
+    let mut args = json!({"signal": format!("wss://localhost:{}/?room=topic", stub.port)});
+    match token {
+        Token::Args => args["key"] = json!("advertise-token"),
+        Token::Injected => allow["headers"] = json!({"authorization": "Bearer advertise-token"}),
+    }
     let config = json!({
         "entry": "stdlib:browser-access",
         "caps": [
@@ -296,15 +310,12 @@ fn host(stub: &Stub, dir: tempfile::TempDir, target: u16, webrtc: Value) -> Host
         "connectors": {
             "time": {},
             "ws": {"scope": {
-                "allow": [format!("wss://localhost:{}", stub.port)],
+                "allow": [allow],
                 "allow_private": true,
                 "extra_roots": [stub.cert.clone()]
             }}
         },
-        "args": {
-            "key": "advertise-token",
-            "signal": format!("wss://localhost:{}/?room=topic", stub.port)
-        },
+        "args": args,
         "webrtc": block,
     });
     let path = dir.path().join("host.json");
@@ -339,9 +350,13 @@ fn host(stub: &Stub, dir: tempfile::TempDir, target: u16, webrtc: Value) -> Host
 
 /// The stub, the host connected to it, and the host's record.
 async fn deployment(target: u16, webrtc: Value) -> (Stub, Host, Record) {
+    deployment_with(target, webrtc, Token::Args).await
+}
+
+async fn deployment_with(target: u16, webrtc: Value, token: Token) -> (Stub, Host, Record) {
     let dir = tempfile::tempdir().unwrap();
     let mut stub = Stub::start(dir.path()).await;
-    let host = host(&stub, dir, target, webrtc);
+    let host = host(&stub, dir, target, webrtc, token);
     let (_, auth) = stub.connection().await;
     assert_eq!(auth.as_deref(), Some("Bearer advertise-token"));
     let record = stub.record().await;
@@ -523,6 +538,17 @@ async fn sessions_outlive_the_socket_and_the_host_redials() {
     round_trip(&mut second, 1, echo).await;
 }
 
+/// With no `args.key`, the token the `ws` scope injects is the one the API
+/// sees, and a session still comes up: the program never holds the token.
+#[tokio::test]
+async fn an_injected_token_needs_no_args_key() {
+    let echo = echo_server().await;
+    let (mut stub, _host, record) = deployment_with(echo, json!({}), Token::Injected).await;
+    let mut client = announce(&stub, &record, "s1", true).await;
+    round_trip(&mut client, 1, echo).await;
+    assert_eq!(stub.frame("outcome").await["session"].as_str(), Some("s1"));
+}
+
 /// 5. A close code in 4000..=4099 -- 4001, replaced by a newer host
 /// socket; 4003, the credential refused -- stops the host for good, and
 /// `drt start` exits.
@@ -614,6 +640,7 @@ async fn a_moved_mapping_sends_a_new_record() {
         dir,
         echo,
         json!({"stun": [format!("127.0.0.1:{stun}")], "stun_refresh_s": 1}),
+        Token::Args,
     );
     stub.connection().await;
     let has = |r: &Record, a: SocketAddr| {

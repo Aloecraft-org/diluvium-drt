@@ -73,7 +73,9 @@ is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
 - **Browser access signals over a socket to the Discofetch API**
   (`doc/BrowserAccess.md` §7.1). `stdlib:browser-access`, a program
   the binary carries, does it:
-  - holds one socket, authenticated with the advertise token
+  - holds one socket, authenticated with the advertise token: from
+    `args.key` when set, else from an `authorization` header the
+    `ws` scope injects, so the program never holds it
   - publishes the host's record on every connect and every change
   - opens a session only for a browser the API announced, and
     closes it on `bye`

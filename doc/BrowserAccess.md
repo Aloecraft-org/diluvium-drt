@@ -310,11 +310,14 @@ is not the relay's park door (`/s`), which is separate and unchanged.
   - `args.signal` is the socket URL. It is the contract's
     `browser_access.signal`, flat because a deployment's args are flat,
     and it is never built in code.
-  - `args.key` is the advertise token, sent as `Authorization: Bearer`
-    on the upgrade.
+  - `args.key`, optional, is the advertise token, sent as
+    `Authorization: Bearer` on the upgrade.
   - `connectors.ws.scope` is the origin allowlist, in `rest`'s shape. A
-    deployment may instead inject the token there, as a `headers` entry
-    the program cannot read.
+    deployment may instead inject the token there, as an `authorization`
+    entry in the allow entry's `headers`, which the program cannot read.
+    It then omits `args.key`: with the key set, the program sends the
+    header too and the connector refuses the connect, because a program
+    may not set a header its scope injects.
 - **Transport**: `wss://` only. The token rides the upgrade, so the `ws`
   connector refuses plain `ws://` anywhere but loopback: in the scope at
   boot, at connect, and again on the resolved address.

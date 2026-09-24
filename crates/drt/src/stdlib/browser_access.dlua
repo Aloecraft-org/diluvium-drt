@@ -14,9 +14,12 @@
 --   granted `host:ws/*` and `host:time/monotonic`. `args.signal` is the
 --   socket's URL (the contract's `browser_access.signal`: a deployment's
 --   args are flat, so each can be overridden with `--signal` on the
---   command line), never built here; `args.key` is the advertise token,
---   sent as `Authorization: Bearer`. The `ws` connector's scope must
---   grant the URL's origin, and `webrtc` must be configured.
+--   command line), never built here. `args.key`, when set, is the
+--   advertise token, sent as `Authorization: Bearer`; when it is absent
+--   the program sends no Authorization, so the `ws` scope can inject the
+--   token and the program never sees it (the connector refuses a header
+--   the scope injects if the program sets it too). The `ws` connector's
+--   scope must grant the URL's origin, and `webrtc` must be configured.
 -- - Configurable: IDLE_MS, silence after which the socket is taken for dead
 --   (the API pings every 25 s); BACKOFF_FIRST_MS, BACKOFF_MAX_MS and JITTER,
 --   the reconnect schedule; HELD_MAX, outcomes and byes kept while the
@@ -55,7 +58,10 @@ local _, args  = queue.wait({argq})
 
 local signal = args.signal
 assert(type(signal) == 'string', 'signal: args.signal must be the signaling socket URL')
-assert(type(args.key) == 'string', 'signal: args.key must be the advertise token')
+assert(args.key == nil or type(args.key) == 'string',
+  'signal: args.key, when set, must be the advertise token')
+local headers = nil
+if args.key then headers = {authorization = 'Bearer ' .. args.key} end
 
 local function now() return host.call('time/monotonic') end
 local function log(line) print('signal: ' .. line) end
@@ -101,7 +107,7 @@ end
 local function dial()
   local r, status, detail = host.try('ws/connect', {
     url = signal,
-    headers = {authorization = 'Bearer ' .. args.key},
+    headers = headers,
     wake = 'signal',
     idle_ms = IDLE_MS,
   })
