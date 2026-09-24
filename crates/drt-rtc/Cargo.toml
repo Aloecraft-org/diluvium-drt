@@ -1,0 +1,29 @@
+[package]
+name = "drt-rtc"
+description = "The WebRTC host: a browser's data channel, carrying Wisp v1 streams to a scoped set of TCP targets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = "1"
+base64 = "0.22"
+sha2 = "0.10"
+# The WebRTC stack. Sans-IO, so this crate owns the socket: STUN gathering
+# happens on the same socket the sessions use, which is the only socket a
+# server-reflexive address means anything for, and one socket serves every
+# session with no mux of anyone else's (doc/Plan-0.8.0.md §3.1).
+#
+# `default-features = false` drops aws-lc-rs, which needs cmake and a C
+# toolchain per target -- the reason `gotatun` is on `ring` in this
+# workspace. `rust-crypto` is pure Rust and builds on every release target.
+str0m = { version = "0.23", default-features = false, features = ["rust-crypto"] }
+tokio = { version = "1", default-features = false, features = ["rt", "net", "time", "sync", "macros", "io-util"] }
+# The STUN binding codec only: encode a request, decode an answer. The
+# socket is ours.
+ego_transport = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "io-util"] }

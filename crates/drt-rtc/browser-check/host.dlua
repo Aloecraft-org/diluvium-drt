@@ -1,0 +1,96 @@
+-- The signaling half of a browser access host, against the M0 mock
+-- (doc/BrowserAccess.md §7). The `webrtc` block does the WebRTC; this does
+-- the room: join, publish the host's record, open a session for each
+-- browser that appears, and close it when its presence goes.
+--
+-- Everything Discofetch-specific is in this file and nothing of it is in
+-- the binary, so the real API replaces the three `call`s below, not DRT.
+--
+-- ## surface block
+--
+-- - Entry point: this program, under `drt start` with host.json; `args`
+--   carries `signal` (the room API's origin) and `room`.
+-- - Configurable: POLL_MS, how often presence is read; REFRESH_FRACTION,
+--   how much of the room's TTL may pass before the host's record is
+--   published again.
+-- - Fan-out: the report loop's three events, and the reconcile of present
+--   browsers against open sessions below it.
+
+local POLL_MS = 1000
+local REFRESH_FRACTION = 3
+
+local argq     = queue.declare('args', {capacity = 1})
+local reports  = queue.declare('webrtc', {capacity = 256})
+local commands = queue.declare('webrtc_cmd', {capacity = 64, exported = true})
+local _, args  = queue.wait({argq})
+local base = args.signal .. '/v1/rooms/' .. args.room
+
+local function call(verb, path, token, body)
+  local headers = {['content-type'] = 'application/json'}
+  if token then headers['authorization'] = 'Bearer ' .. token end
+  local r, status, detail = host.try('rest/' .. verb, {
+    url = base .. path, headers = headers, body = body and json.encode(body),
+  })
+  if status ~= 'ok' then
+    print('signal: ' .. verb .. ' ' .. path .. ': ' .. tostring(detail))
+    return nil
+  end
+  if r.body ~= nil and #r.body > 0 then return json.decode(r.body) end
+  return {}
+end
+
+local function now() return host.call('time/monotonic') end
+
+local joined = call('post', '/join', nil, {credential = {}})
+assert(joined and joined.session_token, 'signal: could not join ' .. base)
+local token = joined.session_token
+local refresh_ms = math.max(POLL_MS, (joined.presence_ttl_s or 30) * 1000 // REFRESH_FRACTION)
+print('signal: joined ' .. args.room .. ' as ' .. joined.peer_id)
+
+local record, published = nil, nil
+-- peer_id -> 'open' while a session is ours to close, 'done' once the host
+-- has closed it, so a browser that failed is not reopened from the same
+-- record until its presence goes and comes back.
+local sessions = {}
+
+-- depth: the loop -- reports in, presence out, sessions reconciled
+
+while true do
+  local _, m = queue.wait({reports}, POLL_MS)
+  while m do
+    if m.event == 'webrtc_record' then
+      record, published = m.rtc, nil
+    elseif m.event == 'webrtc_session' then
+      print('session ' .. m.peer .. ' ' .. m.state .. (m.reason and (': ' .. m.reason) or ''))
+      if m.state == 'closed' and sessions[m.peer] then sessions[m.peer] = 'done' end
+    elseif m.event == 'webrtc_stream' then
+      print(string.format('stream %s/%d %s:%d %s%s up=%d down=%d', m.peer, m.stream, m.host,
+        m.port, m.state, m.reason and (' ' .. m.reason) or '', m.bytes_up, m.bytes_down))
+    end
+    m = queue.pop(reports)
+  end
+
+  if record and (published == nil or now() - published >= refresh_ms) then
+    if call('post', '/presence', token, {kind = 'host', rtc = record}) then published = now() end
+  end
+
+  local present = call('get', '/presence', token)
+  if present then
+    local here = {}
+    for _, p in ipairs(present.peers or {}) do
+      if p.kind == 'browser' then
+        here[p.peer_id] = true
+        if not sessions[p.peer_id] then
+          sessions[p.peer_id] = 'open'
+          queue.push(commands, {command = 'open', peer = p.peer_id, rtc = p.rtc})
+        end
+      end
+    end
+    for peer, state in pairs(sessions) do
+      if not here[peer] then
+        if state == 'open' then queue.push(commands, {command = 'close', peer = peer}) end
+        sessions[peer] = nil
+      end
+    end
+  end
+end

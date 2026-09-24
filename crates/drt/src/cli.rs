@@ -73,6 +73,7 @@ const PROFILE_FULL: &[&str] = &[
     "tunnel",
     "turn",
     "turn-client",
+    "webrtc",
     "wireguard",
 ];
 
@@ -736,6 +737,7 @@ fn enabled_features() -> Vec<&'static str> {
     // profile table that is not probed here makes that profile unreportable
     // -- `profile_matches_its_manifest`'s sibling below is what says so.
     feature!("turn-client");
+    feature!("webrtc");
     feature!("wireguard");
     on.sort_unstable();
     on

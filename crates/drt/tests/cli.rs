@@ -406,7 +406,7 @@ fn every_profile_name_is_a_feature_the_binary_probes() {
 #[test]
 fn profile_matches_its_manifest() {
     const PROFILES: [&str; 4] = ["full", "slim", "wasi", "web"];
-    const LEAVES: [&str; 21] = [
+    const LEAVES: [&str; 22] = [
         "cli",
         "connector-crypto",
         "connector-data",
@@ -431,6 +431,7 @@ fn profile_matches_its_manifest() {
         "stun",
         "tunnel",
         "turn",
+        "webrtc",
         "wireguard",
     ];
 
@@ -526,6 +527,7 @@ fn profile_matches_its_manifest() {
     // it. Omitted here, this list reports eighteen leaves where the manifest
     // closure has nineteen and no profile can ever match.
     feature!("turn-client");
+    feature!("webrtc");
     feature!("wireguard");
     enabled.sort();
 

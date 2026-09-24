@@ -1052,6 +1052,87 @@ fn default_netcheck_queue() -> String {
     "netcheck".to_string()
 }
 
+/// The WebRTC host inside `drt start` (`doc/BrowserAccess.md` §8): a
+/// browser reaches this process directly over a data channel, and the host
+/// carries Wisp v1 streams to the targets `scope` names and to nothing else.
+///
+/// The block never learns how the two sides found each other. It reports
+/// its own presence record on `queue` and takes a browser's on
+/// `reply_queue`; the program does the signaling, as it does WireGuard's
+/// rendezvous. `webrtc` and every event name are placeholders until the
+/// owner names the feature (`doc/Plan-0.8.0.md` §6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebrtcConfig {
+    /// The session socket. A wildcard is advertised as the address this box
+    /// routes from; name an address on a box with several.
+    #[serde(default = "default_webrtc_bind")]
+    pub bind: String,
+    /// The host's ICE credentials and DTLS certificate, kept so its record
+    /// survives a restart. Created `0600` when missing; a file that exists
+    /// and does not parse is refused, never replaced.
+    pub identity_file: PathBuf,
+    /// `host:port` STUN servers, asked from the session socket itself: a
+    /// mapping only means something for the socket it was measured on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stun: Vec<String>,
+    /// Whether the record carries the host candidate, which is this box's
+    /// LAN address, to everyone in the room. Off, two machines on one LAN
+    /// meet through the router's public address, which works only where the
+    /// router hairpins.
+    #[serde(default = "default_true")]
+    pub publish_host_candidates: bool,
+    /// The label `hello` carries.
+    #[serde(default)]
+    pub service: String,
+    /// Where a browser starts: one of `scope`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    /// `scheme://host[:port]` entries, and nothing a browser can reach
+    /// besides. Empty is allowed and reaches nothing.
+    #[serde(default)]
+    pub scope: Vec<String>,
+    #[serde(default = "default_webrtc_max_sessions")]
+    pub max_sessions: usize,
+    #[serde(default = "default_webrtc_max_streams")]
+    pub max_streams_per_session: usize,
+    #[serde(default = "default_webrtc_idle_s")]
+    pub idle_stream_timeout_s: u64,
+    #[serde(default = "default_webrtc_connect_s")]
+    pub connect_timeout_s: u64,
+    /// Reports: `webrtc_record`, `webrtc_session`, `webrtc_stream`.
+    #[serde(default = "default_webrtc_queue")]
+    pub queue: String,
+    /// Commands: `{command = "open", peer, rtc}`, `{command = "close", peer}`.
+    #[serde(default = "default_webrtc_reply_queue")]
+    pub reply_queue: String,
+}
+
+fn default_webrtc_bind() -> String {
+    "0.0.0.0:0".to_string()
+}
+fn default_true() -> bool {
+    true
+}
+fn default_webrtc_max_sessions() -> usize {
+    12
+}
+fn default_webrtc_max_streams() -> usize {
+    64
+}
+fn default_webrtc_idle_s() -> u64 {
+    300
+}
+fn default_webrtc_connect_s() -> u64 {
+    10
+}
+fn default_webrtc_queue() -> String {
+    "webrtc".to_string()
+}
+fn default_webrtc_reply_queue() -> String {
+    "webrtc_cmd".to_string()
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RootConfig {
@@ -1082,6 +1163,8 @@ pub struct RootConfig {
     pub tunnel: Option<TunnelConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub netcheck: Option<NetcheckConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webrtc: Option<WebrtcConfig>,
     #[serde(default, skip_serializing_if = "Identity::is_default")]
     pub identity: Identity,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
