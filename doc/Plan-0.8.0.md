@@ -423,3 +423,22 @@ Each of these edits code `doc/Plan-2026-09.md` §0.2 froze:
     - A close in 4000–4099 ends `drt start`.
     - Reconnect policy is the program's, not the connector's: the
       connector reports how a connection ended and never redials.
+- 2026-09-24, **the browser half ships as a library** (the owner asked
+  for it with every dev build). Discofetch had read `drt_web.tar.gz` as
+  the browser client's transport; it is the dlua runtime for a page and
+  has no network connectors, and the browser half of
+  `doc/BrowserAccess.md` needs none: it is the browser's own
+  `RTCPeerConnection`.
+  - `crates/drt-rtc/client/drt_browser_access.js` and `.d.ts`, one ES
+    module with no dependencies, lifted from what `check.mjs` proved.
+    §9 of the wire doc is its contract.
+  - `check.mjs` now drives the shipped file. Per session: an echo, 1 MiB
+    through Wisp credit intact, and an out-of-scope connect refused with
+    `0x48`. It passes against both the `drt-rtc` example host (three
+    sessions) and `drt start` (two).
+  - The gate is `script/browser-access-client.sh`, run by CI (`--drt`)
+    and by the release's `build-client`, dev builds included, which
+    attaches the two files.
+  - Not proven: the library against the real Discofetch API, and the
+    whole path with `stdlib:browser-access` doing the signaling, since
+    `signal.rs` plays the browser with the native client.

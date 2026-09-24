@@ -569,7 +569,8 @@ first second of life.
   until `publish=true`.
 - **A `v*-dev.*` tag**, pushed or dispatched with `publish=true` → the dev
   fast path (`doc/ALIGNMENT.md` §7): the suite, the Linux build and the
-  web build (`drt_web.tar.gz`), no changelog entry, always a prerelease, and the ten newest dev releases
+  web build (`drt_web.tar.gz`), the browser access client
+  (`drt_browser_access.js` and `.d.ts`), no changelog entry, always a prerelease, and the ten newest dev releases
   kept. `script/dev-tag.sh` prints the next free tag; the number is
   allocated from the tags that exist and never reused, so `dev.5` names
   one build forever.

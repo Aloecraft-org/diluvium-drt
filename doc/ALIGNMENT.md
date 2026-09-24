@@ -487,10 +487,10 @@ dominates: `0.4.0.dev104 < 0.5.0.dev105`.
 
 ### The suffix decides the rigor
 
-A `dev` tag builds one native platform plus the browser module, and skips
-the other cross-compilation, wasip2 and the slow suites. The browser
-module is in because a browser client is built against a dev build long
-before anything is a candidate. Everything else runs the full gate. Better than a dispatch
+A `dev` tag builds one native platform plus the browser module and the
+browser access client library, and skips the other cross-compilation,
+wasip2 and the slow suites. The browser pieces are in because a browser
+client is built against a dev build long before anything is a candidate. Everything else runs the full gate. Better than a dispatch
 checkbox — diluvium's `run_tests` input is the only fast path any repository
 has today, and what it decided is invisible once the run is over.
 

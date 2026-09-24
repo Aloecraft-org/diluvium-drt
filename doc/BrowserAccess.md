@@ -37,6 +37,10 @@ with the §8 block and a program signaling through the §7.2 mock.
 `crates/drt/tests/signal.rs` runs `drt start` with §7.1's program against
 a `wss://` stub of the API.
 
+**The browser half ships as a library** (§9): `drt_browser_access.js`,
+built from `crates/drt-rtc/client/` and attached to every release and dev
+build. `check.mjs` drives that file, not a copy of its logic.
+
 ## 1. The shape
 
 ```text
@@ -447,3 +451,43 @@ GET  /v1/rooms/{room}/presence   Authorization: Bearer <session_token>
   `crates/drt/tests/signal.rs` shows a working config for it. M0's
   `crates/drt-rtc/browser-check/host.json` and its `host.dlua` still do
   §7.2's over `rest`.
+
+## 9. The client library
+
+`crates/drt-rtc/client/drt_browser_access.js`, with its types in
+`drt_browser_access.d.ts`, is §2 to §6 on the browser's side: one ES
+module, no dependencies, no build step. Every release and dev build
+attaches both files. A client may use it or implement these sections
+itself; the vectors hold either to the same bytes.
+
+```js
+import { offer } from './drt_browser_access.js';
+
+const pending = await offer({ iceServers });     // §3.1: gathers, capped at 2 s
+// pending.record goes to the host through signaling (§7.1).
+const session = await pending.accept(hostRecord); // §3.2; object or text (§2)
+session.hello;                                     // §5
+const s = session.connect('127.0.0.1', 8123);      // §6: must be in hello.scope
+// s.readable / s.writable: Web Streams of bytes. s.closed rejects with a
+// StreamClosed whose `reason` is the §6 byte when the host refuses or fails.
+```
+
+- **Signaling is the caller's.** The module makes and takes records; it
+  never opens a WebSocket and never polls.
+- **`accept` resolves once** both channels are open, `hello` has arrived
+  and the stream-0 `CONTINUE` has given the initial credit, and rejects
+  after 15 s otherwise, closing the connection. One `accept` per `offer`:
+  a rejoin is a fresh offer, and so a fresh ufrag (§2.2).
+- **Writes are paced twice**: by Wisp credit, one packet per unit, topped
+  up by the host's `CONTINUE`; and by the data channel's buffer, past 1
+  MiB. A chunk larger than 16379 bytes is split.
+- **`closed`** resolves when the target closed cleanly (`0x02`) or the
+  page closed the stream, and rejects otherwise. When the session ends
+  under a stream, its `reason` is `null`.
+- **`scheme` is the page's to act on** (§5). An `https` target means the
+  page speaks TLS over the stream itself, and an `ssh` one SSH; the
+  library carries bytes.
+- **Its gate** is `script/browser-access-client.sh`: `test.mjs` against
+  the vectors, then `check.mjs` in Chromium against the `drt-rtc` example
+  host and, with `--drt`, against `drt start`. CI runs it with `--drt`,
+  and the release packages the files only after it passes.

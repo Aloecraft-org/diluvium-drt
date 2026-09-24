@@ -70,6 +70,19 @@ is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
   the upgrade carries the credential. A plain origin off this
   machine is refused in the scope at boot, at connect, and again on
   the resolved address.
+- **The browser access client library**, `drt_browser_access.js`
+  with `drt_browser_access.d.ts`: the browser half of
+  `doc/BrowserAccess.md` as one ES module with no dependencies,
+  shipped with every release and every dev build. `offer()` makes
+  the browser's record; `accept(hostRecord)` builds the answer from
+  the host's record, object or text, and resolves on `hello`;
+  `session.connect(host, port)` gives a TCP stream to the host's
+  scope as a `readable`/`writable` pair of Web Streams, split at the
+  16 KiB message cap and paced by Wisp credit. Signaling stays the
+  page's: the module never opens a socket. Proven against the shared
+  vectors, and in Chromium against a real host: three sessions at
+  once, 1 MiB each through the echo intact, and an out-of-scope
+  connect refused with `0x48`.
 - **Browser access signals over a socket to the Discofetch API**
   (`doc/BrowserAccess.md` §7.1). `stdlib:browser-access`, a program
   the binary carries, does it:

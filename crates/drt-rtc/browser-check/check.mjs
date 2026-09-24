@@ -1,11 +1,14 @@
-// The browser half of the M0 check (doc/Plan-0.8.0.md §3.3): Chromium does
+// The browser half of the M0 check (doc/Plan-0.8.0.md §3.3), and the live
+// test of the shipped client library (crates/drt-rtc/client/): Chromium
+// loads drt_browser_access.js as the release serves it and does through it
 // exactly what doc/BrowserAccess.md §3 says a client does -- negotiated
 // channels, an ordinary offer, a record published after gathering, and an
-// answer built locally from the host's record -- against a real host. Several
-// sessions at once, all through one host socket and one host ufrag.
+// answer built locally from the host's record -- against a real host.
+// Several sessions at once, all through one host socket and one host ufrag.
 //
-// Two ways to run it, and both exit 0 only when every session echoed through
-// a Wisp stream:
+// Two ways to run it, and both exit 0 only when every session echoed, moved
+// TRANSFER bytes intact through a Wisp stream, and saw an out-of-scope
+// connect refused with 0x48:
 //
 //   cargo build -p drt-rtc --example browser_check
 //   PLAYWRIGHT=$(npm root -g)/playwright node check.mjs
@@ -26,7 +29,8 @@
 // - Configurable: SESSIONS (env), MOCK_PORT and ECHO_PORT, which host.json
 //   names too; GATHER_CAP_MS, how long a page waits for ICE gathering
 //   before it publishes (doc/BrowserAccess.md §3.1); WAIT_MS, the limit on
-//   any one wait.
+//   any one wait; TRANSFER (env), the bytes each session sends through the
+//   echo and expects back, default 1 MiB.
 // - Fan-out: `run` starts the host side in either mode; window.start,
 //   window.signal and window.finish are the client's three steps.
 
@@ -34,6 +38,7 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import net from 'node:net';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const { chromium } = await import(process.env.PLAYWRIGHT ? path.join(process.env.PLAYWRIGHT, 'index.mjs') : 'playwright');
@@ -44,6 +49,7 @@ const MOCK_PORT = 18787;
 const ECHO_PORT = 18788;
 const GATHER_CAP_MS = 2000;
 const WAIT_MS = 15000;
+const TRANSFER = Number(process.env.TRANSFER ?? 1 << 20);
 const DRT = process.argv.includes('--drt');
 const ROOM = `http://127.0.0.1:${MOCK_PORT}/v1/rooms/m0`;
 const children = [];
@@ -97,64 +103,26 @@ const page = await browser.newPage();
 page.on('console', (m) => console.log('page:', m.text()));
 // In --drt mode the page runs on the mock's origin; see mock.mjs.
 await page.goto(DRT ? `http://127.0.0.1:${MOCK_PORT}/` : 'about:blank');
-await page.evaluate(([GATHER_CAP_MS, WAIT_MS]) => {
-  const b64 = (hex) => btoa(String.fromCharCode(...hex.split(':').map((h) => parseInt(h, 16))));
-  const hex = (b) => [...atob(b)].map((c) => c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')).join(':');
+// The client is the shipped library, loaded as the release serves it: one
+// ES module, imported as-is.
+const library = readFileSync(path.resolve(here, '../client/drt_browser_access.js'));
+await page.evaluate(async ([src, GATHER_CAP_MS, WAIT_MS]) => {
+  const lib = await import(`data:text/javascript;base64,${src}`);
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-  // §2: the record, from our own local description.
-  window.recordFrom = (sdp) => {
-    const get = (k) => sdp.match(new RegExp(`^a=${k}:(.*)$`, 'm'))[1].trim();
-    const c = [...sdp.matchAll(/^a=(candidate:.*)$/gm)]
-      .map((m) => m[1].trim())
-      .filter((l) => / udp /i.test(l) && !/\.local /.test(l) && !/ typ relay/.test(l))
-      .map((l) => l.replace(/^(.* typ \S+(?: raddr \S+ rport \d+)?).*$/, '$1'))
-      .slice(0, 8);
-    return JSON.stringify({ v: 1, u: get('ice-ufrag'), p: get('ice-pwd'), f: b64(get('fingerprint').split(' ')[1]), c });
-  };
-
-  // §3.2: the answer, from the host's record and the offer's mid.
-  window.answerFrom = (rtc, mid) => {
-    const r = JSON.parse(rtc);
-    return [
-      'v=0', 'o=- 0 2 IN IP4 127.0.0.1', 's=-', 't=0 0', `a=group:BUNDLE ${mid}`,
-      'm=application 9 UDP/DTLS/SCTP webrtc-datachannel', 'c=IN IP4 0.0.0.0', `a=mid:${mid}`,
-      `a=ice-ufrag:${r.u}`, `a=ice-pwd:${r.p}`, `a=fingerprint:sha-256 ${hex(r.f)}`,
-      'a=setup:passive', 'a=sctp-port:5000', 'a=max-message-size:262144',
-      ...r.c.map((c) => `a=${c}`), 'a=end-of-candidates', '',
-    ].join('\r\n');
-  };
-
   window.sessions = [];
+
   window.start = async () => {
-    const pc = new RTCPeerConnection();
-    const s = { pc, inbox: [], hello: null, open: 0 };
-    s.control = pc.createDataChannel('control', { negotiated: true, id: 0 });
-    s.wisp = pc.createDataChannel('wisp', { negotiated: true, id: 1 });
-    s.wisp.binaryType = 'arraybuffer';
-    s.control.onmessage = (e) => (s.hello = e.data);
-    s.wisp.onmessage = (e) => s.inbox.push(new Uint8Array(e.data));
-    s.control.onopen = s.wisp.onopen = () => s.open++;
-    await pc.setLocalDescription(await pc.createOffer());
-    // §3.1: publish once gathering completes, or at the cap. In this
-    // container Chromium's gathering never reaches `complete`.
-    await new Promise((r) => {
-      if (pc.iceGatheringState === 'complete') return r();
-      pc.addEventListener('icegatheringstatechange', () => pc.iceGatheringState === 'complete' && r());
-      setTimeout(r, GATHER_CAP_MS);
-    });
-    s.mid = pc.localDescription.sdp.match(/^a=mid:(.*)$/m)[1].trim();
-    s.record = window.recordFrom(pc.localDescription.sdp);
-    window.sessions.push(s);
-    return { index: window.sessions.length - 1, record: s.record };
+    const pending = await lib.offer({ gatherTimeoutMs: GATHER_CAP_MS });
+    window.sessions.push({ pending });
+    return { index: window.sessions.length - 1, record: pending.recordText };
   };
 
-  // §7: join the room, publish, and wait for the host's record.
+  // §7.2: join the mock's room, publish, and wait for the host's record.
   window.signal = async (i, base) => {
     const s = window.sessions[i];
     const joined = await (await fetch(`${base}/join`, { method: 'POST', body: '{"credential":{}}' })).json();
     const headers = { authorization: `Bearer ${joined.session_token}`, 'content-type': 'application/json' };
-    await fetch(`${base}/presence`, { method: 'POST', headers, body: JSON.stringify({ kind: 'browser', rtc: s.record }) });
+    await fetch(`${base}/presence`, { method: 'POST', headers, body: JSON.stringify({ kind: 'browser', rtc: s.pending.recordText }) });
     for (const t0 = Date.now(); Date.now() - t0 < WAIT_MS; await sleep(200)) {
       const { peers } = await (await fetch(`${base}/presence`, { headers })).json();
       const h = peers.find((p) => p.kind === 'host');
@@ -163,38 +131,41 @@ await page.evaluate(([GATHER_CAP_MS, WAIT_MS]) => {
     throw new Error('no host in the room');
   };
 
-  window.finish = async (i, hostRtc, port) => {
+  // Every session: hello, an echo, a transfer big enough to spend Wisp
+  // credit many times over and to be split at 16379 bytes, and a refusal.
+  window.finish = async (i, hostRtc, port, bytes) => {
     const s = window.sessions[i];
-    await s.pc.setRemoteDescription({ type: 'answer', sdp: window.answerFrom(hostRtc, s.mid) });
-    const until = async (what, pred, ms = WAIT_MS) => {
-      const t0 = Date.now();
-      while (!pred()) {
-        if (Date.now() - t0 > ms) throw new Error(`session ${i}: timed out waiting for ${what} (ice ${s.pc.iceConnectionState}, pc ${s.pc.connectionState})`);
-        await sleep(20);
-      }
-    };
-    await until('both channels to open', () => s.open === 2);
-    await until('hello', () => s.hello !== null);
-    await until('CONTINUE on stream 0', () => s.inbox.length > 0);
-    const first = s.inbox.shift();
-    const le32 = (b, o) => b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24);
-    if (first[0] !== 3 || le32(first, 1) !== 0 || le32(first, 5) !== 128) throw new Error('first wisp packet is not CONTINUE(0, 128)');
-    // CONNECT stream 1 to the echo server, then DATA.
-    const host = new TextEncoder().encode('127.0.0.1');
-    const connect = new Uint8Array(8 + host.length);
-    connect.set([1, 1, 0, 0, 0, 1, port & 0xff, port >> 8]);
-    connect.set(host, 8);
-    s.wisp.send(connect);
-    const msg = new TextEncoder().encode(`ping from session ${i}`);
-    const data = new Uint8Array(5 + msg.length);
-    data.set([2, 1, 0, 0, 0]);
-    data.set(msg, 5);
-    s.wisp.send(data);
-    await until('the echo', () => s.inbox.some((p) => p[0] === 2));
-    const echoed = new TextDecoder().decode(s.inbox.find((p) => p[0] === 2).slice(5));
-    return { hello: JSON.parse(s.hello), echoed };
+    // Object or text, as the host's record may arrive either way (§2).
+    const session = await s.pending.accept(i % 2 ? JSON.parse(hostRtc) : hostRtc, { timeoutMs: WAIT_MS });
+    const stream = session.connect('127.0.0.1', port);
+    const writer = stream.writable.getWriter();
+    const reader = stream.readable.getReader();
+    const ping = new TextEncoder().encode(`ping from session ${i}`);
+    await writer.write(ping);
+    const big = new Uint8Array(bytes);
+    for (let k = 0; k < big.length; k++) big[k] = (k * 31 + i) & 0xff;
+    const sent = writer.write(big);
+    const want = ping.length + big.length;
+    const got = new Uint8Array(want);
+    let n = 0;
+    while (n < want) {
+      const { value, done } = await reader.read();
+      if (done) throw new Error(`stream ended after ${n} of ${want} bytes`);
+      got.set(value, n);
+      n += value.length;
+    }
+    await sent;
+    const echoed = new TextDecoder().decode(got.subarray(0, ping.length));
+    const intact = got.subarray(ping.length).every((b, k) => b === big[k]);
+    await writer.close();
+    await stream.closed;
+    // Out of scope: refused by the host with 0x48 before it connects.
+    const refused = session.connect('127.0.0.1', port + 1);
+    const reason = await refused.closed.then(() => 'closed cleanly', (e) => e.reason);
+    session.close();
+    return { hello: session.hello, echoed, intact, bytes: n - ping.length, reason };
   };
-}, [GATHER_CAP_MS, WAIT_MS]);
+}, [library.toString('base64'), GATHER_CAP_MS, WAIT_MS]);
 
 // depth: run the sessions and judge them
 
@@ -206,13 +177,15 @@ const results = await Promise.allSettled(
     let rtc = hostRecord;
     if (DRT) rtc = await page.evaluate(([i, base]) => window.signal(i, base), [s.index, ROOM]);
     else host.child.stdin.write(s.record + '\n');
-    return page.evaluate(([i, h, port]) => window.finish(i, h, port), [s.index, rtc, echoPort]);
+    return page.evaluate(([i, h, port, n]) => window.finish(i, h, port, n), [s.index, rtc, echoPort, TRANSFER]);
   }),
 );
 let failed = false;
 results.forEach((r, i) => {
-  if (r.status === 'fulfilled' && r.value.echoed === `ping from session ${i}` && r.value.hello.t === 'hello') {
-    console.log(`session ${i}: ok, echoed "${r.value.echoed}", hello ${JSON.stringify(r.value.hello)}`);
+  const v = r.value;
+  if (r.status === 'fulfilled' && v.echoed === `ping from session ${i}` && v.hello.t === 'hello'
+      && v.intact && v.bytes === TRANSFER && v.reason === 0x48) {
+    console.log(`session ${i}: ok, echoed "${v.echoed}" and ${v.bytes} bytes intact, out of scope refused 0x48, hello ${JSON.stringify(v.hello)}`);
   } else {
     failed = true;
     console.log(`session ${i}: FAILED`, r.status === 'rejected' ? r.reason.message : JSON.stringify(r.value));

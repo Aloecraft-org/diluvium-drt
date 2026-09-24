@@ -11,7 +11,8 @@ name: Release
 # inside" is a fact you read off the release, never a tag-naming convention.
 #
 # A `v*-dev.*` tag is the fast path (doc/ALIGNMENT.md §7): the suite, the
-# Linux build and the web build, no changelog entry, always a prerelease.
+# Linux build, the web build and the browser access client, no changelog
+# entry, always a prerelease.
 # The suffix decides, so what was decided travels with the artifact.
 
 on:
@@ -496,6 +497,47 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  build-client:
+    # The browser access client library (crates/drt-rtc/client/): the
+    # browser half of doc/BrowserAccess.md, one ES module and its types.
+    # In dev builds too, for the same reason as build-web: a browser
+    # client is built against a dev build before anything is a candidate.
+    # Plain JavaScript with no build step, so "building" it is proving it:
+    # the unit tests against the shared vectors, then Chromium driving it
+    # against a real host, and only then the files the tests ran.
+    name: Build (browser access client)
+    needs: [preflight, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: browser-access-client
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/drt-web/browser-test/package-lock.json
+      - name: Playwright, and its Chromium
+        working-directory: crates/drt-web/browser-test
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: The client's gate, and the package
+        run: script/browser-access-client.sh --package dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drt-browser-access
+          path: |
+            dist/drt_browser_access.js
+            dist/drt_browser_access.d.ts
+          if-no-files-found: error
+          retention-days: 30
+
   build-windows:
     # The Windows leg, for x86_64-pc-windows-gnu, cross-built from Linux
     # with mingw-w64 the way doc/Platforms.md said to rehearse it. Cross
@@ -655,19 +697,20 @@ jobs:
 
   publish:
     name: Publish release
-    needs: [preflight, test, build, build-wasip2, build-web, build-windows, smoke-windows]
+    needs: [preflight, test, build, build-wasip2, build-web, build-client, build-windows, smoke-windows]
     # A dev build skips the three cross-target legs (wasip2 and the two
     # Windows jobs), and a job whose `needs` were skipped is skipped itself
     # unless it says otherwise. So this says otherwise, and checks by hand
     # what the default would have: nothing was cancelled, the suite, the
-    # Linux leg and the web leg passed, and either this is a dev build or
-    # every other leg passed too.
+    # Linux leg, the web leg and the client passed, and either this is a
+    # dev build or every other leg passed too.
     if: >-
       !cancelled()
       && needs.preflight.outputs.publish == 'true'
       && needs.test.result == 'success'
       && needs.build.result == 'success'
       && needs.build-web.result == 'success'
+      && needs.build-client.result == 'success'
       && (needs.preflight.outputs.dev == 'true'
           || (needs.build-wasip2.result == 'success'
               && needs.build-windows.result == 'success'
@@ -850,7 +893,7 @@ jobs:
         run: |
           set -eu
           {
-            echo "A dev build (doc/ALIGNMENT.md §7): commit \`${{ needs.preflight.outputs.sha }}\` on \`${{ needs.preflight.outputs.branch }}\`, the suite, the Linux build and the web build (\`drt_web.tar.gz\`), no changelog entry."
+            echo "A dev build (doc/ALIGNMENT.md §7): commit \`${{ needs.preflight.outputs.sha }}\` on \`${{ needs.preflight.outputs.branch }}\`, the suite, the Linux build, the web build (\`drt_web.tar.gz\`) and the browser access client (\`drt_browser_access.js\`), no changelog entry."
             echo
             echo "Not a release. \`BUILDINFO.txt\` says what is inside. Pin a candidate or a release for anything that has to keep working; the ten newest dev builds are kept and older ones are pruned."
           } > release_notes.md

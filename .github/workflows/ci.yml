@@ -284,6 +284,31 @@ jobs:
         working-directory: crates/drt-web/browser-test
         run: npm test
 
+  browser-access-client:
+    # The browser access client library (crates/drt-rtc/client/) in
+    # Chromium against both hosts: the drt-rtc example and a whole `drt
+    # start`. script/browser-access-client.sh is the gate the release runs
+    # too, less the package step.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: browser-access-client
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/drt-web/browser-test/package-lock.json
+      - name: Playwright, and its Chromium
+        working-directory: crates/drt-web/browser-test
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: The client's gate, against both hosts
+        run: script/browser-access-client.sh --drt
+
   wasip2:
     # The portable build (doc/Wasm.md D2, M1): `drt` itself, for
     # wasm32-wasip2, run under wasmtime. Proven by the examples gate rather
