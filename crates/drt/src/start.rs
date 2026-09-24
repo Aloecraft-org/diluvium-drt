@@ -608,6 +608,26 @@ pub fn serve_with_observer<B: Acceptor>(
         None => None,
     };
 
+    // The WebRTC host: a browser reaching this process directly, over a
+    // data channel. Like WireGuard it both reports and takes orders -- its
+    // reports are its own presence record and the sessions and streams it
+    // carries; its orders are a browser's record to open a session from --
+    // because how the two records met is signaling, and signaling is the
+    // program's.
+    #[cfg(feature = "webrtc")]
+    let mut webrtc = match &config.webrtc {
+        Some(cfg) => {
+            let bridge = crate::webrtc::WebrtcBridge::start(cfg)?;
+            eprintln!(
+                "drt webrtc: serving on {}, record on `{}`",
+                bridge.local_addr(),
+                cfg.queue
+            );
+            Some(bridge)
+        }
+        None => None,
+    };
+
     // The NAT diagnostic, if the config names one. Its own runtime, its
     // verdict on the same queue bridge: a rendezvous program deciding whether
     // to offer a direct path or a relay is asking exactly what this answers,
@@ -693,6 +713,17 @@ pub fn serve_with_observer<B: Acceptor>(
                 inst.pop(q).ok().flatten()
             });
             wg.report(&mut |queue, msg| sw.push(root, queue, &runtime_sender(), msg).is_ok());
+        }
+        #[cfg(feature = "webrtc")]
+        if let Some(rtc) = webrtc.as_mut() {
+            // Orders first, as for WireGuard: a session opened this pass
+            // should be under way before the reports that follow are read.
+            rtc.collect(&mut |queue| {
+                let inst = sw.instance_mut(root)?;
+                let q = inst.queue(queue)?;
+                inst.pop(q).ok().flatten()
+            });
+            rtc.report(&mut |queue, msg| sw.push(root, queue, &runtime_sender(), msg).is_ok());
         }
         #[cfg(feature = "netcheck")]
         if let Some(netcheck) = netcheck.as_mut() {

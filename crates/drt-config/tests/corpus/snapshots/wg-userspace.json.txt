@@ -305,6 +305,7 @@ RootConfig {
     ),
     tunnel: None,
     netcheck: None,
+    webrtc: None,
     identity: Identity {
         host_key_path: None,
     },

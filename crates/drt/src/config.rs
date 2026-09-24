@@ -65,6 +65,7 @@ pub fn load(path: Option<&Path>) -> Result<RootConfig, String> {
     validate(&config).map_err(|e| format!("{}: {e}", path.display()))?;
     resolve_program(&mut config, path);
     resolve_manifests(&mut config, path);
+    resolve_identity(&mut config, path);
     Ok(config)
 }
 
@@ -149,6 +150,22 @@ fn resolve_manifests(config: &mut RootConfig, path: &Path) {
         }
         wiring.manifest = dir.join(manifest).to_string_lossy().into_owned();
     }
+}
+
+/// A relative `webrtc.identity_file` is relative **to the config**, for the
+/// reason a relative `program` is, and more so: the host *creates* this file
+/// when it is missing, so resolving it against the working directory would
+/// not fail -- it would mint a second identity, and every room holding the
+/// first record would stop reaching the host.
+fn resolve_identity(config: &mut RootConfig, path: &Path) {
+    let Some(webrtc) = config.webrtc.as_mut() else {
+        return;
+    };
+    if webrtc.identity_file.is_absolute() {
+        return;
+    }
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    webrtc.identity_file = dir.join(&webrtc.identity_file);
 }
 
 /// Check every grant against the scope-types the wired connectors declare.

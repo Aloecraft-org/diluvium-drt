@@ -1,0 +1,19 @@
+{
+  "_about": "The M0 rehearsal host: drt start with the webrtc block, signaling to the mock (mock.mjs) on 18787, one echo target on 18788 in scope. check.mjs --drt runs all of it.",
+  "program": { "path": "host.dlua" },
+  "caps": [
+    { "capability": "host:rest/*" },
+    { "capability": "host:time/monotonic" }
+  ],
+  "connectors": {
+    "time": {},
+    "rest": { "scope": { "allow": [ { "origin": "http://127.0.0.1:18787" } ], "allow_private": true } }
+  },
+  "args": { "signal": "http://127.0.0.1:18787", "room": "m0" },
+  "webrtc": {
+    "identity_file": "host-identity.json",
+    "service": "M0 rehearsal",
+    "scope": ["http://127.0.0.1:18788"],
+    "default": "http://127.0.0.1:18788"
+  }
+}

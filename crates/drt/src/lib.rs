@@ -67,5 +67,8 @@ pub mod tunnel;
 pub mod turn;
 #[cfg(feature = "wireguard")]
 pub mod userspace;
+// The WebRTC host inside `drt start` (doc/BrowserAccess.md).
+#[cfg(feature = "webrtc")]
+pub mod webrtc;
 #[cfg(feature = "wireguard")]
 pub mod wireguard;
