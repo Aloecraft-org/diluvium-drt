@@ -11,8 +11,8 @@ name: Release
 # inside" is a fact you read off the release, never a tag-naming convention.
 #
 # A `v*-dev.*` tag is the fast path (doc/ALIGNMENT.md §7): the suite, the
-# Linux build, the web build and the browser access client, no changelog
-# entry, always a prerelease.
+# Linux build, the web build, the browser access client and the SSH page,
+# no changelog entry, always a prerelease.
 # The suffix decides, so what was decided travels with the artifact.
 
 on:
@@ -538,6 +538,63 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  build-ssh-page:
+    # The SSH page (doc/Plan-0.8.0.md §2): one static HTML file with the
+    # SSH client and xterm.js inlined. In dev builds too, like the other
+    # browser pieces. Packaged only after its end-to-end gate passed, so
+    # the file on the release is the one that signed in to a stock sshd.
+    name: Build (SSH page)
+    needs: [preflight, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ssh-page
+      # The CLI's version is read off the crate's pin, as the browser job
+      # does; script/drt-ssh-page.sh refuses any other.
+      - name: wasm-bindgen-cli, the pinned version
+        run: |
+          set -eu
+          v=$(sed -n 's/^wasm-bindgen = "=\([0-9.]*\)"/\1/p' crates/drt-ssh-web/Cargo.toml)
+          curl -fsSL -o "$RUNNER_TEMP/wbg.tar.gz" \
+            "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${v}/wasm-bindgen-${v}-x86_64-unknown-linux-musl.tar.gz"
+          tar -C "$RUNNER_TEMP" -xzf "$RUNNER_TEMP/wbg.tar.gz"
+          sudo install "$RUNNER_TEMP/wasm-bindgen-${v}-x86_64-unknown-linux-musl/wasm-bindgen" /usr/local/bin/wasm-bindgen
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/drt-ssh-web/page/package-lock.json
+      - name: The page's packages, and Chromium
+        working-directory: crates/drt-ssh-web/page
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      # e2e.mjs runs sshd as root through `sudo -n`, because an
+      # unprivileged sshd ends every pty session. A root sshd needs its
+      # privilege separation directory, which only the service creates.
+      - name: A stock OpenSSH sshd
+        run: |
+          set -eu
+          sudo apt-get install -y --no-install-recommends openssh-server
+          sudo mkdir -p /run/sshd
+          /usr/sbin/sshd -V 2>&1 || true
+      - name: The page's gate, and the package
+        run: script/drt-ssh-page-gate.sh --package dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drt-ssh-page
+          path: dist/ssh.html
+          if-no-files-found: error
+          retention-days: 30
+
   build-windows:
     # The Windows leg, for x86_64-pc-windows-gnu, cross-built from Linux
     # with mingw-w64 the way doc/Platforms.md said to rehearse it. Cross
@@ -697,13 +754,13 @@ jobs:
 
   publish:
     name: Publish release
-    needs: [preflight, test, build, build-wasip2, build-web, build-client, build-windows, smoke-windows]
+    needs: [preflight, test, build, build-wasip2, build-web, build-client, build-ssh-page, build-windows, smoke-windows]
     # A dev build skips the three cross-target legs (wasip2 and the two
     # Windows jobs), and a job whose `needs` were skipped is skipped itself
     # unless it says otherwise. So this says otherwise, and checks by hand
     # what the default would have: nothing was cancelled, the suite, the
-    # Linux leg, the web leg and the client passed, and either this is a
-    # dev build or every other leg passed too.
+    # Linux leg, the web leg, the client and the SSH page passed, and
+    # either this is a dev build or every other leg passed too.
     if: >-
       !cancelled()
       && needs.preflight.outputs.publish == 'true'
@@ -711,6 +768,7 @@ jobs:
       && needs.build.result == 'success'
       && needs.build-web.result == 'success'
       && needs.build-client.result == 'success'
+      && needs.build-ssh-page.result == 'success'
       && (needs.preflight.outputs.dev == 'true'
           || (needs.build-wasip2.result == 'success'
               && needs.build-windows.result == 'success'
@@ -893,7 +951,7 @@ jobs:
         run: |
           set -eu
           {
-            echo "A dev build (doc/ALIGNMENT.md §7): commit \`${{ needs.preflight.outputs.sha }}\` on \`${{ needs.preflight.outputs.branch }}\`, the suite, the Linux build, the web build (\`drt_web.tar.gz\`) and the browser access client (\`drt_browser_access.js\`), no changelog entry."
+            echo "A dev build (doc/ALIGNMENT.md §7): commit \`${{ needs.preflight.outputs.sha }}\` on \`${{ needs.preflight.outputs.branch }}\`, the suite, the Linux build, the web build (\`drt_web.tar.gz\`) the browser access client (\`drt_browser_access.js\`) and the SSH page (\`ssh.html\`), no changelog entry."
             echo
             echo "Not a release. \`BUILDINFO.txt\` says what is inside. Pin a candidate or a release for anything that has to keep working; the ten newest dev builds are kept and older ones are pruned."
           } > release_notes.md

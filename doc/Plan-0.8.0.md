@@ -386,7 +386,8 @@ Each of these edits code `doc/Plan-2026-09.md` §0.2 froze:
     pin refused with nothing authenticated, TOFU shown and accepted, and
     `exit 3` reaching the page. **All 7 passed**, with the harness and
     sshd running as root.
-  - Found since that pass, and fixed but not yet re-run through the page:
+  - Found since that pass, and fixed, and re-run through the page on
+    2026-09-24 (see the entry below):
     the connect's failure paths dropped the socket's Rust handlers while
     the socket could still fire, so Chromium threw "closure invoked after
     being dropped" on a refused pin. The socket and its handlers are now
@@ -397,7 +398,7 @@ Each of these edits code `doc/Plan-2026-09.md` §0.2 froze:
     session; shown with stock `ssh -tt`, so it is sshd, not the page.
     `e2e.mjs` runs sshd through `sudo -n` when it is not root, with
     `UsePAM yes`, because a root sshd without PAM refuses a locked
-    account and a fresh CI user's is locked. The CI job is not written.
+    account and a fresh CI user's is locked.
 - 2026-09-24, **browser access signaling moves to a socket** (the owner
   took it into 0.8.0):
   - `connectors/ws` is the `ws` connector, in `full`, under `rest`'s
@@ -442,3 +443,15 @@ Each of these edits code `doc/Plan-2026-09.md` §0.2 froze:
   - Not proven: the library against the real Discofetch API, and the
     whole path with `stdlib:browser-access` doing the signaling, since
     `signal.rs` plays the browser with the native client.
+- 2026-09-24, **§2 finished: gated in CI and shipped.**
+  - The page is rebuilt from the fixed module, and `e2e.mjs` passes all
+    eight checks, twice, including "no page raised an uncaught error",
+    which the page built before the fix fails with "closure invoked
+    recursively or after being dropped".
+  - `script/drt-ssh-page-gate.sh` builds the page and `drt`, then runs
+    the gate. CI's `ssh-page` job runs it on every push; the release's
+    `build-ssh-page` runs it, dev builds included, and only then attaches
+    `ssh.html`. Publish requires it.
+  - Proven here as root only. On a runner the gate runs as `runner` and
+    starts sshd through `sudo -n`, with `UsePAM yes` for the locked
+    account: that path is exercised first by CI.

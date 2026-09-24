@@ -42,6 +42,29 @@ is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
 
 ### Added
 
+- **SSH in a browser, over the relay** (`doc/Plan-0.8.0.md` §2).
+  `ssh.html` is one static file, shipped with every release and dev
+  build: an SSH client (russh, compiled to wasm) and a terminal
+  (xterm.js), inlined, with nothing fetched at run time. It claims a
+  label on the relay exactly as `ssh -o ProxyCommand="drt tunnel …"`
+  does, so the relay and the parked device are unchanged, and the
+  session is end to end between the page and sshd: the relay
+  carries ciphertext.
+  - **The host key is decided before anything authenticates.** A
+    pinned fingerprint that does not match fails the connect; with
+    no pin, the key is shown and trusted on first use.
+  - **Auth is an Ed25519 key the page generates and keeps**, or a
+    password. RSA host keys are accepted.
+  - A busy device (close 1013) is retried with backoff, and the page
+    sends its own keepalive so a quiet session outlives the relay's
+    idle close.
+
+  Proven by `script/drt-ssh-page-gate.sh` against a stock OpenSSH
+  sshd, in CI and before the release packages the page: stock `ssh`
+  over ProxyCommand, the page signing in with a pinned key, a
+  resize, a second page and stock `ssh` at once beside an open
+  session, a wrong pin refused before anything authenticates, TOFU,
+  an exit status, and no uncaught error in any page.
 - **The `webrtc` block** (`doc/BrowserAccess.md`). A browser builds
   its session from the host's presence record with no answer round
   trip, and the host carries Wisp v1 streams over the data channel

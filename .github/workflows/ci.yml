@@ -309,6 +309,53 @@ jobs:
       - name: The client's gate, against both hosts
         run: script/browser-access-client.sh --drt
 
+  ssh-page:
+    # SSH in the browser (doc/Plan-0.8.0.md §2.2): dist/ssh.html built as
+    # the release builds it, then e2e.mjs -- stock sshd, the relay, a
+    # parked device, stock `ssh` over ProxyCommand and the page in
+    # Chromium, eight checks. script/drt-ssh-page-gate.sh is the gate the
+    # release runs too, less the package step.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ssh-page
+      # The CLI's version is read off the crate's pin, as the browser job
+      # does; script/drt-ssh-page.sh refuses any other.
+      - name: wasm-bindgen-cli, the pinned version
+        run: |
+          set -eu
+          v=$(sed -n 's/^wasm-bindgen = "=\([0-9.]*\)"/\1/p' crates/drt-ssh-web/Cargo.toml)
+          curl -fsSL -o "$RUNNER_TEMP/wbg.tar.gz" \
+            "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${v}/wasm-bindgen-${v}-x86_64-unknown-linux-musl.tar.gz"
+          tar -C "$RUNNER_TEMP" -xzf "$RUNNER_TEMP/wbg.tar.gz"
+          sudo install "$RUNNER_TEMP/wasm-bindgen-${v}-x86_64-unknown-linux-musl/wasm-bindgen" /usr/local/bin/wasm-bindgen
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/drt-ssh-web/page/package-lock.json
+      - name: The page's packages, and Chromium
+        working-directory: crates/drt-ssh-web/page
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      # e2e.mjs runs sshd as root through `sudo -n`, because an
+      # unprivileged sshd ends every pty session. A root sshd needs its
+      # privilege separation directory, which only the service creates.
+      - name: A stock OpenSSH sshd
+        run: |
+          set -eu
+          sudo apt-get install -y --no-install-recommends openssh-server
+          sudo mkdir -p /run/sshd
+          /usr/sbin/sshd -V 2>&1 || true
+      - name: The page's gate
+        run: script/drt-ssh-page-gate.sh
+
   wasip2:
     # The portable build (doc/Wasm.md D2, M1): `drt` itself, for
     # wasm32-wasip2, run under wasmtime. Proven by the examples gate rather
