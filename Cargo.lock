@@ -1171,7 +1171,7 @@ dependencies = [
 [[package]]
 name = "diluvium"
 version = "0.1.0"
-source = "git+https://github.com/Aloecraft-org/diluvium#7f952d86ec7f5c860c4bdf99ed6be64d2b0d917b"
+source = "git+https://github.com/Aloecraft-org/diluvium?tag=v0.17.1#d8497b0dd917548c3e2bfa88ed539a6f527ba369"
 dependencies = [
  "diluvium-sys",
  "rmp-serde",
@@ -1181,7 +1181,7 @@ dependencies = [
 [[package]]
 name = "diluvium-sys"
 version = "0.1.0"
-source = "git+https://github.com/Aloecraft-org/diluvium#7f952d86ec7f5c860c4bdf99ed6be64d2b0d917b"
+source = "git+https://github.com/Aloecraft-org/diluvium?tag=v0.17.1#d8497b0dd917548c3e2bfa88ed539a6f527ba369"
 
 [[package]]
 name = "dimpl"
@@ -1242,7 +1242,7 @@ dependencies = [
 
 [[package]]
 name = "drt"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -1292,7 +1292,7 @@ dependencies = [
 
 [[package]]
 name = "drt-bench"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "clap",
  "drt-caps",
@@ -1306,7 +1306,7 @@ dependencies = [
 
 [[package]]
 name = "drt-caps"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "rmpv",
  "serde",
@@ -1315,7 +1315,7 @@ dependencies = [
 
 [[package]]
 name = "drt-config"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "base64",
  "drt-caps",
@@ -1330,7 +1330,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "drt-caps",
@@ -1344,7 +1344,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-crypto"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -1364,7 +1364,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-data"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1383,7 +1383,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-exec"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "drt-caps",
@@ -1398,7 +1398,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-fs"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "drt-caps",
@@ -1413,7 +1413,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-rest"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "drt-caps",
@@ -1429,7 +1429,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-socket"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "drt-caps",
@@ -1441,7 +1441,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-sql"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "drt-caps",
@@ -1456,7 +1456,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-ssh"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "drt-caps",
@@ -1474,7 +1474,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-ssmtp"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -1491,7 +1491,7 @@ dependencies = [
 
 [[package]]
 name = "drt-connector-time"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "drt-caps",
@@ -1504,7 +1504,7 @@ dependencies = [
 
 [[package]]
 name = "drt-hostcall"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "rmp-serde",
  "rmpv",
@@ -1513,7 +1513,7 @@ dependencies = [
 
 [[package]]
 name = "drt-platform"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "getrandom 0.3.4",
  "libc",
@@ -1523,7 +1523,7 @@ dependencies = [
 
 [[package]]
 name = "drt-plugin"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "drt-caps",
@@ -1540,7 +1540,7 @@ dependencies = [
 
 [[package]]
 name = "drt-rtc"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "base64",
  "ego_transport",
@@ -1553,7 +1553,7 @@ dependencies = [
 
 [[package]]
 name = "drt-swarm"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "diluvium",
@@ -1570,7 +1570,7 @@ dependencies = [
 
 [[package]]
 name = "drt-web"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "clap",
  "console_error_panic_hook",

@@ -14,6 +14,97 @@
   ],
   "releases": [
     {
+      "version": "0.8.0",
+      "tag": "v0.8.0",
+      "date": null,
+      "status": "unreleased",
+      "stable": true,
+      "mirror": false,
+      "dv_abi": 2,
+      "diluvium": "d8497b0dd917548c3e2bfa88ed539a6f527ba369",
+      "diluvium_build": null,
+      "diluvium_version": "0.17.1",
+      "connectors": {
+        "full": [
+          "time",
+          "fs",
+          "crypto",
+          "sql",
+          "ssh",
+          "rest",
+          "ssmtp",
+          "exec",
+          "data",
+          "socket",
+          "listen"
+        ],
+        "slim": [
+          "time",
+          "fs",
+          "crypto",
+          "listen"
+        ],
+        "wasi": [
+          "time",
+          "fs",
+          "crypto",
+          "sql",
+          "listen"
+        ],
+        "web": [
+          "time",
+          "fs",
+          "crypto"
+        ]
+      },
+      "features": {
+        "full": [
+          "regex",
+          "json",
+          "msgpack",
+          "snapshot",
+          "numeric"
+        ],
+        "slim": [
+          "regex",
+          "json",
+          "msgpack",
+          "snapshot"
+        ],
+        "wasi": [
+          "regex",
+          "json",
+          "msgpack",
+          "snapshot"
+        ],
+        "web": [
+          "regex",
+          "json",
+          "msgpack",
+          "snapshot",
+          "numeric"
+        ]
+      },
+      "summary": "**A browser reaches a DRT host directly, and the core is diluvium\n0.17.1.** The `webrtc` block lets a stock browser open a data\nchannel to this process and carry TCP streams to the targets the\nblock names, with the WebRTC stack in the binary and the signaling\nleft to the program. Underneath it the embedded core moves from\n0.15.1 to 0.17.1: dv ABI 2, the numeric tier on in `full` and `web`,\nand `buildinfo` reading the core's features off the core. The plan\nis `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.\n",
+      "upgrading": "**Drain or replay hibernated instances before upgrading a\ndeployment that holds them.** A snapshot taken under dv ABI 1 does\nnot restore under ABI 2; that is the ABI bump doing its job.\n\nTwo things a program can see change, both from diluvium 0.16.0:\n`tostring` of a table, function or coroutine prints `table: #N`, an\nidentity, where it printed an address; and `pairs` over keys that\nare tables, functions, userdata or coroutines visits them in\ncreation order. A program that scraped the hex out of `tostring` was\nscraping an address; `string.format(\"%p\")` still gives one.\n",
+      "latest": false,
+      "sections": {
+        "added": [
+          "**The `webrtc` block** (`doc/BrowserAccess.md`). A browser builds\nits session from the host's presence record with no answer round\ntrip, and the host carries Wisp v1 streams over the data channel\nto the block's `scope` and to nothing else: checked before any\nconnection, and again on the resolved address, so a name in scope\nthat resolves to loopback or a metadata address is refused. One\nUDP socket and one set of ICE credentials serve every session. The\nblock reports its record, sessions and streams on a queue and\ntakes `open` and `close` on another; how the two records met is\nthe program's business, so Discofetch's API is not in the binary.\nOn str0m 0.23 with its pure-Rust crypto, in `full` by the owner's\ndecision at a measured +2.78 MB, until plugins can carry it.\n`webrtc` and its event names are working names.\n",
+          "**The numeric tier**, on in `full` and `web`: `array`, its kernels,\nand the vendored libm that makes float results the same bits on\nevery target. `slim` and `wasi` stay without it, byte for byte.\nThe config's `numeric` bounds now reach the core\n(`dv_numeric_set_max_elements`, `dv_numeric_set_max_tier`), and the\nfast-tier audit flag is the core's own reading.\n"
+        ],
+        "changed": [
+          "**diluvium 0.15.1 -> 0.17.1, dv ABI 1 -> 2.** The pin names the\ntag, `v0.17.1`, rather than following diluvium's default branch,\nwhere ABI 3 lands when 0.18.0 ships.\n",
+          "**`buildinfo`'s `features` is read off the core** (`dv_features()`)\ninstead of stated per profile, and says what the core says:\n`regex,json,msgpack,snapshot`, plus `numeric` where it is on, in\nthe core's own order. A custom build reports its core's list rather\nthan an empty one. `diluvium_version` is still stated, because\n0.17.1 has no `dv_version()`.\n"
+        ],
+        "known_issues": [
+          "**`numeric.max_elements = 0` is not handed to the core.** Here a\nstated zero is a real bound; in `dv.h` 0 means no limit, so passing\nit on would turn the tightest bound into none. It is withheld\ninstead, which leaves the core at its default -- also no limit --\nand 0.17.1 enforces neither bound yet, so nothing behaves\ndifferently today. Needs a \"no limit\" sentinel upstream.\n",
+          "**The `webrtc` block has only been proven on one machine.**\nChromium connects to it, several sessions at once, through\n`drt start` and a signaling program; nothing has yet crossed a NAT,\nand server-reflexive gathering has not met a real STUN server.\n"
+        ]
+      },
+      "notes_md": "## [0.8.0] - unreleased\n\n`v0.8.0` &middot; dv ABI 2 &middot; diluvium `d8497b0dd917` (v0.17.1)\n\n**A browser reaches a DRT host directly, and the core is diluvium\n0.17.1.** The `webrtc` block lets a stock browser open a data\nchannel to this process and carry TCP streams to the targets the\nblock names, with the WebRTC stack in the binary and the signaling\nleft to the program. Underneath it the embedded core moves from\n0.15.1 to 0.17.1: dv ABI 2, the numeric tier on in `full` and `web`,\nand `buildinfo` reading the core's features off the core. The plan\nis `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.\n\n### Connectors\n\n- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `data`, `socket`, `listen`\n- `slim`: `time`, `fs`, `crypto`, `listen`\n- `wasi`: `time`, `fs`, `crypto`, `sql`, `listen`\n- `web`: `time`, `fs`, `crypto`\n\n### Core features\n\n- `full`: `regex`, `json`, `msgpack`, `snapshot`, `numeric`\n- `slim`: `regex`, `json`, `msgpack`, `snapshot`\n- `wasi`: `regex`, `json`, `msgpack`, `snapshot`\n- `web`: `regex`, `json`, `msgpack`, `snapshot`, `numeric`\n\n### Added\n\n- **The `webrtc` block** (`doc/BrowserAccess.md`). A browser builds\n  its session from the host's presence record with no answer round\n  trip, and the host carries Wisp v1 streams over the data channel\n  to the block's `scope` and to nothing else: checked before any\n  connection, and again on the resolved address, so a name in scope\n  that resolves to loopback or a metadata address is refused. One\n  UDP socket and one set of ICE credentials serve every session. The\n  block reports its record, sessions and streams on a queue and\n  takes `open` and `close` on another; how the two records met is\n  the program's business, so Discofetch's API is not in the binary.\n  On str0m 0.23 with its pure-Rust crypto, in `full` by the owner's\n  decision at a measured +2.78 MB, until plugins can carry it.\n  `webrtc` and its event names are working names.\n- **The numeric tier**, on in `full` and `web`: `array`, its kernels,\n  and the vendored libm that makes float results the same bits on\n  every target. `slim` and `wasi` stay without it, byte for byte.\n  The config's `numeric` bounds now reach the core\n  (`dv_numeric_set_max_elements`, `dv_numeric_set_max_tier`), and the\n  fast-tier audit flag is the core's own reading.\n\n### Changed\n\n- **diluvium 0.15.1 -> 0.17.1, dv ABI 1 -> 2.** The pin names the\n  tag, `v0.17.1`, rather than following diluvium's default branch,\n  where ABI 3 lands when 0.18.0 ships.\n- **`buildinfo`'s `features` is read off the core** (`dv_features()`)\n  instead of stated per profile, and says what the core says:\n  `regex,json,msgpack,snapshot`, plus `numeric` where it is on, in\n  the core's own order. A custom build reports its core's list rather\n  than an empty one. `diluvium_version` is still stated, because\n  0.17.1 has no `dv_version()`.\n\n### Known issues\n\n- **`numeric.max_elements = 0` is not handed to the core.** Here a\n  stated zero is a real bound; in `dv.h` 0 means no limit, so passing\n  it on would turn the tightest bound into none. It is withheld\n  instead, which leaves the core at its default -- also no limit --\n  and 0.17.1 enforces neither bound yet, so nothing behaves\n  differently today. Needs a \"no limit\" sentinel upstream.\n- **The `webrtc` block has only been proven on one machine.**\n  Chromium connects to it, several sessions at once, through\n  `drt start` and a signaling program; nothing has yet crossed a NAT,\n  and server-reflexive gathering has not met a real STUN server.\n\n### Upgrading\n\n**Drain or replay hibernated instances before upgrading a\ndeployment that holds them.** A snapshot taken under dv ABI 1 does\nnot restore under ABI 2; that is the ABI bump doing its job.\n\nTwo things a program can see change, both from diluvium 0.16.0:\n`tostring` of a table, function or coroutine prints `table: #N`, an\nidentity, where it printed an address; and `pairs` over keys that\nare tables, functions, userdata or coroutines visits them in\ncreation order. A program that scraped the hex out of `tostring` was\nscraping an address; `string.format(\"%p\")` still gives one.\n"
+    },
+    {
       "version": "0.7.0",
       "tag": "v0.7.0",
       "date": "2026-09-21",

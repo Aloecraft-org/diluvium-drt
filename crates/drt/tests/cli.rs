@@ -406,7 +406,7 @@ fn every_profile_name_is_a_feature_the_binary_probes() {
 #[test]
 fn profile_matches_its_manifest() {
     const PROFILES: [&str; 4] = ["full", "slim", "wasi", "web"];
-    const LEAVES: [&str; 22] = [
+    const LEAVES: [&str; 23] = [
         "cli",
         "connector-crypto",
         "connector-data",
@@ -420,6 +420,7 @@ fn profile_matches_its_manifest() {
         "connector-time",
         "listen",
         "netcheck",
+        "numeric",
         "plugins",
         // A test dependency expressed as a feature: dev-dependencies cannot be
         // optional, and a shipping feature must not carry crates only its tests
@@ -517,6 +518,7 @@ fn profile_matches_its_manifest() {
     feature!("connector-time");
     feature!("listen");
     feature!("netcheck");
+    feature!("numeric");
     feature!("plugins");
     feature!("relay");
     feature!("runtime");
@@ -549,22 +551,25 @@ fn profile_matches_its_manifest() {
     );
 }
 
-/// The two hard-coded compatibility facts agree with the changelog, which
+/// The core facts `buildinfo` reports agree with the changelog, which
 /// agrees with `Cargo.lock`.
 ///
-/// `features` and `diluvium_version` are stated in `cli.rs` rather than read
-/// off the core, because the core does not yet answer either question —
-/// `dv_features()` and `dv_version()` arrive with session A's A0 milestone
-/// (`doc/Plan-2026-09.md` §3.1), and `TODO(A0)` marks both tables. A fact a
-/// binary states about bytes it did not compile is a fact that can be
-/// wrong, and the way this one goes wrong is quiet: someone moves the pin,
-/// `buildinfo` keeps saying the version before it, and a package's
-/// `requires.diluvium_version` is checked against a pin two moves ago.
+/// `diluvium_version` is still stated in `cli.rs`: the 0.17.1 core answers
+/// `dv_features()` but has no `dv_version()`. A fact a binary states about
+/// bytes it did not compile is a fact that can be wrong, and the way this
+/// one goes wrong is quiet: someone moves the pin, `buildinfo` keeps saying
+/// the version before it, and a package's `requires.diluvium_version` is
+/// checked against a pin two moves ago.
 ///
-/// So the chain is closed instead: `script/changelog.py check` ties the
-/// changelog's `diluvium` revision to `Cargo.lock`, and this ties the
-/// binary's numbers to the changelog. Moving the pin without saying so
-/// fails one of the two. When A0 lands, this test and both tables go.
+/// `features` is read off the core now, so here it checks the other
+/// direction: that the changelog records what the named profile's core
+/// actually carries, which is what a package's `requires.features` is
+/// checked against.
+///
+/// So the chain is closed: `script/changelog.py check` ties the changelog's
+/// `diluvium` revision to `Cargo.lock`, and this ties the binary's facts to
+/// the changelog. Moving the pin, or a profile's `numeric`, without saying
+/// so fails one of the two.
 #[test]
 fn the_hard_coded_core_facts_agree_with_the_changelog() {
     let changelog =
@@ -616,10 +621,11 @@ fn the_hard_coded_core_facts_agree_with_the_changelog() {
     // and has no changelog line to be checked against.
     let profile = says("profile");
     if profile == "custom" {
-        assert_eq!(
-            says("features"),
-            "",
-            "a custom build cannot claim a named profile's features"
+        // No changelog line to check against, but the core still answers:
+        // the unconditional set is in every build that has an engine.
+        assert!(
+            says("features").starts_with("regex,json,msgpack,snapshot"),
+            "a custom build reports its core's features\n{text}"
         );
         return;
     }
@@ -641,7 +647,7 @@ fn the_hard_coded_core_facts_agree_with_the_changelog() {
     assert_eq!(
         says("features"),
         recorded,
-        "CORE_FEATURES_* in cli.rs and features.{profile} in CHANGELOG.yaml \
-         disagree"
+        "the core's dv_features() and features.{profile} in CHANGELOG.yaml \
+         disagree: the profile's `numeric` and the changelog have drifted"
     );
 }

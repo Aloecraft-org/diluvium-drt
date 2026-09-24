@@ -98,6 +98,7 @@ jobs:
           - relay
           - stun
           - netcheck
+          - numeric
           - turn
           - turn-client
           - webrtc

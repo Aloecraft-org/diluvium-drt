@@ -325,7 +325,34 @@ Each of these edits code `doc/Plan-2026-09.md` §0.2 froze:
     and server-reflexive gathering against a real STUN server (the code is
     there; no test reaches one). Both need the browser client and a
     Discofetch room, which is the next pairing.
+- 2026-09-24, **§1 done**: the pin names `tag = "v0.17.1"`; `numeric` is a
+  `drt` feature in `full` and `web`, through `drt-swarm`'s; `buildinfo`'s
+  `features` is `dv_features()`; `DILUVIUM_VERSION` is `0.17.1`; the
+  config's numeric bounds reach the core and the fast-tier flag is the
+  core's. The tree is `0.8.0` with an unreleased changelog entry, so dev
+  builds from here are `v0.8.0-dev.N`. Measured: `numeric` costs the
+  browser module +123.5 KB (3,284,888 → 3,408,417 bytes; +26.8 KB
+  gzipped), `release-small`, wasi-sdk 27. Verified: both test suites, the
+  native gate on `full`, the Chromium gate (12 ok, REPL parity included)
+  and the wasmtime gate on `wasi` (10 ok). Item 7 (`dv_array_adopt` in
+  `to_wire`) is not done and moves to 0.8.1 unless it is ready first.
+- 2026-09-24, **PR #37's CI overflowed a 2 MiB test thread** in the 4 MiB
+  download test. str0m's `Rtc::do_poll_output` recurses once per SCTP
+  packet it hands to DTLS (24.7 KB a frame in debug), and the host ran on
+  its caller's stack. Fixed in `f81dc97`: the host runs on its own thread
+  with a 16 MiB stack, and the test drives its client from 512 KiB so it
+  keeps proving the depth never lands on the caller. Worth an upstream
+  issue: the recursion should be a loop.
+- 2026-09-24, `sockets.rs`'s pin guard: acceptance 13 (a hibernated
+  service keeps its socket and queue handles across a whole-instance
+  snapshot, §3.5 of the 0.7.0 plan) re-proved on `d8497b0` and
+  `DILUVIUM_VERIFIED` moved to it.
 - Decisions made while building, per `doc/Plan-2026-09.md` §0.2:
+  - `numeric.max_elements = 0` is withheld from the core rather than
+    passed as dv's "no limit" 0; a known issue in the changelog, and an
+    upstream ask for a sentinel.
+  - `features` is reported in the core's own order, not sorted: `dv.h`
+    fixes that order so two builds' strings compare directly.
   - The M0 rehearsal deployment lives in `crates/drt-rtc/browser-check/`,
     not `examples/`: `examples/` is a declared human surface, and a config
     there must join the loader corpus. It becomes an example when the

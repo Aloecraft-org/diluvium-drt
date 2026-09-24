@@ -12,6 +12,94 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
+## [0.8.0] - unreleased
+
+`v0.8.0` &middot; dv ABI 2 &middot; diluvium `d8497b0dd917` (v0.17.1)
+
+**A browser reaches a DRT host directly, and the core is diluvium
+0.17.1.** The `webrtc` block lets a stock browser open a data
+channel to this process and carry TCP streams to the targets the
+block names, with the WebRTC stack in the binary and the signaling
+left to the program. Underneath it the embedded core moves from
+0.15.1 to 0.17.1: dv ABI 2, the numeric tier on in `full` and `web`,
+and `buildinfo` reading the core's features off the core. The plan
+is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
+
+### Connectors
+
+- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `data`, `socket`, `listen`
+- `slim`: `time`, `fs`, `crypto`, `listen`
+- `wasi`: `time`, `fs`, `crypto`, `sql`, `listen`
+- `web`: `time`, `fs`, `crypto`
+
+### Core features
+
+- `full`: `regex`, `json`, `msgpack`, `snapshot`, `numeric`
+- `slim`: `regex`, `json`, `msgpack`, `snapshot`
+- `wasi`: `regex`, `json`, `msgpack`, `snapshot`
+- `web`: `regex`, `json`, `msgpack`, `snapshot`, `numeric`
+
+### Added
+
+- **The `webrtc` block** (`doc/BrowserAccess.md`). A browser builds
+  its session from the host's presence record with no answer round
+  trip, and the host carries Wisp v1 streams over the data channel
+  to the block's `scope` and to nothing else: checked before any
+  connection, and again on the resolved address, so a name in scope
+  that resolves to loopback or a metadata address is refused. One
+  UDP socket and one set of ICE credentials serve every session. The
+  block reports its record, sessions and streams on a queue and
+  takes `open` and `close` on another; how the two records met is
+  the program's business, so Discofetch's API is not in the binary.
+  On str0m 0.23 with its pure-Rust crypto, in `full` by the owner's
+  decision at a measured +2.78 MB, until plugins can carry it.
+  `webrtc` and its event names are working names.
+- **The numeric tier**, on in `full` and `web`: `array`, its kernels,
+  and the vendored libm that makes float results the same bits on
+  every target. `slim` and `wasi` stay without it, byte for byte.
+  The config's `numeric` bounds now reach the core
+  (`dv_numeric_set_max_elements`, `dv_numeric_set_max_tier`), and the
+  fast-tier audit flag is the core's own reading.
+
+### Changed
+
+- **diluvium 0.15.1 -> 0.17.1, dv ABI 1 -> 2.** The pin names the
+  tag, `v0.17.1`, rather than following diluvium's default branch,
+  where ABI 3 lands when 0.18.0 ships.
+- **`buildinfo`'s `features` is read off the core** (`dv_features()`)
+  instead of stated per profile, and says what the core says:
+  `regex,json,msgpack,snapshot`, plus `numeric` where it is on, in
+  the core's own order. A custom build reports its core's list rather
+  than an empty one. `diluvium_version` is still stated, because
+  0.17.1 has no `dv_version()`.
+
+### Known issues
+
+- **`numeric.max_elements = 0` is not handed to the core.** Here a
+  stated zero is a real bound; in `dv.h` 0 means no limit, so passing
+  it on would turn the tightest bound into none. It is withheld
+  instead, which leaves the core at its default -- also no limit --
+  and 0.17.1 enforces neither bound yet, so nothing behaves
+  differently today. Needs a "no limit" sentinel upstream.
+- **The `webrtc` block has only been proven on one machine.**
+  Chromium connects to it, several sessions at once, through
+  `drt start` and a signaling program; nothing has yet crossed a NAT,
+  and server-reflexive gathering has not met a real STUN server.
+
+### Upgrading
+
+**Drain or replay hibernated instances before upgrading a
+deployment that holds them.** A snapshot taken under dv ABI 1 does
+not restore under ABI 2; that is the ABI bump doing its job.
+
+Two things a program can see change, both from diluvium 0.16.0:
+`tostring` of a table, function or coroutine prints `table: #N`, an
+identity, where it printed an address; and `pairs` over keys that
+are tables, functions, userdata or coroutines visits them in
+creation order. A program that scraped the hex out of `tostring` was
+scraping an address; `string.format("%p")` still gives one.
+
+
 ## [0.7.0] - 2026-09-21
 
 `v0.7.0` &middot; dv ABI 1 &middot; diluvium `7f952d86ec7f` (v0.15.1)

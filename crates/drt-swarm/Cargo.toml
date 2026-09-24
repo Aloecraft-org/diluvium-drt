@@ -32,6 +32,12 @@ diluvium = { workspace = true, optional = true }
 # both the seam and the whole story.
 default = ["engine-diluvium"]
 engine-diluvium = ["dep:diluvium"]
+# The core's numeric tier (`array`, the kernels, the vendored libm), passed
+# through to the `diluvium` crate. Off here and on in the profiles that
+# carry it, so a build without it is byte-identical to one from before it
+# existed (doc/Plan-2026-09.md §1, principle 4). It implies the engine: a
+# numeric tier with no core to put it in is not a build.
+numeric = ["engine-diluvium", "diluvium/numeric"]
 
 [dev-dependencies]
 # Only the pump's own tests define a connector; the crate proper never does.

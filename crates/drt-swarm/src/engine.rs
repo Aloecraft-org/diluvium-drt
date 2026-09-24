@@ -304,9 +304,9 @@ pub trait Instance: MaybeSend {
     /// *could* run a fast kernel; this says one *did*, and nothing is
     /// banned by either (numeric spec §4).
     ///
-    /// TODO(A2): defaults to `false` because the core has no such entry
-    /// point yet and no fast-tier backend exists to set it. When A2's pin
-    /// lands this reads `dv_numeric_touched_fast` and the default goes.
+    /// The diluvium engine reads the core's `dv_numeric_touched_fast`. The
+    /// default is for engines with no numeric tier at all -- the mocks --
+    /// for which `false` is the true answer rather than a placeholder.
     fn numeric_touched_fast(&self) -> bool {
         false
     }
@@ -349,6 +349,24 @@ pub fn abi_versions() -> Option<(u32, u32)> {
     #[cfg(feature = "engine-diluvium")]
     {
         Some(diluvium_engine::abi_versions())
+    }
+    #[cfg(not(feature = "engine-diluvium"))]
+    {
+        None
+    }
+}
+
+/// The feature names the linked core was compiled with, in the core's own
+/// fixed order (`dv_features()`: the unconditional set first, then the gated
+/// ones), or `None` when this build carries no engine.
+///
+/// Here rather than in `drt` for [`abi_versions`]'s reason: whether there is
+/// a core to ask is this crate's feature, and a consumer's `cfg!` would test
+/// its own.
+pub fn core_features() -> Option<Vec<&'static str>> {
+    #[cfg(feature = "engine-diluvium")]
+    {
+        Some(diluvium::library_features())
     }
     #[cfg(not(feature = "engine-diluvium"))]
     {
@@ -409,23 +427,39 @@ pub mod diluvium_engine {
     }
 
     impl DiluviumInstance {
-        /// Hand the instance's numeric bounds to the core.
+        /// Hand the instance's numeric bounds to the core
+        /// (`dv_numeric_set_max_elements`, `dv_numeric_set_max_tier`).
         ///
-        /// TODO(A2): this is where `dv_numeric_set_max_elements` and
-        /// `dv_numeric_set_max_tier` are called (`doc/Plan-2026-09.md`
-        /// §3.1). Neither exists in the pinned core, and DRT reaches the
-        /// core through the safe `diluvium` crate, so there is nothing to
-        /// call yet and this applies nothing.
+        /// A bound the config leaves unstated is not set, so the core keeps
+        /// its own default: no element limit, and every tier.
         ///
-        /// It is a function rather than a comment at the call site on
-        /// purpose: the bounds are resolved, carried and asserted end to
-        /// end today, so when the pin lands the change is two lines in one
-        /// place and every test around it already passes.
+        /// **`max_elements = 0` is not passed on, and that is a known gap
+        /// rather than a choice.** Here a stated zero is a real bound -- an
+        /// instance that may hold arrays and may not compute over them --
+        /// while `dv.h` spells "no limit" as 0, so handing it over would
+        /// turn the tightest bound into none at all. Withholding it leaves
+        /// the core at its default, which is also no limit, so neither
+        /// spelling is enforced today; what withholding buys is that the
+        /// config's zero is never *rewritten* into something that reads as
+        /// permission. 0.17.1 enforces neither bound (dv.c stores them and
+        /// no kernel reads them), so nothing behaves differently yet. The
+        /// fix is upstream: a sentinel for "no limit" that is not a real
+        /// count (`doc/Plan-0.8.0.md` §1).
         fn apply_numeric(&mut self) {
             let Numeric {
-                max_elements: _,
-                max_tier: _,
+                max_elements,
+                max_tier,
             } = self.numeric;
+            if let Some(n) = max_elements.filter(|n| *n > 0) {
+                self.inner.set_numeric_max_elements(n);
+            }
+            if let Some(tier) = max_tier {
+                self.inner.set_numeric_max_tier(match tier {
+                    drt_config::Tier::Exact => diluvium::Tier::Exact,
+                    drt_config::Tier::Reproducible => diluvium::Tier::Reproducible,
+                    drt_config::Tier::Fast => diluvium::Tier::Fast,
+                });
+            }
         }
 
         /// What was applied. See [`DiluviumInstance::apply_numeric`].
@@ -674,15 +708,10 @@ pub mod diluvium_engine {
             self.inner.exceeded()
         }
 
-        /// TODO(A2): `dv_numeric_touched_fast(inst)` once the pin carries
-        /// it. Until then the honest answer is `false`, and it is honest
-        /// rather than provisional: no fast-tier backend exists anywhere in
-        /// this workspace or in the pinned core, so no fast kernel can have
-        /// run, so the flag cannot be set. The day one exists this must
-        /// read the core, and `numeric_bounds_reach_the_instance` in
-        /// `tests/diluvium_engine.rs` is what fails if it does not.
+        /// The core's own sticky flag (`dv_numeric_touched_fast`): the audit
+        /// trail's answer to "did anything here run at the fast tier".
         fn numeric_touched_fast(&self) -> bool {
-            false
+            self.inner.numeric_touched_fast()
         }
 
         fn numeric_bounds(&self) -> Numeric {
