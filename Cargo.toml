@@ -19,6 +19,7 @@ members = [
     "connectors/ssmtp",
     "connectors/exec",
     "connectors/socket",
+    "connectors/ws",
     "connectors/data",
     "crates/drt-bench",
     "crates/drt-web",
@@ -51,6 +52,7 @@ drt-connector-rest = { path = "connectors/rest", version = "0.8.0" }
 drt-connector-ssmtp = { path = "connectors/ssmtp", version = "0.8.0" }
 drt-connector-exec = { path = "connectors/exec", version = "0.8.0" }
 drt-connector-socket = { path = "connectors/socket", version = "0.8.0" }
+drt-connector-ws = { path = "connectors/ws", version = "0.8.0" }
 drt-connector-data = { path = "connectors/data", version = "0.8.0" }
 # The line editor, one for every target (doc/Wasm.md D8, M8). From git
 # because that is where it lives; the browser half pins wasm-bindgen

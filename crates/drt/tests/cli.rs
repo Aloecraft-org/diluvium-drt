@@ -406,7 +406,7 @@ fn every_profile_name_is_a_feature_the_binary_probes() {
 #[test]
 fn profile_matches_its_manifest() {
     const PROFILES: [&str; 4] = ["full", "slim", "wasi", "web"];
-    const LEAVES: [&str; 23] = [
+    const LEAVES: [&str; 24] = [
         "cli",
         "connector-crypto",
         "connector-data",
@@ -418,6 +418,7 @@ fn profile_matches_its_manifest() {
         "connector-ssh",
         "connector-ssmtp",
         "connector-time",
+        "connector-ws",
         "listen",
         "netcheck",
         "numeric",
@@ -516,6 +517,7 @@ fn profile_matches_its_manifest() {
     feature!("connector-ssh");
     feature!("connector-ssmtp");
     feature!("connector-time");
+    feature!("connector-ws");
     feature!("listen");
     feature!("netcheck");
     feature!("numeric");

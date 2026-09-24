@@ -5,5 +5,5 @@ dv_abi_expected: 2
 diluvium: <revision>
 diluvium_version: 0.17.1
 features: regex,json,msgpack,snapshot,numeric
-connectors: time,fs,crypto,sql,ssh,rest,ssmtp,exec,data,socket,listen
+connectors: time,fs,crypto,sql,ssh,rest,ssmtp,exec,data,socket,ws,listen
 verbs: buildinfo,commit,deploy,key,netcheck,ps,repl,rm,run,start,tunnel,wg

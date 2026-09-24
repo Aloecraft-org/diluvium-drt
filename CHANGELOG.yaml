@@ -90,7 +90,7 @@ releases:
     diluvium: d8497b0dd917548c3e2bfa88ed539a6f527ba369
     diluvium_version: "0.17.1"
     connectors:
-      full: [time, fs, crypto, sql, ssh, rest, ssmtp, exec, data, socket, listen]
+      full: [time, fs, crypto, sql, ssh, rest, ssmtp, exec, data, socket, ws, listen]
       slim: [time, fs, crypto, listen]
       wasi: [time, fs, crypto, sql, listen]
       web: [time, fs, crypto]
@@ -104,7 +104,8 @@ releases:
       0.17.1.** The `webrtc` block lets a stock browser open a data
       channel to this process and carry TCP streams to the targets the
       block names, with the WebRTC stack in the binary and the signaling
-      left to the program. Underneath it the embedded core moves from
+      left to the program, which now holds a socket to the Discofetch API
+      through the new `ws` connector. Underneath it the embedded core moves from
       0.15.1 to 0.17.1: dv ABI 2, the numeric tier on in `full` and `web`,
       and `buildinfo` reading the core's features off the core. The plan
       is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
@@ -123,6 +124,42 @@ releases:
         On str0m 0.23 with its pure-Rust crypto, in `full` by the owner's
         decision at a measured +2.78 MB, until plugins can carry it.
         `webrtc` and its event names are working names.
+      - |
+        **The `ws` connector**, in `full`: an outbound WebSocket a node
+        holds by handle, `host:ws/connect`, `send`, `recv` and `close`.
+        Node-owned like `socket`'s handles, with `vital` and `wake` meaning
+        what they mean there. The connection runs on the connector's own
+        runtime, so it answers pings while its owner is parked, and
+        `idle_ms` closes one that has gone silent. The scope is `rest`'s
+        origin allowlist, parsed by `rest`'s own code:
+        - `headers` go on the upgrade where the program cannot read them
+        - the resolved address is checked before anything connects
+        - `extra_roots` are trusted beside the public ones
+
+        **`wss://` only, with plain `ws://` to loopback alone**, because
+        the upgrade carries the credential. A plain origin off this
+        machine is refused in the scope at boot, at connect, and again on
+        the resolved address.
+      - |
+        **Browser access signals over a socket to the Discofetch API**
+        (`doc/BrowserAccess.md` §7.1). `crates/drt-rtc/signal/host.dlua`
+        does it:
+        - holds one socket, authenticated with the advertise token
+        - publishes the host's record on every connect and every change
+        - opens a session only for a browser the API announced, and
+          closes it on `bye`
+        - reports one `outcome` per session
+        - reconnects with jittered backoff from 1 s to 30 s, while
+          sessions carry on without the socket
+        - stops for good on `replaced`
+
+        The contract's seven host tests run against a `wss://` stub of the
+        API, in `crates/drt/tests/signal.rs`.
+      - |
+        **`webrtc.stun_refresh_s`**, default 20: how often the host
+        re-asks its STUN servers. This keeps the session socket's NAT
+        mapping alive between sessions and re-reports the record when the
+        mapping moves. It was a fixed 25 s.
       - |
         **The numeric tier**, on in `full` and `web`: `array`, its kernels,
         and the vendored libm that makes float results the same bits on

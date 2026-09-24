@@ -93,6 +93,7 @@ jobs:
           - connector-ssh
           - connector-exec
           - connector-socket
+          - connector-ws
           - connector-data
           - tunnel
           - relay

@@ -398,3 +398,23 @@ Each of these edits code `doc/Plan-2026-09.md` §0.2 froze:
     `e2e.mjs` runs sshd through `sudo -n` when it is not root, with
     `UsePAM yes`, because a root sshd without PAM refuses a locked
     account and a fresh CI user's is locked. The CI job is not written.
+- 2026-09-24, **browser access signaling moves to a socket** (the owner
+  took it into 0.8.0):
+  - `connectors/ws` is the `ws` connector, in `full`, under `rest`'s
+    origin allowlist. It allows `wss://` only, with plain `ws://` to
+    loopback alone, because the advertise token rides the upgrade.
+  - `crates/drt-rtc/signal/host.dlua` holds the socket.
+  - `webrtc.stun_refresh_s` defaults to the contract's 20 s, and
+    `open`'s `peer` is capped at 64 bytes.
+  - The contract's seven host tests pass in `crates/drt/tests/signal.rs`,
+    against a `wss://` stub with the native client as the browser.
+  - Not proven: the real API (not live yet), and a browser rather than
+    the native client on this path.
+  - Decisions:
+    - `browser_access.signal` is `args.signal`, because args are flat.
+    - `record` goes out as an object spliced from the host's own text, and
+      comes in as an object or text. dlua's JSON turns `[]` into `{}`, so
+      an object is rebuilt field by field.
+    - `replaced` ends `drt start`.
+    - Reconnect policy is the program's, not the connector's: the
+      connector reports how a connection ended and never redials.

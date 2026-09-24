@@ -18,7 +18,7 @@
 //!
 //! - Entry points: [`WebrtcBridge::start`], [`WebrtcBridge::collect`],
 //!   [`WebrtcBridge::report`].
-//! - Configurable: [`HELD_MAX`]; everything else is the block's
+//! - Configurable: [`HELD_MAX`], [`MAX_PEER`]; everything else is the block's
 //!   (`drt_config::WebrtcConfig`).
 //! - Fan-out: [`command_from`] (the two commands), [`report_value`] (the
 //!   three reports).
@@ -34,6 +34,9 @@ use drt_rtc::{Command, Entry, Host, HostConfig, Identity, Scope};
 /// the one that matters and it is first; past this, the oldest are dropped
 /// and the drop is said once on stderr.
 const HELD_MAX: usize = 4096;
+/// The longest `peer` a command may name. A session id is whatever the
+/// signaling service chose, so it is bounded before it becomes a map key.
+pub const MAX_PEER: usize = 64;
 
 pub struct WebrtcBridge {
     host: Host,
@@ -136,6 +139,9 @@ fn host_config(c: &WebrtcConfig) -> Result<HostConfig, String> {
             Some(e)
         }
     };
+    if c.stun_refresh_s == 0 {
+        return Err("webrtc.stun_refresh_s must be at least 1".into());
+    }
     if c.max_sessions == 0 || c.max_streams_per_session == 0 {
         return Err("webrtc: max_sessions and max_streams_per_session must be at least 1".into());
     }
@@ -151,6 +157,7 @@ fn host_config(c: &WebrtcConfig) -> Result<HostConfig, String> {
         max_streams: c.max_streams_per_session,
         idle_timeout: Duration::from_secs(c.idle_stream_timeout_s),
         connect_timeout: Duration::from_secs(c.connect_timeout_s),
+        stun_refresh: Duration::from_secs(c.stun_refresh_s),
     })
 }
 
@@ -164,9 +171,13 @@ fn text<'a>(v: &'a rmpv::Value, key: &str) -> Option<&'a str> {
 /// `{command = "open", peer, rtc}` or `{command = "close", peer}`.
 pub fn command_from(v: &rmpv::Value) -> Result<Command, String> {
     let peer = || {
-        text(v, "peer")
-            .map(str::to_string)
-            .ok_or_else(|| "a command needs `peer`, a string".to_string())
+        let peer = text(v, "peer").ok_or_else(|| "a command needs `peer`, a string".to_string())?;
+        // An opaque id a signaling service chose: bounded here so nothing
+        // downstream has to be (the Discofetch contract's own bound).
+        if peer.is_empty() || peer.len() > MAX_PEER {
+            return Err(format!("`peer` must be 1..={MAX_PEER} bytes"));
+        }
+        Ok(peer.to_string())
     };
     match text(v, "command") {
         Some("open") => Ok(Command::Open {

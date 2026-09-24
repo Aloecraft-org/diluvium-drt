@@ -20,8 +20,9 @@ implementation, regenerate it (`DRT_WRITE_VECTORS=1 cargo test -p drt-rtc
 --test vectors`), and review the diff.
 
 **Status (2026-09-24):** draft v1, written for the M0 pairing of the host
-(`doc/Plan-0.8.0.md` §3) with the browser client's M0. §7 is a mock, not
-Discofetch's API.
+(`doc/Plan-0.8.0.md` §3) with the browser client's M0. §7.1 is the host's
+side of Discofetch's signaling socket; §7.2 is M0's mock, kept for
+`check.mjs`.
 
 **What is verified, and how.** Everything below the record codec is
 exercised by `crates/drt-rtc/tests/host.rs`, a native client doing what a
@@ -32,7 +33,9 @@ checked by `crates/drt-rtc/browser-check/check.mjs` against headless
 Chromium 1194 (Playwright 1.56.1): three sessions at once, each publishing
 a record with **no candidates at all**, each connecting and echoing
 through a Wisp stream. `check.mjs --drt` runs the same against `drt start`
-with the §8 block and a program signaling through the §7 mock.
+with the §8 block and a program signaling through the §7.2 mock.
+`crates/drt/tests/signal.rs` runs `drt start` with §7.1's program against
+a `wss://` stub of the API.
 
 ## 1. The shape
 
@@ -287,7 +290,64 @@ host does, and where it departs:
 | `0x48` | out of scope, a special-purpose address, or UDP |
 | `0x49` | the session's stream cap is reached |
 
-## 7. Signaling for M0: the mock
+## 7. Signaling
+
+### 7.1 The host's socket to the Discofetch API
+
+The host holds one WebSocket open to the Discofetch API, and the API is
+the far end of it. The contract, browser side included, is Discofetch's
+(`doc/BROWSER-ACCESS-SIGNALING.md` in the discofetch repository; its names
+are placeholders until confirmed). This section is what DRT's side does
+with it. The record (§2) is unchanged; only how it travels changed. This
+is not the relay's park door (`/s`), which is separate and unchanged.
+
+- **The program**: `crates/drt-rtc/signal/host.dlua`, under `drt start`
+  with the §8 block and the `ws` connector. It is the only Discofetch-
+  specific code; the binary knows nothing of the message types.
+- **The config** it reads:
+  - `args.signal` is the socket URL. It is the contract's
+    `browser_access.signal`, flat because a deployment's args are flat,
+    and it is never built in code.
+  - `args.key` is the advertise token, sent as `Authorization: Bearer`
+    on the upgrade.
+  - `connectors.ws.scope` is the origin allowlist, in `rest`'s shape. A
+    deployment may instead inject the token there, as a `headers` entry
+    the program cannot read.
+- **Transport**: `wss://` only. The token rides the upgrade, so the `ws`
+  connector refuses plain `ws://` anywhere but loopback: in the scope at
+  boot, at connect, and again on the resolved address.
+- **Frames**: text, one JSON object each. The host sends:
+  - `record`, with the record as a JSON **object**, spliced unparsed from
+    the host's own record text. It goes out on every connect and whenever
+    the record changes (§8's `stun_refresh_s`).
+  - `outcome`, `direct` or `failed`, exactly once per session.
+  - `bye`, with `busy`, `failed` or `closed`, when the host ends a
+    session. A session the API ended with its own `bye` gets none back.
+- **The `record` in a `peer`** is taken as a JSON object or as the
+  record's text. An object is rebuilt field by field, never re-encoded
+  whole: dlua's JSON would turn an empty `c` into `{}`.
+- **Sessions**: one per `peer` the API announced, and no other. ICE from
+  a ufrag the API never announced finds no session in the host (tested).
+  `session` is an opaque key of at most 64 bytes, refused past that by the
+  program and again by the `webrtc` block.
+- **The socket's life**:
+  - `ws/connect` runs with `idle_ms = 60000`, so 60 s with no frame at
+    all, pings included, closes the socket.
+  - Reconnect backs off from 1 s, doubling to 30 s, plus up to 25%
+    jitter. `ready` resets the backoff.
+  - Sessions do not depend on the socket. Outcomes and byes wait for the
+    next socket, up to 256 of them.
+  - `error` with code `replaced` stops the program, and `drt start` exits
+    without dialing again.
+- **Limits**: a record is at most 512 bytes with at most 8 candidates
+  (§2). The API's draft limits, 4 KiB and 12 candidates, are looser, so a
+  record the API accepts can still be refused by the host and the browser
+  unless the API checks §2's.
+- **Tested** in `crates/drt/tests/signal.rs`, the contract's seven host
+  tests, against a `wss://` stub of the API with the native client as the
+  browser.
+
+### 7.2 M0's mock (superseded by §7.1)
 
 **Not Discofetch's API.** A stand-in both sides point at until
 Discofetch's `rtc` presence field and CORS exist. The browser client's
@@ -334,6 +394,7 @@ GET  /v1/rooms/{room}/presence   Authorization: Bearer <session_token>
     "max_streams_per_session": 64,
     "idle_stream_timeout_s": 300,
     "connect_timeout_s": 10,
+    "stun_refresh_s": 20,
     "queue": "webrtc",
     "reply_queue": "webrtc_cmd"
   }
@@ -347,7 +408,10 @@ GET  /v1/rooms/{room}/presence   Authorization: Bearer <session_token>
   identity would strand every room holding the old record.
 - **`stun`**: server-reflexive candidates are gathered from these, on the
   session socket itself, because a mapping only means something for the
-  socket it was measured on.
+  socket it was measured on. **`stun_refresh_s`** re-asks them that often
+  once they have answered. That keeps the socket's NAT mapping open
+  between sessions; home routers drop an idle UDP mapping after 30 to
+  120 s. A mapping that moved changes the record, which is reported again.
 - **Reports on `queue`**, each a map with `event`:
   - `webrtc_record` `{rtc}`: the host's record, on start and whenever its
     candidates change. The program publishes it.
@@ -360,5 +424,7 @@ GET  /v1/rooms/{room}/presence   Authorization: Bearer <session_token>
   session from a browser's record; `{command = "close", peer}` ends one.
   A refused `open` is reported as `webrtc_session` `closed` with the
   reason.
-- **`crates/drt-rtc/browser-check/host.json`** is a working block, with
-  `host.dlua` doing the §7 signaling over `rest` in about sixty lines.
+- **`crates/drt-rtc/signal/host.dlua`** does §7.1's signaling;
+  `crates/drt/tests/signal.rs` shows a working config for it. M0's
+  `crates/drt-rtc/browser-check/host.json` and its `host.dlua` still do
+  §7.2's over `rest`.

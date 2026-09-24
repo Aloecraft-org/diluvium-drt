@@ -1260,6 +1260,7 @@ dependencies = [
  "drt-connector-ssh",
  "drt-connector-ssmtp",
  "drt-connector-time",
+ "drt-connector-ws",
  "drt-hostcall",
  "drt-platform",
  "drt-plugin",
@@ -1281,6 +1282,7 @@ dependencies = [
  "serde_path_to_error",
  "sha2 0.10.9",
  "smoltcp",
+ "str0m",
  "tempfile",
  "tokio",
  "tokio-rustls",
@@ -1500,6 +1502,22 @@ dependencies = [
  "drt-platform",
  "pollster",
  "rmpv",
+]
+
+[[package]]
+name = "drt-connector-ws"
+version = "0.8.0"
+dependencies = [
+ "async-trait",
+ "drt-caps",
+ "drt-connector",
+ "drt-connector-rest",
+ "futures-util",
+ "rmpv",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]

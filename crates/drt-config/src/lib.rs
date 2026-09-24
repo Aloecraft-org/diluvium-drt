@@ -1076,6 +1076,12 @@ pub struct WebrtcConfig {
     /// mapping only means something for the socket it was measured on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stun: Vec<String>,
+    /// Seconds between STUN refreshes once a server has answered. Each one
+    /// keeps the socket's NAT mapping alive between sessions and re-reports
+    /// the record if the mapping moved; home routers drop an idle UDP
+    /// mapping after 30 to 120 s.
+    #[serde(default = "default_webrtc_stun_refresh_s")]
+    pub stun_refresh_s: u64,
     /// Whether the record carries the host candidate, which is this box's
     /// LAN address, to everyone in the room. Off, two machines on one LAN
     /// meet through the router's public address, which works only where the
@@ -1122,6 +1128,9 @@ fn default_webrtc_max_streams() -> usize {
 }
 fn default_webrtc_idle_s() -> u64 {
     300
+}
+fn default_webrtc_stun_refresh_s() -> u64 {
+    20
 }
 fn default_webrtc_connect_s() -> u64 {
     10

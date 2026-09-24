@@ -71,6 +71,7 @@ const PROFILE_FULL: &[&str] = &[
     "connector-ssh",
     "connector-ssmtp",
     "connector-time",
+    "connector-ws",
     "listen",
     "netcheck",
     "numeric",
@@ -515,6 +516,7 @@ pub enum Command {
         feature = "connector-ssmtp",
         feature = "connector-exec",
         feature = "connector-socket",
+        feature = "connector-ws",
         feature = "connector-data",
         feature = "netcheck"
     )),
@@ -561,6 +563,9 @@ pub fn buildinfo(json: bool) -> String {
     }
     if cfg!(feature = "connector-socket") {
         connectors.push("socket");
+    }
+    if cfg!(feature = "connector-ws") {
+        connectors.push("ws");
     }
     if cfg!(feature = "listen") {
         connectors.push("listen");
@@ -703,6 +708,7 @@ fn enabled_features() -> Vec<&'static str> {
     feature!("connector-exec");
     feature!("connector-socket");
     feature!("connector-time");
+    feature!("connector-ws");
     feature!("listen");
     feature!("netcheck");
     feature!("numeric");
@@ -882,6 +888,17 @@ pub fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
                     wiring.scope.clone(),
                 )
                 .map_err(|e| e.to_string())?,
+            // An outbound WebSocket a node holds by handle, under rest's
+            // origin allowlist: the scope's `headers` go on the handshake
+            // where the program cannot read them.
+            #[cfg(feature = "connector-ws")]
+            "ws" => registry
+                .wire(
+                    "ws",
+                    std::sync::Arc::new(drt_connector_ws::WsConnector::new()),
+                    wiring.scope.clone(),
+                )
+                .map_err(|e| e.to_string())?,
             other => {
                 return Err(format!(
                     "config wires connector '{other}', which this build does not carry"
@@ -902,7 +919,7 @@ pub fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
 /// would start shadowing a builtin the day it ran on `full`, which is the
 /// quiet kind of wrong.
 const BUILTIN_FAMILIES: &[&str] = &[
-    "time", "fs", "sql", "crypto", "data", "ssh", "rest", "ssmtp", "exec", "socket",
+    "time", "fs", "sql", "crypto", "data", "ssh", "rest", "ssmtp", "exec", "socket", "ws",
 ];
 
 /// Every plugin family's name, judged before anything is wired.

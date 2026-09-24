@@ -1,0 +1,230 @@
+-- The signaling half of a browser access host, over the Discofetch
+-- signaling socket (doc/BrowserAccess.md §7). The `webrtc` block does the
+-- WebRTC; this holds one WebSocket to the API, publishes the host's record
+-- on it, opens a session for each browser the API announces with `peer`,
+-- closes it on `bye`, and reports one `outcome` per session.
+--
+-- Everything Discofetch-specific is in this file and nothing of it is in
+-- the binary: the message types below are the contract's, and a change to
+-- them is a change here, not to DRT.
+--
+-- ## surface block
+--
+-- - Entry point: this program, under `drt start`. `args.signal` is the
+--   socket's URL (the contract's `browser_access.signal`: a deployment's
+--   args are flat, so each can be overridden with `--signal` on the
+--   command line), never built here; `args.key` is the advertise token,
+--   sent as `Authorization: Bearer`. The `ws` connector's scope must
+--   grant the URL's origin, and `webrtc` must be configured.
+-- - Configurable: IDLE_MS, silence after which the socket is taken for dead
+--   (the API pings every 25 s); BACKOFF_FIRST_MS, BACKOFF_MAX_MS and JITTER,
+--   the reconnect schedule; HELD_MAX, outcomes and byes kept while the
+--   socket is down; SESSION_MAX, the longest session id taken.
+-- - Fan-out: `on_signal` below, one branch per message the API sends
+--   (ready, peer, bye, error), and `on_report`, one per report the webrtc
+--   block sends (webrtc_record, webrtc_session, webrtc_stream).
+--
+-- Sessions do not depend on the socket: a session that is up stays up while
+-- the socket is down and back, and what it has to say (its outcome, its
+-- bye) waits in `held` for the next socket. A session is only ever opened
+-- for a `peer` the API sent, so ICE from a ufrag the API never announced
+-- finds no session in the host and gets nothing.
+
+local IDLE_MS = 60000
+local BACKOFF_FIRST_MS = 1000
+local BACKOFF_MAX_MS = 30000
+local JITTER = 0.25
+local HELD_MAX = 256
+local SESSION_MAX = 64
+
+local argq     = queue.declare('args', {capacity = 1})
+local reports  = queue.declare('webrtc', {capacity = 256})
+local commands = queue.declare('webrtc_cmd', {capacity = 64, exported = true})
+local wakes    = queue.declare('signal', {capacity = 16})
+local _, args  = queue.wait({argq})
+
+local signal = args.signal
+assert(type(signal) == 'string', 'signal: args.signal must be the signaling socket URL')
+assert(type(args.key) == 'string', 'signal: args.key must be the advertise token')
+
+local function now() return host.call('time/monotonic') end
+local function log(line) print('signal: ' .. line) end
+
+-- depth: the socket -- dial, send, receive, and the reconnect schedule
+
+local ws = nil            -- the connection's handle while there is one
+local dial_at = 0         -- when to dial next, on the monotonic clock
+local backoff = BACKOFF_FIRST_MS
+local record = nil        -- the host's record, as the webrtc block wrote it
+local held = {}           -- frames waiting for a socket
+local sessions = {}       -- session id -> {outcome = bool, by_api = bool}
+
+local function schedule()
+  dial_at = now() + backoff + math.random(0, math.floor(backoff * JITTER))
+  backoff = math.min(backoff * 2, BACKOFF_MAX_MS)
+end
+
+local function drop(why)
+  log('socket down: ' .. why)
+  if ws then host.try('ws/close', {handle = ws}) end
+  ws = nil
+  schedule()
+end
+
+-- Send now, or hold it for the next socket. `record` is never held: the
+-- next socket is sent the current one when it opens.
+local function send(frame, hold)
+  if ws then
+    local _, status, detail = host.try('ws/send', {handle = ws, text = frame})
+    if status == 'ok' then return end
+    drop('send: ' .. tostring(detail))
+  end
+  if hold and #held < HELD_MAX then held[#held + 1] = frame end
+end
+
+-- The record as the webrtc block wrote it, spliced in unparsed: a round
+-- trip through json would turn an empty candidate list into an object.
+local function send_record()
+  if record then send('{"t":"record","record":' .. record .. '}') end
+end
+
+local function dial()
+  local r, status, detail = host.try('ws/connect', {
+    url = signal,
+    headers = {authorization = 'Bearer ' .. args.key},
+    wake = 'signal',
+    idle_ms = IDLE_MS,
+  })
+  if status ~= 'ok' then
+    log('connect: ' .. tostring(detail))
+    return schedule()
+  end
+  ws = r.handle
+  log('connected')
+  send_record()
+  local waiting = held
+  held = {}
+  for _, frame in ipairs(waiting) do send(frame, true) end
+end
+
+-- depth: records, which travel as text
+
+-- A browser's record as `open` wants it: the text itself, or an object
+-- rebuilt field by field, never re-encoded whole (see send_record).
+local function record_text(r)
+  if type(r) == 'string' then return r end
+  if type(r) ~= 'table' then return nil end
+  local lines = {}
+  for i, line in ipairs(r.c or {}) do lines[i] = json.encode(line) end
+  return string.format('{"v":%s,"u":%s,"p":%s,"f":%s,"c":[%s]}', json.encode(r.v),
+    json.encode(r.u), json.encode(r.p), json.encode(r.f), table.concat(lines, ','))
+end
+
+local function outcome(id, path)
+  local s = sessions[id]
+  if not s or s.outcome then return end
+  s.outcome = true
+  send(json.encode({t = 'outcome', session = id, path = path}), true)
+end
+
+-- What the host said when it closed a session, as the contract's reason.
+local function bye_reason(why)
+  if why == nil then return 'closed' end
+  if why:find('^busy') then return 'busy' end
+  if why == 'closed by the program' or why == 'ice disconnected'
+    or why == 'a data channel closed' then return 'closed' end
+  return 'failed'
+end
+
+-- depth: what the API says
+
+local function on_signal(m)
+  if m.t == 'ready' then
+    backoff = BACKOFF_FIRST_MS
+    log('ready in ' .. tostring(m.room))
+  elseif m.t == 'peer' then
+    local id = m.session
+    if type(id) ~= 'string' or #id == 0 or #id > SESSION_MAX then
+      return log('peer: a session id that is not a 1..' .. SESSION_MAX .. ' byte string, ignored')
+    end
+    if sessions[id] then return end
+    local rtc = record_text(m.record)
+    sessions[id] = {outcome = false, by_api = false}
+    if not rtc then
+      outcome(id, 'failed')
+      sessions[id] = nil
+      return send(json.encode({t = 'bye', session = id, reason = 'failed'}), true)
+    end
+    queue.push(commands, {command = 'open', peer = id, rtc = rtc})
+  elseif m.t == 'bye' then
+    local s = sessions[m.session]
+    if s then
+      s.by_api = true
+      queue.push(commands, {command = 'close', peer = m.session})
+    end
+  elseif m.t == 'error' then
+    if m.code == 'replaced' then
+      -- A newer host has this room. Stop, and do not dial again.
+      log('replaced by a newer host for this room; stopping')
+      if ws then host.try('ws/close', {handle = ws}) end
+      ws = nil
+      return 'stop'
+    end
+    log('error ' .. tostring(m.code) .. ': ' .. tostring(m.message))
+  end
+end
+
+local function drain_socket()
+  if not ws then return end
+  local r, status, detail = host.try('ws/recv', {handle = ws, wait = false})
+  if status ~= 'ok' then return drop('recv: ' .. tostring(detail)) end
+  for _, text in ipairs(r.messages or {}) do
+    local ok, m = pcall(json.decode, text)
+    if ok and type(m) == 'table' and on_signal(m) == 'stop' then return 'stop' end
+  end
+  if r.closed then
+    ws = nil
+    drop('closed ' .. tostring(r.closed.code) .. ' ' .. tostring(r.closed.reason))
+  end
+end
+
+-- depth: what the webrtc block says
+
+local function on_report(m)
+  if m.event == 'webrtc_record' then
+    record = m.rtc
+    send_record()
+  elseif m.event == 'webrtc_session' then
+    log('session ' .. m.peer .. ' ' .. m.state .. (m.reason and (': ' .. m.reason) or ''))
+    local s = sessions[m.peer]
+    if not s then return end
+    if m.state == 'connected' then
+      outcome(m.peer, 'direct')
+    elseif m.state == 'closed' then
+      outcome(m.peer, 'failed')
+      if not s.by_api then
+        send(json.encode({t = 'bye', session = m.peer, reason = bye_reason(m.reason)}), true)
+      end
+      sessions[m.peer] = nil
+    end
+  elseif m.event == 'webrtc_stream' then
+    log(string.format('stream %s/%d %s:%d %s%s', m.peer, m.stream, m.host, m.port, m.state,
+      m.reason and (' ' .. m.reason) or ''))
+  end
+end
+
+-- depth: the loop
+
+while true do
+  if not ws and now() >= dial_at then dial() end
+  local wait = ws and IDLE_MS or math.max(1, dial_at - now())
+  local _, m = queue.wait({reports, wakes}, wait)
+  local stop = false
+  while m do
+    if m.event then on_report(m) elseif m.ready then stop = drain_socket() == 'stop' or stop end
+    m = queue.pop(reports) or queue.pop(wakes)
+  end
+  -- A socket that closed with nothing queued since still says so on recv.
+  if not stop and ws then stop = drain_socket() == 'stop' end
+  if stop then break end
+end
