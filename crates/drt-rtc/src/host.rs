@@ -8,13 +8,25 @@
 //! between the socket, the data channel and TCP without passing through
 //! anything a program wrote.
 //!
+//! **The host runs on a thread of its own, with a stack it chose.** str0m's
+//! `Rtc::do_poll_output` recurses once per SCTP packet it hands to DTLS
+//! (`str0m-0.23.1/src/lib.rs:1734`, `return self.do_poll_output()`), so a
+//! burst -- a fast download filling the window -- is as deep as the burst
+//! is long. Measured on a debug build: 24.7 KB a frame, and a 4 MiB
+//! download reached 40 frames before overflowing a 1 MiB stack. It first
+//! showed as CI's 2 MiB test thread overflowing, because the host ran on
+//! whatever stack its caller's runtime had. str0m buffers at most 128 KiB
+//! across a session's channels, about 120 packets, so the worst case is
+//! near 3 MiB in debug and far less in release; [`HOST_STACK`] is five
+//! times that, and it is virtual memory until a page is touched.
+//!
 //! ## surface block
 //!
-//! - Entry points: [`Host::start`] (bind, then serve on the current tokio
-//!   runtime), [`Host::send`], [`Host::try_event`], [`Host::next_event`].
+//! - Entry points: [`Host::start`] (bind, then serve on the host's own
+//!   thread), [`Host::send`], [`Host::try_event`], [`Host::next_event`].
 //! - Configurable: [`WISP_BUFFER`], [`HIGH_WATER`], [`LOW_WATER`],
-//!   [`SETUP_DEADLINE`], [`STUN_RETRY`], [`STUN_REFRESH`], [`TICK`], and
-//!   everything in [`HostConfig`].
+//!   [`SETUP_DEADLINE`], [`STUN_RETRY`], [`STUN_REFRESH`], [`TICK`],
+//!   [`HOST_STACK`], and everything in [`HostConfig`].
 //! - Fan-out: [`Command`] (what the program asks), [`Event`] (what the
 //!   host reports), [`Internal`] (what a stream's tasks tell the loop), and
 //!   [`Session::on_wisp`]'s match over [`wisp::Packet`].
@@ -58,6 +70,9 @@ pub const STUN_RETRY: Duration = Duration::from_secs(2);
 pub const STUN_REFRESH: Duration = Duration::from_secs(25);
 /// The housekeeping interval: idle streams, setup deadlines, the gate.
 pub const TICK: Duration = Duration::from_secs(1);
+/// The host thread's stack. See the module note: str0m recurses once per
+/// SCTP packet in a batch, and this is five times the measured worst case.
+pub const HOST_STACK: usize = 16 * 1024 * 1024;
 
 /// The largest datagram read off the socket.
 const RECV_MTU: usize = 2000;
@@ -131,27 +146,30 @@ pub enum Event {
     },
 }
 
-/// A serving host. Dropping it stops the loop and, with it, every session.
+/// A serving host. Dropping it closes its command channel, which ends the
+/// loop, and the host thread's runtime goes with it: every session, every
+/// stream task, every socket.
 pub struct Host {
     local_addr: SocketAddr,
     commands: mpsc::UnboundedSender<Command>,
     events: mpsc::UnboundedReceiver<Event>,
-    task: tokio::task::JoinHandle<()>,
-}
-
-impl Drop for Host {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
 }
 
 impl Host {
-    /// Bind the socket and start serving on the current runtime. Binding
-    /// happens here so a port in use is a refusal at startup, by name.
-    pub async fn start(cfg: HostConfig) -> Result<Host, String> {
-        let socket = UdpSocket::bind(cfg.bind)
-            .await
+    /// Bind the socket and start serving on a thread of the host's own.
+    ///
+    /// Binding happens here, before the thread starts, so a port in use is
+    /// a refusal at startup, by name. The thread owns a current-thread
+    /// runtime: the socket, the sessions and every stream task live on it
+    /// and on its [`HOST_STACK`], whatever runtime -- or none -- the caller
+    /// has. Commands and reports cross over channels that care about
+    /// neither.
+    pub fn start(cfg: HostConfig) -> Result<Host, String> {
+        let socket = std::net::UdpSocket::bind(cfg.bind)
             .map_err(|e| format!("webrtc cannot bind {}: {e}", cfg.bind))?;
+        socket
+            .set_nonblocking(true)
+            .map_err(|e| format!("webrtc: {e}"))?;
         let bound = socket.local_addr().map_err(|e| format!("webrtc: {e}"))?;
         let base = SocketAddr::new(candidate_ip(bound)?, bound.port());
         let host_candidate = Candidate::host(base, "udp")
@@ -159,43 +177,71 @@ impl Host {
 
         let (commands, command_rx) = mpsc::unbounded_channel();
         let (event_tx, events) = mpsc::unbounded_channel();
-        let (internal_tx, internal_rx) = mpsc::unbounded_channel();
-
-        // STUN servers resolve off the loop, and keep trying: a box that
-        // boots before its network should still come up and find its
-        // mapping later, not refuse to start.
-        if !cfg.stun.is_empty() {
-            let servers = cfg.stun.clone();
-            let tx = internal_tx.clone();
-            tokio::spawn(async move { resolve_stun(servers, bound.is_ipv4(), tx).await });
-        }
-
-        let ctx = Ctx {
-            cfg: Arc::new(cfg),
-            socket: Arc::new(socket),
-            base,
-            events: event_tx,
-            internal: internal_tx,
-        };
-        let mut state = Loop {
-            ctx,
-            host_candidate,
-            sessions: Vec::new(),
-            next_key: 0,
-            stun_servers: Vec::new(),
-            stun_pending: HashMap::new(),
-            mapped: BTreeMap::new(),
-            next_stun: Instant::now(),
-            next_tick: Instant::now() + TICK,
-            last_record: None,
-        };
-        state.publish_record();
-        let task = tokio::spawn(async move { state.run(command_rx, internal_rx).await });
+        let (ready_tx, ready) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("drt-rtc-host".into())
+            .stack_size(HOST_STACK)
+            .spawn(move || {
+                let rt = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        let _ = ready_tx.send(Err(format!("webrtc: no runtime: {e}")));
+                        return;
+                    }
+                };
+                rt.block_on(async move {
+                    let socket = match UdpSocket::from_std(socket) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            let _ = ready_tx.send(Err(format!("webrtc: {e}")));
+                            return;
+                        }
+                    };
+                    let (internal_tx, internal_rx) = mpsc::unbounded_channel();
+                    // STUN servers resolve off the loop, and keep trying: a
+                    // box that boots before its network should still come
+                    // up and find its mapping later, not refuse to start.
+                    if !cfg.stun.is_empty() {
+                        let servers = cfg.stun.clone();
+                        let tx = internal_tx.clone();
+                        tokio::spawn(
+                            async move { resolve_stun(servers, bound.is_ipv4(), tx).await },
+                        );
+                    }
+                    let mut state = Loop {
+                        ctx: Ctx {
+                            cfg: Arc::new(cfg),
+                            socket: Arc::new(socket),
+                            base,
+                            events: event_tx,
+                            internal: internal_tx,
+                        },
+                        host_candidate,
+                        sessions: Vec::new(),
+                        next_key: 0,
+                        stun_servers: Vec::new(),
+                        stun_pending: HashMap::new(),
+                        mapped: BTreeMap::new(),
+                        next_stun: Instant::now(),
+                        next_tick: Instant::now() + TICK,
+                        last_record: None,
+                    };
+                    state.publish_record();
+                    let _ = ready_tx.send(Ok(()));
+                    state.run(command_rx, internal_rx).await;
+                });
+            })
+            .map_err(|e| format!("webrtc: cannot start the host thread: {e}"))?;
+        ready
+            .recv()
+            .map_err(|_| "webrtc: the host thread ended before it started".to_string())??;
         Ok(Host {
             local_addr: base,
             commands,
             events,
-            task,
         })
     }
 

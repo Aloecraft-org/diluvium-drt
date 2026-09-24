@@ -93,7 +93,7 @@ async fn host_with(scope: &[String]) -> (Host, Record) {
         idle_timeout: Duration::from_secs(300),
         connect_timeout: Duration::from_secs(5),
     };
-    let mut host = Host::start(cfg).await.unwrap();
+    let mut host = Host::start(cfg).unwrap();
     let rtc = match host.next_event().await {
         Some(Event::Record { rtc }) => rtc,
         other => panic!("the host's first word is its record, not {other:?}"),
@@ -457,10 +457,31 @@ async fn a_bad_or_duplicate_record_is_refused_by_name() {
     assert!(why.unwrap().starts_with("duplicate"));
 }
 
-#[tokio::test]
-async fn a_large_download_arrives_whole_and_in_order() {
-    // Past str0m's 128 KiB send buffer many times over, so the outbox and
-    // the gate both have to work for this to come out right.
+/// Past str0m's 128 KiB send buffer many times over, so the outbox and the
+/// gate both have to work for this to come out right -- and run from a
+/// deliberately small stack, because this is the load that overflowed CI's
+/// 2 MiB test thread when the host ran on its caller's stack. str0m
+/// recurses once per SCTP packet in a burst (`drt_rtc::host`, the module
+/// note); the host's own thread has room for that, and this proves none of
+/// it lands here, whatever `RUST_MIN_STACK` the runner sets.
+#[test]
+fn a_large_download_arrives_whole_and_in_order() {
+    const CALLER_STACK: usize = 512 * 1024;
+    std::thread::Builder::new()
+        .stack_size(CALLER_STACK)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(large_download())
+        })
+        .unwrap()
+        .join()
+        .expect("the download completes on a 512 KiB caller stack");
+}
+
+async fn large_download() {
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = l.local_addr().unwrap().port();
     const SIZE: usize = 4 * 1024 * 1024;

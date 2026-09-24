@@ -51,7 +51,7 @@ async fn main() {
         idle_timeout: Duration::from_secs(60),
         connect_timeout: Duration::from_secs(5),
     };
-    let mut host = Host::start(cfg).await.expect("the host starts");
+    let mut host = Host::start(cfg).expect("the host starts");
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut n = 0;
     loop {

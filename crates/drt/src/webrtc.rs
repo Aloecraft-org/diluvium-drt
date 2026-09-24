@@ -1,10 +1,12 @@
 //! The `webrtc` block inside `drt start`: the deployment's end of a
 //! `drt_rtc::Host` (`doc/BrowserAccess.md` §8).
 //!
-//! The same arrangement `turn` and `wireguard` have: the host is tokio and
-//! the drive loop is not, so it runs on its own runtime on its own thread,
-//! and the loop moves messages between it and the root program without
-//! blocking. Reports go out on `queue`; commands come in on `reply_queue`.
+//! Nearly the arrangement `turn` and `wireguard` have: the host is tokio
+//! and the drive loop is not, so the host runs on a thread and a runtime of
+//! its own -- `Host::start` brings both, with a stack sized for str0m (see
+//! `drt_rtc::host`) -- and the loop moves messages between it and the root
+//! program without blocking. Reports go out on `queue`; commands come in on
+//! `reply_queue`.
 //!
 //! **Signaling is the program's.** The block reports its own presence record
 //! and opens a session from a browser's; how the two records met -- a
@@ -39,8 +41,6 @@ pub struct WebrtcBridge {
     reply_queue: String,
     held: std::collections::VecDeque<Vec<u8>>,
     dropped: bool,
-    /// Kept alive for the process's life: dropping it stops the host.
-    _runtime: std::thread::JoinHandle<()>,
 }
 
 impl WebrtcBridge {
@@ -51,22 +51,15 @@ impl WebrtcBridge {
     /// `scheme://host[:port]`, a `default` outside the scope, an identity
     /// file that exists and does not parse, a port in use.
     pub fn start(config: &WebrtcConfig) -> Result<WebrtcBridge, String> {
-        let host_config = host_config(config)?;
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| format!("the webrtc host needs a runtime: {e}"))?;
-        let host = rt.block_on(Host::start(host_config))?;
-        let runtime = std::thread::spawn(move || {
-            // The host's tasks live on this runtime; nothing returns from
-            // this but process exit.
-            rt.block_on(std::future::pending::<()>());
-        });
+        // Dropping the host stops it, and the bridge lives as long as the
+        // deployment does.
+        let host = Host::start(host_config(config)?)?;
         Ok(WebrtcBridge {
             host,
             queue: config.queue.clone(),
             reply_queue: config.reply_queue.clone(),
             held: Default::default(),
             dropped: false,
-            _runtime: runtime,
         })
     }
 
