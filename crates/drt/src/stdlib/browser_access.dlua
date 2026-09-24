@@ -10,7 +10,8 @@
 --
 -- ## surface block
 --
--- - Entry point: this program, under `drt start`. `args.signal` is the
+-- - Entry point: `"entry": "stdlib:browser-access"` under `drt start`,
+--   granted `host:ws/*` and `host:time/monotonic`. `args.signal` is the
 --   socket's URL (the contract's `browser_access.signal`: a deployment's
 --   args are flat, so each can be overridden with `--signal` on the
 --   command line), never built here; `args.key` is the advertise token,

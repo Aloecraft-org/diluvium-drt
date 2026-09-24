@@ -403,7 +403,8 @@ Each of these edits code `doc/Plan-2026-09.md` §0.2 froze:
   - `connectors/ws` is the `ws` connector, in `full`, under `rest`'s
     origin allowlist. It allows `wss://` only, with plain `ws://` to
     loopback alone, because the advertise token rides the upgrade.
-  - `crates/drt-rtc/signal/host.dlua` holds the socket.
+  - `stdlib:browser-access` (`crates/drt/src/stdlib/browser_access.dlua`),
+    carried in the binary, holds the socket.
   - `webrtc.stun_refresh_s` defaults to 25 s, the old constant, at the
     owner's word. `open`'s `peer` is capped at 64 bytes.
   - Amended to discofetch 36ad148: close codes 4000–4099 end the host

@@ -301,8 +301,10 @@ the far end of it. The contract, browser side included, is Discofetch's
 with it. The record (§2) is unchanged; only how it travels changed. This
 is not the relay's park door (`/s`), which is separate and unchanged.
 
-- **The program**: `crates/drt-rtc/signal/host.dlua`, under `drt start`
-  with the §8 block and the `ws` connector. It is the only Discofetch-
+- **The program**: `"entry": "stdlib:browser-access"`, carried in the
+  binary (source: `crates/drt/src/stdlib/browser_access.dlua`), under
+  `drt start` with the §8 block and the `ws` connector. Its caps are
+  `host:ws/*` and `host:time/monotonic`. It is the only Discofetch-
   specific code; the binary knows nothing of the message types.
 - **The config** it reads:
   - `args.signal` is the socket URL. It is the contract's
@@ -429,7 +431,7 @@ GET  /v1/rooms/{room}/presence   Authorization: Bearer <session_token>
   session from a browser's record; `{command = "close", peer}` ends one.
   A refused `open` is reported as `webrtc_session` `closed` with the
   reason.
-- **`crates/drt-rtc/signal/host.dlua`** does §7.1's signaling;
+- **`crates/drt/src/stdlib/browser_access.dlua`** does §7.1's signaling;
   `crates/drt/tests/signal.rs` shows a working config for it. M0's
   `crates/drt-rtc/browser-check/host.json` and its `host.dlua` still do
   §7.2's over `rest`.

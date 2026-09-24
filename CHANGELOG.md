@@ -71,8 +71,8 @@ is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
   machine is refused in the scope at boot, at connect, and again on
   the resolved address.
 - **Browser access signals over a socket to the Discofetch API**
-  (`doc/BrowserAccess.md` §7.1). `crates/drt-rtc/signal/host.dlua`
-  does it:
+  (`doc/BrowserAccess.md` §7.1). `stdlib:browser-access`, a program
+  the binary carries, does it:
   - holds one socket, authenticated with the advertise token
   - publishes the host's record on every connect and every change
   - opens a session only for a browser the API announced, and

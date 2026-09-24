@@ -1,5 +1,6 @@
 //! Browser access signaling over the Discofetch socket, end to end: the
-//! real `drt start` running `crates/drt-rtc/signal/host.dlua` with the
+//! real `drt start` running `stdlib:browser-access`
+//! (`crates/drt/src/stdlib/browser_access.dlua`) with the
 //! `webrtc` block and the `ws` connector, against a stub of the API that
 //! speaks the host side of the contract over `wss://`, and drt-rtc's native
 //! client playing the browser (`doc/BrowserAccess.md` §7).
@@ -276,7 +277,6 @@ impl Host {
 /// `drt start` with the signaling program, the socket at the stub, one
 /// target in scope, and whatever `webrtc` settings the test adds.
 fn host(stub: &Stub, dir: tempfile::TempDir, target: u16, webrtc: Value) -> Host {
-    let program = Path::new(env!("CARGO_MANIFEST_DIR")).join("../drt-rtc/signal/host.dlua");
     let mut block = json!({
         "bind": "127.0.0.1:0",
         "identity_file": dir.path().join("identity.json"),
@@ -288,7 +288,7 @@ fn host(stub: &Stub, dir: tempfile::TempDir, target: u16, webrtc: Value) -> Host
         block[k] = v.clone();
     }
     let config = json!({
-        "program": {"path": program},
+        "entry": "stdlib:browser-access",
         "caps": [
             {"capability": "host:ws/*"},
             {"capability": "host:time/monotonic"}
