@@ -61,6 +61,8 @@ enum Say {
     Frame(Value),
     /// Drop the socket without a close frame, as a crashed API would.
     Drop,
+    /// Close it with this code, as the API does.
+    Close(u16, &'static str),
 }
 
 struct Stub {
@@ -132,6 +134,13 @@ impl Stub {
                             },
                             s = say.recv() => match s {
                                 Some(Say::Frame(v)) => { let _ = sink.send(Message::Text(v.to_string())).await; }
+                                Some(Say::Close(code, reason)) => {
+                                    use tokio_tungstenite::tungstenite::protocol::{frame::coding::CloseCode, CloseFrame};
+                                    let frame = CloseFrame { code: CloseCode::from(code), reason: reason.into() };
+                                    let _ = sink.send(Message::Close(Some(frame))).await;
+                                    let _ = seen_tx.send(Seen::Gone(id));
+                                    return;
+                                }
                                 Some(Say::Drop) | None => { let _ = seen_tx.send(Seen::Gone(id)); return; }
                             },
                         }
@@ -153,6 +162,14 @@ impl Stub {
         slot.as_ref()
             .expect("no host is connected")
             .send(Say::Frame(v))
+            .unwrap();
+    }
+
+    fn close(&self, code: u16, reason: &'static str) {
+        let slot = self.current.lock().unwrap();
+        slot.as_ref()
+            .expect("no host is connected")
+            .send(Say::Close(code, reason))
             .unwrap();
     }
 
@@ -506,21 +523,44 @@ async fn sessions_outlive_the_socket_and_the_host_redials() {
     round_trip(&mut second, 1, echo).await;
 }
 
-/// 5. `replaced`: the older host stops and never dials again.
+/// 5. A close code in 4000..=4099 -- 4001, replaced by a newer host
+/// socket; 4003, the credential refused -- stops the host for good, and
+/// `drt start` exits.
 #[tokio::test]
-async fn replaced_stops_the_host_for_good() {
+async fn an_api_close_code_stops_the_host_for_good() {
     let echo = echo_server().await;
-    let (mut stub, mut host, _record) = deployment(echo, json!({})).await;
-    stub.say(json!({"t": "error", "code": "replaced", "message": "a newer host has this room"}));
-    assert!(
-        stub.wait_for(QUIET, |s| matches!(s, Seen::Connected(..)))
-            .await
-            .is_none(),
-        "the replaced host dialed again"
-    );
-    let log = host.log.lock().unwrap().join("\n");
-    assert!(log.contains("replaced by a newer host"), "{log}");
-    assert!(host.exited(), "the replaced host is still running:\n{log}");
+    for (code, reason) in [(4001, "replaced"), (4003, "credential refused")] {
+        let (mut stub, mut host, _record) = deployment(echo, json!({})).await;
+        stub.close(code, reason);
+        assert!(
+            stub.wait_for(QUIET, |s| matches!(s, Seen::Connected(..)))
+                .await
+                .is_none(),
+            "the host dialed again after {code}"
+        );
+        let log = host.log.lock().unwrap().join("\n");
+        assert!(
+            log.contains(&format!(
+                "closed {code} {reason}: the API does not want this host back"
+            )),
+            "{log}"
+        );
+        assert!(
+            host.exited(),
+            "the host is still running after {code}:\n{log}"
+        );
+    }
+}
+
+/// 5, the other half: any other close is redialed with backoff.
+#[tokio::test]
+async fn any_other_close_is_redialed() {
+    let echo = echo_server().await;
+    let (mut stub, _host, _record) = deployment(echo, json!({})).await;
+    stub.close(1011, "restarting");
+    let (n, auth) = stub.connection().await;
+    assert_eq!((n, auth.as_deref()), (2, Some("Bearer advertise-token")));
+    stub.record().await;
 }
 
 /// 6. Exactly one `outcome` per session: `direct` for one that connected,

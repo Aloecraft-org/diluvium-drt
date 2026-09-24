@@ -296,8 +296,8 @@ host does, and where it departs:
 
 The host holds one WebSocket open to the Discofetch API, and the API is
 the far end of it. The contract, browser side included, is Discofetch's
-(`doc/BROWSER-ACCESS-SIGNALING.md` in the discofetch repository; its names
-are placeholders until confirmed). This section is what DRT's side does
+(`doc/BROWSER-ACCESS-SIGNALING.md` in the discofetch repository, as of
+36ad148). This section is what DRT's side does
 with it. The record (§2) is unchanged; only how it travels changed. This
 is not the relay's park door (`/s`), which is separate and unchanged.
 
@@ -337,12 +337,17 @@ is not the relay's park door (`/s`), which is separate and unchanged.
     jitter. `ready` resets the backoff.
   - Sessions do not depend on the socket. Outcomes and byes wait for the
     next socket, up to 256 of them.
-  - `error` with code `replaced` stops the program, and `drt start` exits
-    without dialing again.
-- **Limits**: a record is at most 512 bytes with at most 8 candidates
-  (§2). The API's draft limits, 4 KiB and 12 candidates, are looser, so a
-  record the API accepts can still be refused by the host and the browser
-  unless the API checks §2's.
+  - A close code in 4000–4099 is the API not wanting this socket back:
+    4001, a newer host socket replaced it; 4003, the credential was
+    refused. The program stops, `drt start` exits, and nothing dials
+    again. Any other close, and 60 s of silence, is redialed with backoff.
+    The `ws` connector reports the close code with the close, so none of
+    this reads the API's JSON.
+  - There is no `answer` message: the browser builds the answer from the
+    host's record (§3.2).
+- **Limits**: the API adopts §2's record and limits (512 bytes, 8
+  candidates, `u` 4–32, `p` 22–64) and validates against
+  `crates/drt-rtc/vectors/browser-access-v1.json`. No `v` bump.
 - **Tested** in `crates/drt/tests/signal.rs`, the contract's seven host
   tests, against a `wss://` stub of the API with the native client as the
   browser.
@@ -394,7 +399,7 @@ GET  /v1/rooms/{room}/presence   Authorization: Bearer <session_token>
     "max_streams_per_session": 64,
     "idle_stream_timeout_s": 300,
     "connect_timeout_s": 10,
-    "stun_refresh_s": 20,
+    "stun_refresh_s": 25,
     "queue": "webrtc",
     "reply_queue": "webrtc_cmd"
   }

@@ -21,8 +21,16 @@
 --   the reconnect schedule; HELD_MAX, outcomes and byes kept while the
 --   socket is down; SESSION_MAX, the longest session id taken.
 -- - Fan-out: `on_signal` below, one branch per message the API sends
---   (ready, peer, bye, error), and `on_report`, one per report the webrtc
---   block sends (webrtc_record, webrtc_session, webrtc_stream).
+--   (ready, peer, bye, error); `on_report`, one per report the webrtc
+--   block sends (webrtc_record, webrtc_session, webrtc_stream); and
+--   `drain_socket`'s reading of a close: FINAL_CLOSE stops the host, any
+--   other close redials.
+--
+-- A close code in FINAL_CLOSE is the API saying it does not want this
+-- socket back -- 4001, a newer host socket replaced it; 4003, the
+-- credential was refused -- and the program ends, so `drt start` exits
+-- and nothing dials again. Any other close, and IDLE_MS of silence, is
+-- redialed with backoff.
 --
 -- Sessions do not depend on the socket: a session that is up stays up while
 -- the socket is down and back, and what it has to say (its outcome, its
@@ -36,6 +44,7 @@ local BACKOFF_MAX_MS = 30000
 local JITTER = 0.25
 local HELD_MAX = 256
 local SESSION_MAX = 64
+local FINAL_CLOSE = {first = 4000, last = 4099}
 
 local argq     = queue.declare('args', {capacity = 1})
 local reports  = queue.declare('webrtc', {capacity = 256})
@@ -163,13 +172,6 @@ local function on_signal(m)
       queue.push(commands, {command = 'close', peer = m.session})
     end
   elseif m.t == 'error' then
-    if m.code == 'replaced' then
-      -- A newer host has this room. Stop, and do not dial again.
-      log('replaced by a newer host for this room; stopping')
-      if ws then host.try('ws/close', {handle = ws}) end
-      ws = nil
-      return 'stop'
-    end
     log('error ' .. tostring(m.code) .. ': ' .. tostring(m.message))
   end
 end
@@ -180,11 +182,16 @@ local function drain_socket()
   if status ~= 'ok' then return drop('recv: ' .. tostring(detail)) end
   for _, text in ipairs(r.messages or {}) do
     local ok, m = pcall(json.decode, text)
-    if ok and type(m) == 'table' and on_signal(m) == 'stop' then return 'stop' end
+    if ok and type(m) == 'table' then on_signal(m) end
   end
   if r.closed then
     ws = nil
-    drop('closed ' .. tostring(r.closed.code) .. ' ' .. tostring(r.closed.reason))
+    local code, reason = r.closed.code, tostring(r.closed.reason)
+    if code >= FINAL_CLOSE.first and code <= FINAL_CLOSE.last then
+      log(string.format('closed %d %s: the API does not want this host back; stopping', code, reason))
+      return 'stop'
+    end
+    drop('closed ' .. tostring(code) .. ' ' .. reason)
   end
 end
 

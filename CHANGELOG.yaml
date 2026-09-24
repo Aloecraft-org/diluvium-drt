@@ -151,15 +151,16 @@ releases:
         - reports one `outcome` per session
         - reconnects with jittered backoff from 1 s to 30 s, while
           sessions carry on without the socket
-        - stops for good on `replaced`
+        - stops for good on a close code in 4000–4099 (4001 replaced,
+          4003 credential refused), so `drt start` exits
 
         The contract's seven host tests run against a `wss://` stub of the
         API, in `crates/drt/tests/signal.rs`.
       - |
-        **`webrtc.stun_refresh_s`**, default 20: how often the host
-        re-asks its STUN servers. This keeps the session socket's NAT
+        **`webrtc.stun_refresh_s`**, default 25 as before: how often the
+        host re-asks its STUN servers. This keeps the session socket's NAT
         mapping alive between sessions and re-reports the record when the
-        mapping moves. It was a fixed 25 s.
+        mapping moves. It was a constant; a test can now shorten it.
       - |
         **The numeric tier**, on in `full` and `web`: `array`, its kernels,
         and the vendored libm that makes float results the same bits on

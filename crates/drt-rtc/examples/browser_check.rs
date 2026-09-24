@@ -50,7 +50,7 @@ async fn main() {
         max_streams: 8,
         idle_timeout: Duration::from_secs(60),
         connect_timeout: Duration::from_secs(5),
-        stun_refresh: Duration::from_secs(20),
+        stun_refresh: Duration::from_secs(25),
     };
     let mut host = Host::start(cfg).expect("the host starts");
     let mut lines = BufReader::new(tokio::io::stdin()).lines();

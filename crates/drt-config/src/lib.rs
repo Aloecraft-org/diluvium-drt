@@ -1130,7 +1130,7 @@ fn default_webrtc_idle_s() -> u64 {
     300
 }
 fn default_webrtc_stun_refresh_s() -> u64 {
-    20
+    25
 }
 fn default_webrtc_connect_s() -> u64 {
     10

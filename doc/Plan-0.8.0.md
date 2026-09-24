@@ -404,9 +404,13 @@ Each of these edits code `doc/Plan-2026-09.md` §0.2 froze:
     origin allowlist. It allows `wss://` only, with plain `ws://` to
     loopback alone, because the advertise token rides the upgrade.
   - `crates/drt-rtc/signal/host.dlua` holds the socket.
-  - `webrtc.stun_refresh_s` defaults to the contract's 20 s, and
-    `open`'s `peer` is capped at 64 bytes.
-  - The contract's seven host tests pass in `crates/drt/tests/signal.rs`,
+  - `webrtc.stun_refresh_s` defaults to 25 s, the old constant, at the
+    owner's word. `open`'s `peer` is capped at 64 bytes.
+  - Amended to discofetch 36ad148: close codes 4000–4099 end the host
+    (4001 replaced, 4003 credential refused), and there is no `answer`.
+    The API adopts the §2 record and its limits, so there is no `v` bump.
+  - The contract's seven host tests, plus a redial on any other close,
+    pass in `crates/drt/tests/signal.rs`,
     against a `wss://` stub with the native client as the browser.
   - Not proven: the real API (not live yet), and a browser rather than
     the native client on this path.
@@ -415,6 +419,6 @@ Each of these edits code `doc/Plan-2026-09.md` §0.2 froze:
     - `record` goes out as an object spliced from the host's own text, and
       comes in as an object or text. dlua's JSON turns `[]` into `{}`, so
       an object is rebuilt field by field.
-    - `replaced` ends `drt start`.
+    - A close in 4000–4099 ends `drt start`.
     - Reconnect policy is the program's, not the connector's: the
       connector reports how a connection ended and never redials.
