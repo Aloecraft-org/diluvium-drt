@@ -1,0 +1,33 @@
+[package]
+name = "drt-ssh-web"
+description = "SSH in a browser: russh compiled to wasm, carried over a WebSocket to the DRT relay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# Everything is wasm-only. A native build of the workspace compiles this
+# crate to nothing, and -- the reason it matters -- never unifies russh's
+# `rsa` feature into the native graph, where the ssh connector's russh lives
+# and is deliberately modern-suite only.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The version ego-transport already resolves, on `ring` for its reasons;
+# `rsa` because servers and appliances that only offer RSA host keys still
+# exist (doc/Plan-0.8.0.md §0.1). Measured: +85 KB raw, +32 KB gzipped.
+russh = { version = "=0.63.1", default-features = false, features = ["ring", "rsa"] }
+tokio = { version = "1", default-features = false, features = ["io-util", "sync"] }
+# PINNED for the reason crates/drt-web gives: the glue's ABI has to match
+# the wasm-bindgen CLI that generates it, and a workspace holds one version.
+wasm-bindgen = "=0.2.127"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["WebSocket", "BinaryType", "MessageEvent", "CloseEvent", "Event"] }
+# The browser backend for every getrandom in the graph: 0.2 through ring,
+# 0.3 through the key types. 0.3 also needs the cfg in .cargo/config.toml.
+getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
+getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+# A panic is a trap on this target; this prints its message first.
+console_error_panic_hook = "0.1"

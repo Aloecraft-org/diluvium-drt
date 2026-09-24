@@ -137,15 +137,20 @@ in those numbers.
 - **Host key trust**: trust on first use, kept in IndexedDB, and an
   optional pinned fingerprint in the link's fragment that must match.
 - **Auth**: an Ed25519 key generated in the page (the user adds its public
-  half to `authorized_keys` once), or password / keyboard-interactive.
+  half to `authorized_keys` once), or a password. Keyboard-interactive is
+  not built; nothing in 0.8.0 needs it.
 - **Retry a 1013.** The device keeps one parked leg and re-parks after a
   claim (`tunnel.rs:685`), so two claims at once give one of them close
   1013 until the pool depth in §5 exists. The client retries with backoff.
-- **Keepalive** from the SSH layer, so the relay's idle close never ends a
-  quiet session.
+- **Keepalive**, so the relay's idle close never ends a quiet session. An
+  SSH keepalive, but on the page's timer: russh's own timers are
+  `tokio::time`, which panics on `wasm32-unknown-unknown` (no clock std
+  can reach), so the module runs none and exposes `keepalive()`.
 
-**The link**: `https://<page>/ssh#relay=wss://…&label=…&k=…&hostkey=SHA256:…`.
-The fragment never reaches whoever serves the page.
+**The link**: `https://<page>/ssh.html#url=<claim URL>&user=<name>&hostkey=SHA256:…`,
+where the claim URL is the one `ProxyCommand` dials,
+`wss://<relay>/s/<label>?k=<caller key>`. The fragment never reaches
+whoever serves the page.
 
 **The CI gate**: one job, one stock OpenSSH `sshd`, one relay, one parked
 device; (a) stock `ssh` over `ProxyCommand`, (b) the page in Playwright
@@ -361,3 +366,35 @@ Each of these edits code `doc/Plan-2026-09.md` §0.2 froze:
     mark, because str0m refuses writes past 128 KiB buffered.
   - UDP `CONNECT` is refused with `0x48`, the one departure from Wisp v1.
   - A browser must cap its wait for ICE gathering; the check uses 2 s.
+- 2026-09-24, **§2 built, not yet in CI**:
+  - `crates/drt-ssh-web`: russh 0.63.1 (`ring`, `rsa`) for
+    `wasm32-unknown-unknown` behind `Ssh.connect / authPassword / authKey /
+    shell / write / resize / keepalive / close` and `generateKey`. The
+    host key is decided between key exchange and authentication: a pin
+    that does not match fails the connect before anything authenticates.
+    Every dependency is wasm-only, so native russh's features are
+    unchanged.
+  - `crates/drt-ssh-web/page/`: `ssh.html`, one file with xterm.js 5.5 and
+    the module inlined (gzip, then base64). TOFU host keys and the page's
+    own key live in IndexedDB; a close 1013 is retried with backoff.
+    `script/drt-ssh-page.sh` builds it. Measured: 861,091 bytes on disk,
+    472,562 gzipped; the module inside is 956,993 bytes.
+  - `page/e2e.mjs` is the §2.2 gate: stock OpenSSH 9.6 sshd, `drt start`
+    as the relay, `drt tunnel --park`, then stock `ssh` over
+    `ProxyCommand`, the page signing in with a pinned key, a resize, a
+    second page and stock `ssh` at once beside the open session, a wrong
+    pin refused with nothing authenticated, TOFU shown and accepted, and
+    `exit 3` reaching the page. **All 7 passed**, with the harness and
+    sshd running as root.
+  - Found since that pass, and fixed but not yet re-run through the page:
+    the connect's failure paths dropped the socket's Rust handlers while
+    the socket could still fire, so Chromium threw "closure invoked after
+    being dropped" on a refused pin. The socket and its handlers are now
+    one value that detaches them on drop, and the e2e gained an eighth
+    check, that no page raised an uncaught error.
+  - **The gate needs a root sshd.** An unprivileged OpenSSH cannot give a
+    pty to the `tty` group or write login records, and closes every pty
+    session; shown with stock `ssh -tt`, so it is sshd, not the page.
+    `e2e.mjs` runs sshd through `sudo -n` when it is not root, with
+    `UsePAM yes`, because a root sshd without PAM refuses a locked
+    account and a fresh CI user's is locked. The CI job is not written.

@@ -23,6 +23,7 @@ members = [
     "crates/drt-bench",
     "crates/drt-web",
     "crates/drt-rtc",
+    "crates/drt-ssh-web",
 ]
 
 [workspace.package]

@@ -1,0 +1,273 @@
+<!doctype html>
+<!--
+  SSH in a browser, over the DRT relay (doc/Plan-0.8.0.md §2). One file:
+  build.mjs inlines xterm.js, the drt-ssh-web module and its glue at the
+  placeholders below, and nothing is fetched at run time.
+
+  The link carries everything in its fragment, which never reaches whoever
+  serves this page:
+
+    ssh.html#url=<the relay claim URL, encoded>&user=<name>[&hostkey=SHA256:…]
+
+  The claim URL is wss://<relay>/s/<label>?k=<caller key>, the same one
+  `ssh -o ProxyCommand="drt tunnel …"` dials. A `hostkey` in the link is a
+  pin: any other key refuses the connection. Without one, the first key
+  seen is shown and trusted on confirmation, and remembered per relay and
+  label; a key that later changes is refused.
+
+  surface block
+  - Entry point: loading the page. With `url` and `user` in the fragment it
+    connects at once; otherwise the form does.
+  - Configurable: RETRIES and RETRY_MS (a claim that finds nothing parked,
+    close 1013, is retried with backoff); KEEPALIVE_MS, how often an idle
+    session says it is alive (the module runs no timers of its own);
+    STORE, the IndexedDB name.
+  - Fan-out: start() is the whole flow -- connect, check the host key,
+    authenticate (this browser's key, then a password), open the shell.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; connect-src ws: wss:">
+<title>SSH</title>
+<style>@@XTERM_CSS@@</style>
+<style>
+  :root { color-scheme: light dark; --bg: #fff; --fg: #1d1d1f; --muted: #6e6e73; --bad: #b3261e; --line: #d2d2d7; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111; --fg: #eee; --muted: #9a9aa0; --bad: #ff6b60; --line: #333; } }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+               font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { display: flex; flex-direction: column; }
+  #status { padding: 6px 12px; border-bottom: 1px solid var(--line); color: var(--muted);
+            white-space: pre-wrap; overflow-wrap: anywhere; }
+  #status.bad { color: var(--bad); }
+  #setup { padding: 16px; max-width: 640px; }
+  #setup label { display: block; margin: 10px 0 4px; color: var(--muted); }
+  #setup input, #setup textarea { width: 100%; box-sizing: border-box; font: inherit; padding: 6px 8px;
+            border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; }
+  #setup textarea { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; height: 4.5em; }
+  #setup button { margin-top: 12px; font: inherit; padding: 6px 14px; border-radius: 6px;
+            border: 1px solid var(--line); background: transparent; color: inherit; cursor: pointer; }
+  #term { flex: 1; min-height: 0; background: #000; padding: 4px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div id="status">Not connected.</div>
+<form id="setup">
+  <label for="url">Relay claim URL</label>
+  <input id="url" name="url" placeholder="wss://relay.example/s/label?k=…" autocomplete="off" required>
+  <label for="user">User</label>
+  <input id="user" name="user" autocomplete="username" required>
+  <button type="submit">Connect</button>
+  <section id="keys">
+    <label>This browser's key</label>
+    <div id="nokey"><button type="button" id="makekey">Create a key</button></div>
+    <div id="haskey" hidden>
+      <textarea id="pub" readonly></textarea>
+      <div id="fpr"></div>
+      <button type="button" id="forgetkey">Forget this key</button>
+    </div>
+  </section>
+</form>
+<div id="term" hidden></div>
+<script>@@XTERM_JS@@</script>
+<script>@@FIT_JS@@</script>
+<script>@@GLUE_JS@@</script>
+<script>
+'use strict';
+const WASM = '@@WASM_GZ_B64@@';
+const RETRIES = 5;
+const RETRY_MS = 250;
+const KEEPALIVE_MS = 20000;
+const STORE = 'drt-ssh';
+
+const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function say(text, bad) {
+  $('status').textContent = text;
+  $('status').className = bad ? 'bad' : '';
+}
+
+// depth: what this browser remembers -- trusted host keys and its own key
+
+const kv = (() => {
+  const memory = new Map();
+  const db = new Promise((ok) => {
+    try {
+      const r = indexedDB.open(STORE, 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('kv');
+      r.onsuccess = () => ok(r.result);
+      r.onerror = () => ok(null);
+    } catch {
+      ok(null);
+    }
+  });
+  const run = async (mode, f) => {
+    const d = await db;
+    if (!d) return f(null);
+    return new Promise((ok, no) => {
+      const r = f(d.transaction('kv', mode).objectStore('kv'));
+      r.onsuccess = () => ok(r.result);
+      r.onerror = () => no(r.error);
+    });
+  };
+  return {
+    get: (k) => run('readonly', (s) => (s ? s.get(k) : { result: memory.get(k) }))
+      .then((v) => v, () => memory.get(k)),
+    set: (k, v) => run('readwrite', (s) => (s ? s.put(v, k) : memory.set(k, v))),
+    del: (k) => run('readwrite', (s) => (s ? s.delete(k) : memory.delete(k))),
+    persistent: db.then(Boolean),
+  };
+})();
+
+// The trust is per relay and label, not per key: the caller key in the
+// query can be rotated without the host key becoming a stranger.
+function place(url) {
+  const u = new URL(url);
+  return `${u.host}${u.pathname}`;
+}
+
+// depth: the module, unpacked from the page itself
+
+async function load() {
+  const gz = Uint8Array.from(atob(WASM), (c) => c.charCodeAt(0));
+  const raw = new Blob([gz]).stream().pipeThrough(new DecompressionStream('gzip'));
+  await wasm_bindgen({ module_or_path: await new Response(raw).arrayBuffer() });
+}
+
+async function showKey() {
+  const key = await kv.get('key');
+  $('nokey').hidden = !!key;
+  $('haskey').hidden = !key;
+  if (key) {
+    $('pub').value = key.publicOpenssh;
+    $('fpr').textContent = key.fingerprint;
+  }
+}
+
+// depth: the session
+
+async function connect(url, pinned) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await wasm_bindgen.Ssh.connect(url, pinned || undefined);
+    } catch (e) {
+      // 1013: right key, nothing parked. The device parks a fresh leg as
+      // soon as another caller claims one, so this is worth a retry.
+      if (e.code === 1013 && attempt < RETRIES) {
+        say(`The device is not home yet; retrying (${attempt + 1}/${RETRIES})…`);
+        await sleep(RETRY_MS * 2 ** attempt);
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
+async function start(url, user, pinned) {
+  say('Connecting…');
+  const ssh = await connect(url, pinned);
+  const where = place(url);
+  const fp = ssh.hostKey;
+  if (!pinned) {
+    const known = await kv.get(`host:${where}`);
+    if (known && known !== fp) {
+      ssh.close();
+      throw new Error(`The host key for ${where} has changed.\nIt was ${known}\nIt is now ${fp}\n` +
+        'Refusing to go on. If you know why it changed, forget the old key in this browser and try again.');
+    }
+    if (!known) {
+      if (!confirm(`First connection to ${where}.\n\nIts host key is\n${fp}\n\nTrust this host?`)) {
+        ssh.close();
+        say('Not trusted; nothing was sent.');
+        return;
+      }
+      await kv.set(`host:${where}`, fp);
+    }
+  }
+
+  say(`Host key ${fp}. Signing in as ${user}…`);
+  let ok = false;
+  const key = await kv.get('key');
+  if (key) ok = await ssh.authKey(user, key.privateOpenssh);
+  if (!ok) {
+    const password = prompt(`Password for ${user}@${where}`);
+    if (password !== null) ok = await ssh.authPassword(user, password);
+  }
+  if (!ok) {
+    ssh.close();
+    throw new Error(`${user} was not accepted.${key ? ' Is this browser\'s key in authorized_keys?' : ''}`);
+  }
+
+  $('setup').hidden = true;
+  $('term').hidden = false;
+  const term = new Terminal({ cursorBlink: true, fontFamily: 'ui-monospace, Menlo, Consolas, monospace' });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open($('term'));
+  fit.fit();
+  const text = new TextEncoder();
+  await ssh.shell(term.cols, term.rows,
+    (bytes) => term.write(bytes),
+    (status) => {
+      clearInterval(beat);
+      say(`Session ended${status === null ? '' : ` (exit ${status})`}.`);
+      window.drtSsh.ended = status;
+    });
+  const beat = setInterval(() => ssh.keepalive().catch(() => {}), KEEPALIVE_MS);
+  term.onData((d) => ssh.write(text.encode(d)));
+  term.onBinary((d) => ssh.write(Uint8Array.from(d, (c) => c.charCodeAt(0))));
+  term.onResize(({ cols, rows }) => ssh.resize(cols, rows));
+  addEventListener('resize', () => fit.fit());
+  term.focus();
+  say(`${user}@${where} · ${fp}`);
+  // For the end-to-end check, and for anyone debugging from the console.
+  window.drtSsh = { ssh, term, fit, ended: undefined };
+}
+
+// depth: the page
+
+(async () => {
+  try {
+    await load();
+  } catch (e) {
+    say(`This browser cannot run the SSH module: ${e.message || e}`, true);
+    return;
+  }
+  if (!(await kv.persistent)) say('This browser will not remember keys or trusted hosts for this page.', true);
+  await showKey();
+
+  $('makekey').onclick = async () => {
+    const k = wasm_bindgen.generateKey(`drt-ssh@${location.host || 'page'} ${new Date().toISOString().slice(0, 10)}`);
+    await kv.set('key', { privateOpenssh: k.privateOpenssh, publicOpenssh: k.publicOpenssh, fingerprint: k.fingerprint });
+    await showKey();
+    say('Key created. Add the public half above to ~/.ssh/authorized_keys on the host.');
+  };
+  $('forgetkey').onclick = async () => {
+    if (confirm('Forget this browser\'s key? Hosts that trust it will stop accepting this browser.')) {
+      await kv.del('key');
+      await showKey();
+    }
+  };
+
+  const go = (url, user, pinned) =>
+    start(url, user, pinned).catch((e) => {
+      $('setup').hidden = false;
+      $('term').hidden = true;
+      say(e.message || String(e), true);
+    });
+  const link = new URLSearchParams(location.hash.slice(1));
+  $('url').value = link.get('url') || '';
+  $('user').value = link.get('user') || '';
+  $('setup').onsubmit = (e) => {
+    e.preventDefault();
+    go($('url').value.trim(), $('user').value.trim(), link.get('hostkey'));
+  };
+  if (link.get('url') && link.get('user')) go(link.get('url'), link.get('user'), link.get('hostkey'));
+  else say('Not connected.');
+})();
+</script>
+</body>
+</html>
