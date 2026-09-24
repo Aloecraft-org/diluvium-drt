@@ -809,6 +809,22 @@ fn request(
     Ok(request)
 }
 
+/// Every address that passed the check, in resolver order, until one
+/// answers. A name with both families (`localhost` is `::1` and
+/// `127.0.0.1` on GitHub's runners) must not fail because the server
+/// listens on only one of them. Each was checked before any dial, so this
+/// opens no rebinding window.
+async fn connect_any(addrs: &[std::net::SocketAddr]) -> Result<tokio::net::TcpStream, String> {
+    let mut last = String::from("connect: no address to try");
+    for addr in addrs {
+        match tokio::net::TcpStream::connect(addr).await {
+            Ok(tcp) => return Ok(tcp),
+            Err(e) => last = format!("connect: {e}"),
+        }
+    }
+    Err(last)
+}
+
 /// Resolve, check every address, connect to one that passed, then TLS:
 /// rest's order, and for rest's reason -- resolving again after the check
 /// is the rebinding window.
@@ -833,19 +849,17 @@ async fn open(dial: &Dial) -> Result<Stream, String> {
             url.host
         ));
     }
-    let Some(addr) = addrs
-        .iter()
-        .copied()
-        .find(|a| dial.scope.permits_address(a.ip()))
-    else {
+    let addrs: Vec<std::net::SocketAddr> = addrs
+        .into_iter()
+        .filter(|a| dial.scope.permits_address(a.ip()))
+        .collect();
+    if addrs.is_empty() {
         return Err(format!(
             "'{}' resolves only into private address space, which this instance was not granted (allow_private)",
             url.host
         ));
-    };
-    let tcp = tokio::net::TcpStream::connect(addr)
-        .await
-        .map_err(|e| format!("connect: {e}"))?;
+    }
+    let tcp = connect_any(&addrs).await?;
     let _ = tcp.set_nodelay(true);
     if !url.tls {
         return Ok(Stream::Plain(tcp));
@@ -1071,4 +1085,25 @@ fn reply(entries: Vec<(&str, rmpv::Value)>) -> rmpv::Value {
             .map(|(k, v)| (rmpv::Value::from(k), v))
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::connect_any;
+
+    /// The first address refuses, the second listens: the dial lands on the
+    /// second, as it must for `localhost` on a runner that lists `::1` first.
+    #[tokio::test]
+    async fn a_refused_address_falls_through_to_the_next() {
+        let listening = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let closed = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap()
+        };
+        let open = listening.local_addr().unwrap();
+        let tcp = connect_any(&[closed, open]).await.unwrap();
+        assert_eq!(tcp.peer_addr().unwrap(), open);
+        let err = connect_any(&[closed]).await.unwrap_err();
+        assert!(err.starts_with("connect: "), "{err}");
+    }
 }

@@ -62,9 +62,17 @@ nothing directed at one browser ever passes through Discofetch.
 
 ## 2. The record
 
-The value of a peer's `rtc` presence field: **a string** holding one JSON
-object. Discofetch treats the field as opaque; the budget is on this
-string.
+One JSON object, carried in two forms, and **a reader accepts both**:
+
+- **An object.** The real Discofetch API (§7.1) sends it this way, in a
+  `peer`'s `record` and in its `rtc` presence field, and the host sends
+  its own `record` this way.
+- **A string** holding the object's JSON text. The M0 mock (§7.2) and
+  the test vectors use it, and a reader must still take it.
+
+Whichever form arrives, the reader checks the same rules below. The
+budget is on the object's compact JSON text: `drt`'s program rebuilds
+that text field by field, never by re-encoding the whole object (§7.1).
 
 ```json
 {"v":1,"u":"Xk3fQ9aBc2Dd7eFg","p":"8bqS0lK1vT6YpR2eWm4nHc","f":"EBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8=","c":["candidate:1 1 udp 2130706431 192.168.1.20 50212 typ host","candidate:2 1 udp 1694498815 203.0.113.7 50212 typ srflx raddr 0.0.0.0 rport 0"]}
@@ -78,7 +86,8 @@ string.
 | `f` | string | SHA-256 of the peer's DTLS certificate: standard base64 (RFC 4648 §4), padded, so exactly 44 characters decoding to 32 bytes. |
 | `c` | array of strings | 0 to 8 candidate lines (§2.1). |
 
-- **At most 512 bytes**, measured as the UTF-8 length of the string.
+- **At most 512 bytes**, measured as the UTF-8 length of the record's
+  JSON text: the string, or an object's compact encoding.
 - **Keys may come in any order**, and a writer emits no whitespace. The
   host writes `v, u, p, f, c` in that order; nothing may depend on it.
 - **Unknown keys are ignored.** A change a v1 reader cannot ignore is
