@@ -95,6 +95,36 @@
       "rtc": "{\"v\":1,\"u\":\"bRwS\",\"p\":\"Zm9vYmFyYmF6cXV4cXV1eA\",\"f\":\"QkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGE=\",\"c\":[\"candidate:842163049 1 udp 1677729535 198.51.100.23 61234 typ srflx raddr 0.0.0.0 rport 0\"]}"
     },
     {
+      "answer_sdp": "v=0\r\no=- 0 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=ice-ufrag:SkipTcpRelay\r\na=ice-pwd:0123456789abcdefghijKL\r\na=fingerprint:sha-256 60:61:62:63:64:65:66:67:68:69:6A:6B:6C:6D:6E:6F:70:71:72:73:74:75:76:77:78:79:7A:7B:7C:7D:7E:7F\r\na=setup:passive\r\na=sctp-port:5000\r\na=max-message-size:262144\r\na=candidate:1 1 udp 2130706430 192.0.2.1 50001 typ host\r\na=end-of-candidates\r\n",
+      "bytes": 314,
+      "decoded": {
+        "c": [
+          "candidate:1 1 udp 2130706430 192.0.2.1 50001 typ host"
+        ],
+        "f_hex": "60:61:62:63:64:65:66:67:68:69:6A:6B:6C:6D:6E:6F:70:71:72:73:74:75:76:77:78:79:7A:7B:7C:7D:7E:7F",
+        "p": "0123456789abcdefghijKL",
+        "u": "SkipTcpRelay"
+      },
+      "mid": "0",
+      "name": "a reader skips a TCP and a relay line, and keeps the UDP one (§2.1)",
+      "rtc": "{\"v\":1,\"u\":\"SkipTcpRelay\",\"p\":\"0123456789abcdefghijKL\",\"f\":\"YGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn8=\",\"c\":[\"candidate:1 1 udp 2130706430 192.0.2.1 50001 typ host\",\"candidate:4 1 udp 41885439 198.51.100.1 3478 typ relay raddr 0.0.0.0 rport 0\",\"candidate:5 1 tcp 1518280447 192.0.2.5 9 typ host tcptype active\"]}"
+    },
+    {
+      "answer_sdp": "v=0\r\no=- 0 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=ice-ufrag:SkipMdns\r\na=ice-pwd:0123456789abcdefghijKL\r\na=fingerprint:sha-256 70:71:72:73:74:75:76:77:78:79:7A:7B:7C:7D:7E:7F:80:81:82:83:84:85:86:87:88:89:8A:8B:8C:8D:8E:8F\r\na=setup:passive\r\na=sctp-port:5000\r\na=max-message-size:262144\r\na=candidate:2 1 UDP 1694498815 203.0.113.7 50212 typ srflx raddr 0.0.0.0 rport 0\r\na=end-of-candidates\r\n",
+      "bytes": 313,
+      "decoded": {
+        "c": [
+          "candidate:2 1 UDP 1694498815 203.0.113.7 50212 typ srflx raddr 0.0.0.0 rport 0"
+        ],
+        "f_hex": "70:71:72:73:74:75:76:77:78:79:7A:7B:7C:7D:7E:7F:80:81:82:83:84:85:86:87:88:89:8A:8B:8C:8D:8E:8F",
+        "p": "0123456789abcdefghijKL",
+        "u": "SkipMdns"
+      },
+      "mid": "0",
+      "name": "a reader skips an mDNS name and a line that does not read as a candidate",
+      "rtc": "{\"v\":1,\"u\":\"SkipMdns\",\"p\":\"0123456789abcdefghijKL\",\"f\":\"cHFyc3R1dnd4eXp7fH1+f4CBgoOEhYaHiImKi4yNjo8=\",\"c\":[\"candidate:1 1 udp 2113937151 3f1a7c2e-0000-4000-8000-000000000000.local 61234 typ host\",\"candidate:not a candidate at all\",\"candidate:2 1 UDP 1694498815 203.0.113.7 50212 typ srflx raddr 0.0.0.0 rport 0\"]}"
+    },
+    {
       "answer_sdp": "v=0\r\no=- 0 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=ice-ufrag:Empty0000\r\na=ice-pwd:AAAAAAAAAAAAAAAAAAAAAA\r\na=fingerprint:sha-256 FF:00:01:02:03:04:05:06:07:08:09:0A:0B:0C:0D:0E:0F:10:11:12:13:14:15:16:17:18:19:1A:1B:1C:1D:1E\r\na=setup:passive\r\na=sctp-port:5000\r\na=max-message-size:262144\r\na=end-of-candidates\r\n",
       "bytes": 110,
       "decoded": {

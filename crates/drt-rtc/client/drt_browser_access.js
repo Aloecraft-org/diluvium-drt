@@ -21,7 +21,7 @@
 //   close(), closed}; Session.connect -> Stream {id, readable, writable,
 //   close(), closed}. And the pure pieces, for a client that drives its own
 //   RTCPeerConnection: `parseRecord`, `recordFromSdp`, `answerSdp`,
-//   `fingerprintHex`, `encodeWisp`, `decodeWisp`.
+//   `fingerprintHex`, `isUsableCandidate`, `encodeWisp`, `decodeWisp`.
 // - Configurable: GATHER_CAP_MS, how long `offer` waits for ICE gathering
 //   before it publishes what it has (§3.1); ACCEPT_TIMEOUT_MS, how long
 //   `accept` waits for the channels, `hello` and the first CONTINUE;
@@ -126,7 +126,9 @@ export function parseRecord(input) {
   for (const line of c) {
     if (!line.startsWith('candidate:') || /[\r\n]/.test(line)) throw new RecordError('Candidate', line);
   }
-  return { v: RECORD_VERSION, u, p, f, c: [...c] };
+  // §2.1: a well-formed line v1 cannot use is skipped, not refused, so no
+  // answer built from this record carries one.
+  return { v: RECORD_VERSION, u, p, f, c: c.filter(isUsableCandidate) };
 }
 
 /**
@@ -151,15 +153,30 @@ export function recordFromSdp(sdp) {
   return parseRecord({ v: RECORD_VERSION, u: get('ice-ufrag'), p: get('ice-pwd'), f: toBase64(fromHex(fp[1])), c });
 }
 
-/** §2.1: the line as a record carries it, or null when it is skipped. */
+/**
+ * Whether v1 can use a candidate line (§2.1): it reads as RFC 8839 §5.1
+ * through `typ <type>`, over UDP, of type host, srflx or prflx (never
+ * relay: v1 has no TURN), at an address that is not an mDNS `.local`
+ * name. Trailing extensions are allowed. The same rule as
+ * crates/drt-rtc/src/record.rs's `usable_candidate`.
+ */
+export function isUsableCandidate(line) {
+  if (typeof line !== 'string' || !line.startsWith('candidate:')) return false;
+  const t = line.slice('candidate:'.length).split(/[ \t\n\r\f]+/).filter(Boolean);
+  if (t.length < 8 || t[6] !== 'typ') return false;
+  const numeric = (s) => /^[0-9]+$/.test(s);
+  return numeric(t[1]) && numeric(t[3]) && numeric(t[5]) && Number(t[5]) <= 65535
+    && t[2].toLowerCase() === 'udp'
+    && ['host', 'srflx', 'prflx'].includes(t[7].toLowerCase())
+    && !t[4].toLowerCase().endsWith('.local');
+}
+
+/** §2.1, for the writer: the line as a record carries it, or null. */
 function usableCandidate(line) {
-  const m = line.match(/^(candidate:\S+ \d+ (\S+) \d+ (\S+) \d+ typ (\S+)(?: raddr \S+ rport \d+)?)/i);
-  if (!m) return null;
-  const [, kept, proto, addr, typ] = m;
-  if (proto.toLowerCase() !== 'udp') return null;
-  if (!['host', 'srflx', 'prflx'].includes(typ.toLowerCase())) return null;
-  if (addr.toLowerCase().endsWith('.local')) return null;
-  return kept;
+  if (!isUsableCandidate(line)) return null;
+  // Everything after `typ <type>` and its `raddr`/`rport` is stripped: the
+  // extensions are what would push a record past its budget.
+  return line.match(/^candidate:\S+ \d+ \S+ \d+ \S+ \d+ typ \S+(?: raddr \S+ rport \d+)?/i)[0];
 }
 
 /** The fingerprint as SDP spells it: upper-case hex pairs joined by ":". */

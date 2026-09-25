@@ -157,6 +157,17 @@ is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
   than an empty one. `diluvium_version` is still stated, because
   0.17.1 has no `dv_version()`.
 
+### Fixed
+
+- **Browser access readers skip the candidate lines §2.1 says they
+  skip** (issue #38). `Record::decode` and the client library's
+  `parseRecord` kept every `candidate:` line, so a TCP or relay line
+  in a record reached the answer SDP a browser applies. Both now drop
+  a line that is not UDP, not `host`/`srflx`/`prflx`, names an mDNS
+  `.local` address, or does not read as a candidate; the size and
+  count limits still apply to the record as received. The vectors
+  gain two records with such lines, and their expected answers.
+
 ### Known issues
 
 - **`numeric.max_elements = 0` is not handed to the core.** Here a

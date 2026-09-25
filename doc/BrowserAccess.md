@@ -97,7 +97,8 @@ that text field by field, never by re-encoding the whole object (§7.1).
 - **Unknown keys are ignored.** A change a v1 reader cannot ignore is
   `v: 2`, not a new key.
 - A record that breaks a rule above is refused whole. A candidate line
-  that parses but cannot be used is skipped, not refused (§2.1).
+  that starts `candidate:` but cannot be used is skipped, not refused
+  (§2.1). The budget and the 8-line count are the record's as received.
 
 ### 2.1 Candidate lines
 
@@ -116,6 +117,17 @@ Exactly the string `RTCIceCandidate.candidate` yields: it starts with
   resolve them and does not need them: the browser is controlling, its
   checks reach the host, and the host learns the browser's address from
   them as a peer-reflexive candidate.
+- **What a reader keeps.** A line is kept when it reads as RFC 8839 §5.1
+  through `typ <type>` (numeric component, priority and port, the port at
+  most 65535), its transport is `udp`, its type is `host`, `srflx` or
+  `prflx`, and its address does not end `.local`, all compared without
+  case. Every other line is dropped on the way in, so no answer a browser
+  builds (§3.2) and no session a host builds (§3.3) sees one. Trailing
+  extensions do not make a line unusable. `usable_candidate` in
+  `crates/drt-rtc/src/record.rs` and `isUsableCandidate` in the client
+  library (§9) are this rule, held to the same cases, and the vectors
+  carry records with lines a reader skips: their `decoded` and
+  `answer_sdp` are what is left.
 - **The host's `srflx` lines carry `raddr 0.0.0.0 rport 0`**, as
   browsers' do, so a host that publishes only its public candidates
   (`doc/Plan-0.8.0.md` §3.4) does not leak its LAN address through them.

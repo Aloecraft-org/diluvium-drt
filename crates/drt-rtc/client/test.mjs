@@ -15,7 +15,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  parseRecord, recordFromSdp, answerSdp, fingerprintHex, encodeWisp, decodeWisp,
+  parseRecord, recordFromSdp, answerSdp, fingerprintHex, isUsableCandidate, encodeWisp, decodeWisp,
   RecordError, StreamClosed, WISP, DATA_MAX,
 } from './drt_browser_access.js';
 
@@ -32,7 +32,10 @@ test('every valid record parses from its text and from its object, and answers b
       assert.equal(fingerprintHex(r.f), v.decoded.f_hex, v.name);
       assert.equal(answerSdp(form, v.mid), v.answer_sdp, v.name);
     }
-    assert.equal(JSON.stringify(parseRecord(v.rtc)), v.rtc, `${v.name}: re-encodes to the same text`);
+    // A record that has been read reads the same again: the §2.1 skip
+    // happens once, on the way in.
+    const once = parseRecord(v.rtc);
+    assert.deepEqual(parseRecord(JSON.stringify(once)), once, `${v.name}: reads the same twice`);
   }
 });
 
@@ -74,6 +77,28 @@ test('a browser record from its local description keeps only what §2.1 allows',
   const got = recordFromSdp(sdp);
   assert.equal(JSON.stringify(got), v.rtc);
   assert.equal(Buffer.byteLength(JSON.stringify(got)), v.bytes);
+});
+
+test('a candidate is usable only as §2.1 says, by the same rule as the host', () => {
+  const yes = [
+    'candidate:1 1 udp 2130706431 192.168.1.20 50212 typ host',
+    'candidate:2 1 UDP 1694498815 203.0.113.7 50212 typ srflx raddr 0.0.0.0 rport 0',
+    'candidate:3 1 udp 1845501695 198.51.100.9 4000 typ prflx',
+    'candidate:4 1 udp 2130706431 fd00::1 50212 typ host generation 0',
+  ];
+  const no = [
+    'candidate:1 1 tcp 1518280447 192.0.2.5 9 typ host tcptype active',
+    'candidate:1 1 udp 41885439 198.51.100.1 3478 typ relay raddr 0.0.0.0 rport 0',
+    'candidate:1 1 udp 2113937151 x.local 61234 typ host',
+    'candidate:1 1 udp 2130706431 192.0.2.1 +5 typ host',
+    'candidate:1 1 udp 2130706431 192.0.2.1 70000 typ host',
+    'candidate:1 1 udp 2130706431 192.0.2.1 5000 host',
+    'candidate:1 x udp 2130706431 192.0.2.1 5000 typ host',
+    'candidate:not a candidate',
+    'a=candidate:1 1 udp 2130706431 192.0.2.1 5000 typ host',
+  ];
+  for (const l of yes) assert.ok(isUsableCandidate(l), l);
+  for (const l of no) assert.ok(!isUsableCandidate(l), l);
 });
 
 test('a local description without a sha-256 fingerprint is refused, not published', () => {

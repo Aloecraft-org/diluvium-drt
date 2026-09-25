@@ -243,6 +243,16 @@ releases:
       are tables, functions, userdata or coroutines visits them in
       creation order. A program that scraped the hex out of `tostring` was
       scraping an address; `string.format("%p")` still gives one.
+    fixed:
+      - |
+        **Browser access readers skip the candidate lines §2.1 says they
+        skip** (issue #38). `Record::decode` and the client library's
+        `parseRecord` kept every `candidate:` line, so a TCP or relay line
+        in a record reached the answer SDP a browser applies. Both now drop
+        a line that is not UDP, not `host`/`srflx`/`prflx`, names an mDNS
+        `.local` address, or does not read as a candidate; the size and
+        count limits still apply to the record as received. The vectors
+        gain two records with such lines, and their expected answers.
     known_issues:
       - |
         **`numeric.max_elements = 0` is not handed to the core.** Here a

@@ -112,6 +112,8 @@ export function parseRecord(input: string | object): BrowserAccessRecord;
 export function recordFromSdp(sdp: string): BrowserAccessRecord;
 export function answerSdp(hostRecord: string | object, mid: string): string;
 export function fingerprintHex(f: string): string;
+/** Whether v1 can use a candidate line (§2.1); parseRecord drops the rest. */
+export function isUsableCandidate(line: string): boolean;
 
 export interface WispPacket {
   type: number;
