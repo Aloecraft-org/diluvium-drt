@@ -111,6 +111,16 @@ releases:
       is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
     added:
       - |
+        **A determinism corpus, run on every target DRT ships**
+        (`tests/determinism/`). diluvium's own numeric corpus, vendored
+        unchanged, plus DRT's: what every profile answers the same (integer
+        arithmetic, float printing, the default random seed, iteration over
+        scalar keys, sort with ties, floats through `json` and `msgpack`),
+        and what holds wherever the core carries `numeric` (`math` and `^`
+        through the vendored libm, iteration over table and function
+        keys). CI runs it natively on `full` and `slim`, through wasmtime
+        and in Chromium, with one expected output per corpus.
+      - |
         **SSH in a browser, over the relay** (`doc/Plan-0.8.0.md` §2).
         `ssh.html` is one static file, shipped with every release and dev
         build: an SSH client (russh, compiled to wasm) and a terminal
@@ -246,6 +256,25 @@ releases:
         Chromium connects to it, several sessions at once, through
         `drt start` and a signaling program; nothing has yet crossed a NAT,
         and server-reflexive gathering has not met a real STUN server.
+      - |
+        **Hibernation changes `pairs` order over table and function
+        keys.** The core's snapshot does not carry the identities those
+        keys hash by, so a restored instance iterates an untouched table
+        in a different order, and the objects it makes after waking get
+        offset identities. Scalar keys are unaffected. Pinned by a test
+        and reported upstream (`doc/Snapshot-Identity-Upstream.md`).
+      - |
+        **Without `numeric`, `math` and `^` are the platform's.** `slim`
+        and `wasi` keep the platform libm, so their float results are not
+        guaranteed across targets: native `slim` on glibc answers
+        `math.atan(π)` one bit away from the `numeric` builds. And
+        iteration over table and function keys differs between builds
+        with and without `numeric`. The claim, tier by tier, is
+        `tests/determinism/README.md`.
+      - |
+        **`json` turns `-0.0` into the integer `0`.** The core writes an
+        integral float without a fraction, and `-0` decodes as an integer.
+        Same on every target; `msgpack` keeps sign and subtype.
 
   - version: 0.7.0
     tag: v0.7.0

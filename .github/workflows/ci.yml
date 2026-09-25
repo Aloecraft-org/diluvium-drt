@@ -189,6 +189,16 @@ jobs:
           set -eu
           cargo build --release --features full
           cd examples && DRT="$GITHUB_WORKSPACE/target/release/drt" ./run-all.sh
+      # tests/determinism/README.md: one expected.txt per corpus, and every
+      # target DRT ships must print it. `full` natively here; `slim` beside
+      # it, because it is a shipped binary with a different core feature
+      # set; the browser and wasmtime jobs run the same directory.
+      - name: The determinism corpus, natively (full and slim)
+        run: |
+          set -eu
+          EXAMPLES_DIR=tests/determinism DRT="$GITHUB_WORKSPACE/target/release/drt" examples/run-all.sh
+          cargo build --release -p drt --target-dir target/slim
+          EXAMPLES_DIR=tests/determinism DRT="$GITHUB_WORKSPACE/target/slim/release/drt" examples/run-all.sh
       - name: Build without default features
         run: cargo build --workspace --no-default-features
 
@@ -283,6 +293,9 @@ jobs:
       - name: The examples gate, in Chromium
         working-directory: crates/drt-web/browser-test
         run: npm test
+      - name: The determinism corpus, in Chromium
+        working-directory: crates/drt-web/browser-test
+        run: EXAMPLES_DIR="$GITHUB_WORKSPACE/tests/determinism" node run.mjs
 
   browser-access-client:
     # The browser access client library (crates/drt-rtc/client/) in
@@ -421,6 +434,8 @@ jobs:
           grep -q '^profile: wasi$' "$RUNNER_TEMP/buildinfo.txt"
       - name: The examples gate, through wasmtime
         run: cd examples && DRT="$GITHUB_WORKSPACE/script/drt-wasip2.sh" ./run-all.sh
+      - name: The determinism corpus, through wasmtime
+        run: EXAMPLES_DIR=tests/determinism DRT="$GITHUB_WORKSPACE/script/drt-wasip2.sh" examples/run-all.sh
 
   windows:
     # The Windows code, run on Windows. Nothing did that until this job:

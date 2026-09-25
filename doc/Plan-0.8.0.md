@@ -455,3 +455,22 @@ Each of these edits code `doc/Plan-2026-09.md` §0.2 froze:
   - Proven here as root only. On a runner the gate runs as `runner` and
     starts sshd through `sudo -n`, with `UsePAM yes` for the locked
     account: that path is exercised first by CI.
+- 2026-09-25, **the determinism corpus** (`tests/determinism/`), run by
+  the native, wasmtime and Chromium gates through a new `EXAMPLES_DIR`,
+  and natively on `slim` too. What it measured:
+  - diluvium's numeric corpus is bit-identical through `drt` on native
+    `full` and in Chromium (`web`), 103 of 103 lines.
+  - `02-exact` agrees on all four builds: native `full` and `slim`,
+    `wasi` under wasmtime, `web` in Chromium.
+  - Two things hold only with `numeric`, by the core's design: `math`
+    and `^` (native `slim` differs from the rest in one bit of
+    `math.atan(π)`), and iteration over table and function keys (a
+    rotation between builds with and without the feature).
+  - Hibernation changes iteration over table and function keys: the
+    snapshot does not carry key identities. Pinned by a twin test in
+    `crates/drt-swarm/tests/swarm.rs`; `doc/Snapshot-Identity-Upstream.md`
+    is the report.
+  - `json` turns `-0.0` into the integer `0`; pinned in `02-exact`.
+  - Not covered: Windows, macOS and arm64, which CI builds but only the
+    release's Windows smoke runs; and release native builds are musl
+    where this machine's `slim` is glibc.

@@ -1,0 +1,67 @@
+-- The reproducible corpus: what holds on every target only when the core
+-- carries `numeric` (full and web today).
+--
+-- Without the feature diluvium keeps the platform's libm under `math` and
+-- `^` (src/dlibm.c, src/luaconf.h), so those bits are the platform's; and
+-- the identity a table or function key hashes by counts every object the
+-- state made before the program started, which the feature's own setup
+-- adds to, so iteration over such keys agrees only between builds with
+-- the same core features. Both are stated in the README, and 02-exact
+-- holds everywhere.
+--
+-- ## surface block
+--
+-- - Entry point: this file, under `drt run` (tests/determinism/README.md).
+-- - Configurable: INPUTS, the float arguments the math section runs over.
+-- - Fan-out: one `say` per observable, grouped into the numbered sections
+--   below; a new observable is one more `say`.
+
+local INPUTS = {0.1, 0.5, 1.0, 2.0, 3.141592653589793, 10.0, 1e-300, 1e300, 123.456}
+
+local function say(name, s) print(name .. ": " .. s) end
+local function fbits(x) return ("%016x"):format(string.unpack("<I8", string.pack("<d", x))) end
+local function list(t, f)
+  local out = {}
+  for k = 1, #t do out[k] = f(t[k]) end
+  return table.concat(out, " ")
+end
+
+-- depth: 1. math, from the vendored libm, over fixed inputs
+for _, fn in ipairs{"exp", "log", "sin", "cos", "tan", "asin", "acos", "atan", "sqrt", "floor", "ceil"} do
+  say("math." .. fn, list(INPUTS, function(x)
+    local ok, v = pcall(math[fn], fn:match("^a[sc]") and x / 1e300 or x)
+    return ok and fbits(v) or "error"
+  end))
+end
+say("math.log2", list(INPUTS, function(x) return fbits(math.log(x, 2)) end))
+say("math.atan2", list(INPUTS, function(x) return fbits(math.atan(x, 0.7)) end))
+say("math.fmod", list(INPUTS, function(x) return fbits(math.fmod(x, 0.3)) end))
+
+-- depth: 2. `^`, which compiles to OP_POW and must not reach the platform's pow
+say("pow", list(INPUTS, function(x) return fbits(x ^ 0.37) end))
+local folded = 2.5 ^ 1.7
+local b = 1.7
+say("pow.folded_vs_runtime", fbits(folded) .. " " .. fbits(2.5 ^ b))
+say("pow.int", list({2, 3, 7, 10}, function(x) return fbits(x ^ 10) end))
+
+-- depth: 3. iteration over reference keys
+-- Table and function keys hash by an identity taken at creation. Which
+-- identity a table gets depends on everything created before it, the
+-- stdlib's setup included, so this line is the one that says whether that
+-- setup is the same on every target.
+local tkeys = {}
+for n = 1, 8 do
+  local t = {n = n}
+  tkeys[t] = true
+end
+local order = {}
+for k in pairs(tkeys) do order[#order + 1] = tostring(k.n) end
+say("pairs.tables", table.concat(order, " "))
+local fkeys = {}
+for n = 1, 8 do fkeys[function() return n end] = n end
+order = {}
+for f, n in pairs(fkeys) do order[#order + 1] = tostring(n) end
+say("pairs.functions", table.concat(order, " "))
+local a, b2 = {}, {}
+say("identity.step", tostring(tonumber(tostring(b2):match("#(%d+)")) - tonumber(tostring(a):match("#(%d+)"))))
+

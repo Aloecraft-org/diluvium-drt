@@ -1,0 +1,7 @@
+{
+  "name": "01-numeric",
+  "teaches": "diluvium's own cross-target corpus (test/numeric/corpus.lua at the pinned core, vendored unchanged): the array kernels and the vendored libm, printed as IEEE bits, against diluvium's own expected.txt.",
+  "cmd": "drt run corpus.lua",
+  "needs_network": false,
+  "needs_features": ["numeric"]
+}

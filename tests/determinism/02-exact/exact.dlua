@@ -1,0 +1,71 @@
+-- The exact corpus: what every profile gives the same answer to (slim,
+-- wasi, web, full), so one expected.txt must hold on every target DRT
+-- ships.
+--
+-- Floats are printed as IEEE bits, never as decimals, except in the one
+-- section that is about printing itself. Everything here is something a
+-- program can observe, so a line that differs between two targets is a
+-- program that behaves differently on them. What only holds with the
+-- core's `numeric` feature -- `math`, `^`, and iteration over table and
+-- function keys -- is in 03-reproducible instead.
+--
+-- ## surface block
+--
+-- - Entry point: this file, under `drt run` (tests/determinism/README.md).
+-- - Configurable: none.
+-- - Fan-out: one `say` per observable, grouped into the numbered sections
+--   below; a new observable is one more `say`.
+
+local function say(name, s) print(name .. ": " .. s) end
+local function fbits(x) return ("%016x"):format(string.unpack("<I8", string.pack("<d", x))) end
+local function list(t, f)
+  local out = {}
+  for k = 1, #t do out[k] = f(t[k]) end
+  return table.concat(out, " ")
+end
+
+-- depth: 1. integer arithmetic, which is exact by construction
+say("int.wrap", tostring(math.maxinteger + 1) .. " " .. tostring(math.mininteger - 1))
+say("int.idiv", list({-7, 7}, function(x) return tostring(x // 2) .. "," .. tostring(x // -2) end))
+say("int.mod", list({-7, 7}, function(x) return tostring(x % 3) .. "," .. tostring(x % -3) end))
+say("int.shift", tostring(1 << 63) .. " " .. tostring(-1 >> 1) .. " " .. tostring(1 << 64))
+say("int.tofloat", list({2^53, 2^53 + 1, -2^63}, function(x) return tostring(math.tointeger(x)) end))
+
+-- depth: 2. printing: the one section about decimal text, because a
+-- program prints and a person reads it
+say("tostring", list({0.1, 1/3, 1e300, 1e-300, -0.0, 2^53, 100.0, 1.5}, tostring))
+say("format.g", list({0.1, 1/3, 1e21}, function(x) return ("%.17g"):format(x) end))
+say("format.a", ("%a"):format(0.1))
+say("tonumber", list({"0.1", "1e-5", "0x1p-3", " 12 "}, function(s) return fbits(tonumber(s)) end))
+
+-- depth: 3. randomness with the default seed, and with a stated one
+say("random.default", tostring(math.random(1, 1000000)) .. " " .. fbits(math.random()))
+math.randomseed(42)
+say("random.seed42", tostring(math.random(1, 1000000)) .. " " .. fbits(math.random()))
+
+-- depth: 4. iteration order
+local strings = {}
+for _, k in ipairs{"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"} do strings[k] = true end
+local order = {}
+for k in pairs(strings) do order[#order + 1] = k end
+say("pairs.strings", table.concat(order, " "))
+
+local mixed = {10, 20, 30, x = 1, y = 2, [2.5] = 3, [true] = 4, [-1] = 5}
+order = {}
+for k in pairs(mixed) do order[#order + 1] = tostring(k) end
+say("pairs.mixed", table.concat(order, " "))
+
+-- depth: 5. sort with ties, where the algorithm's order shows
+local rows = {}
+for n = 1, 12 do rows[n] = {key = n % 3, id = n} end
+table.sort(rows, function(p, q) return p.key < q.key end)
+say("sort.ties", list(rows, function(r) return tostring(r.id) end))
+
+-- depth: 6. floats through the two encodings a message crosses
+-- JSON's -0.0 comes back +0 (an integer, too): djson writes an integral
+-- float without a fraction, so `-0` decodes as the integer 0. Pinned here
+-- as the core behaves today; msgpack keeps the sign.
+local samples = {0.1, 1/3, 1e300, 5e-324, -0.0, 2^53 + 1.0}
+say("json.roundtrip", list(samples, function(x) return fbits(json.decode(json.encode({v = x})).v) end))
+say("json.text", json.encode({0.1, 1/3, 1e300}))
+say("msgpack.roundtrip", list(samples, function(x) return fbits(msgpack.decode(msgpack.encode({v = x})).v) end))
