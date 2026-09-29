@@ -63,6 +63,10 @@ pub mod stun;
 mod testfs;
 #[cfg(feature = "tunnel")]
 pub mod tunnel;
+// `drt tunnel rtc:…`: the caller's side of a WebRTC session as a
+// ProxyCommand (doc/ssh-transport-matrix.md, rows 3 and 6).
+#[cfg(all(feature = "tunnel", feature = "webrtc"))]
+pub mod tunnel_rtc;
 #[cfg(feature = "turn")]
 pub mod turn;
 #[cfg(feature = "wireguard")]

@@ -22,7 +22,10 @@
 //!   - [`scope`]: what a `CONNECT` may reach, before and after resolution.
 //!   - [`identity`]: the credentials and certificate kept across restarts.
 //!   - [`host`]: the socket, the sessions, the Wisp server, the splice.
+//!   - [`caller`]: the caller's side, natively (§10.1): a record, a
+//!     connection to an answerer, and Wisp streams it opens.
 
+pub mod caller;
 pub mod host;
 pub mod identity;
 pub mod record;

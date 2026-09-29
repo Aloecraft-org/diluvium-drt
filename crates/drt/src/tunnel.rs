@@ -113,6 +113,14 @@ pub enum Mode {
     /// `drt tunnel --park <url> --to <target>`: the device side of the
     /// relay, dialing `to` lazily when a caller claims the leg.
     Park { park: String, to: String },
+    /// `drt tunnel rtc:<source> [--to <service or host:port>]`: stdio over
+    /// a WebRTC session instead of a relay (`crate::tunnel_rtc`). `to`
+    /// defaults to the service `ssh`.
+    #[cfg(feature = "webrtc")]
+    Rtc {
+        source: crate::tunnel_rtc::Source,
+        to: String,
+    },
 }
 
 /// `drt tunnel`'s flags, as typed. Each is one key of the `tunnel` block
@@ -304,8 +312,12 @@ pub fn resolve(file: Option<&drt_config::TunnelConfig>, flags: &Flags) -> Result
         )),
     };
     let mode = match (claim, park, listen) {
+        (Some((claim, _)), None, None) if claim.starts_with("rtc:") => {
+            belongs("bind", "a relay `claim`", &bind)?;
+            rtc_mode(&claim, to.map(|(t, _)| t))?
+        }
         (Some((claim, _)), None, None) => {
-            belongs("to", "`park` or `listen`", &to)?;
+            belongs("to", "`park`, `listen` or an `rtc:` claim", &to)?;
             match bind {
                 Some((bind, _)) => Mode::Local { claim, bind },
                 None => Mode::Stdio { claim },
@@ -360,7 +372,27 @@ pub async fn run(
         Mode::Local { claim, bind } => local_to_ws(&bind, &claim, extra_roots, headers).await,
         Mode::Listen { listen, to } => ws_to_tcp(&listen, &to).await,
         Mode::Park { park: url, to } => park(&url, &to, extra_roots, headers).await,
+        #[cfg(feature = "webrtc")]
+        Mode::Rtc { source, to } => {
+            crate::tunnel_rtc::stdio(&source, &to, extra_roots, headers).await
+        }
     }
+}
+
+/// An `rtc:` claim, as a mode: its source read now, so a file that is not
+/// there or a URL that is not one is refused before anything is dialed.
+#[cfg(feature = "webrtc")]
+fn rtc_mode(claim: &str, to: Option<String>) -> Result<Mode, String> {
+    let rest = &claim["rtc:".len()..];
+    Ok(Mode::Rtc {
+        source: crate::tunnel_rtc::Source::parse(rest).map_err(|e| format!("tunnel: {e}"))?,
+        to: to.unwrap_or_else(|| "ssh".to_string()),
+    })
+}
+
+#[cfg(not(feature = "webrtc"))]
+fn rtc_mode(_claim: &str, _to: Option<String>) -> Result<Mode, String> {
+    Err("tunnel: an `rtc:` claim needs a build with `webrtc` (`full` has it)".into())
 }
 
 /// Dial a `ws://` or `wss://` URL, trusting `extra_roots` beside the
@@ -913,5 +945,48 @@ mod tests {
             shown("ws://127.0.0.1:18490/s/fp?"),
             "ws://127.0.0.1:18490/s/fp?…"
         );
+    }
+
+    /// `rtc:` picks the WebRTC caller: `--to` is its target and defaults
+    /// to the service `ssh`, and `--local` is a relay claim's alone.
+    #[cfg(feature = "webrtc")]
+    #[test]
+    fn an_rtc_claim_is_its_own_mode() {
+        use super::{resolve, Flags, Mode};
+        use crate::tunnel_rtc::Source;
+        let flags = |url: &str, to: Option<&str>, local: Option<&str>| Flags {
+            url: Some(url.into()),
+            to: to.map(Into::into),
+            local: local.map(Into::into),
+            ..Flags::default()
+        };
+        let mode = |f: Flags| resolve(None, &f).map(|r| r.mode);
+        assert_eq!(
+            mode(flags("rtc:https://box.example/session", None, None)),
+            Ok(Mode::Rtc {
+                source: Source::Post("https://box.example/session".into()),
+                to: "ssh".into()
+            })
+        );
+        let record = r#"{"v":1,"u":"abcd","p":"0123456789abcdefghijKL","f":"x","c":[]}"#;
+        assert_eq!(
+            mode(flags(&format!("rtc:{record}"), Some("127.0.0.1:22"), None)),
+            Ok(Mode::Rtc {
+                source: Source::Record(record.into()),
+                to: "127.0.0.1:22".into()
+            })
+        );
+        let e = mode(flags(
+            "rtc:https://box.example/session",
+            None,
+            Some("127.0.0.1:2222"),
+        ))
+        .unwrap_err();
+        assert!(e.contains("belongs with a relay `claim`"), "{e}");
+        let e = mode(flags("rtc:/no/such/record.json", None, None)).unwrap_err();
+        assert!(e.contains("not a file that reads"), "{e}");
+        // A relay claim still refuses `to`, and says an rtc: claim takes it.
+        let e = mode(flags("wss://relay.example/s/box", Some("ssh"), None)).unwrap_err();
+        assert!(e.contains("an `rtc:` claim"), "{e}");
     }
 }

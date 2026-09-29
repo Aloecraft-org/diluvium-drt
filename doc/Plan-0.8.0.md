@@ -513,3 +513,9 @@ Each of these edits code `doc/Plan-2026-09.md` §0.2 froze:
   service `ssh`, reached from another page's `ssh.html` module over
   WebRTC, gated in the browser suite. Stage 3, the native caller
   (`drt tunnel rtc:`, rows 3 and 6), is next.
+- 2026-09-29, **stage 3a: `drt tunnel rtc:`** (row 3). `drt_rtc::caller`
+  is the caller natively, and `drt tunnel` takes `rtc:` with a record, a
+  file or an `http(s)://` endpoint. Stock `ssh` reaches a stock sshd
+  through it, in direct mode and through `examples/29-browser-access`.
+  Stage 3b is row 6: a page answering a native caller needs signaling a
+  page can take part in, since a page cannot host the endpoint.

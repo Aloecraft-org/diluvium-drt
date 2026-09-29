@@ -339,7 +339,11 @@ pub enum Command {
     /// fresh leg per accepted connection, which is how a program reaches
     /// a parked device. With --listen/--to: accept WebSocket connections
     /// and bridge each to a TCP target, in front of any sshd. With
-    /// --park/--to: the device side of the relay.
+    /// --park/--to: the device side of the relay. With `rtc:` in place of
+    /// the URL: the same stdio over a WebRTC session, no relay -- the
+    /// answerer's record (a file, or the JSON itself, for a host in direct
+    /// mode) or an http(s):// endpoint to POST this caller's record to --
+    /// and --to naming the service or host:port to reach, `ssh` if omitted.
     ///
     /// Every flag is also a key of the `tunnel` block in --config, under
     /// the block's name (the URL is `claim`, --local is `bind`), so the
@@ -348,7 +352,8 @@ pub enum Command {
     /// refused as the conflict it is.
     #[cfg(feature = "tunnel")]
     Tunnel {
-        /// The wss:// or ws:// URL to bridge stdio to.
+        /// The wss:// or ws:// URL to bridge stdio to, or `rtc:` and a
+        /// record, a file holding one, or an http(s):// signaling endpoint.
         url: Option<String>,
         /// With a URL: bind this local address instead of using stdio,
         /// and give each accepted connection its own fresh leg to the URL

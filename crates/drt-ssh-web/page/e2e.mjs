@@ -155,7 +155,8 @@ fs.writeFileSync(path.join(tmp, 'direct.dlua'), [
 fs.writeFileSync(path.join(tmp, 'direct.json'), JSON.stringify({
   program: { path: path.join(tmp, 'direct.dlua') },
   webrtc: { bind: `127.0.0.1:${PORTS.direct}`, identity_file: path.join(tmp, 'direct-identity.json'),
-            direct: true, scope: [`ssh://127.0.0.1:${PORTS.sshd}`] },
+            direct: true, scope: [`ssh://127.0.0.1:${PORTS.sshd}`],
+            services: { ssh: `ssh://127.0.0.1:${PORTS.sshd}` } },
 }));
 // The example's program under a config of the harness's: the same
 // listener and block, on the harness's ports, with the test sshd in scope.
@@ -191,11 +192,11 @@ http.createServer((req, res) => {
 const pageUrl = `http://127.0.0.1:${PORTS.page}/ssh.html`;
 const rtcUrl = `http://127.0.0.1:${PORTS.page}/rtc.html`;
 
-function nativeSsh(command) {
+function nativeSsh(command, proxy = `${DRT} tunnel ${claim}`) {
   return new Promise((ok) => {
     const c = spawn('ssh', ['-F', '/dev/null', '-i', client, '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes',
       '-o', `UserKnownHostsFile=${tmp}/known_hosts`, '-o', 'StrictHostKeyChecking=accept-new',
-      '-o', `ProxyCommand=${DRT} tunnel ${claim}`, `${USER}@${LABEL}`, command]);
+      '-o', `ProxyCommand=${proxy}`, `${USER}@${LABEL}`, command]);
     let out = '';
     let err = '';
     c.stdout.on('data', (d) => (out += d));
@@ -424,6 +425,27 @@ await check('the shipped page, CSP and all, follows a direct-mode link to a shel
   const ended = await until('the end', () => p.evaluate(() => window.drtSsh.ended));
   if (ended !== 7) throw new Error(`ended with ${ended}`);
   await p.close();
+});
+
+// depth: the native caller, `drt tunnel rtc:` (rows 3 and 6 of the matrix)
+
+await check('stock ssh through ProxyCommand="drt tunnel rtc:<record>" reaches the named service ssh', async () => {
+  const file = path.join(tmp, 'direct.record.json');
+  fs.writeFileSync(file, directRecord);
+  const r = await nativeSsh('echo rtc-direct-ok', `${DRT} tunnel rtc:${file}`);
+  if (r.code !== 0 || !r.out.includes('rtc-direct-ok')) throw new Error(`exit ${r.code}\n${r.err}`);
+  if (!directHost.lines.some((l) => /^session direct:\S+ connected$/.test(l))) throw new Error('the host saw no direct session');
+});
+
+await check('stock ssh through "drt tunnel rtc:http://…/session" signals through examples/29 and reaches sshd', async () => {
+  const r = await nativeSsh('echo rtc-posted-ok',
+    `${DRT} tunnel rtc:http://127.0.0.1:${PORTS.post}/session --to 127.0.0.1:${PORTS.sshd}`);
+  if (r.code !== 0 || !r.out.includes('rtc-posted-ok')) throw new Error(`exit ${r.code}\n${r.err}`);
+});
+
+await check('drt tunnel rtc: names why a stream was refused', async () => {
+  const r = await nativeSsh('true', `${DRT} tunnel rtc:${path.join(tmp, 'direct.record.json')} --to telnet`);
+  if (r.code === 0 || !r.err.includes('blocked (0x48)')) throw new Error(`exit ${r.code}\n${r.err}`);
 });
 
 await check('no page raised an uncaught error', async () => {

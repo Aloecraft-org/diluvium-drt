@@ -111,6 +111,21 @@ releases:
       is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
     added:
       - |
+        **`drt tunnel rtc:`**, the relay's `ProxyCommand` over WebRTC
+        instead (row 3 of `doc/ssh-transport-matrix.md`). The process is
+        the caller in a browser access session and moves stdio over one
+        stream; nothing between the ends carries a byte.
+        - `rtc:<record>` or `rtc:<file>`: the answerer's record in hand,
+          for a host in direct mode. No signaling at all.
+        - `rtc:https://…`: `POST` this caller's record, read the answerer's
+          back, which is what `examples/29-browser-access` serves.
+        - `--to` names the service or `host:port`; the service `ssh` if
+          omitted. A refused stream says why: `blocked (0x48)`.
+        Underneath it, `drt_rtc::caller` is the caller natively: its own
+        record, a connection to an answerer's, and Wisp streams it opens
+        with credit, as async byte streams. The SSH page's gate runs stock
+        `ssh` through both forms to a stock sshd.
+      - |
         **Either peer serves, and services have names**
         (`doc/BrowserAccess.md` §10). Browser access was one-way: a browser
         called, a DRT host answered, and only the browser opened streams,

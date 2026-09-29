@@ -294,7 +294,7 @@ impl Host {
 /// The address a wildcard bind is advertised as: the one this box would
 /// route from. `connect` on a UDP socket sends nothing; it only asks the
 /// routing table.
-fn candidate_ip(bound: SocketAddr) -> Result<IpAddr, String> {
+pub(crate) fn candidate_ip(bound: SocketAddr) -> Result<IpAddr, String> {
     if !bound.ip().is_unspecified() {
         return Ok(bound.ip());
     }
