@@ -46,6 +46,7 @@ async fn main() {
         scope: Scope::new(vec![
             Entry::parse(&format!("http://127.0.0.1:{port}")).unwrap()
         ]),
+        services: Vec::new(),
         max_sessions: 8,
         max_streams: 8,
         idle_timeout: Duration::from_secs(60),

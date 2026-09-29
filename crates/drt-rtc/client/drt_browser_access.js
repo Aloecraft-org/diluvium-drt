@@ -18,32 +18,47 @@
 //
 //   const session = await direct(hostRecord);
 //
+// Or the page answers, and serves (§10): the caller's record in, the
+// page's record back out through signaling, and streams to its services.
+//
+//   const a = await answer(callerRecord, { services: { ssh: (stream) => … } });
+//   send(a.record);
+//   const session = await a.session;
+//
 // ## surface block
 //
 // - Entry points: `offer(options)` -> Pending {record, recordText,
 //   accept(hostRecord, options)} -> Session {hello, connect(host, port),
 //   close(), closed}; `direct(hostRecord, options)` -> Session, for direct
-//   mode; Session.connect -> Stream {id, readable, writable, close(),
-//   closed}. And the pure pieces, for a client that drives its own
+//   mode; `answer(callerRecord, options)` -> Answering {record, recordText,
+//   session}, for a page that answers (§10.4); Session.connect(host, port)
+//   or Session.connect(service) -> Stream {id, readable, writable, close(),
+//   closed}; `options.services`, name -> (stream, session), for what a page
+//   serves (§10.3). And the pure pieces, for a client that drives its own
 //   RTCPeerConnection: `parseRecord`, `recordFromSdp`, `answerSdp`,
-//   `withIceCredentials`, `fingerprintHex`, `isUsableCandidate`,
-//   `encodeWisp`, `decodeWisp`.
+//   `offerSdp`, `withIceCredentials`, `fingerprintHex`, `isUsableCandidate`,
+//   `isServiceName`, `encodeWisp`, `decodeWisp`.
 // - Configurable: GATHER_CAP_MS, how long `offer` waits for ICE gathering
 //   before it publishes what it has (§3.1); ACCEPT_TIMEOUT_MS, how long
 //   `accept` and `direct` wait for the channels, `hello` and the first
 //   CONTINUE;
 //   SEND_HIGH_WATER, the data channel buffer past which a stream's writer
-//   waits. The wire's own limits -- RECORD_MAX_BYTES, MAX_CANDIDATES, the
+//   waits; SERVE_BUFFER and SERVE_MAX_STREAMS, what a page that serves
+//   grants each stream and how many it holds open. The wire's own limits -- RECORD_MAX_BYTES, MAX_CANDIDATES, the
 //   ICE lengths, DIRECT_UFRAG_LEN, MESSAGE_MAX -- are constants of v1, not
 //   knobs: changing one is a `v` bump.
 // - Fan-out: `onWispPacket`, one branch per packet type the host sends
-//   (DATA, CONTINUE, CLOSE); RecordError's `code`, one per rule a record can
+//   (CONNECT, DATA, CONTINUE, CLOSE); RecordError's `code`, one per rule a record can
 //   break, named as crates/drt-rtc/src/record.rs names them; CLOSE_REASON,
 //   the reasons a stream can end with (§6).
 
 export const GATHER_CAP_MS = 2000;
 export const ACCEPT_TIMEOUT_MS = 15000;
 export const SEND_HIGH_WATER = 1 << 20;
+/** Packets of DATA a page that serves lets each stream queue (§10.2, as §6). */
+export const SERVE_BUFFER = 128;
+/** Streams a page that serves holds open at once; one more is 0x49. */
+export const SERVE_MAX_STREAMS = 64;
 
 export const RECORD_VERSION = 1;
 export const RECORD_MAX_BYTES = 512;
@@ -52,6 +67,8 @@ export const UFRAG_LEN = [4, 32];
 export const PWD_LEN = [22, 64];
 /** A direct-mode browser's ufrag, which is also its password (§3.4). */
 export const DIRECT_UFRAG_LEN = 32;
+/** A service's name (§10.3). */
+const SERVICE_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
 /** Every message on either channel is at most this (§4). */
 export const MESSAGE_MAX = 16384;
 /** A DATA packet's payload: the message cap less the 5-byte header. */
@@ -199,7 +216,24 @@ export function fingerprintHex(f) {
  * `answer_sdp` builds, and the vectors hold both to it.
  */
 export function answerSdp(hostRecord, mid) {
-  const r = parseRecord(hostRecord);
+  return sdpFromRecord(hostRecord, mid, 'passive');
+}
+
+/**
+ * The offer a page that answers applies (§10.4): the caller's record as an
+ * offer from a DTLS client, so the page's own answer makes it the server.
+ */
+export function offerSdp(callerRecord, mid = '0') {
+  return sdpFromRecord(callerRecord, mid, 'active');
+}
+
+/** Whether `name` can name a service (§10.3). */
+export function isServiceName(name) {
+  return typeof name === 'string' && SERVICE_NAME.test(name);
+}
+
+function sdpFromRecord(record, mid, setup) {
+  const r = parseRecord(record);
   return [
     'v=0',
     'o=- 0 2 IN IP4 127.0.0.1',
@@ -212,7 +246,7 @@ export function answerSdp(hostRecord, mid) {
     `a=ice-ufrag:${r.u}`,
     `a=ice-pwd:${r.p}`,
     `a=fingerprint:sha-256 ${fingerprintHex(r.f)}`,
-    'a=setup:passive',
+    `a=setup:${setup}`,
     'a=sctp-port:5000',
     'a=max-message-size:262144',
     ...r.c.map((c) => `a=${c}`),
@@ -262,6 +296,15 @@ export function decodeWisp(bytes) {
   const packet = { type: b[0], stream: view.getUint32(1, true), payload: b.subarray(5) };
   if (packet.type === WISP.CONTINUE && packet.payload.length >= 4) packet.buffer = view.getUint32(5, true);
   if (packet.type === WISP.CLOSE && packet.payload.length >= 1) packet.reason = b[5];
+  if (packet.type === WISP.CONNECT && packet.payload.length >= 3) {
+    packet.kind = b[5];
+    packet.port = view.getUint16(6, true);
+    try {
+      packet.host = new TextDecoder('utf-8', { fatal: true }).decode(b.subarray(8));
+    } catch {
+      packet.host = null;
+    }
+  }
   return packet;
 }
 
@@ -299,7 +342,7 @@ export async function offer(options = {}) {
       accept(hostRecord, acceptOptions = {}) {
         if (used) return Promise.reject(new Error('accept was already called; a session needs a fresh offer'));
         used = true;
-        return open(pc, control, wisp, early, answerSdp(hostRecord, mid), acceptOptions);
+        return open(pc, control, wisp, early, answerSdp(hostRecord, mid), { ...options, ...acceptOptions });
       },
       close: () => pc.close(),
     };
@@ -340,6 +383,51 @@ export async function direct(hostRecord, options = {}) {
     return await open(pc, control, wisp, early, answerSdp(hostRecord, mid), options);
   } catch (e) {
     pc.close();
+    throw e;
+  }
+}
+
+/**
+ * A page answering (§10.4): take the caller's record, answer it, and hand
+ * back the page's own record for signaling to carry to the caller. The
+ * session resolves once both channels are open; the page is the answerer,
+ * so it serves `options.services` and opens even stream ids.
+ *
+ * Options: `services` (name -> (stream, session)), `label` (the `service`
+ * its hello carries), `iceServers`, `gatherTimeoutMs`, `timeoutMs`,
+ * `certificates` (an `RTCCertificate` the page keeps, so its fingerprint
+ * holds across sessions), and `RTCPeerConnection`.
+ */
+export async function answer(callerRecord, options = {}) {
+  const offered = offerSdp(callerRecord);
+  const PC = options.RTCPeerConnection ?? globalThis.RTCPeerConnection;
+  if (!PC) throw new Error('no RTCPeerConnection in this runtime');
+  const config = { iceServers: options.iceServers ?? [] };
+  if (options.certificates) config.certificates = options.certificates;
+  const pc = new PC(config);
+  const control = pc.createDataChannel('control', { negotiated: true, id: 0 });
+  const wisp = pc.createDataChannel('wisp', { negotiated: true, id: 1 });
+  wisp.binaryType = 'arraybuffer';
+  const session = new Session(pc, control, wisp, { role: 'answerer', ...options });
+  const ready = session.readyAnswering(options.timeoutMs ?? ACCEPT_TIMEOUT_MS);
+  ready.catch(() => {}); // the caller of answer() holds it through `session`
+  control.onmessage = (e) => session.onControl(e.data);
+  wisp.onmessage = (e) => session.onWispPacket(e.data);
+  control.onopen = wisp.onopen = () => session.onChannelOpen();
+  try {
+    await pc.setRemoteDescription({ type: 'offer', sdp: offered });
+    await pc.setLocalDescription(await pc.createAnswer());
+    await gathered(pc, options.gatherTimeoutMs ?? GATHER_CAP_MS);
+    const record = recordFromSdp(pc.localDescription.sdp);
+    return {
+      record,
+      recordText: JSON.stringify(record),
+      pc,
+      session: ready.then(() => session),
+      close: () => session.close(),
+    };
+  } catch (e) {
+    session.close();
     throw e;
   }
 }
@@ -385,7 +473,7 @@ function earlyInbox(control, wisp) {
 }
 
 async function open(pc, control, wisp, early, answer, options) {
-  const session = new Session(pc, control, wisp);
+  const session = new Session(pc, control, wisp, { role: 'caller', ...options });
   const ready = session.ready(options.timeoutMs ?? ACCEPT_TIMEOUT_MS);
   control.onmessage = (e) => session.onControl(e.data);
   wisp.onmessage = (e) => session.onWispPacket(e.data);
@@ -403,17 +491,29 @@ async function open(pc, control, wisp, early, answer, options) {
   return session;
 }
 
-/** A connected session: its `hello`, and streams to the host's scope. */
+/**
+ * A connected session: the peer's `hello`, streams to what the peer serves,
+ * and streams to what this side serves (§10).
+ */
 class Session {
-  constructor(pc, control, wisp) {
+  constructor(pc, control, wisp, options = {}) {
     this.pc = pc;
     this.control = control;
     this.wisp = wisp;
-    /** The host's `hello` (§5): service, default, scope, limits. */
+    /** The peer's `hello` (§5): service, default, scope, services, limits. */
     this.hello = null;
     this.streams = new Map();
-    this.nextId = 1;
+    /** §10.2: the caller opens odd ids, the answerer even ones. */
+    this.role = options.role ?? 'caller';
+    this.nextId = this.role === 'caller' ? 1 : 2;
     this.initialCredit = null;
+    this.services = new Map(Object.entries(options.services ?? {}));
+    for (const name of this.services.keys()) {
+      if (!isServiceName(name)) throw new TypeError(`"${name}" cannot name a service (§10.3)`);
+    }
+    this.label = options.label ?? '';
+    this.announced = false;
+    this.serving = 0;
     this.channelsOpen = 0;
     this.ended = false;
     this.waiters = [];
@@ -451,9 +551,48 @@ class Session {
     });
   }
 
+  /** For a page that answers: ready once both channels are open (§10.4). */
+  readyAnswering(timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`no session within ${timeoutMs} ms (ice ${this.pc.iceConnectionState}, `
+          + `channels ${this.channelsOpen}/2)`));
+      }, timeoutMs);
+      this.onReady = () => {
+        if (this.channelsOpen === 2) {
+          clearTimeout(timer);
+          this.onReady = null;
+          resolve();
+        }
+      };
+      this.onEnded = (why) => {
+        clearTimeout(timer);
+        reject(new Error(why));
+      };
+    });
+  }
+
   onChannelOpen() {
     this.channelsOpen++;
+    if (this.channelsOpen === 2) this.announce();
     this.onReady?.();
+  }
+
+  /**
+   * §10.2: a side that serves says so once the channels are open -- its
+   * `hello` and its per-stream buffer. The answerer always does, since a
+   * caller's `accept` waits for both.
+   */
+  announce() {
+    if (this.announced || (this.role === 'caller' && this.services.size === 0)) return;
+    this.announced = true;
+    try {
+      this.control.send(JSON.stringify({
+        v: RECORD_VERSION, t: 'hello', service: this.label, scope: [],
+        services: [...this.services.keys()], limits: { max_streams: SERVE_MAX_STREAMS },
+      }));
+      this.send(encodeWisp(WISP.CONTINUE, 0, { buffer: SERVE_BUFFER }));
+    } catch {}
   }
 
   onControl(text) {
@@ -481,6 +620,7 @@ class Session {
       }
       return;
     }
+    if (p.type === WISP.CONNECT) return this.onConnect(p);
     const s = this.streams.get(p.stream);
     if (!s) return;
     if (p.type === WISP.DATA) s.receive(p.payload);
@@ -490,16 +630,51 @@ class Session {
   }
 
   /**
-   * A TCP stream to `host:port`, which must match a scope entry in
-   * `hello.scope` (the host checks; §6). Wisp v1 has no "connected"
-   * packet: the stream is usable at once, and a refusal arrives as its
-   * `closed` rejecting with a StreamClosed.
+   * The peer opened a stream to something this side serves (§10.3). Only
+   * a named service is served by a page; an address, an unknown name, or
+   * UDP is 0x48, and a malformed CONNECT, an id of this side's parity or
+   * an id already open is 0x41.
+   */
+  onConnect(p) {
+    const refuse = (reason) => {
+      try {
+        this.send(encodeWisp(WISP.CLOSE, p.stream, { reason }));
+      } catch {}
+    };
+    const theirs = this.role === 'caller' ? 0 : 1;
+    if (p.host === null || p.host === undefined || p.stream === 0 || p.stream % 2 !== theirs
+        || this.streams.has(p.stream)) return refuse(0x41);
+    const handler = p.kind === 0x01 && p.port === 0 ? this.services.get(p.host) : undefined;
+    if (!handler) return refuse(0x48);
+    if (this.serving >= SERVE_MAX_STREAMS) return refuse(0x49);
+    const stream = new Stream(this, p.stream, Infinity, { served: true });
+    this.streams.set(p.stream, stream);
+    this.serving++;
+    stream.closed.finally(() => this.serving--).catch(() => {});
+    try {
+      handler(stream, this);
+    } catch {
+      stream.close();
+    }
+  }
+
+  /**
+   * A stream to what the peer serves: `connect(host, port)` for an entry
+   * in its `hello.scope` (the host checks; §6), or `connect(name)` for one
+   * of its `hello.services` (§10.3). Wisp v1 has no "connected" packet:
+   * the stream is usable at once, and a refusal arrives as its `closed`
+   * rejecting with a StreamClosed.
    */
   connect(host, port) {
     if (this.ended) throw new Error('the session has ended');
     if (typeof host !== 'string' || host.length === 0) throw new TypeError('host must be a non-empty string');
-    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new TypeError('port must be 1..65535');
-    const id = this.nextId++;
+    if (port === undefined) {
+      if (!isServiceName(host)) throw new TypeError(`"${host}" cannot name a service (§10.3); pass a port for an address`);
+      port = 0;
+    } else if (!Number.isInteger(port) || port < 1 || port > 65535) throw new TypeError('port must be 1..65535');
+    if (this.initialCredit === null) throw new Error('the peer serves nothing: it sent no credit (§10.2)');
+    const id = this.nextId;
+    this.nextId += 2;
     const stream = new Stream(this, id, this.initialCredit);
     this.streams.set(id, stream);
     this.send(encodeWisp(WISP.CONNECT, id, { host, port }));
@@ -548,7 +723,7 @@ class Session {
  * rejects with a StreamClosed for anything else.
  */
 class Stream {
-  constructor(session, id, credit) {
+  constructor(session, id, credit, { served = false } = {}) {
     this.session = session;
     this.id = id;
     this.remaining = credit;
@@ -558,10 +733,23 @@ class Stream {
     this.closed = new Promise((res, rej) => ((resolve = res), (reject = rej)));
     this.closed.catch(() => {}); // a caller that never looks is not an unhandled rejection
     this.settle = { resolve, reject };
-    this.readable = new ReadableStream({
-      start: (c) => (this.reader = c),
-      cancel: () => this.close(),
-    });
+    // A stream this side serves grants the opener credit (§10.2, as §6):
+    // SERVE_BUFFER packets, topped up with CONTINUE as the reader drains
+    // them. What it reads is pulled one packet at a time so the count is
+    // what the reader has taken, not what has arrived.
+    this.served = served;
+    this.inbox = [];
+    this.taken = 0;
+    this.readable = served
+      ? new ReadableStream({
+        start: (c) => (this.reader = c),
+        pull: () => this.pull(),
+        cancel: () => this.close(),
+      }, { highWaterMark: 0 })
+      : new ReadableStream({
+        start: (c) => (this.reader = c),
+        cancel: () => this.close(),
+      });
     this.writable = new WritableStream({
       write: (chunk) => this.write(chunk),
       close: () => this.close(),
@@ -582,7 +770,28 @@ class Stream {
   }
 
   receive(payload) {
-    if (!this.done) this.reader.enqueue(payload.slice());
+    if (this.done) return;
+    if (!this.served) return this.reader.enqueue(payload.slice());
+    this.inbox.push(payload.slice());
+    this.pending?.();
+  }
+
+  /** A served stream's reader wants a packet. */
+  pull() {
+    if (this.inbox.length === 0) {
+      if (this.done) return;
+      return new Promise((r) => (this.pending = () => {
+        this.pending = null;
+        r(this.pull());
+      }));
+    }
+    this.reader.enqueue(this.inbox.shift());
+    if (++this.taken >= SERVE_BUFFER / 2) {
+      this.taken = 0;
+      try {
+        this.session.send(encodeWisp(WISP.CONTINUE, this.id, { buffer: SERVE_BUFFER - this.inbox.length }));
+      } catch {}
+    }
   }
 
   credit(buffer) {
@@ -608,6 +817,7 @@ class Stream {
   finish(error, local) {
     if (this.done) return;
     this.done = true;
+    this.pending?.();
     this.session.streams.delete(this.id);
     const clean = error === null || (!local && error.reason === 0x02);
     try {

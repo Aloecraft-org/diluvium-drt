@@ -42,6 +42,28 @@ is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
 
 ### Added
 
+- **Either peer serves, and services have names**
+  (`doc/BrowserAccess.md` §10). Browser access was one-way: a browser
+  called, a DRT host answered, and only the browser opened streams,
+  each to an address in the host's scope. Now:
+  - **A page can answer a session**: `answer(callerRecord, {services})`
+    in `drt_browser_access.js` takes a caller's record, answers it and
+    returns the page's own record for signaling to carry back. Two
+    pages connect with no DRT process between them; each side needs
+    signaling, and across a network a STUN server.
+  - **Either peer opens streams to what the other serves.** The caller
+    opens odd stream ids and the answerer even ones; whichever side
+    serves sends `hello` and its credit, as the host always has.
+  - **Named services**: `session.connect('ssh')` is a `CONNECT` with
+    port 0 and the name, and a peer's `hello` lists its `services`.
+    A `webrtc` block names its own as aliases of scope entries:
+    `"services": {"ssh": "ssh://127.0.0.1:22"}`.
+  Compatible both ways within v1: a host that predates this refuses
+  port 0 with 0x41, and a caller that predates it keeps working.
+  Proven by `crates/drt-rtc/browser-check/pages.mjs`, two Chromium
+  pages: a page answering a page, 1 MiB through a named service and
+  the page's own credit, the answerer opening a stream back to the
+  caller, and an unknown name refused with 0x48.
 - **SSH into a page** (rows 6 to 8 of `doc/ssh-transport-matrix.md`,
   `doc/SshInBrowser.md`). The `web` module carries an SSH server: a
   standard `ssh` reaches the page's own shell, directly over a byte

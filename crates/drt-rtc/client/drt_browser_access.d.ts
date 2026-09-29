@@ -21,6 +21,8 @@ export interface Hello {
   service?: string;
   default?: ScopeEntry;
   scope: ScopeEntry[];
+  /** Named services the peer serves (§10.3). */
+  services?: string[];
   limits: { max_streams: number };
   [key: string]: unknown;
 }
@@ -33,7 +35,12 @@ export interface ScopeEntry {
   label?: string;
 }
 
+/** What a side serves (§10.3): a name, and what to do with a stream to it. */
+export type Services = Record<string, (stream: Stream, session: Session) => void>;
+
 export interface OfferOptions {
+  /** Services this side serves to the peer (§10.2). */
+  services?: Services;
   /** STUN servers. v1 has no relay, so TURN entries buy nothing. */
   iceServers?: RTCIceServer[];
   /** How long to wait for ICE gathering before publishing (§3.1). Default 2000. */
@@ -66,14 +73,18 @@ export interface Pending {
 }
 
 export interface Session {
+  /** The peer's hello; null when the peer serves nothing (§10.2). */
   readonly hello: Hello;
   readonly pc: RTCPeerConnection;
+  /** 'caller' opens odd stream ids, 'answerer' even ones (§10.2). */
+  readonly role: 'caller' | 'answerer';
   /**
    * A TCP stream to `host:port`, which must match an entry in
-   * `hello.scope`. Usable at once: Wisp v1 has no "connected" packet, so
-   * a refusal arrives as `closed` rejecting with a StreamClosed.
+   * `hello.scope`, or with no port a stream to the named service `host`
+   * (§10.3). Usable at once: Wisp v1 has no "connected" packet, so a
+   * refusal arrives as `closed` rejecting with a StreamClosed.
    */
-  connect(host: string, port: number): Stream;
+  connect(host: string, port?: number): Stream;
   /** End the session: every stream fails, and the connection closes. */
   close(): void;
   /** Resolves, with why, when the session ends for any reason. */
@@ -107,6 +118,26 @@ export class StreamClosed extends Error {
 }
 
 export function offer(options?: OfferOptions): Promise<Pending>;
+
+export interface AnswerOptions extends OfferOptions, AcceptOptions {
+  /** The `service` label this side's hello carries. */
+  label?: string;
+  /** A certificate the page keeps, so its fingerprint holds across sessions. */
+  certificates?: RTCCertificate[];
+}
+/** A page answering (§10.4): its record, for signaling, and the session. */
+export interface Answering {
+  record: BrowserAccessRecord;
+  recordText: string;
+  pc: RTCPeerConnection;
+  session: Promise<Session>;
+  close(): void;
+}
+export function answer(callerRecord: BrowserAccessRecord | string | object, options?: AnswerOptions): Promise<Answering>;
+/** The caller's record as the offer a page that answers applies (§10.4). */
+export function offerSdp(callerRecord: BrowserAccessRecord | string | object, mid?: string): string;
+/** Whether `name` can name a service (§10.3). */
+export function isServiceName(name: string): boolean;
 /**
  * Direct mode (§3.4): a session from the host's record alone, for a host
  * with `direct` on. The browser chooses its own ICE credentials; nothing is
@@ -134,6 +165,10 @@ export interface WispPacket {
   buffer?: number;
   /** On CLOSE. */
   reason?: number;
+  /** On CONNECT: the stream type, port (0 for a named service) and hostname. */
+  kind?: number;
+  port?: number;
+  host?: string | null;
 }
 export function encodeWisp(
   type: number,
@@ -151,6 +186,8 @@ export const MAX_CANDIDATES: 8;
 export const UFRAG_LEN: [number, number];
 export const PWD_LEN: [number, number];
 export const DIRECT_UFRAG_LEN: 32;
+export const SERVE_BUFFER: number;
+export const SERVE_MAX_STREAMS: number;
 export const MESSAGE_MAX: 16384;
 export const DATA_MAX: 16379;
 export const WISP: { readonly CONNECT: 1; readonly DATA: 2; readonly CONTINUE: 3; readonly CLOSE: 4 };

@@ -139,6 +139,22 @@ fn host_config(c: &WebrtcConfig) -> Result<HostConfig, String> {
             Some(e)
         }
     };
+    let mut services = Vec::new();
+    for (name, target) in &c.services {
+        if !drt_rtc::scope::is_service_name(name) {
+            return Err(format!(
+                "webrtc.services: '{name}' cannot name a service; a name is 1 to 32 of a-z, 0-9 and -, \
+                 starting with a letter or digit"
+            ));
+        }
+        let e = Entry::parse(target).map_err(|e| format!("webrtc.services.{name}: {e}"))?;
+        if scope.allows(&e.host, e.port).is_none() {
+            return Err(format!(
+                "webrtc.services.{name} '{target}' is not in webrtc.scope; a stream to it would be refused"
+            ));
+        }
+        services.push((name.clone(), e));
+    }
     if c.stun_refresh_s == 0 {
         return Err("webrtc.stun_refresh_s must be at least 1".into());
     }
@@ -153,6 +169,7 @@ fn host_config(c: &WebrtcConfig) -> Result<HostConfig, String> {
         service: c.service.clone(),
         default,
         scope,
+        services,
         max_sessions: c.max_sessions,
         max_streams: c.max_streams_per_session,
         idle_timeout: Duration::from_secs(c.idle_stream_timeout_s),
@@ -305,6 +322,22 @@ mod tests {
         let e = host_config(&block(&["http://h/path"], None)).unwrap_err();
         assert!(e.starts_with("webrtc.scope entry"), "{e}");
         let e = host_config(&block(&["http://a:80"], Some("http://b:80"))).unwrap_err();
+        assert!(e.contains("is not in webrtc.scope"), "{e}");
+    }
+
+    #[test]
+    fn a_service_must_be_named_as_section_10_3_says_and_be_in_scope() {
+        let with = |services: serde_json::Value| -> WebrtcConfig {
+            serde_json::from_value(serde_json::json!({
+                "identity_file": "/nonexistent/for/this/test",
+                "scope": ["ssh://127.0.0.1:22"],
+                "services": services,
+            }))
+            .unwrap()
+        };
+        let e = host_config(&with(serde_json::json!({"SSH": "ssh://127.0.0.1:22"}))).unwrap_err();
+        assert!(e.contains("cannot name a service"), "{e}");
+        let e = host_config(&with(serde_json::json!({"ssh": "ssh://127.0.0.1:2222"}))).unwrap_err();
         assert!(e.contains("is not in webrtc.scope"), "{e}");
     }
 }

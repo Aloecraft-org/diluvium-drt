@@ -229,7 +229,8 @@ test('closing the session fails every stream and resolves closed', async () => {
   const { session } = await fakeSession();
   const a = session.connect('127.0.0.1', 1);
   const b = session.connect('127.0.0.1', 2);
-  assert.deepEqual([a.id, b.id], [1, 2]);
+  // A caller opens odd ids (§10.2).
+  assert.deepEqual([a.id, b.id], [1, 3]);
   session.close();
   await assert.rejects(a.closed, (e) => e.reason === null);
   await assert.rejects(b.closed, (e) => e.reason === null);
@@ -292,4 +293,98 @@ test('direct mode refuses a bad host record before making a connection', async (
   class PC { constructor() { made++; } }
   await assert.rejects(direct('{}', { RTCPeerConnection: PC }), RecordError);
   assert.equal(made, 0);
+});
+
+// depth: §10, either peer serves and services have names
+
+test('offerSdp is answerSdp with the caller as DTLS client', async () => {
+  const { offerSdp } = await import('./drt_browser_access.js');
+  const rtc = vectors.records[0].rtc;
+  assert.equal(offerSdp(rtc, '0'), answerSdp(rtc, '0').replace('a=setup:passive', 'a=setup:active'));
+});
+
+test('a named CONNECT is port 0 and the name, and decodes back', async () => {
+  const { isServiceName } = await import('./drt_browser_access.js');
+  const p = decodeWisp(encodeWisp(WISP.CONNECT, 3, { host: 'ssh', port: 0 }));
+  assert.deepEqual([p.type, p.stream, p.kind, p.port, p.host], [WISP.CONNECT, 3, 1, 0, 'ssh']);
+  for (const ok of ['ssh', 'a', 'dom-debug', '9p']) assert.ok(isServiceName(ok), ok);
+  for (const bad of ['', '-x', 'SSH', 'a b', 'x'.repeat(33), 'ssh.local']) assert.ok(!isServiceName(bad), bad);
+});
+
+async function answeringSession(services) {
+  const { answer } = await import('./drt_browser_access.js');
+  const channels = [];
+  const fp = vectors.records[0].decoded.f_hex;
+  class PC extends EventTarget {
+    constructor() {
+      super();
+      this.iceGatheringState = 'complete';
+    }
+    createDataChannel() {
+      const c = new FakeChannel();
+      channels.push(c);
+      return c;
+    }
+    async setRemoteDescription(d) {
+      this.offered = d;
+    }
+    async createAnswer() {
+      return { type: 'answer', sdp: `a=ice-ufrag:pageUfrag\r\na=ice-pwd:pagePassword0123456789ab\r\na=fingerprint:sha-256 ${fp}\r\na=mid:0\r\n` };
+    }
+    async setLocalDescription(d) {
+      this.localDescription = d;
+    }
+    close() {}
+  }
+  const a = await answer(vectors.records[0].rtc, { RTCPeerConnection: PC, services, label: 'page' });
+  const [control, wisp] = channels;
+  control.sentText = [];
+  control.send = (t) => control.sentText.push(JSON.parse(t));
+  control.onopen();
+  wisp.onopen();
+  const session = await a.session;
+  const peer = (packet) => wisp.onmessage({ data: packet.buffer });
+  return { a, session, control, wisp, peer, pc: session.pc };
+}
+
+test('a page answers: the caller\'s record as an offer, its own record back, then hello and credit', async () => {
+  const { a, control, wisp, pc } = await answeringSession({ ssh: () => {} });
+  assert.equal(pc.offered.type, 'offer');
+  assert.match(pc.offered.sdp, /a=setup:active/);
+  assert.equal(a.record.u, 'pageUfrag');
+  assert.deepEqual(control.sentText[0].services, ['ssh']);
+  assert.equal(control.sentText[0].service, 'page');
+  assert.deepEqual([wisp.sent[0].type, wisp.sent[0].stream, wisp.sent[0].buffer], [WISP.CONTINUE, 0, 128]);
+});
+
+test('a served stream reaches its service, and the reader\'s pace is the opener\'s credit', async () => {
+  let got;
+  const { wisp, peer } = await answeringSession({ ssh: (stream) => (got = stream) });
+  peer(encodeWisp(WISP.CONNECT, 1, { host: 'ssh', port: 0 }));
+  assert.equal(got.id, 1);
+  for (let i = 0; i < 70; i++) peer(encodeWisp(WISP.DATA, 1, { data: Uint8Array.of(i) }));
+  const reader = got.readable.getReader();
+  for (let i = 0; i < 64; i++) assert.equal((await reader.read()).value[0], i);
+  // Half the buffer taken: CONTINUE with the space left, 128 less the 6 queued.
+  const cont = wisp.sent.filter((p) => p.type === WISP.CONTINUE && p.stream === 1);
+  assert.deepEqual(cont.map((p) => p.buffer), [122]);
+  const writer = got.writable.getWriter();
+  await writer.write(Uint8Array.of(9));
+  assert.deepEqual([...wisp.sent.at(-1).payload], [9]);
+});
+
+test('what a page does not serve is refused by the rule that names it', async () => {
+  const { wisp, peer } = await answeringSession({ ssh: () => assert.fail('not this one') });
+  const closeFor = (id) => wisp.sent.find((p) => p.type === WISP.CLOSE && p.stream === id)?.reason;
+  peer(encodeWisp(WISP.CONNECT, 1, { host: 'telnet', port: 0 }));
+  peer(encodeWisp(WISP.CONNECT, 3, { host: '127.0.0.1', port: 22 }));
+  peer(encodeWisp(WISP.CONNECT, 2, { host: 'ssh', port: 0 }));
+  assert.deepEqual([closeFor(1), closeFor(3), closeFor(2)], [0x48, 0x48, 0x41]);
+});
+
+test('the answerer opens even ids to what the caller serves', async () => {
+  const { session, peer } = await answeringSession({});
+  assert.throws(() => session.connect('dom'), /serves nothing/);
+  peer(encodeWisp(WISP.CONTINUE, 0, { buffer: 16 }));
+  assert.deepEqual([session.connect('dom').id, session.connect('dom').id], [2, 4]);
 });

@@ -112,6 +112,9 @@ pub struct HostConfig {
     pub service: String,
     pub default: Option<Entry>,
     pub scope: Scope,
+    /// Named services (§10.3): each name an alias of a scope entry, reached
+    /// by a CONNECT with port 0 and checked as that entry is.
+    pub services: Vec<(String, Entry)>,
     pub max_sessions: usize,
     pub max_streams: usize,
     pub idle_timeout: Duration,
@@ -1072,7 +1075,7 @@ impl Session {
             Ok(h) if !h.is_empty() => h.to_string(),
             _ => return self.refuse(ctx, id, "", port, reason::INVALID),
         };
-        if id == 0 || port == 0 {
+        if id == 0 || (port == 0 && !scope::is_service_name(&host)) {
             return self.refuse(ctx, id, &host, port, reason::INVALID);
         }
         if self.streams.contains_key(&id) {
@@ -1090,6 +1093,15 @@ impl Session {
         if self.streams.len() >= ctx.cfg.max_streams {
             return self.refuse(ctx, id, &host, port, reason::THROTTLED);
         }
+        // A named service (§10.3) is its entry under another name: from
+        // here on the stream is to that entry's host and port.
+        let (host, port) = match port {
+            0 => match ctx.cfg.services.iter().find(|(name, _)| *name == host) {
+                Some((_, e)) => (e.host.clone(), e.port),
+                None => return self.refuse(ctx, id, &host, port, reason::BLOCKED),
+            },
+            _ => (host, port),
+        };
         let Some(entry) = ctx.cfg.scope.allows(&host, port).cloned() else {
             return self.refuse(ctx, id, &host, port, reason::BLOCKED);
         };
@@ -1197,7 +1209,8 @@ impl Session {
     }
 }
 
-/// `hello` (§5): the scope, over the data channel and nowhere else.
+/// `hello` (§5): the scope and the services' names (§10.3), over the data
+/// channel and nowhere else.
 fn hello(cfg: &HostConfig) -> String {
     let entry = |e: &Entry| serde_json::json!({"scheme": e.scheme, "host": e.host, "port": e.port});
     let mut msg = serde_json::json!({
@@ -1209,6 +1222,9 @@ fn hello(cfg: &HostConfig) -> String {
     });
     if let Some(d) = &cfg.default {
         msg["default"] = entry(d);
+    }
+    if !cfg.services.is_empty() {
+        msg["services"] = cfg.services.iter().map(|(name, _)| name.as_str()).collect();
     }
     msg.to_string()
 }

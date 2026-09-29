@@ -77,14 +77,14 @@ async fn sink_server() -> (u16, tokio::sync::mpsc::UnboundedReceiver<&'static st
 // depth: the host
 
 async fn host_with(scope: &[String]) -> (Host, Record) {
-    host_in_mode(scope, false).await
+    host_in_mode(scope, false, &[]).await
 }
 
 async fn direct_host(scope: &[String]) -> (Host, Record) {
-    host_in_mode(scope, true).await
+    host_in_mode(scope, true, &[]).await
 }
 
-async fn host_in_mode(scope: &[String], direct: bool) -> (Host, Record) {
+async fn host_in_mode(scope: &[String], direct: bool, services: &[(&str, &str)]) -> (Host, Record) {
     let entries = scope.iter().map(|s| Entry::parse(s).unwrap()).collect();
     let cfg = HostConfig {
         bind: "127.0.0.1:0".parse().unwrap(),
@@ -94,6 +94,10 @@ async fn host_in_mode(scope: &[String], direct: bool) -> (Host, Record) {
         service: "test".into(),
         default: None,
         scope: Scope::new(entries),
+        services: services
+            .iter()
+            .map(|(name, entry)| (name.to_string(), Entry::parse(entry).unwrap()))
+            .collect(),
         max_sessions: 4,
         max_streams: 8,
         idle_timeout: Duration::from_secs(300),
@@ -399,4 +403,30 @@ async fn direct_mode_ignores_a_browsers_own_short_ufrag() {
     };
     let (mut client, _) = Client::with_creds(&record, creds).await;
     assert!(!client.within(NOTHING, |c| c.connected).await);
+}
+
+// depth: named services (doc/BrowserAccess.md §10.3)
+
+#[tokio::test]
+async fn a_named_service_reaches_its_entry_and_hello_names_it() {
+    let port = echo_server().await;
+    let entry = format!("ssh://127.0.0.1:{port}");
+    let (mut host, record) = host_in_mode(&[entry.clone()], false, &[("echo", &entry)]).await;
+    let mut client = open_session(&mut host, &record, "p1").await;
+    let hello: serde_json::Value = serde_json::from_str(client.hello.as_deref().unwrap()).unwrap();
+    assert_eq!(hello["services"], serde_json::json!(["echo"]));
+
+    client.send(wisp::connect(1, wisp::STREAM_TCP, 0, "echo"));
+    client.send(wisp::data(1, b"by name"));
+    assert_eq!(client.read_stream(1, 7).await.0, b"by name");
+    // The audit names what the stream reached, not what it was called.
+    let (state, _, _, _) = stream_event(&mut host, 1).await;
+    assert_eq!(state, StreamState::Open);
+
+    // An unknown name is out of scope; a name no service could have is
+    // malformed, as port 0 always was.
+    client.send(wisp::connect(3, wisp::STREAM_TCP, 0, "telnet"));
+    assert_eq!(client.read_stream(3, 1).await.1, Some(reason::BLOCKED));
+    client.send(wisp::connect(5, wisp::STREAM_TCP, 0, "Not A Name"));
+    assert_eq!(client.read_stream(5, 1).await.1, Some(reason::INVALID));
 }

@@ -485,6 +485,10 @@ GET  /v1/rooms/{room}/presence   Authorization: Bearer <session_token>
 }
 ```
 
+- **`services`**, name to scope entry, names what a peer may open a
+  stream to without an address (§10.3): `{"ssh": "ssh://127.0.0.1:22"}`.
+  Each name must be one §10.3 allows and each entry must be in `scope`,
+  or the host refuses to start. `hello` lists the names.
 - **`direct`**, off by default, turns on §3.4: a caller holding the
   record makes a session with no signaling. The program still gets every
   report, `webrtc_session` included, with `direct:<ufrag>` as the peer.
@@ -537,6 +541,12 @@ const s = session.connect('127.0.0.1', 8123);      // §6: must be in hello.scop
 // StreamClosed whose `reason` is the §6 byte when the host refuses or fails.
 
 const alone = await direct(hostRecord);           // §3.4: a session, no signaling
+session.connect('ssh');                            // §10.3: a named service
+
+// §10.4: a page answering, serving `ssh` to whoever called.
+const a = await answer(callerRecord, { services: { ssh: (stream) => { /* … */ } } });
+// a.record goes back to the caller through signaling.
+const served = await a.session;
 ```
 
 - **Signaling is the caller's.** The module makes and takes records; it
@@ -560,3 +570,81 @@ const alone = await direct(hostRecord);           // §3.4: a session, no signal
   the vectors, then `check.mjs` in Chromium against the `drt-rtc` example
   host and, with `--drt`, against `drt start`. CI runs it with `--drt`,
   and the release packages the files only after it passes.
+
+## 10. Either peer serves, and services have names
+
+§3 to §6 describe one shape: a browser calls, a DRT host answers, and
+only the browser opens streams, each to a `host:port` in the host's
+scope. This section makes the wire symmetric. It stays v1: a peer that
+predates it keeps working with one that follows it, as each rule below
+says.
+
+### 10.1 Roles
+
+Every session has a **caller** and an **answerer**. The caller makes the
+offer, controls ICE and is the DTLS client; the answerer is controlled
+and is the DTLS server. So far the answerer has always been a DRT host
+(§3.3). §10.4 adds a browser page as an answerer.
+
+These roles are the connection's and nothing more. **Either peer may open
+streams to the other**, and either may serve them; which peer serves SSH,
+say, has nothing to do with which one called.
+
+### 10.2 Opening and serving streams
+
+- **Stream ids by parity.** The caller opens odd ids and the answerer
+  even ones, so neither ever picks an id the other has open. A peer
+  receiving `CONNECT` for an id already open still refuses it with `0x41`
+  (§6). A caller that predates this section may open even ids too; that
+  is harmless to an answerer that opens none.
+- **A peer that serves announces it.** When the channels open, it sends
+  `hello` on `control` (§5) and `CONTINUE` on stream 0 with its
+  per-stream buffer (§6), as the host always has. Its `hello` lists what
+  it serves: `scope` (§5) and `services` (§10.3). A peer that serves
+  nothing may send neither. A caller's `accept` still waits for both from
+  the answerer.
+- **Serving is the same wherever it happens.** The rules of §6 for
+  `DATA`, `CONTINUE` and `CLOSE` hold for whichever peer serves: it grants
+  credit, the opener spends it, and data towards the opener is paced by
+  the channel's buffer.
+
+### 10.3 Named services
+
+A service is something a peer serves under a name rather than at an
+address: the page's SSH server is `ssh`.
+
+- **On the wire** it is a `CONNECT` of stream type TCP (`0x01`) with port
+  0 and the name as the hostname. A name is 1 to 32 characters of `a-z`,
+  `0-9` and `-`, starting with a letter or digit.
+- **The server** routes the stream to the service registered under that
+  name. An unknown name is `CLOSE 0x48`, as an address out of scope is.
+  A server that predates this section refuses port 0 with `0x41` (§6),
+  so an opener can tell the two apart.
+- **`hello`** lists the names: `"services": ["ssh"]`. An older reader
+  ignores the key (§5).
+- **A DRT host** names services in its block, each an alias of an entry
+  in its scope: `"services": {"ssh": "ssh://127.0.0.1:22"}`. The name
+  reaches exactly what the entry does and is checked the same way.
+
+### 10.4 A page answering
+
+A browser cannot take up a connection it was not told about, so a page
+that answers always needs signaling (§7): direct mode (§3.4) stays a DRT
+host's. Given a caller's record, the page:
+
+1. builds an offer from it, as §3.2 builds an answer, but with
+   `a=setup:active` (the caller is the DTLS client) and the caller's
+   candidates;
+2. applies that, creates its answer, applies it, and waits for gathering
+   as §3.1 does;
+3. sends its record, read from its answer as §3.1 reads a browser's, back
+   through signaling.
+
+The caller then does exactly what it does with a host: builds the answer
+from the page's record (§3.2) and waits for `hello` and credit. The page
+is the answerer, so it serves (§10.2) and opens even ids.
+
+A page's record changes per session: a browser gathers new candidates
+for every connection. Its certificate need not. A page that keeps one
+(an `RTCCertificate` survives in IndexedDB) has a fingerprint a caller
+can pin across sessions and reloads.

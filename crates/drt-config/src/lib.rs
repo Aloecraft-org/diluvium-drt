@@ -1098,6 +1098,12 @@ pub struct WebrtcConfig {
     /// besides. Empty is allowed and reaches nothing.
     #[serde(default)]
     pub scope: Vec<String>,
+    /// Named services (`doc/BrowserAccess.md` §10.3): a name a peer can
+    /// open a stream to, each an alias of one entry in `scope`, so
+    /// `{"ssh": "ssh://127.0.0.1:22"}` lets a caller say `ssh` and reach
+    /// exactly what that entry does.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub services: BTreeMap<String, String>,
     #[serde(default = "default_webrtc_max_sessions")]
     pub max_sessions: usize,
     #[serde(default = "default_webrtc_max_streams")]
