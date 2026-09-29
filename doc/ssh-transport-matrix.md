@@ -25,8 +25,8 @@ is configured, and to the relay when a relay URL is configured. A
 deployment that configures neither gets direct or a failure, and the
 failure carries `drt netcheck`'s verdict for the network it ran on.
 
-Discofetch's launch configuration provides neither TURN nor a relay, so a
-Discofetch user gets direct or that failure.
+A configuration that provides neither TURN nor a relay gets direct or
+reports a failure to the user.
 
 ## The pieces
 
