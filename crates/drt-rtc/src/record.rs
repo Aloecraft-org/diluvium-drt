@@ -213,7 +213,7 @@ pub fn usable_candidate(line: &str) -> bool {
 }
 
 /// RFC 8839 `ice-char`: `ALPHA / DIGIT / "+" / "/"`.
-fn ice_char(b: u8) -> bool {
+pub(crate) fn ice_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'+' || b == b'/'
 }
 

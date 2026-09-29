@@ -2,8 +2,8 @@
 
 **Status:** target design. This describes every way DRT carries SSH once the
 0.8.0 SSH work is complete, written as though all of it exists. The
-command and URL forms for pieces not yet built (`drt tunnel rtc:…`, direct
-mode) are provisional and change with their implementation.
+command and URL forms for pieces not yet built (`drt tunnel rtc:…`) are
+provisional and change with their implementation.
 
 SSH is end to end in every row below. DRT never terminates it and never
 holds a session key: host-key verification, authentication, `-L`/`-R`,
@@ -139,7 +139,12 @@ const ssh = await Ssh.connect(session.connect("127.0.0.1", 22), pinned);
 ```
 
 No certificate is involved: DTLS is checked against the fingerprint in
-the host's record. In direct mode the record is all the page needs.
+the host's record. In direct mode (`"direct": true` in the block) the
+record is all the page needs, and `ssh.html` takes it in a link:
+
+```
+ssh.html#rtc=<the host's record>&user=me&hostkey=SHA256:…
+```
 
 ### 6. Native `ssh` to a browser page
 

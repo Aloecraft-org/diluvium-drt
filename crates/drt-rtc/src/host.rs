@@ -8,6 +8,15 @@
 //! between the socket, the data channel and TCP without passing through
 //! anything a program wrote.
 //!
+//! **Direct mode** (`doc/BrowserAccess.md` §3.4) makes a session with no
+//! `open` at all: a binding request no session claims, addressed to this
+//! host's ufrag from a browser ufrag of [`DIRECT_UFRAG_LEN`], becomes a
+//! session whose remote password is that same ufrag. The request has to pass
+//! integrity against the host's password to be kept, so only a caller holding
+//! the host's record gets one; the browser's DTLS certificate is not known in
+//! advance, so its fingerprint is not checked, and whatever runs over the
+//! stream authenticates the ends (SSH does).
+//!
 //! **The host runs on a thread of its own, with a stack it chose.** str0m's
 //! `Rtc::do_poll_output` recurses once per SCTP packet it hands to DTLS
 //! (`str0m-0.23.1/src/lib.rs:1734`, `return self.do_poll_output()`), so a
@@ -26,7 +35,8 @@
 //!   thread), [`Host::send`], [`Host::try_event`], [`Host::next_event`].
 //! - Configurable: [`WISP_BUFFER`], [`HIGH_WATER`], [`LOW_WATER`],
 //!   [`SETUP_DEADLINE`], [`STUN_RETRY`], [`TICK`],
-//!   [`HOST_STACK`], and everything in [`HostConfig`].
+//!   [`HOST_STACK`], [`DIRECT_UFRAG_LEN`], and everything in
+//!   [`HostConfig`].
 //! - Fan-out: [`Command`] (what the program asks), [`Event`] (what the
 //!   host reports), [`Internal`] (what a stream's tasks tell the loop), and
 //!   [`Session::on_wisp`]'s match over [`wisp::Packet`].
@@ -70,6 +80,11 @@ pub const TICK: Duration = Duration::from_secs(1);
 /// The host thread's stack. See the module note: str0m recurses once per
 /// SCTP packet in a batch, and this is five times the measured worst case.
 pub const HOST_STACK: usize = 16 * 1024 * 1024;
+/// A direct-mode browser's ufrag, which is also its ICE password: long
+/// enough to be a password (RFC 8839 asks 22 characters, 128 bits) and short
+/// enough to be a record's `u`. A browser's own ufrags are 4 or 8
+/// characters, so a signaled session never matches.
+pub const DIRECT_UFRAG_LEN: std::ops::RangeInclusive<usize> = 22..=32;
 
 /// The largest datagram read off the socket.
 const RECV_MTU: usize = 2000;
@@ -101,6 +116,9 @@ pub struct HostConfig {
     pub max_streams: usize,
     pub idle_timeout: Duration,
     pub connect_timeout: Duration,
+    /// Direct mode: a caller holding the record needs no signaling (see
+    /// the module note).
+    pub direct: bool,
 }
 
 /// What the program asks of the host.
@@ -477,6 +495,7 @@ impl Loop {
                     peer.clone(),
                     &record,
                     &self.host_candidate,
+                    true,
                 ) {
                     Ok(s) => self.sessions.push(s),
                     Err(e) => self.ctx.report(refuse(e)),
@@ -513,7 +532,48 @@ impl Loop {
             if let Err(e) = s.rtc.handle_input(input) {
                 s.end(&format!("rtc: {e}"));
             }
+        } else if self.ctx.cfg.direct {
+            self.direct_session(buf, input);
         }
+    }
+
+    /// Direct mode: make a session from a binding request nobody claimed,
+    /// and keep it only when the request passes integrity against this
+    /// host's password. Anything else is dropped without an answer, as an
+    /// unknown datagram always is.
+    fn direct_session(&mut self, buf: &[u8], input: Input) {
+        let Some(remote) = direct_ufrag(buf, &self.ctx.cfg.identity.ufrag) else {
+            return;
+        };
+        if self.sessions.len() >= self.ctx.cfg.max_sessions
+            || self.sessions.iter().any(|s| s.remote_ufrag == remote)
+        {
+            return;
+        }
+        let record = Record {
+            ufrag: remote.clone(),
+            pwd: remote.clone(),
+            fingerprint: [0; 32],
+            candidates: Vec::new(),
+        };
+        let Ok(mut s) = Session::new(
+            &self.ctx,
+            self.next_key + 1,
+            format!("direct:{remote}"),
+            &record,
+            &self.host_candidate,
+            false,
+        ) else {
+            return;
+        };
+        if !s.rtc.accepts(&input) {
+            return;
+        }
+        self.next_key += 1;
+        if let Err(e) = s.rtc.handle_input(input) {
+            s.end(&format!("rtc: {e}"));
+        }
+        self.sessions.push(s);
     }
 
     fn on_internal(&mut self, i: Internal) {
@@ -626,6 +686,37 @@ impl Loop {
     }
 }
 
+/// The browser ufrag of a direct-mode binding request: a STUN Binding
+/// request whose USERNAME is `<host ufrag>:<browser ufrag>`, the host half
+/// this host's and the browser half [`DIRECT_UFRAG_LEN`] ice-chars. `None`
+/// for anything else. Integrity is not checked here; the session is.
+fn direct_ufrag(buf: &[u8], host_ufrag: &str) -> Option<String> {
+    const BINDING_REQUEST: u16 = 0x0001;
+    const MAGIC_COOKIE: u32 = 0x2112_A442;
+    const USERNAME: u16 = 0x0006;
+    let u16_at = |i: usize| buf.get(i..i + 2).map(|b| u16::from_be_bytes([b[0], b[1]]));
+    if u16_at(0)? != BINDING_REQUEST
+        || buf.get(4..8)? != MAGIC_COOKIE.to_be_bytes()
+        || 20 + usize::from(u16_at(2)?) != buf.len()
+    {
+        return None;
+    }
+    let mut at = 20;
+    while at + 4 <= buf.len() {
+        let (kind, len) = (u16_at(at)?, usize::from(u16_at(at + 2)?));
+        let value = buf.get(at + 4..at + 4 + len)?;
+        if kind == USERNAME {
+            let (host, browser) = std::str::from_utf8(value).ok()?.split_once(':')?;
+            let ok = host == host_ufrag
+                && DIRECT_UFRAG_LEN.contains(&browser.len())
+                && browser.bytes().all(crate::record::ice_char);
+            return ok.then(|| browser.to_string());
+        }
+        at += 4 + len.div_ceil(4) * 4;
+    }
+    None
+}
+
 /// A server-reflexive line with its related address blanked, as browsers
 /// write theirs: the relation is the LAN address, and a host that chose not
 /// to publish its host candidate should not publish it here instead.
@@ -690,6 +781,7 @@ impl Session {
         peer: String,
         record: &Record,
         host_candidate: &Candidate,
+        verify_fingerprint: bool,
     ) -> Result<Session, String> {
         let id = &ctx.cfg.identity;
         let now = Instant::now();
@@ -700,6 +792,7 @@ impl Session {
             })
             .set_dtls_cert(id.cert.clone())
             .set_ice_lite(false)
+            .set_fingerprint_verification(verify_fingerprint)
             .build(now.into_std());
         rtc.add_local_candidate(host_candidate.clone());
         let mut api = rtc.direct_api();

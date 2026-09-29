@@ -158,6 +158,7 @@ fn host_config(c: &WebrtcConfig) -> Result<HostConfig, String> {
         idle_timeout: Duration::from_secs(c.idle_stream_timeout_s),
         connect_timeout: Duration::from_secs(c.connect_timeout_s),
         stun_refresh: Duration::from_secs(c.stun_refresh_s),
+        direct: c.direct,
     })
 }
 

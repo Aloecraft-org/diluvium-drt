@@ -22,7 +22,7 @@ implementation, regenerate it (`DRT_WRITE_VECTORS=1 cargo test -p drt-rtc
 **Status (2026-09-24):** draft v1, written for the M0 pairing of the host
 (`doc/Plan-0.8.0.md` §3) with the browser client's M0. §7.1 is the host's
 side of Discofetch's signaling socket; §7.2 is M0's mock, kept for
-`check.mjs`.
+`check.mjs`. §3.4, direct mode, needs no signaling at all.
 
 **What is verified, and how.** Everything below the record codec is
 exercised by `crates/drt-rtc/tests/host.rs`, a native client doing what a
@@ -213,6 +213,54 @@ sees them, by transaction id.
 presence expires (the program sends `close`), or when the host is asked to
 close it. Ending it closes every Wisp stream it holds and every TCP
 socket behind them.
+
+### 3.4 Direct mode
+
+A session with no signaling: the browser holds the host's record, got
+however the host's owner hands it out (a link, a QR code, a config), and
+nothing travels back. The host's record already says everything the
+browser needs (§1: it is the same for every session). What the host lacks
+is the browser's ICE credentials and certificate, and direct mode supplies
+the first by rule and does without the second. It is off unless the
+block's `direct` is on (§8); signaled sessions work beside it either way.
+
+**The browser** makes an ordinary offer (§3.1's channels), replaces its
+`a=ice-ufrag` and `a=ice-pwd` lines with one value it chose, applies that,
+and builds the answer from the host's record as §3.2 says. The value is
+32 random `ice-char`s (`DIRECT_UFRAG_LEN`), used as both ufrag and
+password. It publishes nothing and need not wait for gathering: it is
+controlling, and its checks go straight to the host's candidates.
+
+**The host**, when a binding request arrives that no session accepts,
+reads its `USERNAME`. When the host half is this host's ufrag and the
+browser half is 22 to 32 `ice-char`s (`drt_rtc::host::DIRECT_UFRAG_LEN`),
+it builds a session as §3.3 does with the browser's record taken to be
+`{u: <browser half>, p: <browser half>, c: []}`, and keeps it only if that
+session accepts the request: its `MESSAGE-INTEGRITY` must verify against
+this host's password. Anything else is dropped unanswered, as an unknown
+datagram always is. The session's peer is `direct:<browser ufrag>`, and
+it is reported and ended as any other.
+
+- **The record is the grant.** Integrity against the host's password is
+  the only check, so whoever holds the record can open a session, up to
+  `max_sessions`, to the block's scope and nothing else. A host with
+  `direct` on hands its record only to whoever may reach that scope, and
+  a new `identity_file` revokes every copy.
+- **The browser's certificate is not checked.** Its fingerprint was
+  never sent, so the host runs DTLS with fingerprint verification off.
+  DTLS still encrypts, and the host's own certificate is still checked by
+  the browser against `f`; what goes unproven is which browser it is,
+  which is the job of whatever runs over the stream. SSH does it: the
+  server's key is pinned, and the user authenticates.
+- **Browser ufrags never collide with it.** Chromium's are 4 characters
+  and Firefox's 8, so a signaled browser's checks never read as direct
+  mode's, even before its `open` arrives.
+
+Verified by `crates/drt-rtc/tests/host.rs` (a session from the record
+alone; nothing without `direct`, with a wrong password, or with a short
+ufrag) and in Chromium by `crates/drt-ssh-web/page/e2e.mjs`, where the
+shipped SSH page reaches a stock sshd from a link carrying only the
+record.
 
 ## 4. Data channels
 
@@ -430,11 +478,16 @@ GET  /v1/rooms/{room}/presence   Authorization: Bearer <session_token>
     "idle_stream_timeout_s": 300,
     "connect_timeout_s": 10,
     "stun_refresh_s": 25,
+    "direct": false,
     "queue": "webrtc",
     "reply_queue": "webrtc_cmd"
   }
 }
 ```
+
+- **`direct`**, off by default, turns on §3.4: a caller holding the
+  record makes a session with no signaling. The program still gets every
+  report, `webrtc_session` included, with `direct:<ufrag>` as the peer.
 
 - **`identity_file`** holds the ufrag, password and certificate, relative
   to the config file like `program`. Created `0600` on first start when
@@ -473,7 +526,7 @@ attaches both files. A client may use it or implement these sections
 itself; the vectors hold either to the same bytes.
 
 ```js
-import { offer } from './drt_browser_access.js';
+import { offer, direct } from './drt_browser_access.js';
 
 const pending = await offer({ iceServers });     // §3.1: gathers, capped at 2 s
 // pending.record goes to the host through signaling (§7.1).
@@ -482,6 +535,8 @@ session.hello;                                     // §5
 const s = session.connect('127.0.0.1', 8123);      // §6: must be in hello.scope
 // s.readable / s.writable: Web Streams of bytes. s.closed rejects with a
 // StreamClosed whose `reason` is the §6 byte when the host refuses or fails.
+
+const alone = await direct(hostRecord);           // §3.4: a session, no signaling
 ```
 
 - **Signaling is the caller's.** The module makes and takes records; it

@@ -6,7 +6,8 @@
 //!
 //! ## surface block
 //!
-//! - Entry points: [`Client::new`], then [`Client::connect`], [`Client::send`],
+//! - Entry points: [`Client::new`] or [`Client::with_creds`], then
+//!   [`Client::connect`], [`Client::send`],
 //!   [`Client::next_packet`], [`Client::read_stream`]; [`Client::until`]
 //!   and [`Client::within`] to run it.
 //! - Configurable: [`LIMIT`], how long any one wait may take.
@@ -45,9 +46,14 @@ pub struct Client {
 impl Client {
     /// What a browser does with the host's record: everything but the SDP.
     pub async fn new(host: &Record) -> (Client, String) {
+        Client::with_creds(host, IceCreds::new()).await
+    }
+
+    /// The same, with ICE credentials the caller chose: direct mode's
+    /// browser picks its own (`doc/BrowserAccess.md` §3.4).
+    pub async fn with_creds(host: &Record, creds: IceCreds) -> (Client, String) {
         let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let addr = socket.local_addr().unwrap();
-        let creds = IceCreds::new();
         let mut rtc = Rtc::builder()
             .set_local_ice_credentials(creds.clone())
             .build(Instant::now().into_std());

@@ -107,6 +107,17 @@ export class StreamClosed extends Error {
 }
 
 export function offer(options?: OfferOptions): Promise<Pending>;
+/**
+ * Direct mode (§3.4): a session from the host's record alone, for a host
+ * with `direct` on. The browser chooses its own ICE credentials; nothing is
+ * signaled.
+ */
+export function direct(
+  hostRecord: BrowserAccessRecord | string | object,
+  options?: Omit<OfferOptions, 'gatherTimeoutMs'> & AcceptOptions,
+): Promise<Session>;
+/** `sdp` with every `a=ice-ufrag` and `a=ice-pwd` line replaced. */
+export function withIceCredentials(sdp: string, ufrag: string, pwd: string): string;
 
 export function parseRecord(input: string | object): BrowserAccessRecord;
 export function recordFromSdp(sdp: string): BrowserAccessRecord;
@@ -139,6 +150,7 @@ export const RECORD_MAX_BYTES: 512;
 export const MAX_CANDIDATES: 8;
 export const UFRAG_LEN: [number, number];
 export const PWD_LEN: [number, number];
+export const DIRECT_UFRAG_LEN: 32;
 export const MESSAGE_MAX: 16384;
 export const DATA_MAX: 16379;
 export const WISP: { readonly CONNECT: 1; readonly DATA: 2; readonly CONTINUE: 3; readonly CLOSE: 4 };

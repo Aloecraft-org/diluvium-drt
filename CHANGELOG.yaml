@@ -161,6 +161,26 @@ releases:
         wrong pin refused before anything authenticates; and a port out of
         scope refused with 0x48.
       - |
+        **Direct mode** (`doc/BrowserAccess.md` §3.4): with the `webrtc`
+        block's `direct` on, a browser holding the host's record makes a
+        session with no signaling at all. The browser chooses one ICE
+        value as its ufrag and password; the host makes the session from
+        the first binding request addressed to it, and keeps it only when
+        the request passes integrity against the host's password. The
+        record is the whole grant, up to `max_sessions` and to the scope,
+        and the browser's certificate is not checked, so whatever runs
+        over the stream authenticates the ends. SSH does.
+        - `drt_browser_access.js` gains `direct(hostRecord)`.
+        - `ssh.html` follows `#rtc=<record>&user=…[&to=host:port]`, and has
+          a host-record field beside the relay URL. The page grows to
+          894,179 bytes (+26.7 KB, +9 KB gzipped) for the client it now
+          inlines.
+        - `drt-rtc`'s host tests cover a session from the record alone, and
+          nothing without `direct`, with a wrong password, or with a
+          browser's own short ufrag. The SSH page's gate reaches the stock
+          sshd in direct mode, through the library and through the shipped
+          page with its CSP.
+      - |
         **The `webrtc` block** (`doc/BrowserAccess.md`). A browser builds
         its session from the host's presence record with no answer round
         trip, and the host carries Wisp v1 streams over the data channel

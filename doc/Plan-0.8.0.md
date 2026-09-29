@@ -474,3 +474,27 @@ Each of these edits code `doc/Plan-2026-09.md` §0.2 froze:
   - Not covered: Windows, macOS and arm64, which CI builds but only the
     release's Windows smoke runs; and release native builds are musl
     where this machine's `slim` is glibc.
+- 2026-09-29, **SSH over browser access, and direct mode**, after the
+  0.8.0 dev builds merged to `main` (#39). The target is
+  `doc/ssh-transport-matrix.md`; this delivers its row 5.
+  - `Ssh.connect` takes a `{readable, writable}` pair as well as a URL,
+    so the page runs SSH over a browser access stream to an sshd in a
+    `webrtc` block's scope. A refused stream fails the connect with the
+    host's CLOSE byte as its `code`.
+  - Direct mode, `doc/BrowserAccess.md` §3.4: `"direct": true` in the
+    block, and a browser holding the record needs no signaling. It chooses
+    one 32-character ICE value as ufrag and password; the host builds the
+    session from the first binding request addressed to it and keeps it
+    only when integrity verifies against the host's password. The
+    browser's certificate goes unchecked by design, and SSH authenticates
+    the ends. `drt_browser_access.js` has `direct()`, and `ssh.html`
+    follows `#rtc=<record>&user=…`.
+  - Verified: `tests/host.rs` 10 of 10 (four new: a session from the
+    record alone; nothing without `direct`, with a wrong password, or with
+    a short ufrag); the client's `test.mjs` 15 of 15 and its Chromium gate
+    against both hosts; `e2e.mjs` 13 of 13, among them the stock sshd over
+    WebRTC signaled through the mock, and in direct mode through the
+    shipped page with its CSP. Chromium keeps ICE credentials the page
+    chose, which direct mode rests on.
+  - Not proven: anything across a NAT, as before. Direct mode's intended
+    host is one the browser can reach (a VPS, a LAN), where that is moot.

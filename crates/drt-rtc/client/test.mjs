@@ -245,3 +245,51 @@ test('a closed stream ends cleanly from this side and tells the host', async () 
   const last = wisp.sent.at(-1);
   assert.deepEqual([last.type, last.stream, last.reason], [WISP.CLOSE, 1, 0x02]);
 });
+
+test('direct mode applies one chosen ufrag as both ufrag and password, and connects', async () => {
+  const { direct, withIceCredentials, DIRECT_UFRAG_LEN } = await import('./drt_browser_access.js');
+  const made = 'v=0\r\na=ice-ufrag:abcd\r\na=ice-pwd:0123456789012345678901\r\na=mid:0\r\n';
+  assert.equal(withIceCredentials(made, 'U', 'P'), 'v=0\r\na=ice-ufrag:U\r\na=ice-pwd:P\r\na=mid:0\r\n');
+
+  const channels = [];
+  let applied;
+  class PC extends EventTarget {
+    createDataChannel() {
+      const c = new FakeChannel();
+      channels.push(c);
+      return c;
+    }
+    async createOffer() {
+      return { type: 'offer', sdp: made };
+    }
+    async setLocalDescription(d) {
+      applied = d.sdp;
+      this.localDescription = d;
+    }
+    async setRemoteDescription(d) {
+      this.remote = d.sdp;
+      const [control, wisp] = channels;
+      control.onopen();
+      wisp.onopen();
+      control.onmessage({ data: JSON.stringify({ v: 1, t: 'hello', scope: [], limits: { max_streams: 64 } }) });
+      wisp.onmessage({ data: encodeWisp(WISP.CONTINUE, 0, { buffer: 2 }).buffer });
+    }
+    close() {}
+  }
+  const session = await direct(vectors.records[0].rtc, { RTCPeerConnection: PC });
+  const ufrag = applied.match(/^a=ice-ufrag:(.*)$/m)[1].trim();
+  const pwd = applied.match(/^a=ice-pwd:(.*)$/m)[1].trim();
+  assert.equal(ufrag.length, DIRECT_UFRAG_LEN);
+  assert.match(ufrag, /^[A-Za-z0-9+/]+$/);
+  assert.equal(pwd, ufrag);
+  assert.equal(session.hello.t, 'hello');
+  assert.equal(session.pc.remote, answerSdp(vectors.records[0].rtc, '0'));
+});
+
+test('direct mode refuses a bad host record before making a connection', async () => {
+  const { direct } = await import('./drt_browser_access.js');
+  let made = 0;
+  class PC { constructor() { made++; } }
+  await assert.rejects(direct('{}', { RTCPeerConnection: PC }), RecordError);
+  assert.equal(made, 0);
+});

@@ -9,7 +9,8 @@
 //! - Entry points: the `#[tokio::test]`s below, one per rule in
 //!   `doc/BrowserAccess.md` §6 that can be seen from outside.
 //! - Configurable: [`LIMIT`], how long any one wait may take.
-//! - Fan-out: [`Client`] (`common/peer.rs`) is the browser; [`host_with`] is the host;
+//! - Fan-out: [`Client`] (`common/peer.rs`) is the browser; [`host_with`] and
+//!   [`direct_host`] are the host, signaled and in direct mode;
 //!   [`echo_server`] and [`sink_server`] are the targets.
 
 use std::time::Duration;
@@ -17,6 +18,7 @@ use std::time::Duration;
 use drt_rtc::host::{Event, SessionState, StreamState};
 use drt_rtc::wisp::{self, reason};
 use drt_rtc::{Command, Entry, Host, HostConfig, Identity, Record, Scope};
+use str0m::IceCreds;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -75,6 +77,14 @@ async fn sink_server() -> (u16, tokio::sync::mpsc::UnboundedReceiver<&'static st
 // depth: the host
 
 async fn host_with(scope: &[String]) -> (Host, Record) {
+    host_in_mode(scope, false).await
+}
+
+async fn direct_host(scope: &[String]) -> (Host, Record) {
+    host_in_mode(scope, true).await
+}
+
+async fn host_in_mode(scope: &[String], direct: bool) -> (Host, Record) {
     let entries = scope.iter().map(|s| Entry::parse(s).unwrap()).collect();
     let cfg = HostConfig {
         bind: "127.0.0.1:0".parse().unwrap(),
@@ -89,6 +99,7 @@ async fn host_with(scope: &[String]) -> (Host, Record) {
         idle_timeout: Duration::from_secs(300),
         connect_timeout: Duration::from_secs(5),
         stun_refresh: Duration::from_secs(25),
+        direct,
     };
     let mut host = Host::start(cfg).unwrap();
     let rtc = match host.next_event().await {
@@ -320,4 +331,72 @@ async fn large_download() {
     let (got, _) = client.read_stream(9, SIZE).await;
     assert_eq!(got.len(), SIZE);
     assert!(got == body, "the bytes arrive in order and intact");
+}
+
+// depth: direct mode (doc/BrowserAccess.md §3.4)
+
+/// A direct-mode browser's credentials: one 32-character ufrag that is also
+/// its password.
+fn direct_creds(tag: char) -> IceCreds {
+    let ufrag: String = std::iter::repeat_n(tag, 24)
+        .chain("Direct09".chars())
+        .collect();
+    IceCreds {
+        ufrag: ufrag.clone(),
+        pass: ufrag,
+    }
+}
+
+/// How long a test that proves nothing connects waits for it not to.
+const NOTHING: Duration = Duration::from_secs(3);
+
+#[tokio::test]
+async fn direct_mode_makes_a_session_from_the_record_alone() {
+    let port = echo_server().await;
+    let (mut host, record) = direct_host(&[format!("http://127.0.0.1:{port}")]).await;
+    let creds = direct_creds('a');
+    // No Command::Open: the record is all the browser was given.
+    let (mut client, _) = Client::with_creds(&record, creds.clone()).await;
+    client.connect().await;
+    assert_eq!(
+        session_event(&mut host, &format!("direct:{}", creds.ufrag)).await,
+        (SessionState::Connected, None)
+    );
+    client.send(wisp::connect(1, wisp::STREAM_TCP, port, "127.0.0.1"));
+    client.send(wisp::data(1, b"direct"));
+    assert_eq!(client.read_stream(1, 6).await.0, b"direct");
+
+    // A second browser gets a session of its own on the same socket.
+    let (mut other, _) = Client::with_creds(&record, direct_creds('b')).await;
+    other.connect().await;
+    other.send(wisp::connect(1, wisp::STREAM_TCP, port, "127.0.0.1"));
+    other.send(wisp::data(1, b"second"));
+    assert_eq!(other.read_stream(1, 6).await.0, b"second");
+}
+
+#[tokio::test]
+async fn without_direct_mode_an_unsignaled_browser_gets_nothing() {
+    let (_host, record) = host_with(&[]).await;
+    let (mut client, _) = Client::with_creds(&record, direct_creds('c')).await;
+    assert!(!client.within(NOTHING, |c| c.connected).await);
+}
+
+#[tokio::test]
+async fn direct_mode_needs_the_hosts_password() {
+    let (_host, mut record) = direct_host(&[]).await;
+    // The ufrag and certificate are right; the password is not the host's.
+    record.pwd = "notTheHostsPassword0123456".into();
+    let (mut client, _) = Client::with_creds(&record, direct_creds('d')).await;
+    assert!(!client.within(NOTHING, |c| c.connected).await);
+}
+
+#[tokio::test]
+async fn direct_mode_ignores_a_browsers_own_short_ufrag() {
+    let (_host, record) = direct_host(&[]).await;
+    let creds = IceCreds {
+        ufrag: "abcdEFGH".into(),
+        pass: "abcdEFGHabcdEFGHabcdEFGH".into(),
+    };
+    let (mut client, _) = Client::with_creds(&record, creds).await;
+    assert!(!client.within(NOTHING, |c| c.connected).await);
 }

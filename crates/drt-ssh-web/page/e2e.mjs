@@ -7,7 +7,9 @@
 // browser access host (`drt start` with the `webrtc` block, its scope the
 // sshd), signaling through the M0 mock (crates/drt-rtc/browser-check), and
 // the page's module running SSH over a stream from the shipped client
-// library, drt_browser_access.js.
+// library, drt_browser_access.js. And once more in direct mode
+// (doc/BrowserAccess.md §3.4): a second host with `direct` on, whose record
+// is all the page is given -- no room, no signaling.
 //
 //   script/drt-ssh-page.sh && cargo build -p drt --features full
 //   cd crates/drt-ssh-web/page && npm test
@@ -40,7 +42,7 @@ import path from 'node:path';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DRT = process.env.DRT ?? path.resolve(here, '../../../target/debug/drt');
 const SSHD = process.env.SSHD ?? '/usr/sbin/sshd';
-const PORTS = { sshd: 18222, relay: 18443, page: 18480, mock: 18787 };
+const PORTS = { sshd: 18222, relay: 18443, page: 18480, mock: 18787, direct: 18790 };
 const LABEL = 'box';
 const ROOM = 'ssh';
 const WAIT_MS = 20000;
@@ -135,6 +137,27 @@ fs.writeFileSync(path.join(tmp, 'host.json'), JSON.stringify({
 }));
 const rtcHost = run('rtc-host', DRT, ['--config', path.join(tmp, 'host.json'), 'start']);
 await until('the browser access host in the room', () => rtcHost.lines.some((l) => l.startsWith('signal: joined')));
+
+// Direct mode's host has no signaling to do, so its program only prints
+// what the host reports: the record, which is how the page is given it.
+fs.writeFileSync(path.join(tmp, 'direct.dlua'), [
+  "local reports = queue.declare('webrtc', {capacity = 64})",
+  "queue.declare('webrtc_cmd', {capacity = 8, exported = true})",
+  'while true do',
+  '  local _, m = queue.wait({reports})',
+  "  if m.event == 'webrtc_record' then print('record ' .. m.rtc)",
+  "  elseif m.event == 'webrtc_session' then print('session ' .. m.peer .. ' ' .. m.state)",
+  "  elseif m.event == 'webrtc_stream' then print('stream ' .. m.host .. ':' .. m.port .. ' ' .. m.state) end",
+  'end',
+].join('\n'));
+fs.writeFileSync(path.join(tmp, 'direct.json'), JSON.stringify({
+  program: { path: path.join(tmp, 'direct.dlua') },
+  webrtc: { bind: `127.0.0.1:${PORTS.direct}`, identity_file: path.join(tmp, 'direct-identity.json'),
+            direct: true, scope: [`ssh://127.0.0.1:${PORTS.sshd}`] },
+}));
+const directHost = run('direct-host', DRT, ['--config', path.join(tmp, 'direct.json'), 'start']);
+const directRecord = (await until('the direct host\'s record',
+  () => directHost.lines.find((l) => l.startsWith('record ')))).slice('record '.length);
 
 // The page is served over http so it has an origin, and IndexedDB, as it
 // would anywhere it is embedded.
@@ -278,25 +301,15 @@ await check('exit ends the session with its status', async () => {
 // One session per call: offer, the mock's room, the host's record, a
 // browser access stream to `port`, and `Ssh.connect` over it. Then, when
 // `command` is given, sign in with the test's key and run it in a shell.
-async function overRtc({ port = PORTS.sshd, pin = fingerprint, command } = {}) {
+async function overRtc({ port = PORTS.sshd, pin = fingerprint, command, direct } = {}) {
   const page = await context.newPage();
   await page.goto(rtcUrl);
   await until('the module', () => page.evaluate(() =>
     !document.getElementById('nokey').hidden || !document.getElementById('haskey').hidden));
-  return page.evaluate(async ({ base, port, pin, user, key, command, waitMs }) => {
+  return page.evaluate(async ({ base, port, pin, user, key, command, waitMs, direct }) => {
     const lib = await import('/drt_browser_access.js');
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    const pending = await lib.offer({ gatherTimeoutMs: 2000 });
-    const joined = await (await fetch(`${base}/join`, { method: 'POST', body: '{"credential":{}}' })).json();
-    const headers = { authorization: `Bearer ${joined.session_token}`, 'content-type': 'application/json' };
-    await fetch(`${base}/presence`, { method: 'POST', headers, body: JSON.stringify({ kind: 'browser', rtc: pending.recordText }) });
-    let hostRecord;
-    for (const t0 = Date.now(); !hostRecord && Date.now() - t0 < waitMs; await sleep(200)) {
-      const { peers } = await (await fetch(`${base}/presence`, { headers })).json();
-      hostRecord = peers.find((p) => p.kind === 'host')?.rtc;
-    }
-    if (!hostRecord) throw new Error('no host in the room');
-    const session = await pending.accept(hostRecord, { timeoutMs: waitMs });
+    const session = direct ? await lib.direct(direct, { timeoutMs: waitMs }) : await signaled();
     let ssh;
     try {
       ssh = await wasm_bindgen.Ssh.connect(session.connect('127.0.0.1', port), pin);
@@ -318,8 +331,22 @@ async function overRtc({ port = PORTS.sshd, pin = fingerprint, command } = {}) {
     ssh.close();
     session.close();
     return result;
+
+    async function signaled() {
+    const pending = await lib.offer({ gatherTimeoutMs: 2000 });
+    const joined = await (await fetch(`${base}/join`, { method: 'POST', body: '{"credential":{}}' })).json();
+    const headers = { authorization: `Bearer ${joined.session_token}`, 'content-type': 'application/json' };
+    await fetch(`${base}/presence`, { method: 'POST', headers, body: JSON.stringify({ kind: 'browser', rtc: pending.recordText }) });
+    let hostRecord;
+    for (const t0 = Date.now(); !hostRecord && Date.now() - t0 < waitMs; await sleep(200)) {
+      const { peers } = await (await fetch(`${base}/presence`, { headers })).json();
+      hostRecord = peers.find((p) => p.kind === 'host')?.rtc;
+    }
+    if (!hostRecord) throw new Error('no host in the room');
+    return pending.accept(hostRecord, { timeoutMs: waitMs });
+    }
   }, { base: `${signal}/v1/rooms/${ROOM}`, port, pin, user: USER, key: fs.readFileSync(client, 'utf8'),
-       command, waitMs: WAIT_MS });
+       command, waitMs: WAIT_MS, direct });
 }
 
 await check('over browser access, the page signs in to sshd and runs a command', async () => {
@@ -344,6 +371,28 @@ await check('over browser access, a wrong pin is refused before anything authent
 await check('over browser access, a port out of scope fails the connect with the host\'s reason', async () => {
   const r = await overRtc({ port: PORTS.sshd + 1 });
   if (r.code !== 0x48) throw new Error(`got ${JSON.stringify(r)}`);
+});
+
+await check('in direct mode, the page signs in with only the host\'s record', async () => {
+  const r = await overRtc({ direct: directRecord, command: 'echo direct-ok-$((6*7)); exit 6' });
+  if (r.refused) throw new Error(`refused: ${r.refused} (${r.code})`);
+  if (r.hostKey !== fingerprint || !r.signedIn) throw new Error(`got ${JSON.stringify(r)}`);
+  if (!r.out.includes('direct-ok-42')) throw new Error(`the shell printed: ${JSON.stringify(r.out)}`);
+  if (r.status !== 6) throw new Error(`ended with ${r.status}`);
+  if (!directHost.lines.some((l) => /^session direct:\S+ connected$/.test(l))) throw new Error('the host reported no direct session');
+});
+
+await check('the shipped page, CSP and all, follows a direct-mode link to a shell', async () => {
+  const link = new URLSearchParams({ rtc: directRecord, user: USER, hostkey: fingerprint }).toString();
+  const p = await openSession(link);
+  await until('a shell', () => p.evaluate(() => !!window.drtSsh?.term)).catch(async (e) => {
+    throw new Error(`${e.message}; the page says: ${await p.textContent('#status')}`);
+  });
+  await typeAndWait(p, 'echo page-direct-$((6*7))', 'page-direct-42');
+  await p.keyboard.type('exit 7\n');
+  const ended = await until('the end', () => p.evaluate(() => window.drtSsh.ended));
+  if (ended !== 7) throw new Error(`ended with ${ended}`);
+  await p.close();
 });
 
 await check('no page raised an uncaught error', async () => {

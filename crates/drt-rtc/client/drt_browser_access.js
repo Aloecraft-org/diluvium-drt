@@ -14,21 +14,28 @@
 //   const s = session.connect('127.0.0.1', 8123);
 //   s.writable / s.readable / await s.closed    // Web Streams, bytes
 //
+// Or, for a host with direct mode on (§3.4), no signaling at all:
+//
+//   const session = await direct(hostRecord);
+//
 // ## surface block
 //
 // - Entry points: `offer(options)` -> Pending {record, recordText,
 //   accept(hostRecord, options)} -> Session {hello, connect(host, port),
-//   close(), closed}; Session.connect -> Stream {id, readable, writable,
-//   close(), closed}. And the pure pieces, for a client that drives its own
+//   close(), closed}; `direct(hostRecord, options)` -> Session, for direct
+//   mode; Session.connect -> Stream {id, readable, writable, close(),
+//   closed}. And the pure pieces, for a client that drives its own
 //   RTCPeerConnection: `parseRecord`, `recordFromSdp`, `answerSdp`,
-//   `fingerprintHex`, `isUsableCandidate`, `encodeWisp`, `decodeWisp`.
+//   `withIceCredentials`, `fingerprintHex`, `isUsableCandidate`,
+//   `encodeWisp`, `decodeWisp`.
 // - Configurable: GATHER_CAP_MS, how long `offer` waits for ICE gathering
 //   before it publishes what it has (§3.1); ACCEPT_TIMEOUT_MS, how long
-//   `accept` waits for the channels, `hello` and the first CONTINUE;
+//   `accept` and `direct` wait for the channels, `hello` and the first
+//   CONTINUE;
 //   SEND_HIGH_WATER, the data channel buffer past which a stream's writer
 //   waits. The wire's own limits -- RECORD_MAX_BYTES, MAX_CANDIDATES, the
-//   ICE lengths, MESSAGE_MAX -- are constants of v1, not knobs: changing
-//   one is a `v` bump.
+//   ICE lengths, DIRECT_UFRAG_LEN, MESSAGE_MAX -- are constants of v1, not
+//   knobs: changing one is a `v` bump.
 // - Fan-out: `onWispPacket`, one branch per packet type the host sends
 //   (DATA, CONTINUE, CLOSE); RecordError's `code`, one per rule a record can
 //   break, named as crates/drt-rtc/src/record.rs names them; CLOSE_REASON,
@@ -43,6 +50,8 @@ export const RECORD_MAX_BYTES = 512;
 export const MAX_CANDIDATES = 8;
 export const UFRAG_LEN = [4, 32];
 export const PWD_LEN = [22, 64];
+/** A direct-mode browser's ufrag, which is also its password (§3.4). */
+export const DIRECT_UFRAG_LEN = 32;
 /** Every message on either channel is at most this (§4). */
 export const MESSAGE_MAX = 16384;
 /** A DATA packet's payload: the message cap less the 5-byte header. */
@@ -298,6 +307,54 @@ export async function offer(options = {}) {
     pc.close();
     throw e;
   }
+}
+
+/**
+ * Direct mode (§3.4): a session from the host's record alone, for a host
+ * whose `webrtc` block has `direct` on. The browser chooses its own ICE
+ * ufrag, uses it as its password as well, and builds the host's answer
+ * locally; the host makes the session from the first connectivity check.
+ * Nothing is published and nothing waits for gathering.
+ *
+ * Options: `iceServers`, `timeoutMs` (as `accept` takes it), and
+ * `RTCPeerConnection` for a runtime without a global one.
+ */
+export async function direct(hostRecord, options = {}) {
+  parseRecord(hostRecord);
+  const PC = options.RTCPeerConnection ?? globalThis.RTCPeerConnection;
+  if (!PC) throw new Error('no RTCPeerConnection in this runtime');
+  const pc = new PC({ iceServers: options.iceServers ?? [] });
+  const control = pc.createDataChannel('control', { negotiated: true, id: 0 });
+  const wisp = pc.createDataChannel('wisp', { negotiated: true, id: 1 });
+  wisp.binaryType = 'arraybuffer';
+  const early = earlyInbox(control, wisp);
+  try {
+    const ufrag = iceChars(DIRECT_UFRAG_LEN);
+    const made = await pc.createOffer();
+    await pc.setLocalDescription({ type: 'offer', sdp: withIceCredentials(made.sdp, ufrag, ufrag) });
+    const sdp = pc.localDescription.sdp;
+    if (!sdp.includes(`a=ice-ufrag:${ufrag}`)) {
+      throw new Error('this browser did not keep the ICE credentials direct mode chose');
+    }
+    const mid = sdp.match(/^a=mid:(.*)$/m)[1].trim();
+    return await open(pc, control, wisp, early, answerSdp(hostRecord, mid), options);
+  } catch (e) {
+    pc.close();
+    throw e;
+  }
+}
+
+/** `sdp` with every `a=ice-ufrag` and `a=ice-pwd` line replaced. */
+export function withIceCredentials(sdp, ufrag, pwd) {
+  return sdp
+    .replace(/^a=ice-ufrag:.*$/gm, `a=ice-ufrag:${ufrag}`)
+    .replace(/^a=ice-pwd:.*$/gm, `a=ice-pwd:${pwd}`);
+}
+
+/** `n` random ice-chars (RFC 8839: ALPHA, DIGIT, `+`, `/`). */
+function iceChars(n) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  return Array.from(crypto.getRandomValues(new Uint8Array(n)), (b) => alphabet[b & 63]).join('');
 }
 
 function gathered(pc, capMs) {

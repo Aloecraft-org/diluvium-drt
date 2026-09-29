@@ -1106,6 +1106,13 @@ pub struct WebrtcConfig {
     pub idle_stream_timeout_s: u64,
     #[serde(default = "default_webrtc_connect_s")]
     pub connect_timeout_s: u64,
+    /// Direct mode (`doc/BrowserAccess.md` §3.4): a caller holding this
+    /// host's record makes a session with no signaling at all, by choosing
+    /// its own ICE credentials. The record is then the whole grant, so a
+    /// host that turns this on hands its record only to whoever may reach
+    /// its scope. Signaled sessions work beside it either way.
+    #[serde(default)]
+    pub direct: bool,
     /// Reports: `webrtc_record`, `webrtc_session`, `webrtc_stream`.
     #[serde(default = "default_webrtc_queue")]
     pub queue: String,

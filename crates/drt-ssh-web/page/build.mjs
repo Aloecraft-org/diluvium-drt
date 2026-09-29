@@ -1,7 +1,7 @@
 // Assemble dist/ssh.html: ssh.html with xterm.js, its fit addon, the
-// wasm-bindgen glue and the wasm itself inlined, so the page is one file
-// that fetches nothing. Run by script/drt-ssh-page.sh after the module and
-// its glue are in pkg/.
+// browser access client, the wasm-bindgen glue and the wasm itself inlined,
+// so the page is one file that fetches nothing. Run by script/drt-ssh-page.sh
+// after the module and its glue are in pkg/.
 //
 // ## surface block
 //
@@ -9,6 +9,10 @@
 // - Configurable: INPUTS, the files each placeholder is filled from.
 // - Fan-out: the placeholder map; `@@NAME@@` in ssh.html is replaced by
 //   INPUTS[NAME], made safe for the element it sits in.
+//
+// The browser access client is an ES module and the page's scripts are
+// classic, so it goes in as a block that keeps its names to itself and
+// hands the page the few it uses (`asClassic`).
 //
 // The wasm travels as base64 of its gzip and the page unpacks it with
 // DecompressionStream: about half the size of base64 of the raw module
@@ -26,8 +30,22 @@ const INPUTS = {
   XTERM_JS: () => read('node_modules/@xterm/xterm/lib/xterm.js').toString(),
   FIT_JS: () => read('node_modules/@xterm/addon-fit/lib/addon-fit.js').toString(),
   GLUE_JS: () => read('pkg/drt_ssh_web.js').toString(),
+  BROWSER_ACCESS_JS: () => asClassic(read('../../drt-rtc/client/drt_browser_access.js').toString()),
   WASM_GZ_B64: () => zlib.gzipSync(read('pkg/drt_ssh_web_bg.wasm'), { level: 9 }).toString('base64'),
 };
+
+// The module as a classic script: `export` dropped from each declaration,
+// the whole in one function, and what the page calls returned from it.
+// Anything else a module can say (imports, `export {}`, a default) would be
+// lost here, so it is refused rather than inlined wrong.
+function asClassic(src) {
+  if (/^\s*(import\b|export\s*(\{|\*|default\b))/m.test(src)) {
+    throw new Error('drt_browser_access.js has an import or export form build.mjs cannot inline');
+  }
+  const body = src.replace(/^export (?=(async function|function|const|class) )/gm, '');
+  return `const drtBrowserAccess = (() => {\n'use strict';\n${body}\n` +
+    'return { direct, parseRecord, StreamClosed, CLOSE_REASON };\n})();';
+}
 
 // Inlined text must not end the element it is inlined into.
 const safe = (name, text) =>
