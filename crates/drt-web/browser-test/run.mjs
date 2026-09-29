@@ -722,6 +722,75 @@ if (PAGE_CHECKS) {
   }
 }
 
+// Row 6: stock `ssh` with `ProxyCommand="drt tunnel rtc:<room>/call"`
+// reaches this page's SSH server over WebRTC. The room is
+// examples/30-signaling-room's program, unchanged, under a config of this
+// suite's port; the page polls it for callers and answers each. No relay
+// and nothing bridged by this file: the bytes go native caller to page.
+{
+  const name = 'ssh-rtc-into-a-page';
+  const keys = fs.mkdtempSync(path.join(os.tmpdir(), 'drt-rtc-'));
+  const key = path.join(keys, 'id');
+  let room;
+  let client;
+  if (!drtBin) noRelay.push(name);
+  else {
+    try {
+      execFileSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', 'drt-web-rtc', '-f', key]);
+    } catch {
+      noSsh.push(name);
+    }
+  }
+  if (!noRelay.includes(name) && !noSsh.includes(name)) {
+    try {
+      const port = await freePort();
+      const config = path.join(keys, 'room.json');
+      fs.writeFileSync(config, JSON.stringify({
+        program: { path: path.resolve(HERE, '../../../examples/30-signaling-room/app.dlua') },
+        listeners: [{ scheme: 'http', address: `127.0.0.1:${port}`, queue: 'http_in', reply_queue: 'http_out',
+                      conn_deadline_ms: 15000, resp_headers: ['access-control-allow-origin'] }],
+      }));
+      room = spawn(drtBin, ['--config', config, 'start'], { stdio: ['ignore', 'pipe', 'pipe'] });
+      let roomSaid = '';
+      room.stdout.on('data', (b) => (roomSaid += b));
+      room.stderr.on('data', (b) => (roomSaid += b));
+      if (!(await waitFor(() => accepting(port), 10000))) throw new Error(`the room never listened: ${roomSaid.trim()}`);
+
+      const hostKey = await page.evaluate(() => window.drtBrowserTest.sshHostKey());
+      const listening = await page.evaluate(
+        ([hk, ak, url]) => window.drtBrowserTest.sshListen(hk, ak, url),
+        [hostKey, fs.readFileSync(`${key}.pub`, 'utf8'), `http://127.0.0.1:${port}`],
+      );
+      client = spawn('ssh', [
+        '-tt', '-i', key, '-o', 'IdentitiesOnly=yes',
+        '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null',
+        '-o', 'GlobalKnownHostsFile=/dev/null', '-o', 'LogLevel=ERROR',
+        '-o', `ProxyCommand=${drtBin} tunnel rtc:http://127.0.0.1:${port}/call`,
+        'whoever@page',
+      ]);
+      let transcript = '';
+      client.on('error', (e) => (transcript += `ssh: ${e.message}\n`));
+      client.stdout.on('data', (b) => (transcript += b.toString('utf8')));
+      client.stderr.on('data', (b) => (transcript += b.toString('utf8')));
+      client.stdin.write('drt run hello.dlua\r');
+      const said = await waitFor(() => transcript.includes('hello from a page, over webrtc'), TIMEOUT * 1000);
+      if (said) {
+        console.log(`ok       ${name.padEnd(24)} ssh -o ProxyCommand="drt tunnel rtc:<room>/call", ${listening.fingerprint.slice(0, 18)}...`);
+        nOk += 1;
+      } else {
+        fail(name, `the program never printed: ${JSON.stringify(plain(transcript).slice(-300))}`);
+      }
+    } catch (e) {
+      fail(name, `threw: ${String(e.message).split('\n')[0].slice(0, 300)}`);
+    } finally {
+      await page.evaluate(() => window.drtBrowserTest.sshStopListening()).catch(() => {});
+      if (client) client.kill('SIGKILL');
+      if (room) room.kill('SIGKILL');
+    }
+  }
+  fs.rmSync(keys, { recursive: true, force: true });
+}
+
 // The REPL, typed at drt-term.js, against what the native binary said to
 // the same lines. The page echoes what is typed and the native transcript
 // (stdin from a file) does not, so the echoes are removed before the diff;

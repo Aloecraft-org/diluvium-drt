@@ -21,11 +21,11 @@ RootConfig {
     listeners: [
         Listener {
             scheme: "http",
-            address: "127.0.0.1:18490",
+            address: "127.0.0.1:18495",
             queue: "http_in",
             reply_queue: "http_out",
             max_body: 65536,
-            conn_deadline_ms: 10000,
+            conn_deadline_ms: 15000,
             max_conns: 64,
             admit_timeout_ms: 2000,
             headers: [],
@@ -41,28 +41,7 @@ RootConfig {
     wireguard: None,
     tunnel: None,
     netcheck: None,
-    webrtc: Some(
-        WebrtcConfig {
-            bind: "127.0.0.1:18491",
-            identity_file: "<corpus>/webrtc-identity.json",
-            stun: [],
-            stun_refresh_s: 25,
-            publish_host_candidates: true,
-            service: "",
-            default: None,
-            scope: [
-                "ssh://127.0.0.1:22",
-            ],
-            services: {},
-            max_sessions: 12,
-            max_streams_per_session: 64,
-            idle_stream_timeout_s: 300,
-            connect_timeout_s: 10,
-            direct: false,
-            queue: "webrtc",
-            reply_queue: "webrtc_cmd",
-        },
-    ),
+    webrtc: None,
     identity: Identity {
         host_key_path: None,
     },

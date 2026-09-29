@@ -1,7 +1,7 @@
 # DRT examples
 
 A run-through for someone who has a `drt` binary and has never run anything
-with it. Thirty sittings — thirty-one directories, because `05` has a
+with it. Thirty-one sittings — thirty-two directories, because `05` has a
 live twin — meant in order: one idea each, a command block you can paste, and
 an `expected.txt` that is the real output of running it rather than a
 transcription of what it ought to say. A **drt app** is a config plus a
@@ -43,6 +43,7 @@ reference. Everything here is v0.6.0.
 | [`27-reductions-and-grouping`](27-reductions-and-grouping) | The three rules that make a reduction answer the same thing on every target: a canonical summation order, one total ordering with NaN last, and first-appearance group ids. | `drt run app.dlua` |
 | [`28-fft`](28-fft) | `rfft` on a real signal, printed as `real:imag` bit patterns. The example where a compiler flag that failed to reach one target shows up as a differing hex digit. | `drt run app.dlua` |
 | [`29-browser-access`](29-browser-access) | Signaling is a program: one HTTP endpoint on the host swaps records with a browser, which then reaches the host's scope directly over WebRTC. | `./demo.sh` |
+| [`30-signaling-room`](30-signaling-room) | Signaling for an answerer that cannot host an endpoint, such as a page: a caller's request is held until the answerer, polling, answers it. | `./demo.sh` |
 
 `drt run` executes one program to completion and exits — no swarm, no
 listeners, no second instance — and it is what `01`–`07`, `10`, `12`, `16`,

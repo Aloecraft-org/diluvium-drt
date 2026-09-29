@@ -111,6 +111,15 @@ releases:
       is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
     added:
       - |
+        **`examples/30-signaling-room`**: signaling for an answerer that
+        cannot host an endpoint, such as a page. A caller's `POST /call` is
+        held until the answerer, polling `GET /calls`, answers with `POST
+        /answer/<id>`, and the held request's reply is the answerer's
+        record, so `drt tunnel rtc:http://…/call` works unchanged. With it,
+        stock `ssh` reaches a page over WebRTC (row 6 of
+        `doc/ssh-transport-matrix.md`); the browser suite runs exactly that
+        in Chromium, the room being the example's program unchanged.
+      - |
         **`drt tunnel rtc:`**, the relay's `ProxyCommand` over WebRTC
         instead (row 3 of `doc/ssh-transport-matrix.md`). The process is
         the caller in a browser access session and moves stdio over one

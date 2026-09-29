@@ -1,0 +1,14 @@
+{
+  "_comment": "A signaling room. A call is held until the answerer answers, so the connection deadline is how long a caller waits. In front of a page on an https origin, a TLS terminator faces the listener.",
+  "program": { "path": "app.dlua" },
+  "listeners": [
+    {
+      "scheme": "http",
+      "address": "127.0.0.1:18495",
+      "queue": "http_in",
+      "reply_queue": "http_out",
+      "conn_deadline_ms": 15000,
+      "resp_headers": ["access-control-allow-origin"]
+    }
+  ]
+}

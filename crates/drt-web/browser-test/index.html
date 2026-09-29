@@ -46,6 +46,7 @@
   const sshShells = new Map();
   const sshParked = new Map();
   const sshAnswered = [];
+  const sshListening = [];
 
   let term = null;
   let shell = null;
@@ -213,6 +214,39 @@
       const answering = await answer(callerRecord, { services: { ssh }, label: 'drt in a page' });
       sshAnswered.push(answering);
       return { record: answering.recordText, fingerprint: server.fingerprint };
+    },
+    // Row 6: the same, for callers that arrive through a signaling room
+    // (examples/30-signaling-room) rather than through the suite. The page
+    // polls for waiting callers, answers each, and posts its record back;
+    // `drt tunnel rtc:<room>/call` is the caller.
+    async sshListen(hostKey, authorizedKeys, room) {
+      const { answer } = await import('/drt_browser_access.js');
+      const server = new DrtSshServer(hostKey, authorizedKeys);
+      const ssh = (stream) =>
+        splice(stream, server.serve((shell) => {
+          const terminal = terminalFor(shell);
+          const bound = attach(DrtTerm, terminal, { DrtEditor, banner: 'drt in a page, called natively' });
+          bound.term.putFile('/hello.dlua', new TextEncoder().encode('print("hello from a page, over webrtc")\n'));
+          bound.term.setCwd('/');
+        }));
+      const listening = { stop: false, answered: 0 };
+      (async () => {
+        while (!listening.stop) {
+          const calls = await fetch(`${room}/calls`).then((r) => r.json()).catch(() => []);
+          for (const call of calls) {
+            const answering = await answer(call.record, { services: { ssh }, label: 'drt in a page' });
+            sshAnswered.push(answering);
+            await fetch(`${room}/answer/${call.id}`, { method: 'POST', body: answering.recordText });
+            listening.answered++;
+          }
+          await new Promise((r) => setTimeout(r, 200));
+        }
+      })();
+      sshListening.push(listening);
+      return { fingerprint: server.fingerprint };
+    },
+    sshStopListening() {
+      for (const l of sshListening) l.stop = true;
     },
     sshParkEvents: () => (sshParked.get(1) ? sshParked.get(1).events : []),
     sshUnpark() {

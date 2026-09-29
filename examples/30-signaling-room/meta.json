@@ -1,0 +1,8 @@
+{
+  "name": "30-signaling-room",
+  "teaches": "A room is signaling for an answerer that cannot host an endpoint, such as a page: a caller's POST is held until the answerer, polling, answers it, and the held request's reply is the answerer's record.",
+  "cmd": "./demo.sh",
+  "needs_network": false,
+  "needs_listener": true,
+  "normalise": []
+}

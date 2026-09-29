@@ -1,0 +1,38 @@
+-- A room for callers and one answerer that cannot host an endpoint, such
+-- as a page. A caller POSTs its record to /call and the reply is the
+-- answerer's record; the answerer polls /calls and POSTs to /answer/<id>.
+local requests = queue.declare('http_in',  {capacity = 16})
+local replies  = queue.declare('http_out', {capacity = 16, exported = true})
+local cors     = {['access-control-allow-origin'] = '*'}
+local MAX_WAITING = 16
+local waiting, order, next_id = {}, {}, 0   -- id -> {record, conn, handed}
+
+local function reply(conn, status, body)
+  queue.push(replies, {conn = conn, status = status, body = body, headers = cors,
+                       content_type = 'application/json'})
+end
+
+while true do
+  local _, m = queue.wait({requests})
+  local answer_id = m.path:match('^/answer/(%d+)$')
+  if m.method == 'POST' and m.path == '/call' then
+    next_id = next_id + 1
+    waiting[next_id] = {record = m.body, conn = m.conn}   -- held: no reply yet
+    table.insert(order, next_id)
+    if #order > MAX_WAITING then waiting[table.remove(order, 1)] = nil end
+  elseif m.method == 'GET' and m.path == '/calls' then
+    local calls = {}
+    for _, id in ipairs(order) do
+      local c = waiting[id]
+      if c and not c.handed then c.handed = true; table.insert(calls, {id = id, record = c.record}) end
+    end
+    reply(m.conn, 200, #calls > 0 and json.encode(calls) or '[]')   -- an empty table is not an array
+  elseif m.method == 'POST' and answer_id and waiting[tonumber(answer_id)] then
+    local id = tonumber(answer_id)
+    reply(waiting[id].conn, 200, m.body)   -- the held call gets the answer
+    waiting[id] = nil
+    reply(m.conn, 204, '')
+  else
+    reply(m.conn, 404, '"POST /call, GET /calls, POST /answer/<id>"')
+  end
+end

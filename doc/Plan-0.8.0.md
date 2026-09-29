@@ -519,3 +519,15 @@ Each of these edits code `doc/Plan-2026-09.md` §0.2 froze:
   through it, in direct mode and through `examples/29-browser-access`.
   Stage 3b is row 6: a page answering a native caller needs signaling a
   page can take part in, since a page cannot host the endpoint.
+- 2026-09-29, **stage 3b: row 6**, stock `ssh` to a page over WebRTC.
+  `examples/30-signaling-room` holds a caller's `POST` until the page,
+  polling, answers it, so `drt tunnel rtc:http://…/call` needs no change;
+  the browser suite's `ssh-rtc-into-a-page` runs it. With this, every row
+  of the transport matrix has a gated path: 1 and 7 through the relay, 2
+  over WireGuard as before, and 3, 5, 6 and 8 over WebRTC with no relay.
+  Row 4's WebSocket bridge is `websocat` or a relay, and untested here.
+- Two process notes from this stage. The stage 1 to 3a pushes went red in
+  CI's `test` job: the loader corpus snapshot for `examples/29` gained
+  `services: {}` with the block, and a `sed` edit left a line rustfmt
+  rewraps. Both are fixed together, and CI's `test` job is now run in
+  full before a push.
