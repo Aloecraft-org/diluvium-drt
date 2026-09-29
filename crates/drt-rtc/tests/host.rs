@@ -411,7 +411,8 @@ async fn direct_mode_ignores_a_browsers_own_short_ufrag() {
 async fn a_named_service_reaches_its_entry_and_hello_names_it() {
     let port = echo_server().await;
     let entry = format!("ssh://127.0.0.1:{port}");
-    let (mut host, record) = host_in_mode(&[entry.clone()], false, &[("echo", &entry)]).await;
+    let (mut host, record) =
+        host_in_mode(std::slice::from_ref(&entry), false, &[("echo", &entry)]).await;
     let mut client = open_session(&mut host, &record, "p1").await;
     let hello: serde_json::Value = serde_json::from_str(client.hello.as_deref().unwrap()).unwrap();
     assert_eq!(hello["services"], serde_json::json!(["echo"]));
