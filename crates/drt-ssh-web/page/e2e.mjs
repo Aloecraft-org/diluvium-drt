@@ -9,7 +9,9 @@
 // the page's module running SSH over a stream from the shipped client
 // library, drt_browser_access.js. And once more in direct mode
 // (doc/BrowserAccess.md §3.4): a second host with `direct` on, whose record
-// is all the page is given -- no room, no signaling.
+// is all the page is given -- no room, no signaling. And through
+// examples/29-browser-access's program, unchanged: the host signaling for
+// itself over one HTTP endpoint, as that example's README shows a page.
 //
 //   script/drt-ssh-page.sh && cargo build -p drt --features full
 //   cd crates/drt-ssh-web/page && npm test
@@ -42,7 +44,7 @@ import path from 'node:path';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DRT = process.env.DRT ?? path.resolve(here, '../../../target/debug/drt');
 const SSHD = process.env.SSHD ?? '/usr/sbin/sshd';
-const PORTS = { sshd: 18222, relay: 18443, page: 18480, mock: 18787, direct: 18790 };
+const PORTS = { sshd: 18222, relay: 18443, page: 18480, mock: 18787, direct: 18790, post: 18792, postRtc: 18793 };
 const LABEL = 'box';
 const ROOM = 'ssh';
 const WAIT_MS = 20000;
@@ -155,6 +157,18 @@ fs.writeFileSync(path.join(tmp, 'direct.json'), JSON.stringify({
   webrtc: { bind: `127.0.0.1:${PORTS.direct}`, identity_file: path.join(tmp, 'direct-identity.json'),
             direct: true, scope: [`ssh://127.0.0.1:${PORTS.sshd}`] },
 }));
+// The example's program under a config of the harness's: the same
+// listener and block, on the harness's ports, with the test sshd in scope.
+fs.writeFileSync(path.join(tmp, 'post.json'), JSON.stringify({
+  program: { path: path.resolve(here, '../../../examples/29-browser-access/app.dlua') },
+  listeners: [{ scheme: 'http', address: `127.0.0.1:${PORTS.post}`, queue: 'http_in', reply_queue: 'http_out',
+                resp_headers: ['access-control-allow-origin'] }],
+  webrtc: { bind: `127.0.0.1:${PORTS.postRtc}`, identity_file: path.join(tmp, 'post-identity.json'),
+            scope: [`ssh://127.0.0.1:${PORTS.sshd}`] },
+}));
+const postHost = run('post-host', DRT, ['--config', path.join(tmp, 'post.json'), 'start']);
+await until('the example\'s listener', () => postHost.lines.some((l) => l.includes(`listening on 127.0.0.1:${PORTS.post}`)));
+
 const directHost = run('direct-host', DRT, ['--config', path.join(tmp, 'direct.json'), 'start']);
 const directRecord = (await until('the direct host\'s record',
   () => directHost.lines.find((l) => l.startsWith('record ')))).slice('record '.length);
@@ -301,15 +315,16 @@ await check('exit ends the session with its status', async () => {
 // One session per call: offer, the mock's room, the host's record, a
 // browser access stream to `port`, and `Ssh.connect` over it. Then, when
 // `command` is given, sign in with the test's key and run it in a shell.
-async function overRtc({ port = PORTS.sshd, pin = fingerprint, command, direct } = {}) {
+async function overRtc({ port = PORTS.sshd, pin = fingerprint, command, direct, post } = {}) {
   const page = await context.newPage();
   await page.goto(rtcUrl);
   await until('the module', () => page.evaluate(() =>
     !document.getElementById('nokey').hidden || !document.getElementById('haskey').hidden));
-  return page.evaluate(async ({ base, port, pin, user, key, command, waitMs, direct }) => {
+  return page.evaluate(async ({ base, port, pin, user, key, command, waitMs, direct, post }) => {
     const lib = await import('/drt_browser_access.js');
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    const session = direct ? await lib.direct(direct, { timeoutMs: waitMs }) : await signaled();
+    const session = direct ? await lib.direct(direct, { timeoutMs: waitMs })
+      : post ? await posted() : await signaled();
     let ssh;
     try {
       ssh = await wasm_bindgen.Ssh.connect(session.connect('127.0.0.1', port), pin);
@@ -332,6 +347,13 @@ async function overRtc({ port = PORTS.sshd, pin = fingerprint, command, direct }
     session.close();
     return result;
 
+    // examples/29-browser-access's README, as a page would run it.
+    async function posted() {
+      const pending = await lib.offer();
+      const reply = await fetch(post, { method: 'POST', body: pending.recordText });
+      return pending.accept(await reply.text(), { timeoutMs: waitMs });
+    }
+
     async function signaled() {
     const pending = await lib.offer({ gatherTimeoutMs: 2000 });
     const joined = await (await fetch(`${base}/join`, { method: 'POST', body: '{"credential":{}}' })).json();
@@ -346,7 +368,7 @@ async function overRtc({ port = PORTS.sshd, pin = fingerprint, command, direct }
     return pending.accept(hostRecord, { timeoutMs: waitMs });
     }
   }, { base: `${signal}/v1/rooms/${ROOM}`, port, pin, user: USER, key: fs.readFileSync(client, 'utf8'),
-       command, waitMs: WAIT_MS, direct });
+       command, waitMs: WAIT_MS, direct, post });
 }
 
 await check('over browser access, the page signs in to sshd and runs a command', async () => {
@@ -380,6 +402,15 @@ await check('in direct mode, the page signs in with only the host\'s record', as
   if (!r.out.includes('direct-ok-42')) throw new Error(`the shell printed: ${JSON.stringify(r.out)}`);
   if (r.status !== 6) throw new Error(`ended with ${r.status}`);
   if (!directHost.lines.some((l) => /^session direct:\S+ connected$/.test(l))) throw new Error('the host reported no direct session');
+});
+
+await check('examples/29-browser-access\'s program signals for its own host, and the page signs in', async () => {
+  const r = await overRtc({ post: `http://127.0.0.1:${PORTS.post}/session`, command: 'echo posted-$((6*7)); exit 8' });
+  if (r.refused) throw new Error(`refused: ${r.refused} (${r.code})`);
+  if (r.hostKey !== fingerprint || !r.signedIn) throw new Error(`got ${JSON.stringify(r)}`);
+  if (!r.out.includes('posted-42')) throw new Error(`the shell printed: ${JSON.stringify(r.out)}`);
+  if (r.status !== 8) throw new Error(`ended with ${r.status}`);
+  if (!postHost.lines.some((l) => /^browser-1\s+connected/.test(l))) throw new Error('the program reported no session');
 });
 
 await check('the shipped page, CSP and all, follows a direct-mode link to a shell', async () => {

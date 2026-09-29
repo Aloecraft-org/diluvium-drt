@@ -56,7 +56,7 @@ with each of them:
 | Mode | Where the records travel | Use |
 |---|---|---|
 | **None (direct mode)** | The host's record is fixed, so it travels in a link, a QR code or a config. The caller chooses its own ICE credentials, and the host makes a session from the first connectivity check. | A host with a reachable UDP port, such as a VPS. No server of any kind. |
-| **Program** | A `drt start` program behind an `http` listener keeps a room of records and passes `open` and `close` to the `webrtc` block's queues. `examples/` carries one. | A fetchpoint anyone runs. Needs a TLS terminator for callers on `https://` pages. |
+| **Program** | A `drt start` program behind an `http` listener keeps a room of records and passes `open` and `close` to the `webrtc` block's queues. `examples/29-browser-access` is one, for a single host. | A fetchpoint anyone runs. Needs a TLS terminator for callers on `https://` pages. |
 | **External service** | A third party's API. For Discofetch that is `stdlib:browser-access` on the host's side. | Rooms, presence and accounts that belong to the service. |
 
 WireGuard rows need the peer's public key and endpoint instead. They

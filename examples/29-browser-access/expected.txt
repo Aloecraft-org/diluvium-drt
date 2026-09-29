@@ -1,0 +1,7 @@
+drt start: http listening on 127.0.0.1:18490
+drt webrtc: serving on 127.0.0.1:18491, record on `webrtc`
+HTTP/1.1 200 OK
+access-control-allow-origin: *
+{"v":1,"u":"<ufrag>","p":"<password>","f":"<fingerprint>","c":["candidate:fffeff7e32c583ef85edbb1a 1 udp 2130706175 127.0.0.1 18491 typ host"]}
+
+browser-2	closed	record is not JSON: expected ident at line 1 column 2

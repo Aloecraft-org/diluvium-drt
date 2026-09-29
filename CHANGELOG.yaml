@@ -111,6 +111,13 @@ releases:
       is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
     added:
       - |
+        **`examples/29-browser-access`**: a host that does its own
+        signaling. One `http` listener answers `POST /session` with the
+        host's record and hands the browser's to the `webrtc` block as
+        `open`; the browser then reaches the host's scope directly. No
+        room and no third party. The SSH page's gate runs the example's
+        program unchanged and signs in to a stock sshd through it.
+      - |
         **Three numeric examples**: `26-arrays` (a typed buffer the core
         owns, elementwise arithmetic, contents printed as IEEE bits),
         `27-reductions-and-grouping` (summation order, NaN-last ordering,

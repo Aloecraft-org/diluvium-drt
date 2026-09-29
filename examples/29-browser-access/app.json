@@ -1,0 +1,18 @@
+{
+  "_comment": "The signaling endpoint and the WebRTC host in one deployment. In front of a browser on an https page, a TLS terminator faces the listener.",
+  "program": { "path": "app.dlua" },
+  "listeners": [
+    {
+      "scheme": "http",
+      "address": "127.0.0.1:18490",
+      "queue": "http_in",
+      "reply_queue": "http_out",
+      "resp_headers": ["access-control-allow-origin"]
+    }
+  ],
+  "webrtc": {
+    "bind": "127.0.0.1:18491",
+    "identity_file": "webrtc-identity.json",
+    "scope": ["ssh://127.0.0.1:22"]
+  }
+}
