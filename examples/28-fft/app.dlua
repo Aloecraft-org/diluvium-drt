@@ -1,0 +1,30 @@
+-- The transform whose whole claim is that its bits are the same everywhere.
+-- A wrong twiddle factor on one target shows up here and nowhere else.
+--
+--   drt run app.dlua
+
+local signal = array.from{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0}
+
+-- rfft is the transform for a real signal: the spectrum of one is
+-- symmetric, so only the first n/2+1 bins carry anything, and that is what
+-- comes back. Complex, dtype c128.
+local spectrum = array.rfft(signal)
+
+print("8 real samples -> " .. tostring(spectrum))
+
+-- bits prints a complex element as real:imag, so these two lines are the
+-- same five numbers split into their halves.
+print("")
+print("the spectrum")
+print("  real  " .. array.bits(array.real(spectrum)))
+print("  imag  " .. array.bits(array.imag(spectrum)))
+print("  size  " .. array.bits(array.magnitude(spectrum)))
+
+-- And back. For this signal the round trip is exact, which is luck of the
+-- input rather than a promise -- a transform costs rounding, and some
+-- signals come back a bit or two light. The check is on bits precisely so
+-- that when it happens it is visible instead of hidden by %g.
+print("")
+print("the round trip")
+print("  in    " .. array.bits(signal))
+print("  out   " .. array.bits(array.irfft(spectrum)))

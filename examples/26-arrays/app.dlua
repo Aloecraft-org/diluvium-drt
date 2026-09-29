@@ -1,0 +1,43 @@
+-- An array is a typed buffer the core owns, not a Lua table -- and what is
+-- inside one prints as IEEE bits, never as a decimal.
+--
+--   drt run app.dlua
+
+-- The dtype follows the values: all integers is i64, and one float makes
+-- the whole thing f64.
+local ints = array.from{1, 2, 3, 4}
+local floats = array.from{1.0, 2.5, -3.75, 0.1}
+
+print("what they are")
+print("  ints    " .. tostring(ints) .. "   dtype " .. array.dtype(ints))
+print("  floats  " .. tostring(floats) .. "   dtype " .. array.dtype(floats))
+
+-- Printing 0.1 with %g would be right here and wrong somewhere else:
+-- glibc, musl, wasmtime, Chromium and mingw do not all format a double the
+-- same way. array.bits prints the IEEE pattern instead -- 16 hex digits per
+-- f64, 2 per u8 -- which is why the one expected.txt beside this file is
+-- valid on all five.
+print("")
+print("what is in them")
+print("  ints    " .. array.bits(ints))
+print("  floats  " .. array.bits(floats))
+
+-- Arithmetic is elementwise, and a scalar broadcasts across the array.
+-- Integer arithmetic stays integer, exactly as it does in Lua.
+print("")
+print("elementwise")
+print("  ints + ints  " .. array.bits(ints + ints))
+print("  floats * 2   " .. array.bits(floats * 2))
+
+-- A comparison answers a u8 mask rather than an array of booleans, and the
+-- mask is what selects.
+local positive = array.gt(floats, 0.0)
+print("")
+print("masks")
+print("  positive  " .. array.bits(positive))
+print("  selected  " .. array.bits(array.select(floats, positive)))
+
+-- Two dimensions are the one place bits output has a shape: a row per line.
+print("")
+print("two dimensions")
+print(array.bits(array.from{{1.0, 2.0}, {3.0, 4.0}}))

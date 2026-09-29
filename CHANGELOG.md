@@ -42,6 +42,14 @@ is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
 
 ### Added
 
+- **Three numeric examples**: `26-arrays` (a typed buffer the core
+  owns, elementwise arithmetic, contents printed as IEEE bits),
+  `27-reductions-and-grouping` (summation order, NaN-last ordering,
+  first-appearance group ids) and `28-fft` (`rfft`, as `real:imag`
+  bit patterns). Each needs `numeric` and is skipped where the build
+  lacks it; one `expected.txt` holds on every target that has it.
+  A drt-swarm test checks what ABI 2 carries, not only its number:
+  the feature list is the core's and a guest can call `array`.
 - **A determinism corpus, run on every target DRT ships**
   (`tests/determinism/`). diluvium's own numeric corpus, vendored
   unchanged, plus DRT's: what every profile answers the same (integer

@@ -39,6 +39,9 @@ reference. Everything here is v0.6.0.
 | [`23-reading-parquet`](23-reading-parquet) | The `data` connector: parquet columns cross as raw bytes and text crosses dictionary-encoded, so a million-row column is a million bytes rather than a million Lua values. | `drt run --config app.json` |
 | [`24-wireguard-userspace`](24-wireguard-userspace) | `mode = "userspace"` puts a TCP/IP stack in the process instead of an interface on the machine, so two peers cross a real tunnel with no `CAP_NET_ADMIN`, no sudo and no wintun.dll. | `./demo.sh` |
 | [`25-modules`](25-modules) | A program in more than one file. Every `.dlua` beside the entry is a module the host compiled before the program started, so `require` reads no filesystem and costs no capability. | `drt run app.dlua` |
+| [`26-arrays`](26-arrays) | The `array` library: a typed buffer the core owns rather than a Lua table, elementwise arithmetic with a scalar broadcast, and why the contents print as IEEE bits and never as decimals. | `drt run app.dlua` |
+| [`27-reductions-and-grouping`](27-reductions-and-grouping) | The three rules that make a reduction answer the same thing on every target: a canonical summation order, one total ordering with NaN last, and first-appearance group ids. | `drt run app.dlua` |
+| [`28-fft`](28-fft) | `rfft` on a real signal, printed as `real:imag` bit patterns. The example where a compiler flag that failed to reach one target shows up as a differing hex digit. | `drt run app.dlua` |
 
 `drt run` executes one program to completion and exits — no swarm, no
 listeners, no second instance — and it is what `01`–`07`, `10`, `12`, `16`,
