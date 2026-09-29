@@ -326,8 +326,9 @@ jobs:
     # SSH in the browser (doc/Plan-0.8.0.md §2.2): dist/ssh.html built as
     # the release builds it, then e2e.mjs -- stock sshd, the relay, a
     # parked device, stock `ssh` over ProxyCommand and the page in
-    # Chromium, eight checks. script/drt-ssh-page-gate.sh is the gate the
-    # release runs too, less the package step.
+    # Chromium, then the same sshd over WebRTC through a `webrtc` host.
+    # script/drt-ssh-page-gate.sh is the gate the release runs too, less
+    # the package step.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

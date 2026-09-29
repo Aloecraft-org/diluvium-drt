@@ -1,10 +1,17 @@
-//! SSH in a browser (`doc/Plan-0.8.0.md` §2): russh compiled to wasm,
-//! carried over a WebSocket to the relay's claim door, `/s/<label>`.
+//! SSH in a browser (`doc/Plan-0.8.0.md` §2): russh compiled to wasm, over
+//! one of two transports (`doc/ssh-transport-matrix.md`):
 //!
-//! The page sends exactly the bytes `ssh -o ProxyCommand="drt tunnel …"`
-//! sends, so the relay and the parked device are unchanged, and the SSH
-//! session -- key exchange, host key, authentication -- is end to end
-//! between this page and sshd. The relay only ever carries ciphertext.
+//! - **A WebSocket URL**, the relay's claim door `/s/<label>` or any bridge
+//!   that carries raw bytes to an sshd. The page sends exactly the bytes
+//!   `ssh -o ProxyCommand="drt tunnel …"` sends, so the relay and the
+//!   parked device are unchanged.
+//! - **A `{readable, writable}` pair of Web Streams**: a browser access
+//!   stream (`doc/BrowserAccess.md` §9, `session.connect(host, port)`), or
+//!   anything else shaped like one.
+//!
+//! Either way the SSH session -- key exchange, host key, authentication --
+//! is end to end between this page and sshd, and whatever carries it only
+//! ever sees ciphertext.
 //!
 //! **The host key is decided between key exchange and authentication.**
 //! `Ssh.connect` resolves once the server's key is known, and nothing that
@@ -16,7 +23,7 @@
 //!
 //! ## surface block
 //!
-//! - Entry points (JS): `Ssh.connect(url, pinned?)`; then `hostKey`,
+//! - Entry points (JS): `Ssh.connect(urlOrStream, pinned?)`; then `hostKey`,
 //!   `authPassword(user, password)`, `authKey(user, openssh)`,
 //!   `shell(cols, rows, onData, onClose)`, `write(bytes)`,
 //!   `resize(cols, rows)`, `keepalive()`, `close()`; and
@@ -29,9 +36,12 @@
 //! their default, off, and the page calls `keepalive()` on a browser timer
 //! instead, so a quiet session still never meets the relay's idle close.
 //!
-//! - Fan-out: [`Op`], what the page asks of an open shell; a failed connect
-//!   carries `code`: the WebSocket close code (1013 is "the device is not
-//!   home", which the page retries) or `"hostkey"` for a pin mismatch.
+//! - Fan-out: [`Transport`], what carries the bytes; [`Op`], what the page
+//!   asks of an open shell. A failed connect carries `code`: the WebSocket
+//!   close code (1013 is "the device is not home", which the page retries),
+//!   a stream's `reason` when it has one (a browser access CLOSE byte, such
+//!   as 0x48 for a target out of scope), `"stream"` when it has none, or
+//!   `"hostkey"` for a pin mismatch.
 
 #![cfg(target_arch = "wasm32")]
 
@@ -49,7 +59,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio::sync::{mpsc, oneshot};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use wasm_bindgen_futures::{future_to_promise, spawn_local};
+use wasm_bindgen_futures::{future_to_promise, spawn_local, JsFuture};
 use web_sys::{BinaryType, CloseEvent, Event, MessageEvent, WebSocket};
 
 /// Runs once, when the module is instantiated: a Rust panic is a wasm trap
@@ -63,6 +73,24 @@ fn start() {
 pub const PIPE: usize = 256 * 1024;
 /// What the pty says it is. xterm.js is the terminal on the other side.
 pub const TERM: &str = "xterm-256color";
+
+/// What carries the session's bytes. Dropping either end releases what
+/// it holds, so the far side sees this page hang up.
+enum Transport {
+    Socket(Socket),
+    Streams(Streams),
+}
+
+impl Transport {
+    fn close(&self) {
+        match self {
+            Transport::Socket(s) => {
+                let _ = s.ws.close();
+            }
+            Transport::Streams(s) => s.release(),
+        }
+    }
+}
 
 /// What the page asks of an open shell, in the order it asked.
 enum Op {
@@ -225,12 +253,129 @@ async fn open(
     Ok((socket, ours))
 }
 
+// depth: Web Streams, spliced to a pipe russh can own
+
+/// The reader and writer taken from a `{readable, writable}` pair. They are
+/// locked to this session from the connect on; releasing cancels the reader
+/// and closes the writer, which for a browser access stream is its CLOSE.
+struct Streams {
+    reader: JsValue,
+    writer: JsValue,
+}
+
+impl Streams {
+    fn release(&self) {
+        settle(call(&self.reader, "cancel", &[]));
+        settle(call(&self.writer, "close", &[]));
+    }
+}
+
+impl Drop for Streams {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+/// `target[method](...args)`, for objects known only by their shape.
+fn call(target: &JsValue, method: &str, args: &[&JsValue]) -> Result<JsValue, JsValue> {
+    let f: Function = Reflect::get(target, &method.into())?
+        .dyn_into()
+        .map_err(|_| fail(&format!("not a stream: it has no {method}()"), None))?;
+    let args: js_sys::Array = args.iter().copied().collect();
+    f.apply(target, &args)
+}
+
+/// Await a call's promise and drop its outcome. Releasing a stream twice,
+/// or one the far side already closed, rejects, and a rejection nobody
+/// handles is an uncaught error on the page.
+fn settle(result: Result<JsValue, JsValue>) {
+    spawn_local(async move {
+        let _ = awaited(result).await;
+    });
+}
+
+/// A call's promise, awaited.
+async fn awaited(result: Result<JsValue, JsValue>) -> Result<JsValue, JsValue> {
+    JsFuture::from(result?.dyn_into::<Promise>()?).await
+}
+
+/// Lock `stream`'s two halves and resolve with russh's end of a pipe whose
+/// other end two tasks splice to them, bytes in order both ways. `failed`
+/// records why the readable side errored, if it does: a browser access
+/// stream errors with a `StreamClosed` carrying the host's CLOSE byte.
+fn open_streams(
+    stream: &JsValue,
+    failed: Rc<RefCell<Option<JsValue>>>,
+) -> Result<(Streams, DuplexStream), JsValue> {
+    let readable = Reflect::get(stream, &"readable".into())?;
+    let writable = Reflect::get(stream, &"writable".into())?;
+    if readable.is_undefined() || writable.is_undefined() {
+        return Err(fail("not a stream: it needs readable and writable", None));
+    }
+    let reader = call(&readable, "getReader", &[])?;
+    let writer = call(&writable, "getWriter", &[])?;
+    let (ours, theirs) = tokio::io::duplex(PIPE);
+    let (mut from_russh, mut to_russh) = tokio::io::split(theirs);
+
+    let r = reader.clone();
+    spawn_local(async move {
+        loop {
+            let chunk = match awaited(call(&r, "read", &[])).await {
+                Ok(c) => c,
+                Err(e) => {
+                    *failed.borrow_mut() = Some(e);
+                    break;
+                }
+            };
+            if Reflect::get(&chunk, &"done".into())
+                .ok()
+                .and_then(|d| d.as_bool())
+                == Some(true)
+            {
+                break;
+            }
+            let Ok(value) = Reflect::get(&chunk, &"value".into()) else {
+                break;
+            };
+            if to_russh
+                .write_all(&Uint8Array::new(&value).to_vec())
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+        let _ = to_russh.shutdown().await;
+    });
+    let w = writer.clone();
+    spawn_local(async move {
+        let mut buf = vec![0u8; 16 * 1024];
+        loop {
+            match from_russh.read(&mut buf).await {
+                Ok(0) | Err(_) => {
+                    settle(call(&w, "close", &[]));
+                    break;
+                }
+                Ok(n) => {
+                    // Awaiting the write is the backpressure: a browser
+                    // access stream resolves it once Wisp credit allows.
+                    let chunk = Uint8Array::from(&buf[..n]);
+                    if awaited(call(&w, "write", &[&chunk])).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    Ok((Streams { reader, writer }, ours))
+}
+
 // depth: the session
 
 struct Inner {
     handle: Option<Handle<Checker>>,
     host_key: String,
-    socket: Socket,
+    transport: Transport,
     ops: Option<mpsc::UnboundedSender<Op>>,
 }
 
@@ -242,7 +387,7 @@ fn take_handle(inner: &Rc<RefCell<Inner>>) -> Result<Handle<Checker>, JsValue> {
         .ok_or_else(|| fail("the session is busy or closed", None))
 }
 
-/// One SSH session to one host, over one WebSocket.
+/// One SSH session to one host, over one transport.
 #[wasm_bindgen]
 pub struct Ssh {
     inner: Rc<RefCell<Inner>>,
@@ -250,13 +395,24 @@ pub struct Ssh {
 
 #[wasm_bindgen]
 impl Ssh {
-    /// Open the WebSocket and run key exchange. Resolves once the server's
-    /// host key is known and before anything authenticates; rejects with
-    /// `code` set to the close code, or to `"hostkey"` when `pinned` (a
-    /// `SHA256:…` fingerprint) does not match.
-    pub async fn connect(url: String, pinned: Option<String>) -> Result<Ssh, JsValue> {
+    /// Open the transport and run key exchange. `target` is a WebSocket URL
+    /// or a `{readable, writable}` pair of Web Streams. Resolves once the
+    /// server's host key is known and before anything authenticates;
+    /// rejects with `code` as the module note says, or `"hostkey"` when
+    /// `pinned` (a `SHA256:…` fingerprint) does not match.
+    pub async fn connect(target: JsValue, pinned: Option<String>) -> Result<Ssh, JsValue> {
         let closed = Rc::new(RefCell::new(None));
-        let (socket, stream) = open(&url, closed.clone()).await?;
+        let failed = Rc::new(RefCell::new(None));
+        let (transport, stream) = match target.as_string() {
+            Some(url) => {
+                let (socket, stream) = open(&url, closed.clone()).await?;
+                (Transport::Socket(socket), stream)
+            }
+            None => {
+                let (streams, stream) = open_streams(&target, failed.clone())?;
+                (Transport::Streams(streams), stream)
+            }
+        };
         let seen = Arc::new(Mutex::new(None));
         // Timers off, deliberately: see the module note.
         let config = client::Config::default();
@@ -271,13 +427,13 @@ impl Ssh {
                     inner: Rc::new(RefCell::new(Inner {
                         handle: Some(handle),
                         host_key,
-                        socket,
+                        transport,
                         ops: None,
                     })),
                 })
             }
             Err(e) => {
-                drop(socket);
+                drop(transport);
                 let saw = seen.lock().expect("one thread").clone();
                 if let (Some(pin), Some(saw)) = (&pinned, &saw) {
                     if pin != saw {
@@ -286,6 +442,19 @@ impl Ssh {
                             Some("hostkey".into()),
                         ));
                     }
+                }
+                if let Some(why) = failed.borrow_mut().take() {
+                    let reason = Reflect::get(&why, &"reason".into())
+                        .ok()
+                        .filter(|r| r.as_f64().is_some());
+                    let said = Reflect::get(&why, &"message".into())
+                        .ok()
+                        .and_then(|m| m.as_string())
+                        .unwrap_or_else(|| format!("{why:?}"));
+                    return Err(fail(
+                        &format!("the stream closed during key exchange ({said}): {e}"),
+                        Some(reason.unwrap_or_else(|| "stream".into())),
+                    ));
                 }
                 let code = *closed.borrow();
                 match code {
@@ -447,7 +616,7 @@ impl Ssh {
                     .await;
             });
         }
-        let _ = inner.socket.ws.close();
+        inner.transport.close();
     }
 }
 

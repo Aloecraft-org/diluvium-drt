@@ -135,7 +135,7 @@ access session and runs SSH over one of its streams:
 
 ```js
 const session = await accept(hostRecord);
-const ssh = await Ssh.connect(await session.connect("127.0.0.1", 22));
+const ssh = await Ssh.connect(session.connect("127.0.0.1", 22), pinned);
 ```
 
 No certificate is involved: DTLS is checked against the fingerprint in

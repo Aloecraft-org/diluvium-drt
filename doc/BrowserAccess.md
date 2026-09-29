@@ -498,7 +498,9 @@ const s = session.connect('127.0.0.1', 8123);      // §6: must be in hello.scop
   under a stream, its `reason` is `null`.
 - **`scheme` is the page's to act on** (§5). An `https` target means the
   page speaks TLS over the stream itself, and an `ssh` one SSH; the
-  library carries bytes.
+  library carries bytes. For SSH, `Ssh.connect(s, pinned)` from
+  `crates/drt-ssh-web` takes the stream as it is, and
+  `script/drt-ssh-page-gate.sh` runs it against a stock sshd in scope.
 - **Its gate** is `script/browser-access-client.sh`: `test.mjs` against
   the vectors, then `check.mjs` in Chromium against the `drt-rtc` example
   host and, with `--drt`, against `drt start`. CI runs it with `--drt`,

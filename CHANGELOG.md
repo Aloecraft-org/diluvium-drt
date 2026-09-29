@@ -74,6 +74,21 @@ is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
   resize, a second page and stock `ssh` at once beside an open
   session, a wrong pin refused before anything authenticates, TOFU,
   an exit status, and no uncaught error in any page.
+- **SSH in a browser, over browser access** (row 5 of
+  `doc/ssh-transport-matrix.md`). The SSH module's `Ssh.connect`
+  takes a `{readable, writable}` pair of Web Streams as well as a
+  WebSocket URL, so a page runs SSH over a stream from
+  `drt_browser_access.js` to an sshd in a `webrtc` block's scope:
+  directly between the browser and the host, with no relay. Host-key
+  pinning is unchanged, and a stream the host refuses fails the
+  connect with the host's CLOSE byte as its `code` (0x48 for a target
+  out of scope).
+
+  The same gate proves it: a `webrtc` host scoped to the test sshd,
+  signaling through the M0 mock, and the page's module signing in,
+  running a command and returning its exit status over WebRTC; a
+  wrong pin refused before anything authenticates; and a port out of
+  scope refused with 0x48.
 - **The `webrtc` block** (`doc/BrowserAccess.md`). A browser builds
   its session from the host's presence record with no answer round
   trip, and the host carries Wisp v1 streams over the data channel

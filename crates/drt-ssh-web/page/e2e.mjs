@@ -3,6 +3,12 @@
 // tunnel --park`), and three kinds of caller on the one label -- stock
 // `ssh` through `ProxyCommand`, and dist/ssh.html in Chromium, twice.
 //
+// Then the same sshd over WebRTC (doc/ssh-transport-matrix.md, row 5): a
+// browser access host (`drt start` with the `webrtc` block, its scope the
+// sshd), signaling through the M0 mock (crates/drt-rtc/browser-check), and
+// the page's module running SSH over a stream from the shipped client
+// library, drt_browser_access.js.
+//
 //   script/drt-ssh-page.sh && cargo build -p drt --features full
 //   cd crates/drt-ssh-web/page && npm test
 //
@@ -18,7 +24,7 @@
 // ## surface block
 //
 // - Entry point: `node e2e.mjs`.
-// - Configurable: DRT and SSHD (env), PORTS, LABEL, WAIT_MS.
+// - Configurable: DRT and SSHD (env), PORTS, LABEL, WAIT_MS, ROOM.
 // - Fan-out: the checks at the bottom, one `check(name, fn)` each; the
 //   last one fails if any page raised an uncaught error along the way.
 
@@ -34,8 +40,9 @@ import path from 'node:path';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DRT = process.env.DRT ?? path.resolve(here, '../../../target/debug/drt');
 const SSHD = process.env.SSHD ?? '/usr/sbin/sshd';
-const PORTS = { sshd: 18222, relay: 18443, page: 18480 };
+const PORTS = { sshd: 18222, relay: 18443, page: 18480, mock: 18787 };
 const LABEL = 'box';
+const ROOM = 'ssh';
 const WAIT_MS = 20000;
 const USER = os.userInfo().username;
 
@@ -113,11 +120,39 @@ const device = run('device', DRT, ['tunnel', '--park', `ws://127.0.0.1:${PORTS.r
 await until('the device to park', () => device.lines.some((l) => l.includes('parked')));
 const claim = `ws://127.0.0.1:${PORTS.relay}/s/${LABEL}?k=${callerKey}`;
 
+// depth: the browser access host, its room, and the client library
+
+const browserCheck = path.resolve(here, '../../drt-rtc/browser-check');
+const mock = run('mock', 'node', [path.join(browserCheck, 'mock.mjs'), String(PORTS.mock)]);
+await until('the mock', () => mock.lines.some((l) => l.includes('listening')));
+const signal = `http://127.0.0.1:${PORTS.mock}`;
+fs.writeFileSync(path.join(tmp, 'host.json'), JSON.stringify({
+  program: { path: path.join(browserCheck, 'host.dlua') },
+  caps: [{ capability: 'host:rest/*' }, { capability: 'host:time/monotonic' }],
+  connectors: { time: {}, rest: { scope: { allow: [{ origin: signal }], allow_private: true } } },
+  args: { signal, room: ROOM },
+  webrtc: { identity_file: path.join(tmp, 'host-identity.json'), service: 'SSH', scope: [`ssh://127.0.0.1:${PORTS.sshd}`] },
+}));
+const rtcHost = run('rtc-host', DRT, ['--config', path.join(tmp, 'host.json'), 'start']);
+await until('the browser access host in the room', () => rtcHost.lines.some((l) => l.startsWith('signal: joined')));
+
 // The page is served over http so it has an origin, and IndexedDB, as it
 // would anywhere it is embedded.
 const html = fs.readFileSync(path.join(here, 'dist/ssh.html'));
-http.createServer((_, res) => res.writeHead(200, { 'content-type': 'text/html' }).end(html)).listen(PORTS.page, '127.0.0.1');
+// /rtc.html is the same build with its CSP taken out, and nothing else
+// changed. The shipped page admits only WebSocket connections, and these
+// checks signal over fetch and import the client library, which are the
+// harness's doing rather than the page's.
+const harness = html.toString().replace(/<meta http-equiv="Content-Security-Policy"[^>]*>/, '');
+if (harness === html.toString()) throw new Error('dist/ssh.html has no CSP meta for the harness to take out');
+const library = fs.readFileSync(path.resolve(here, '../../drt-rtc/client/drt_browser_access.js'));
+http.createServer((req, res) => {
+  if (req.url === '/rtc.html') res.writeHead(200, { 'content-type': 'text/html' }).end(harness);
+  else if (req.url === '/drt_browser_access.js') res.writeHead(200, { 'content-type': 'text/javascript' }).end(library);
+  else res.writeHead(200, { 'content-type': 'text/html' }).end(html);
+}).listen(PORTS.page, '127.0.0.1');
 const pageUrl = `http://127.0.0.1:${PORTS.page}/ssh.html`;
+const rtcUrl = `http://127.0.0.1:${PORTS.page}/rtc.html`;
 
 function nativeSsh(command) {
   return new Promise((ok) => {
@@ -236,6 +271,79 @@ await check('exit ends the session with its status', async () => {
   await a.keyboard.type('exit 3\n');
   const ended = await until('the end', () => a.evaluate(() => window.drtSsh.ended));
   if (ended !== 3) throw new Error(`ended with ${ended}`);
+});
+
+// depth: SSH over browser access, driven through the page's module
+
+// One session per call: offer, the mock's room, the host's record, a
+// browser access stream to `port`, and `Ssh.connect` over it. Then, when
+// `command` is given, sign in with the test's key and run it in a shell.
+async function overRtc({ port = PORTS.sshd, pin = fingerprint, command } = {}) {
+  const page = await context.newPage();
+  await page.goto(rtcUrl);
+  await until('the module', () => page.evaluate(() =>
+    !document.getElementById('nokey').hidden || !document.getElementById('haskey').hidden));
+  return page.evaluate(async ({ base, port, pin, user, key, command, waitMs }) => {
+    const lib = await import('/drt_browser_access.js');
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const pending = await lib.offer({ gatherTimeoutMs: 2000 });
+    const joined = await (await fetch(`${base}/join`, { method: 'POST', body: '{"credential":{}}' })).json();
+    const headers = { authorization: `Bearer ${joined.session_token}`, 'content-type': 'application/json' };
+    await fetch(`${base}/presence`, { method: 'POST', headers, body: JSON.stringify({ kind: 'browser', rtc: pending.recordText }) });
+    let hostRecord;
+    for (const t0 = Date.now(); !hostRecord && Date.now() - t0 < waitMs; await sleep(200)) {
+      const { peers } = await (await fetch(`${base}/presence`, { headers })).json();
+      hostRecord = peers.find((p) => p.kind === 'host')?.rtc;
+    }
+    if (!hostRecord) throw new Error('no host in the room');
+    const session = await pending.accept(hostRecord, { timeoutMs: waitMs });
+    let ssh;
+    try {
+      ssh = await wasm_bindgen.Ssh.connect(session.connect('127.0.0.1', port), pin);
+    } catch (e) {
+      session.close();
+      return { refused: e.message, code: e.code };
+    }
+    const result = { hostKey: ssh.hostKey };
+    if (command) {
+      result.signedIn = await ssh.authKey(user, key);
+      let out = '';
+      let end;
+      const ended = new Promise((ok) => (end = ok));
+      await ssh.shell(80, 24, (b) => (out += new TextDecoder().decode(b)), end);
+      ssh.write(new TextEncoder().encode(`${command}\n`));
+      result.status = await Promise.race([ended, sleep(waitMs).then(() => 'timed out')]);
+      result.out = out;
+    }
+    ssh.close();
+    session.close();
+    return result;
+  }, { base: `${signal}/v1/rooms/${ROOM}`, port, pin, user: USER, key: fs.readFileSync(client, 'utf8'),
+       command, waitMs: WAIT_MS });
+}
+
+await check('over browser access, the page signs in to sshd and runs a command', async () => {
+  const logged = sshd.lines.filter((l) => /Accepted publickey/.test(l)).length;
+  const r = await overRtc({ command: 'echo rtc-ok-$((6*7)); exit 5' });
+  if (r.refused) throw new Error(`refused: ${r.refused} (${r.code})`);
+  if (r.hostKey !== fingerprint) throw new Error(`host key ${r.hostKey}, expected ${fingerprint}`);
+  if (!r.signedIn) throw new Error('the key was not accepted');
+  if (!r.out.includes('rtc-ok-42')) throw new Error(`the shell printed: ${JSON.stringify(r.out)}`);
+  if (r.status !== 5) throw new Error(`ended with ${r.status}`);
+  if (!sshd.lines.slice(logged).some((l) => /Accepted publickey/.test(l))) throw new Error('sshd logged no sign-in');
+  if (!rtcHost.lines.some((l) => l.includes(`127.0.0.1:${PORTS.sshd}`))) throw new Error('the host reported no stream to sshd');
+});
+
+await check('over browser access, a wrong pin is refused before anything authenticates', async () => {
+  const logged = sshd.lines.filter((l) => /Accepted publickey/.test(l)).length;
+  const r = await overRtc({ pin: 'SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' });
+  if (r.code !== 'hostkey' || !r.refused.includes(fingerprint)) throw new Error(`got ${JSON.stringify(r)}`);
+  if (sshd.lines.filter((l) => /Accepted publickey/.test(l)).length !== logged) throw new Error('something authenticated');
+});
+
+await check('over browser access, a port out of scope fails the connect with the host\'s reason', async () => {
+  const r = await overRtc({ port: PORTS.sshd + 1 });
+  if (r.code !== 0x48) throw new Error(`got ${JSON.stringify(r)}`);
 });
 
 await check('no page raised an uncaught error', async () => {
