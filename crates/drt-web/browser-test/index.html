@@ -36,6 +36,7 @@
   import { attach } from './drt-term.js';
   import { terminalFor } from './ssh-terminal.js';
   import { park } from './relay-leg.js';
+  import { splice } from './stream-leg.js';
 
   const decode = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
   // The other direction, for the SSH bridge: Playwright's exposed
@@ -44,6 +45,7 @@
   const sshSockets = new Map();
   const sshShells = new Map();
   const sshParked = new Map();
+  const sshAnswered = [];
 
   let term = null;
   let shell = null;
@@ -194,6 +196,23 @@
       );
       sshParked.set(1, { leg, events });
       return true;
+    },
+    // Row 8 of doc/ssh-transport-matrix.md: this page answers a session
+    // from another browser (doc/BrowserAccess.md §10.4) and serves `ssh`
+    // on it. The suite carries the two records; that is all signaling is.
+    async sshAnswer(hostKey, authorizedKeys, callerRecord) {
+      const { answer } = await import('/drt_browser_access.js');
+      const server = new DrtSshServer(hostKey, authorizedKeys);
+      const ssh = (stream) =>
+        splice(stream, server.serve((shell) => {
+          const terminal = terminalFor(shell);
+          const bound = attach(DrtTerm, terminal, { DrtEditor, banner: 'drt in a page, over WebRTC' });
+          bound.term.putFile('/hello.dlua', new TextEncoder().encode('print("hello over webrtc")\n'));
+          bound.term.setCwd('/');
+        }));
+      const answering = await answer(callerRecord, { services: { ssh }, label: 'drt in a page' });
+      sshAnswered.push(answering);
+      return { record: answering.recordText, fingerprint: server.fingerprint };
     },
     sshParkEvents: () => (sshParked.get(1) ? sshParked.get(1).events : []),
     sshUnpark() {

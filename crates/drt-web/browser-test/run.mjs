@@ -133,8 +133,24 @@ if (!fs.existsSync(path.join(HERE, 'pkg', 'drt_web.js'))) {
 // The page: served from this directory, driven through window.drtBrowserTest
 // ---------------------------------------------------------------------------
 
+// Two files from outside this directory, for the WebRTC check: the browser
+// access client as the release serves it, and the SSH page from
+// crates/drt-ssh-web with its CSP taken out, since there it is the harness
+// that signals (the page's own CSP admits only WebSocket connections).
+const BROWSER_ACCESS = path.resolve(HERE, '../../drt-rtc/client/drt_browser_access.js');
+const SSH_PAGE = path.resolve(HERE, '../../drt-ssh-web/page/dist/ssh.html');
 const server = http.createServer((req, res) => {
   const url = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+  if (url === '/drt_browser_access.js') {
+    res.writeHead(200, { 'content-type': TYPES['.js'] });
+    res.end(fs.readFileSync(BROWSER_ACCESS));
+    return;
+  }
+  if (url === '/ssh-rtc.html' && fs.existsSync(SSH_PAGE)) {
+    res.writeHead(200, { 'content-type': TYPES['.html'] });
+    res.end(fs.readFileSync(SSH_PAGE, 'utf8').replace(/<meta http-equiv="Content-Security-Policy"[^>]*>/, ''));
+    return;
+  }
   const file = path.join(HERE, url === '/' ? 'index.html' : url);
   if (!file.startsWith(HERE)) {
     res.writeHead(403);
@@ -154,7 +170,10 @@ const server = http.createServer((req, res) => {
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const origin = `http://127.0.0.1:${server.address().port}`;
 
-const browser = await chromium.launch();
+// WebRtcHideLocalIpsWithMdns off: two pages on one machine with no STUN
+// server otherwise have no address to give each other, since a record
+// drops `.local` candidates (doc/BrowserAccess.md §2.1, §10.4).
+const browser = await chromium.launch({ args: ['--disable-features=WebRtcHideLocalIpsWithMdns'] });
 let page;
 const consoleLines = [];
 async function open() {
@@ -196,6 +215,9 @@ const noSsh = [];
 // No native `drt` carrying `relay` and `tunnel`, so the whole-chain check
 // has no carrier to run over.
 const noRelay = [];
+// No dist/ssh.html (script/drt-ssh-page.sh), so the WebRTC check has no
+// SSH client to run in the second page.
+const noSshPage = [];
 
 const fail = (name, why) => {
   console.log(`FAILED   ${name.padEnd(24)} ${why}`);
@@ -640,6 +662,66 @@ if (PAGE_CHECKS) {
   }
 }
 
+// Row 8 of doc/ssh-transport-matrix.md: a second page, running the SSH
+// page's module, reaches this page's SSH server over WebRTC. This page
+// answers the session and serves `ssh` (doc/BrowserAccess.md §10); the
+// suite carries the two records across, which is all signaling does. The
+// proof is a string the page's own runtime printed, read back by the SSH
+// client in the other page.
+{
+  const name = 'ssh-over-webrtc-to-a-page';
+  if (!fs.existsSync(SSH_PAGE)) noSshPage.push(name);
+  else {
+    let caller;
+    try {
+      caller = await browser.newPage();
+      caller.on('pageerror', (e) => consoleLines.push(`caller pageerror: ${e.message}`));
+      await caller.goto(`${origin}/ssh-rtc.html`);
+      await caller.waitForFunction(() =>
+        !document.getElementById('nokey').hidden || !document.getElementById('haskey').hidden);
+      const key = await caller.evaluate(async () => {
+        window.lib = await import('/drt_browser_access.js');
+        const k = wasm_bindgen.generateKey('rtc-suite');
+        window.pending = await window.lib.offer();
+        return { priv: k.privateOpenssh, pub: k.publicOpenssh, record: window.pending.recordText };
+      });
+      const hostKey = await page.evaluate(() => window.drtBrowserTest.sshHostKey());
+      const answered = await page.evaluate(
+        ([hk, ak, rec]) => window.drtBrowserTest.sshAnswer(hk, ak, rec),
+        [hostKey, key.pub, key.record],
+      );
+      const r = await caller.evaluate(async ([record, pin, priv, ms]) => {
+        const sleep = (t) => new Promise((ok) => setTimeout(ok, t));
+        const session = await window.pending.accept(record, { timeoutMs: ms });
+        const ssh = await wasm_bindgen.Ssh.connect(session.connect('ssh'), pin);
+        const signedIn = await ssh.authKey('whoever', priv);
+        let out = '';
+        await ssh.shell(80, 24, (b) => (out += new TextDecoder().decode(b)), () => {});
+        ssh.write(new TextEncoder().encode('drt run hello.dlua\r'));
+        for (const t0 = Date.now(); !out.includes('hello over webrtc') && Date.now() - t0 < ms; ) await sleep(100);
+        const services = session.hello.services;
+        ssh.close();
+        session.close();
+        return { signedIn, services, out: out.slice(-400) };
+      }, [answered.record, answered.fingerprint, key.priv, TIMEOUT * 1000]);
+      const wrong = [];
+      if (!r.signedIn) wrong.push('the key was not accepted');
+      if (JSON.stringify(r.services) !== '["ssh"]') wrong.push(`hello named ${JSON.stringify(r.services)}`);
+      if (!r.out.includes('hello over webrtc')) wrong.push(`the program never printed: ${JSON.stringify(plain(r.out))}`);
+      if (wrong.length === 0) {
+        console.log(`ok       ${name.padEnd(24)} ssh.html -> connect('ssh') -> a page, ${answered.fingerprint.slice(0, 18)}...`);
+        nOk += 1;
+      } else {
+        fail(name, wrong.join('; '));
+      }
+    } catch (e) {
+      fail(name, `threw: ${String(e.message).split('\n')[0].slice(0, 300)}`);
+    } finally {
+      await caller?.close();
+    }
+  }
+}
+
 // The REPL, typed at drt-term.js, against what the native binary said to
 // the same lines. The page echoes what is typed and the native transcript
 // (stdin from a file) does not, so the echoes are removed before the diff;
@@ -694,7 +776,8 @@ if (PAGE_CHECKS) {
 // ---------------------------------------------------------------------------
 
 for (const n of uncovered) console.log(`NO META  ${n.padEnd(24)} not checked by anything — add a meta.json`);
-const nSkip = skipped.length + wrongBuild.length + noSocket.length + noSsh.length + noRelay.length;
+const nSkip = skipped.length + wrongBuild.length + noSocket.length + noSsh.length + noRelay.length
+  + noSshPage.length;
 const total = nOk + nFail + nSkip + uncovered.length;
 console.log('');
 console.log(`${total} check(s): ${nOk} ok, ${nFail} failed, ${nSkip} skipped, ${uncovered.length} without a meta.json`);
@@ -717,6 +800,10 @@ if (noSsh.length) {
 if (noRelay.length) {
   console.log(`skipped for needing a native drt (NOT a pass): ${noRelay.join(' ')}`);
   console.log('build one -- cargo build -p drt --no-default-features --features full -- or set DRT_BIN.');
+}
+if (noSshPage.length) {
+  console.log(`skipped for needing the SSH page (NOT a pass): ${noSshPage.join(' ')}`);
+  console.log('build it -- script/drt-ssh-page.sh -- so dist/ssh.html is there.');
 }
 if (uncovered.length) console.log(`no meta.json, so unchecked: ${uncovered.join(' ')}`);
 if (nFail) console.log(`failed: ${failed.join(' ')}`);

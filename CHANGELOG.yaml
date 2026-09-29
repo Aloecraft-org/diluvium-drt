@@ -157,6 +157,13 @@ releases:
 
         Carried over from `claude/drt-wasm-port-planning-4ua6qk`, written
         2026-09-07 before `main`'s history was rewritten and never merged.
+
+        **Over WebRTC, as the named service `ssh`** (row 8): a page answers
+        a session (§10.4) and serves `ssh` on it through
+        `browser-test/stream-leg.js`, and a second page running the SSH
+        page's module reaches the first page's shell with
+        `Ssh.connect(session.connect('ssh'), pin)`. The browser suite runs
+        exactly that in Chromium, with no DRT process between the pages.
       - |
         **`examples/29-browser-access`**: a host that does its own
         signaling. One `http` listener answers `POST /session` with the

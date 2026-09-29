@@ -296,6 +296,10 @@ jobs:
         run: cargo build -p drt --no-default-features --features full
       - name: Build the module and its glue
         run: DRT_WEB_PROFILE=release-small script/drt-web.sh
+      # The SSH page, as the caller in ssh-over-webrtc-to-a-page: a second
+      # page reaching this module's SSH server over WebRTC.
+      - name: The SSH page, for the WebRTC check
+        run: script/drt-ssh-page.sh
       - name: Playwright, and its Chromium
         working-directory: crates/drt-web/browser-test
         run: |

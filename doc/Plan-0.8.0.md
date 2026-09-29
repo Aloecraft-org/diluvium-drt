@@ -505,3 +505,11 @@ Each of these edits code `doc/Plan-2026-09.md` §0.2 froze:
   measured again, +465 KB gzipped on `drt_web_bg.wasm`. Rows 6 to 8 of
   the transport matrix still need the page's server on WebRTC and a native
   WebRTC caller (`drt tunnel rtc:`); row 7, through a relay, is done.
+- 2026-09-29, **Option A, by the owner's decision: symmetric, with named
+  services** (`doc/BrowserAccess.md` §10). Stage 1 is the wire and both
+  libraries: either peer serves, odd and even stream ids, `hello` from
+  whichever side serves, named services (`CONNECT` with port 0), and a page
+  answering a session. Stage 2 is row 8: the page's SSH server as the
+  service `ssh`, reached from another page's `ssh.html` module over
+  WebRTC, gated in the browser suite. Stage 3, the native caller
+  (`drt tunnel rtc:`, rows 3 and 6), is next.
