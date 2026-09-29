@@ -9,10 +9,18 @@
 // examples/NN-*/ with a meta.json is one example; its files are seeded
 // into the page's memory filesystem; its "cmd" runs through the in-page
 // shell with stdout and stderr merged; "normalise" is applied to both
-// sides; the two are diffed. A skip is named and is never a pass. Then
-// the REPL parity check: repl-script.txt typed at drt-term.js, against
-// the transcript the native binary produced for the same lines
-// (repl-expected.txt).
+// sides; the two are diffed. A skip is named and is never a pass.
+//
+// Then the checks that are not examples, because what they exercise is a
+// page rather than a program: `xterm-embedding`, the contract against a
+// real Terminal; `swarm-table`, the instances table driven the way a host
+// drives it; `socket-echo`, the byte stream a page owns;
+// `ssh-into-the-page` and `ssh-through-a-relay`, a standard `ssh` client
+// reaching a shell in the page -- over a bridge this file makes, and then
+// over a real relay (`drt start`) with `drt tunnel` as the `ProxyCommand`
+// (doc/SshInBrowser.md); and `repl-parity`, repl-script.txt typed at
+// drt-term.js against the transcript the native binary produced for the
+// same lines (repl-expected.txt).
 //
 // usage: node run.mjs [--net] [--list] [example ...]
 //   --net    also run examples whose meta.json sets "needs_network"
@@ -22,6 +30,8 @@
 //      EXAMPLES_DIR  another directory in the examples' layout to run
 //                    instead (tests/determinism/), with the page-only
 //                    checks after the examples left out
+//      DRT_BIN  a native `drt` carrying `relay` and `tunnel`, for the
+//               whole-chain check. Found under target/ if unset.
 //      DRT_WEB_BUILDINFO  a path: the page's `drt buildinfo` is written there,
 //                         which is how a release reads the profile off the
 //                         module (release.yml, build-web)
@@ -31,7 +41,10 @@
 import { chromium } from 'playwright';
 import fs from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
+import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -75,6 +88,20 @@ if (!Number.isInteger(TIMEOUT) || TIMEOUT < 0) {
   console.error(`run.mjs: TIMEOUT=${process.env.TIMEOUT} is not a whole number of seconds`);
   process.exit(2);
 }
+
+/// The native `drt` the whole-chain check runs as the relay and as the
+/// `ProxyCommand`. Named by `DRT_BIN`, or found where cargo leaves one.
+/// It must carry `relay` and `tunnel`, which the `full` profile does.
+const drtBin = (() => {
+  const named = process.env.DRT_BIN;
+  if (named) return fs.existsSync(named) ? named : null;
+  const root = path.resolve(HERE, '../../..');
+  for (const p of ['target/debug/drt', 'target/release/drt']) {
+    const full = path.join(root, p);
+    if (fs.existsSync(full)) return full;
+  }
+  return null;
+})();
 
 const examples = [];
 const uncovered = [];
@@ -163,6 +190,12 @@ const failed = [];
 const skipped = [];
 const wrongBuild = [];
 const noSocket = [];
+// No `ssh` on this machine: the one check that needs a client outside
+// the page cannot run, and says so rather than passing.
+const noSsh = [];
+// No native `drt` carrying `relay` and `tunnel`, so the whole-chain check
+// has no carrier to run over.
+const noRelay = [];
 
 const fail = (name, why) => {
   console.log(`FAILED   ${name.padEnd(24)} ${why}`);
@@ -362,6 +395,251 @@ if (PAGE_CHECKS) {
   }
 }
 
+// The transport (doc/SshInBrowser.md): the page owns the socket, Rust owns
+// a `Send` byte stream, and bytes cross both ways. What makes this worth a
+// browser check rather than only the native tests in ws.rs is the boundary
+// itself -- a Uint8Array in, a promise per chunk out, and the page's pump
+// loop learning from `undefined` that the session is over. `startEcho`
+// upper-cases so the answer cannot be an echo of the delivery path.
+{
+  const name = 'socket-echo';
+  const said = ['ssh ', 'in a page'];
+  try {
+    const r = await withTimeout(
+      page.evaluate((m) => window.drtBrowserTest.socketEcho(m), said),
+      TIMEOUT * 1000,
+    );
+    const wrong = [];
+    if (!r.sent) wrong.push('a deliver to a live socket was refused');
+    if (r.echoed !== said.join('').toUpperCase()) {
+      wrong.push(`came back as ${JSON.stringify(r.echoed)}`);
+    }
+    if (r.afterClose) wrong.push('a deliver after close was accepted');
+    if (!r.ended) wrong.push("closing the wire did not end the page's pump loop");
+    if (wrong.length === 0) {
+      console.log(`ok       ${name.padEnd(24)} bytes out and back in ${r.chunks} chunk(s), then EOF`);
+      nOk += 1;
+    } else {
+      fail(name, wrong.join('; '));
+    }
+  } catch (e) {
+    fail(name, e === TIMED_OUT ? `timed out after ${TIMEOUT}s` : `the page threw: ${e.message}`);
+  }
+}
+
+// SSH into the page, with the client `ssh(1)` (doc/SshInBrowser.md).
+//
+// The product's claim, run rather than argued: a *standard* client, its
+// own keys, its own pty, reaching a terminal inside a page. Nothing here
+// speaks SSH -- Node listens on a TCP port and shuttles bytes between
+// that socket and the page's, which is what `drt tunnel` does over a
+// relay and a WebSocket instead. Everything above the bytes is the real
+// thing on both sides: OpenSSH's client, russh's server, and behind it
+// M8's editor and shell.js.
+//
+// Skipped, and named, when there is no `ssh` to run.
+{
+  const name = 'ssh-into-the-page';
+  const keys = fs.mkdtempSync(path.join(os.tmpdir(), 'drt-ssh-'));
+  const key = path.join(keys, 'id_ed25519');
+  let client = null;
+  try {
+    execFileSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', 'drt-web-suite', '-f', key]);
+  } catch {
+    noSsh.push(name);
+  }
+  if (!noSsh.includes(name)) {
+    // `held` is not an optimisation. The server writes its SSH id the
+    // moment it is served, which is before `ssh` has connected, and a
+    // dropped id line means OpenSSH reads the first binary packet as the
+    // banner and refuses the connection with "invalid characters".
+    const bridge = { toPage: Promise.resolve(), socket: null, held: [] };
+    try {
+      await page.exposeFunction('sshOutgoing', (_id, data) => {
+        const bytes = Buffer.from(data, 'base64');
+        if (bridge.socket) bridge.socket.write(bytes);
+        else bridge.held.push(bytes);
+      });
+      await page.exposeFunction('sshClosed', (_id) => {
+        if (bridge.socket) bridge.socket.end();
+      });
+      const hostKey = await page.evaluate(() => window.drtBrowserTest.sshHostKey());
+      const authorized = fs.readFileSync(`${key}.pub`, 'utf8');
+      const server = await page.evaluate(
+        ([hk, ak]) => window.drtBrowserTest.sshServe(1, hk, ak),
+        [hostKey, authorized],
+      );
+
+      const listener = net.createServer((socket) => {
+        bridge.socket = socket;
+        for (const bytes of bridge.held.splice(0)) socket.write(bytes);
+        // Killing the client resets the connection, which is a normal end
+        // here and an unhandled 'error' event otherwise.
+        socket.on('error', () => {});
+        socket.on('data', (chunk) => {
+          // Chained, not fired: two `evaluate`s in flight could deliver
+          // the stream out of order, and a reordered SSH packet is a
+          // failed key exchange.
+          bridge.toPage = bridge.toPage.then(() =>
+            page.evaluate(
+              ([id, data]) => window.drtBrowserTest.sshDeliver(id, data),
+              [1, chunk.toString('base64')],
+            ),
+          );
+        });
+        socket.on('close', () => page.evaluate(() => window.drtBrowserTest.sshClose(1)));
+      });
+      listener.on('error', () => {});
+      await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
+      const port = listener.address().port;
+
+      client = spawn('ssh', [
+        '-tt', // a pty, because what is behind this is a line editor
+        '-i', key,
+        '-o', 'IdentitiesOnly=yes',
+        '-o', 'StrictHostKeyChecking=no',
+        '-o', 'UserKnownHostsFile=/dev/null',
+        '-o', 'GlobalKnownHostsFile=/dev/null',
+        '-o', 'LogLevel=ERROR',
+        '-p', String(port),
+        'whoever@127.0.0.1',
+      ]);
+      let transcript = '';
+      client.on('error', (e) => (transcript += `ssh: ${e.message}\n`));
+      client.stdout.on('data', (b) => (transcript += b.toString('utf8')));
+      client.stderr.on('data', (b) => (transcript += b.toString('utf8')));
+      client.stdin.write('drt run hello.dlua\r');
+
+      // What proves it went all the way through: a string the page's own
+      // runtime printed, which nothing in the transcript typed.
+      const said = await waitFor(() => transcript.includes('hello over ssh'), TIMEOUT * 1000);
+      const wrong = [];
+      if (server.authorized !== 1) wrong.push(`${server.authorized} authorized keys, expected 1`);
+      if (!/^SHA256:/.test(server.fingerprint)) wrong.push('the host key has no fingerprint');
+      if (!said) wrong.push(`the program never printed: ${JSON.stringify(plain(transcript).slice(-300))}`);
+      else if (!plain(transcript).includes('drt in a page')) wrong.push('the banner never arrived');
+      if (wrong.length === 0) {
+        console.log(`ok       ${name.padEnd(24)} ssh -tt -p PORT, ${server.fingerprint.slice(0, 18)}...`);
+        nOk += 1;
+      } else {
+        fail(name, wrong.join('; '));
+      }
+      listener.close();
+    } catch (e) {
+      fail(name, `the bridge threw: ${e.message}`);
+    } finally {
+      if (client) client.kill('SIGKILL');
+      fs.rmSync(keys, { recursive: true, force: true });
+    }
+  } else {
+    fs.rmSync(keys, { recursive: true, force: true });
+  }
+}
+
+// The whole chain, with nothing bridged by this file
+// (doc/SshInBrowser.md): a real relay (`drt start`), a page parking a leg on it by
+// label, and `ssh -o ProxyCommand="drt tunnel ..."` claiming it. This is
+// the shape the README documents and the reason `drt tunnel` exists --
+// a device with no inbound address, reached by a standard client -- and
+// the device here is a browser tab.
+//
+// The previous check bridged TCP itself, which proved the server. This
+// one proves the *carrier*: park and claim by URL, spliced by the relay,
+// with the page's WebSocket and the binary's WebSocket at the two ends.
+//
+// Skipped, and named, without an `ssh` or a `drt` binary carrying
+// `relay` and `tunnel` (the `full` profile).
+{
+  const name = 'ssh-through-a-relay';
+  const keys = fs.mkdtempSync(path.join(os.tmpdir(), 'drt-relay-'));
+  const key = path.join(keys, 'id_ed25519');
+  const PARK = 'pk-browser-suite-0123456789';
+  const CALLER = 'ck-browser-suite-9876543210';
+  let relay = null;
+  let client = null;
+  try {
+    if (!drtBin) noRelay.push(name);
+    else execFileSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', 'drt-web-relay', '-f', key]);
+  } catch {
+    if (!noSsh.includes(name)) noSsh.push(name);
+  }
+  if (!noRelay.includes(name) && !noSsh.includes(name)) {
+    try {
+      // A port the relay can have. Bound and released rather than
+      // guessed, and the relay is waited for rather than slept on.
+      const port = await freePort();
+      const config = path.join(keys, 'relay.json');
+      fs.writeFileSync(config, JSON.stringify({
+        entry: 'stdlib:relay',
+        relay: { bind: `127.0.0.1:${port}`, labels: { page: { park_key: PARK, caller_key: CALLER } } },
+      }));
+      relay = spawn(drtBin, ['--config', config, 'start'], { stdio: ['ignore', 'pipe', 'pipe'] });
+      let relaySaid = '';
+      relay.stdout.on('data', (b) => (relaySaid += b));
+      relay.stderr.on('data', (b) => (relaySaid += b));
+      relay.on('error', (e) => (relaySaid += `relay: ${e.message}\n`));
+      const up = await waitFor(() => accepting(port), 10000);
+      if (!up) throw new Error(`the relay never listened on ${port}: ${relaySaid.trim()}`);
+
+      const hostKey = await page.evaluate(() => window.drtBrowserTest.sshHostKey());
+      await page.evaluate(
+        ([url, hk, ak]) => window.drtBrowserTest.sshPark(url, hk, ak),
+        [`ws://127.0.0.1:${port}/park/page?k=${PARK}`, hostKey, fs.readFileSync(`${key}.pub`, 'utf8')],
+      );
+      // A claim that beats the park is told "not home", so the leg has to
+      // be up before `ssh` runs. The page says when it is.
+      const parked = await waitFor(
+        async () => (await page.evaluate(() => window.drtBrowserTest.sshParkEvents())).includes('parked'),
+        10000,
+      );
+      if (!parked) throw new Error('the page never parked a leg');
+
+      client = spawn('ssh', [
+        '-tt',
+        '-i', key,
+        '-o', `ProxyCommand=${drtBin} tunnel ws://127.0.0.1:${port}/s/page?k=${CALLER}`,
+        '-o', 'IdentitiesOnly=yes',
+        '-o', 'StrictHostKeyChecking=no',
+        '-o', 'UserKnownHostsFile=/dev/null',
+        '-o', 'GlobalKnownHostsFile=/dev/null',
+        '-o', 'LogLevel=ERROR',
+        'whoever@page',
+      ]);
+      let transcript = '';
+      client.on('error', (e) => (transcript += `ssh: ${e.message}\n`));
+      client.stdout.on('data', (b) => (transcript += b.toString('utf8')));
+      client.stderr.on('data', (b) => (transcript += b.toString('utf8')));
+      client.stdin.write('drt run hello.dlua\r');
+
+      const said = await waitFor(() => transcript.includes('hello through a tunnel'), TIMEOUT * 1000);
+      const events = await page.evaluate(() => window.drtBrowserTest.sshParkEvents());
+      const wrong = [];
+      if (!said) wrong.push(`the program never printed: ${JSON.stringify(plain(transcript).slice(-300))}`);
+      if (!events.includes('claimed')) wrong.push('the page never saw the claim');
+      // Replenish-on-claim: a claimed leg is a session, so a fresh one is
+      // parked at once. Without it the second caller finds nobody home.
+      if (events.filter((e) => e === 'parked').length < 2) {
+        wrong.push(`the page parked ${events.filter((e) => e === 'parked').length} time(s), so it did not replenish`);
+      }
+      if (wrong.length === 0) {
+        console.log(`ok       ${name.padEnd(24)} ssh -o ProxyCommand="drt tunnel ws://.../s/page"`);
+        nOk += 1;
+      } else {
+        fail(name, wrong.join('; '));
+      }
+      await page.evaluate(() => window.drtBrowserTest.sshUnpark());
+    } catch (e) {
+      fail(name, e.message);
+    } finally {
+      if (client) client.kill('SIGKILL');
+      if (relay) relay.kill('SIGKILL');
+      fs.rmSync(keys, { recursive: true, force: true });
+    }
+  } else {
+    fs.rmSync(keys, { recursive: true, force: true });
+  }
+}
+
 // The REPL, typed at drt-term.js, against what the native binary said to
 // the same lines. The page echoes what is typed and the native transcript
 // (stdin from a file) does not, so the echoes are removed before the diff;
@@ -416,7 +694,7 @@ if (PAGE_CHECKS) {
 // ---------------------------------------------------------------------------
 
 for (const n of uncovered) console.log(`NO META  ${n.padEnd(24)} not checked by anything — add a meta.json`);
-const nSkip = skipped.length + wrongBuild.length + noSocket.length;
+const nSkip = skipped.length + wrongBuild.length + noSocket.length + noSsh.length + noRelay.length;
 const total = nOk + nFail + nSkip + uncovered.length;
 console.log('');
 console.log(`${total} check(s): ${nOk} ok, ${nFail} failed, ${nSkip} skipped, ${uncovered.length} without a meta.json`);
@@ -431,6 +709,14 @@ if (wrongBuild.length) {
 if (noSocket.length) {
   console.log(`skipped for binding a port (NOT a pass): ${noSocket.join(' ')}`);
   console.log('a page has no socket to bind; the native gate and the wasmtime one cover these.');
+}
+if (noSsh.length) {
+  console.log(`skipped for needing an ssh client (NOT a pass): ${noSsh.join(' ')}`);
+  console.log('install openssh-client; crates/drt-web/tests/ssh.rs covers the server natively.');
+}
+if (noRelay.length) {
+  console.log(`skipped for needing a native drt (NOT a pass): ${noRelay.join(' ')}`);
+  console.log('build one -- cargo build -p drt --no-default-features --features full -- or set DRT_BIN.');
 }
 if (uncovered.length) console.log(`no meta.json, so unchecked: ${uncovered.join(' ')}`);
 if (nFail) console.log(`failed: ${failed.join(' ')}`);
@@ -447,6 +733,56 @@ process.exit(nFail || uncovered.length ? 1 : 0);
 // ---------------------------------------------------------------------------
 // depth: helpers
 // ---------------------------------------------------------------------------
+
+/// Poll until `done()` or the deadline. Used where the thing being waited
+/// for is a byte arriving in a transcript rather than a promise resolving.
+async function waitFor(done, ms) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (await done()) return true;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  return await done();
+}
+
+/// A pty transcript without the escape sequences a line editor emits.
+function plain(text) {
+  return text
+    .replace(/\u001b\][^\u0007\u001b]*(\u0007|\u001b\\)/g, '')
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    .replace(/\u001b[@-_]/g, '')
+    .replace(/\r/g, '\n');
+}
+
+/// A port nothing is on: bound and released rather than guessed, which
+/// is what the relay's own tests do for the same reason.
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.on('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const { port } = probe.address();
+      probe.close(() => resolve(port));
+    });
+  });
+}
+
+/// Whether something is accepting on `port` yet. The relay prints a line
+/// when it binds, but a line on stderr is not the same fact as a socket
+/// that answers.
+function accepting(port) {
+  return new Promise((resolve) => {
+    const probe = net.connect({ port, host: '127.0.0.1' });
+    probe.setTimeout(200);
+    const done = (yes) => {
+      probe.destroy();
+      resolve(yes);
+    };
+    probe.on('connect', () => done(true));
+    probe.on('error', () => done(false));
+    probe.on('timeout', () => done(false));
+  });
+}
 
 function withTimeout(promise, ms) {
   if (!ms) return promise;

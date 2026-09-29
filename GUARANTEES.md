@@ -76,6 +76,47 @@ in the capability tree; the ceiling on what a connecting key can do is the
 grant set mapped to it in root config, and reviewing that mapping is part of
 deploying.
 
+## An SSH server in a page is reachable from outside the tab
+
+The `web` build carries one (`DrtSshServer`), and a page that parks a leg on a
+rendezvous relay can be reached by anyone holding that label's caller key —
+from any machine, not only the one the tab is open on. That is the capability
+and it is the point; this entry is where it stops.
+
+Nothing listens by default, and no default opens the door. A page must supply
+a host key, supply a list of authorized keys, and pump a socket; the class
+being present in the module is not a listener. There is no "accept any key" —
+`Authorized` is a list of `authorized_keys` lines, and an empty one
+authenticates nobody rather than everybody. There is no password method at
+all.
+
+A session can do whatever the page's shell exposes, and that is the whole of
+the grant. With `drt-term.js` attached it is every `drt` verb the build
+carries, `drt repl --unsafe` included. Choosing which shell sits behind the
+session is the security decision; there is no second one behind it.
+
+It is not a way onto the machine, and that part is not ours to promise or to
+break: the `web` build's filesystem backend is an empty `MemFs`, `cfg`'d for
+the browser target, and a browser has no other. A session reaches at most
+what the page seeded, and only where the page's config wires `fs` at all — a
+config-less run has no `fs` connector to call. Nor is it a way into the page:
+the shell runs `drt`, not JavaScript, and no connector in this build can
+execute script or reach the document. What the session does see of the page
+is the terminal — the same sink the page's own output goes to, which is what
+a terminal is.
+
+It is only as strong as the page. The host key and the authorized list live
+wherever the page keeps them, which is readable by anything that can run
+script on that origin: an XSS on the page is the page's SSH server. The host
+key must also persist across reloads — one regenerated on load makes every
+client see a changed host key, which trains whoever connects to click through
+the warning that is supposed to matter.
+
+The relay decides reachability, not secrecy. SSH is end-to-end between the
+client and the page, so a relay on the path carries ciphertext and can drop a
+connection but not read it. What the caller key gates is who can reach the
+label at all; it is a reachability control, not a second authentication.
+
 ## tokio introduces scheduling nondeterminism
 
 The drive loop is structured around an event log (which-queue-fired decisions

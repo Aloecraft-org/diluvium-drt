@@ -498,3 +498,10 @@ Each of these edits code `doc/Plan-2026-09.md` §0.2 froze:
     chose, which direct mode rests on.
   - Not proven: anything across a NAT, as before. Direct mode's intended
     host is one the browser can reach (a VPS, a LAN), where that is moot.
+- 2026-09-29, **SSH into a page, re-applied** from
+  `claude/drt-wasm-port-planning-4ua6qk` (four commits of 2026-09-07,
+  never merged). `doc/SshInBrowser.md` §8 is what changed on the way: one
+  russh, the fork, workspace-wide; the relay as `drt start`; and the size
+  measured again, +465 KB gzipped on `drt_web_bg.wasm`. Rows 6 to 8 of
+  the transport matrix still need the page's server on WebRTC and a native
+  WebRTC caller (`drt tunnel rtc:`); row 7, through a relay, is done.

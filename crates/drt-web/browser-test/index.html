@@ -31,11 +31,19 @@
   // moves the cursor, redraws a line, clears to the end -- so a <pre> that
   // appends characters would now be a third terminal emulator to get
   // wrong, which is the thing D8 exists to avoid.
-  import init, { DrtTerm, DrtEditor, DrtSwarm, buildInfo, abiVersion, setPanicHook } from './pkg/drt_web.js';
+  import init, { DrtTerm, DrtEditor, DrtSwarm, DrtSocket, DrtSshServer, buildInfo, abiVersion, setPanicHook } from './pkg/drt_web.js';
   import { makeShell } from './shell.js';
   import { attach } from './drt-term.js';
+  import { terminalFor } from './ssh-terminal.js';
+  import { park } from './relay-leg.js';
 
   const decode = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  // The other direction, for the SSH bridge: Playwright's exposed
+  // functions carry JSON, so bytes travel as base64 either way.
+  const b64 = (bytes) => btoa(String.fromCharCode(...bytes));
+  const sshSockets = new Map();
+  const sshShells = new Map();
+  const sshParked = new Map();
 
   let term = null;
   let shell = null;
@@ -84,6 +92,126 @@
         sw.free();
       }
       return out;
+    },
+    // The transport (doc/SshInBrowser.md): a byte stream whose socket
+    // stays in the page. This is the page's whole side of it -- deliver
+    // what arrives, pump what Rust wants written, close when the wire
+    // does -- and the loop below is the one from `ws.rs`'s header with a
+    // WebSocket swapped for the caller's strings. `startEcho` stands in
+    // for the SSH session: what is under test is the stream, not what
+    // reads it.
+    async socketEcho(messages) {
+      const socket = new DrtSocket();
+      socket.startEcho();
+      const back = [];
+      const pump = (async () => {
+        for (;;) {
+          const out = await socket.nextOutgoing();
+          if (out === undefined) break;
+          back.push(out);
+        }
+      })();
+
+      const encoder = new TextEncoder();
+      const want = messages.join('').length;
+      const size = () => back.reduce((n, b) => n + b.length, 0);
+      const sent = messages.every((m) => socket.deliver(encoder.encode(m)));
+      const deadline = Date.now() + 5000;
+      while (size() < want && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 0));
+      }
+
+      // Closing must end both halves: Rust reads end of input, the task
+      // above it stops and drops the stream, and that is what the page's
+      // pump loop sees.
+      socket.close();
+      const afterClose = socket.deliver(encoder.encode('too late'));
+      const ended = await Promise.race([
+        pump.then(() => true),
+        new Promise((r) => setTimeout(() => r(false), 5000)),
+      ]);
+      socket.free();
+
+      const joined = new Uint8Array(size());
+      let at = 0;
+      for (const chunk of back) {
+        joined.set(chunk, at);
+        at += chunk.length;
+      }
+      return { sent, afterClose, ended, chunks: back.length, echoed: new TextDecoder().decode(joined) };
+    },
+    // SSH into the page (doc/SshInBrowser.md). The suite drives this
+    // with a real `ssh` client: run.mjs listens on a TCP port, shuttles
+    // bytes between that socket and the one below, and points `ssh` at
+    // it. So what is under test is the product's claim -- a standard
+    // client gets a terminal into a page -- rather than two things we
+    // wrote agreeing with each other.
+    //
+    // The shell behind the session is the page's own: `terminalFor` makes
+    // the SSH channel into the object `attach` takes, and everything
+    // after that is M8's editor and shell.js, unchanged.
+    sshHostKey: () => DrtSshServer.generateHostKey(),
+    sshServe(id, hostKey, authorizedKeys) {
+      const server = new DrtSshServer(hostKey, authorizedKeys);
+      const socket = server.serve((shell) => {
+        const terminal = terminalFor(shell);
+        const bound = attach(DrtTerm, terminal, { DrtEditor, banner: 'drt in a page' });
+        bound.term.putFile('/hello.dlua', new TextEncoder().encode(
+          'print("hello over ssh")\n'));
+        bound.term.setCwd('/');
+        sshShells.set(id, { terminal, bound });
+      });
+      sshSockets.set(id, socket);
+      (async () => {
+        for (;;) {
+          const out = await socket.nextOutgoing();
+          if (out === undefined) break;
+          await window.sshOutgoing(id, b64(out));
+        }
+        await window.sshClosed(id);
+      })();
+      return { fingerprint: server.fingerprint, authorized: server.authorized };
+    },
+    // The whole chain (doc/SshInBrowser.md): the page parks a leg on a
+    // real `drt relay`, and `ssh -o ProxyCommand="drt tunnel ..."` claims
+    // it. Nothing is bridged by the suite here -- the bytes go over the
+    // relay the way they will in production, and the only thing this adds
+    // is the label and the keys.
+    sshPark(url, hostKey, authorizedKeys) {
+      const server = new DrtSshServer(hostKey, authorizedKeys);
+      const events = [];
+      const leg = park(
+        url,
+        () =>
+          server.serve((shell) => {
+            const terminal = terminalFor(shell);
+            const bound = attach(DrtTerm, terminal, { DrtEditor, banner: 'drt over a relay' });
+            bound.term.putFile('/hello.dlua', new TextEncoder().encode(
+              'print("hello through a tunnel")\n'));
+            bound.term.setCwd('/');
+          }),
+        { onEvent: (name) => events.push(name) },
+      );
+      sshParked.set(1, { leg, events });
+      return true;
+    },
+    sshParkEvents: () => (sshParked.get(1) ? sshParked.get(1).events : []),
+    sshUnpark() {
+      const held = sshParked.get(1);
+      if (held) held.leg.close();
+      sshParked.delete(1);
+    },
+    sshDeliver(id, data) {
+      const socket = sshSockets.get(id);
+      return socket ? socket.deliver(decode(data)) : false;
+    },
+    sshClose(id) {
+      const held = sshShells.get(id);
+      if (held) held.bound.dispose();
+      const socket = sshSockets.get(id);
+      if (socket) socket.close();
+      sshShells.delete(id);
+      sshSockets.delete(id);
     },
     seed({ cwd, files, dirs = [] }) {
       fresh();

@@ -42,6 +42,29 @@ is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
 
 ### Added
 
+- **SSH into a page** (rows 6 to 8 of `doc/ssh-transport-matrix.md`,
+  `doc/SshInBrowser.md`). The `web` module carries an SSH server: a
+  standard `ssh` reaches the page's own shell, directly over a byte
+  stream the page supplies (a WebSocket, an `RTCDataChannel`, a relay
+  leg) or with `ProxyCommand="drt tunnel …"` through a relay the page
+  parks on, and a session gets exactly what the page's shell exposes.
+  - **Keys only.** No password method, and the authorized list has no
+    "anyone" form, so an empty one admits nobody. Nothing listens
+    until the page supplies a host key, a list and a socket.
+  - **One russh, from a fork.** Upstream russh (0.63.3) does not
+    build its server for wasm; `[patch.crates-io]` points the
+    workspace at the fork carrying that one commit on 0.63.2, so the
+    page's server, the SSH page's client and the native `ssh`
+    connector share one crate.
+  - **Its cost is in `web`:** `drt_web_bg.wasm` 3,409,303 ->
+    5,486,220 bytes, +465 KB gzipped. It ships there so the artifact
+    the browser suite gates is the one that ships.
+  - `GUARANTEES.md` says where it stops. The browser suite runs
+    OpenSSH into the page, and through a relay with `drt tunnel`, in
+    Chromium; `drt-web`'s own tests hold the key posture natively.
+
+  Carried over from `claude/drt-wasm-port-planning-4ua6qk`, written
+  2026-09-07 before `main`'s history was rewritten and never merged.
 - **`examples/29-browser-access`**: a host that does its own
   signaling. One `http` listener answers `POST /session` with the
   host's record and hands the browser's to the `webrtc` block as
