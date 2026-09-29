@@ -25,8 +25,7 @@ is configured, and to the relay when a relay URL is configured. A
 deployment that configures neither gets direct or a failure, and the
 failure carries `drt netcheck`'s verdict for the network it ran on.
 
-A configuration that provides neither TURN nor a relay gets direct or
-reports a failure to the user.
+A configuration that provides neither TURN nor a relay gets direct or reports a failure to the user.
 
 ## The pieces
 
@@ -62,6 +61,7 @@ with each of them:
 WireGuard rows need the peer's public key and endpoint instead. They
 travel in the config, or through a program that reads them from a room.
 
+<<<<<<< HEAD
 ## The matrix
 
 | # | Caller | Callee | Transport | Path | DRT at the caller | DRT at the callee |
@@ -188,3 +188,5 @@ evaluation) is debuggable from anywhere this row reaches.
   and direct mode.
 - `doc/WireGuard.md`: both WireGuard modes, and what hole punching relies
   on there.
+=======
+>>>>>>> 6fce6f0 (ssh-transport-matrix doc)
