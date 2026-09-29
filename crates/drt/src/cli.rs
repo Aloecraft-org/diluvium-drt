@@ -52,7 +52,13 @@ const PROFILE_WASI: &[&str] = &[
     "connector-time",
     "listen",
 ];
-const PROFILE_WEB: &[&str] = &["cli", "connector-crypto", "connector-fs", "connector-time"];
+const PROFILE_WEB: &[&str] = &[
+    "cli",
+    "connector-crypto",
+    "connector-fs",
+    "connector-time",
+    "numeric",
+];
 const PROFILE_FULL: &[&str] = &[
     "cli",
     "connector-crypto",
@@ -65,8 +71,10 @@ const PROFILE_FULL: &[&str] = &[
     "connector-ssh",
     "connector-ssmtp",
     "connector-time",
+    "connector-ws",
     "listen",
     "netcheck",
+    "numeric",
     "relay",
     "runtime",
     "stun",
@@ -76,34 +84,6 @@ const PROFILE_FULL: &[&str] = &[
     "webrtc",
     "wireguard",
 ];
-
-/// What the embedded diluvium core carries, per profile: the other half of
-/// the compatibility fact `dv_abi` starts. A package that needs regular
-/// expressions, or later the `numeric` array library, can only be admitted
-/// or refused by name if the binary will say which of them are inside.
-///
-/// TODO(A0): hard-coded, because the core does not yet say. Session A's A0
-/// milestone adds `dv_features()` -- a newline-separated list, stable for
-/// the life of the process -- and when that pin lands these five tables go
-/// away and the list is read off the linked core instead. That is
-/// `doc/Release.md`'s rule: the compatibility fact travels with the bytes,
-/// and a fact this file states about bytes it did not compile is a fact
-/// that can be wrong. It is per profile already so that the day a profile
-/// carries a different core -- the web profile without `numeric`, say, if
-/// C1's size ledger says it costs too much -- nothing has to be reshaped
-/// to say so.
-///
-/// Sorted, like the profile tables above, and gated the same way by
-/// `core_features_agree_with_the_changelog` in `tests/cli.rs`.
-const CORE_FEATURES_FULL: &[&str] = &["regex"];
-const CORE_FEATURES_SLIM: &[&str] = &["regex"];
-const CORE_FEATURES_WASI: &[&str] = &["regex"];
-const CORE_FEATURES_WEB: &[&str] = &["regex"];
-/// A build whose feature set matches no named profile still embeds a core,
-/// and `unknown` is the honest answer about which features it carries --
-/// the same answer `diluvium: unknown` gives for an unpinned revision. An
-/// empty list would read as "carries none", which is a different claim.
-const CORE_FEATURES_CUSTOM: &[&str] = &[];
 
 /// Which diluvium is inside, as something two builds can be *ordered* by.
 /// The revision beside it is exact but unordered -- two revisions cannot be
@@ -121,13 +101,15 @@ const CORE_FEATURES_CUSTOM: &[&str] = &[];
 /// finds nothing, which is the right failure: the alternative was printing
 /// `14` for a build that is not build 14.
 ///
-/// TODO(A0): hard-coded for the same reason and with the same fix as
-/// [`CORE_FEATURES_FULL`]; A0 adds `dv_version()`. Until then it is
-/// written down once, here, and `the_hard_coded_core_facts_agree_with_the_changelog`
-/// in `tests/cli.rs` is what stops it going stale when the pin moves: the
-/// changelog records the pin, the pin is checked against `Cargo.lock` by
-/// `script/changelog.py check`, and this is checked against the changelog.
-const DILUVIUM_VERSION: &str = "0.15.1";
+/// Hard-coded, because the core still does not say: 0.17.1 answers
+/// `dv_features()` -- which is why `features` is now read off the core --
+/// but has no `dv_version()`, and its `dv_build()` returns a constant that
+/// upstream lists as a known issue. So this is written down once, here, and
+/// `the_hard_coded_core_facts_agree_with_the_changelog` in `tests/cli.rs` is
+/// what stops it going stale when the pin moves: the changelog records the
+/// pin, the pin is checked against `Cargo.lock` by `script/changelog.py
+/// check`, and this is checked against the changelog.
+const DILUVIUM_VERSION: &str = "0.17.1";
 
 /// What `drt wg` does. All three are diagnostics or key handling, and the
 /// serving that used to sit beside them is `drt start` now.
@@ -534,6 +516,7 @@ pub enum Command {
         feature = "connector-ssmtp",
         feature = "connector-exec",
         feature = "connector-socket",
+        feature = "connector-ws",
         feature = "connector-data",
         feature = "netcheck"
     )),
@@ -581,6 +564,9 @@ pub fn buildinfo(json: bool) -> String {
     if cfg!(feature = "connector-socket") {
         connectors.push("socket");
     }
+    if cfg!(feature = "connector-ws") {
+        connectors.push("ws");
+    }
     if cfg!(feature = "listen") {
         connectors.push("listen");
     }
@@ -618,11 +604,14 @@ pub fn buildinfo(json: bool) -> String {
     // which the examples gate then read as "skip what needs sql".
     let profile = profile_name(&enabled_features());
 
-    // What the core inside carries, the other half of the `dv_abi` fact.
-    // Keyed off the profile because that is what decides which core was
-    // compiled -- see the note on `CORE_FEATURES_FULL`, and the TODO(A0)
-    // that ends this indirection.
-    let features = core_features(profile);
+    // What the core inside carries, the other half of the `dv_abi` fact: a
+    // package needing `numeric` is admitted or refused by name against it.
+    // Read off the linked core (`dv_features()`, in the core's own fixed
+    // order), not stated per profile, because a fact this file states about
+    // bytes it did not compile is a fact that can be wrong -- the rule
+    // `doc/Release.md` is built on. Empty only when the build carries no
+    // engine at all.
+    let features = drt_swarm::engine::core_features().unwrap_or_default();
 
     // Asked of drt-swarm, which owns the engine feature — see the note on
     // `abi_versions` there. `null`/`unknown` is reported honestly rather
@@ -719,8 +708,10 @@ fn enabled_features() -> Vec<&'static str> {
     feature!("connector-exec");
     feature!("connector-socket");
     feature!("connector-time");
+    feature!("connector-ws");
     feature!("listen");
     feature!("netcheck");
+    feature!("numeric");
     // Probed and reportable, and in no named profile yet: the plugin
     // channel is built and reachable from a config, and the segments that
     // make it worth shipping (`doc/Plan-0.7.0.md` §7) are not all in. A
@@ -755,19 +746,6 @@ fn profile_name(features: &[&str]) -> &'static str {
         "web"
     } else {
         "custom"
-    }
-}
-
-/// The core features a named profile carries.
-///
-/// TODO(A0): replaced by one call to `dv_features()` once that pin lands.
-fn core_features(profile: &str) -> &'static [&'static str] {
-    match profile {
-        "full" => CORE_FEATURES_FULL,
-        "slim" => CORE_FEATURES_SLIM,
-        "wasi" => CORE_FEATURES_WASI,
-        "web" => CORE_FEATURES_WEB,
-        _ => CORE_FEATURES_CUSTOM,
     }
 }
 
@@ -910,6 +888,17 @@ pub fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
                     wiring.scope.clone(),
                 )
                 .map_err(|e| e.to_string())?,
+            // An outbound WebSocket a node holds by handle, under rest's
+            // origin allowlist: the scope's `headers` go on the handshake
+            // where the program cannot read them.
+            #[cfg(feature = "connector-ws")]
+            "ws" => registry
+                .wire(
+                    "ws",
+                    std::sync::Arc::new(drt_connector_ws::WsConnector::new()),
+                    wiring.scope.clone(),
+                )
+                .map_err(|e| e.to_string())?,
             other => {
                 return Err(format!(
                     "config wires connector '{other}', which this build does not carry"
@@ -930,7 +919,7 @@ pub fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
 /// would start shadowing a builtin the day it ran on `full`, which is the
 /// quiet kind of wrong.
 const BUILTIN_FAMILIES: &[&str] = &[
-    "time", "fs", "sql", "crypto", "data", "ssh", "rest", "ssmtp", "exec", "socket",
+    "time", "fs", "sql", "crypto", "data", "ssh", "rest", "ssmtp", "exec", "socket", "ws",
 ];
 
 /// Every plugin family's name, judged before anything is wired.

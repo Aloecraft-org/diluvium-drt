@@ -20,8 +20,9 @@ implementation, regenerate it (`DRT_WRITE_VECTORS=1 cargo test -p drt-rtc
 --test vectors`), and review the diff.
 
 **Status (2026-09-24):** draft v1, written for the M0 pairing of the host
-(`doc/Plan-0.8.0.md` §3) with the browser client's M0. §7 is a mock, not
-Discofetch's API.
+(`doc/Plan-0.8.0.md` §3) with the browser client's M0. §7.1 is the host's
+side of Discofetch's signaling socket; §7.2 is M0's mock, kept for
+`check.mjs`.
 
 **What is verified, and how.** Everything below the record codec is
 exercised by `crates/drt-rtc/tests/host.rs`, a native client doing what a
@@ -32,7 +33,13 @@ checked by `crates/drt-rtc/browser-check/check.mjs` against headless
 Chromium 1194 (Playwright 1.56.1): three sessions at once, each publishing
 a record with **no candidates at all**, each connecting and echoing
 through a Wisp stream. `check.mjs --drt` runs the same against `drt start`
-with the §8 block and a program signaling through the §7 mock.
+with the §8 block and a program signaling through the §7.2 mock.
+`crates/drt/tests/signal.rs` runs `drt start` with §7.1's program against
+a `wss://` stub of the API.
+
+**The browser half ships as a library** (§9): `drt_browser_access.js`,
+built from `crates/drt-rtc/client/` and attached to every release and dev
+build. `check.mjs` drives that file, not a copy of its logic.
 
 ## 1. The shape
 
@@ -59,9 +66,17 @@ nothing directed at one browser ever passes through Discofetch.
 
 ## 2. The record
 
-The value of a peer's `rtc` presence field: **a string** holding one JSON
-object. Discofetch treats the field as opaque; the budget is on this
-string.
+One JSON object, carried in two forms, and **a reader accepts both**:
+
+- **An object.** The real Discofetch API (§7.1) sends it this way, in a
+  `peer`'s `record` and in its `rtc` presence field, and the host sends
+  its own `record` this way.
+- **A string** holding the object's JSON text. The M0 mock (§7.2) and
+  the test vectors use it, and a reader must still take it.
+
+Whichever form arrives, the reader checks the same rules below. The
+budget is on the object's compact JSON text: `drt`'s program rebuilds
+that text field by field, never by re-encoding the whole object (§7.1).
 
 ```json
 {"v":1,"u":"Xk3fQ9aBc2Dd7eFg","p":"8bqS0lK1vT6YpR2eWm4nHc","f":"EBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8=","c":["candidate:1 1 udp 2130706431 192.168.1.20 50212 typ host","candidate:2 1 udp 1694498815 203.0.113.7 50212 typ srflx raddr 0.0.0.0 rport 0"]}
@@ -75,13 +90,15 @@ string.
 | `f` | string | SHA-256 of the peer's DTLS certificate: standard base64 (RFC 4648 §4), padded, so exactly 44 characters decoding to 32 bytes. |
 | `c` | array of strings | 0 to 8 candidate lines (§2.1). |
 
-- **At most 512 bytes**, measured as the UTF-8 length of the string.
+- **At most 512 bytes**, measured as the UTF-8 length of the record's
+  JSON text: the string, or an object's compact encoding.
 - **Keys may come in any order**, and a writer emits no whitespace. The
   host writes `v, u, p, f, c` in that order; nothing may depend on it.
 - **Unknown keys are ignored.** A change a v1 reader cannot ignore is
   `v: 2`, not a new key.
 - A record that breaks a rule above is refused whole. A candidate line
-  that parses but cannot be used is skipped, not refused (§2.1).
+  that starts `candidate:` but cannot be used is skipped, not refused
+  (§2.1). The budget and the 8-line count are the record's as received.
 
 ### 2.1 Candidate lines
 
@@ -100,6 +117,17 @@ Exactly the string `RTCIceCandidate.candidate` yields: it starts with
   resolve them and does not need them: the browser is controlling, its
   checks reach the host, and the host learns the browser's address from
   them as a peer-reflexive candidate.
+- **What a reader keeps.** A line is kept when it reads as RFC 8839 §5.1
+  through `typ <type>` (numeric component, priority and port, the port at
+  most 65535), its transport is `udp`, its type is `host`, `srflx` or
+  `prflx`, and its address does not end `.local`, all compared without
+  case. Every other line is dropped on the way in, so no answer a browser
+  builds (§3.2) and no session a host builds (§3.3) sees one. Trailing
+  extensions do not make a line unusable. `usable_candidate` in
+  `crates/drt-rtc/src/record.rs` and `isUsableCandidate` in the client
+  library (§9) are this rule, held to the same cases, and the vectors
+  carry records with lines a reader skips: their `decoded` and
+  `answer_sdp` are what is left.
 - **The host's `srflx` lines carry `raddr 0.0.0.0 rport 0`**, as
   browsers' do, so a host that publishes only its public candidates
   (`doc/Plan-0.8.0.md` §3.4) does not leak its LAN address through them.
@@ -287,7 +315,74 @@ host does, and where it departs:
 | `0x48` | out of scope, a special-purpose address, or UDP |
 | `0x49` | the session's stream cap is reached |
 
-## 7. Signaling for M0: the mock
+## 7. Signaling
+
+### 7.1 The host's socket to the Discofetch API
+
+The host holds one WebSocket open to the Discofetch API, and the API is
+the far end of it. The contract, browser side included, is Discofetch's
+(`doc/BROWSER-ACCESS-SIGNALING.md` in the discofetch repository, as of
+36ad148). This section is what DRT's side does
+with it. The record (§2) is unchanged; only how it travels changed. This
+is not the relay's park door (`/s`), which is separate and unchanged.
+
+- **The program**: `"entry": "stdlib:browser-access"`, carried in the
+  binary (source: `crates/drt/src/stdlib/browser_access.dlua`), under
+  `drt start` with the §8 block and the `ws` connector. Its caps are
+  `host:ws/*` and `host:time/monotonic`. It is the only Discofetch-
+  specific code; the binary knows nothing of the message types.
+- **The config** it reads:
+  - `args.signal` is the socket URL. It is the contract's
+    `browser_access.signal`, flat because a deployment's args are flat,
+    and it is never built in code.
+  - `args.key`, optional, is the advertise token, sent as
+    `Authorization: Bearer` on the upgrade.
+  - `connectors.ws.scope` is the origin allowlist, in `rest`'s shape. A
+    deployment may instead inject the token there, as an `authorization`
+    entry in the allow entry's `headers`, which the program cannot read.
+    It then omits `args.key`: with the key set, the program sends the
+    header too and the connector refuses the connect, because a program
+    may not set a header its scope injects.
+- **Transport**: `wss://` only. The token rides the upgrade, so the `ws`
+  connector refuses plain `ws://` anywhere but loopback: in the scope at
+  boot, at connect, and again on the resolved address.
+- **Frames**: text, one JSON object each. The host sends:
+  - `record`, with the record as a JSON **object**, spliced unparsed from
+    the host's own record text. It goes out on every connect and whenever
+    the record changes (§8's `stun_refresh_s`).
+  - `outcome`, `direct` or `failed`, exactly once per session.
+  - `bye`, with `busy`, `failed` or `closed`, when the host ends a
+    session. A session the API ended with its own `bye` gets none back.
+- **The `record` in a `peer`** is taken as a JSON object or as the
+  record's text. An object is rebuilt field by field, never re-encoded
+  whole: dlua's JSON would turn an empty `c` into `{}`.
+- **Sessions**: one per `peer` the API announced, and no other. ICE from
+  a ufrag the API never announced finds no session in the host (tested).
+  `session` is an opaque key of at most 64 bytes, refused past that by the
+  program and again by the `webrtc` block.
+- **The socket's life**:
+  - `ws/connect` runs with `idle_ms = 60000`, so 60 s with no frame at
+    all, pings included, closes the socket.
+  - Reconnect backs off from 1 s, doubling to 30 s, plus up to 25%
+    jitter. `ready` resets the backoff.
+  - Sessions do not depend on the socket. Outcomes and byes wait for the
+    next socket, up to 256 of them.
+  - A close code in 4000–4099 is the API not wanting this socket back:
+    4001, a newer host socket replaced it; 4003, the credential was
+    refused. The program stops, `drt start` exits, and nothing dials
+    again. Any other close, and 60 s of silence, is redialed with backoff.
+    The `ws` connector reports the close code with the close, so none of
+    this reads the API's JSON.
+  - There is no `answer` message: the browser builds the answer from the
+    host's record (§3.2).
+- **Limits**: the API adopts §2's record and limits (512 bytes, 8
+  candidates, `u` 4–32, `p` 22–64) and validates against
+  `crates/drt-rtc/vectors/browser-access-v1.json`. No `v` bump.
+- **Tested** in `crates/drt/tests/signal.rs`, the contract's seven host
+  tests, against a `wss://` stub of the API with the native client as the
+  browser.
+
+### 7.2 M0's mock (superseded by §7.1)
 
 **Not Discofetch's API.** A stand-in both sides point at until
 Discofetch's `rtc` presence field and CORS exist. The browser client's
@@ -334,6 +429,7 @@ GET  /v1/rooms/{room}/presence   Authorization: Bearer <session_token>
     "max_streams_per_session": 64,
     "idle_stream_timeout_s": 300,
     "connect_timeout_s": 10,
+    "stun_refresh_s": 25,
     "queue": "webrtc",
     "reply_queue": "webrtc_cmd"
   }
@@ -347,7 +443,10 @@ GET  /v1/rooms/{room}/presence   Authorization: Bearer <session_token>
   identity would strand every room holding the old record.
 - **`stun`**: server-reflexive candidates are gathered from these, on the
   session socket itself, because a mapping only means something for the
-  socket it was measured on.
+  socket it was measured on. **`stun_refresh_s`** re-asks them that often
+  once they have answered. That keeps the socket's NAT mapping open
+  between sessions; home routers drop an idle UDP mapping after 30 to
+  120 s. A mapping that moved changes the record, which is reported again.
 - **Reports on `queue`**, each a map with `event`:
   - `webrtc_record` `{rtc}`: the host's record, on start and whenever its
     candidates change. The program publishes it.
@@ -360,5 +459,47 @@ GET  /v1/rooms/{room}/presence   Authorization: Bearer <session_token>
   session from a browser's record; `{command = "close", peer}` ends one.
   A refused `open` is reported as `webrtc_session` `closed` with the
   reason.
-- **`crates/drt-rtc/browser-check/host.json`** is a working block, with
-  `host.dlua` doing the §7 signaling over `rest` in about sixty lines.
+- **`crates/drt/src/stdlib/browser_access.dlua`** does §7.1's signaling;
+  `crates/drt/tests/signal.rs` shows a working config for it. M0's
+  `crates/drt-rtc/browser-check/host.json` and its `host.dlua` still do
+  §7.2's over `rest`.
+
+## 9. The client library
+
+`crates/drt-rtc/client/drt_browser_access.js`, with its types in
+`drt_browser_access.d.ts`, is §2 to §6 on the browser's side: one ES
+module, no dependencies, no build step. Every release and dev build
+attaches both files. A client may use it or implement these sections
+itself; the vectors hold either to the same bytes.
+
+```js
+import { offer } from './drt_browser_access.js';
+
+const pending = await offer({ iceServers });     // §3.1: gathers, capped at 2 s
+// pending.record goes to the host through signaling (§7.1).
+const session = await pending.accept(hostRecord); // §3.2; object or text (§2)
+session.hello;                                     // §5
+const s = session.connect('127.0.0.1', 8123);      // §6: must be in hello.scope
+// s.readable / s.writable: Web Streams of bytes. s.closed rejects with a
+// StreamClosed whose `reason` is the §6 byte when the host refuses or fails.
+```
+
+- **Signaling is the caller's.** The module makes and takes records; it
+  never opens a WebSocket and never polls.
+- **`accept` resolves once** both channels are open, `hello` has arrived
+  and the stream-0 `CONTINUE` has given the initial credit, and rejects
+  after 15 s otherwise, closing the connection. One `accept` per `offer`:
+  a rejoin is a fresh offer, and so a fresh ufrag (§2.2).
+- **Writes are paced twice**: by Wisp credit, one packet per unit, topped
+  up by the host's `CONTINUE`; and by the data channel's buffer, past 1
+  MiB. A chunk larger than 16379 bytes is split.
+- **`closed`** resolves when the target closed cleanly (`0x02`) or the
+  page closed the stream, and rejects otherwise. When the session ends
+  under a stream, its `reason` is `null`.
+- **`scheme` is the page's to act on** (§5). An `https` target means the
+  page speaks TLS over the stream itself, and an `ssh` one SSH; the
+  library carries bytes.
+- **Its gate** is `script/browser-access-client.sh`: `test.mjs` against
+  the vectors, then `check.mjs` in Chromium against the `drt-rtc` example
+  host and, with `--drt`, against `drt start`. CI runs it with `--drt`,
+  and the release packages the files only after it passes.

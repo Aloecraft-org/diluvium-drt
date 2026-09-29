@@ -13,6 +13,11 @@ set -o pipefail
 
 SELF=${0##*/}
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
+# Another directory in this layout, run by this same gate: the
+# determinism corpus in tests/determinism/ is one.
+if [ -n "${EXAMPLES_DIR:-}" ]; then
+    HERE=$(cd -- "$EXAMPLES_DIR" && pwd)
+fi
 
 usage() {
     cat <<EOF

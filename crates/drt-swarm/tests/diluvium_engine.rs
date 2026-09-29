@@ -30,8 +30,8 @@ fn version_first() {
     let engine = DiluviumEngine::new().unwrap();
     assert_eq!(
         engine.abi_version(),
-        1,
-        "dv ABI v1 — a bump is a decision, not a surprise"
+        2,
+        "dv ABI v2 — a bump is a decision, not a surprise"
     );
 }
 
@@ -201,13 +201,13 @@ fn a_budget_bounds_a_runaway_program() {
 }
 
 /// The numeric bounds a `LoadSpec` states reach the instance, and the audit
-/// flag is false because nothing can have set it.
+/// flag, now read off the core, is false because nothing has set it.
 ///
-/// This is the test that fails when session A's A2 pin lands and
-/// `DiluviumInstance::apply_numeric` is still a no-op: the bounds have to
-/// stop being merely *carried* and start being *applied*, and the flag has
-/// to stop being a literal `false` and start being a reading. Until then
-/// both halves are true and this passes for the right reasons.
+/// Since the 0.17.1 pin `apply_numeric` hands the bounds to the core and
+/// `numeric_touched_fast` is the core's own reading. The core has no getter
+/// for the bounds, so what is asserted here is what DRT applied; that the
+/// core *enforces* them is diluvium's to test, and at 0.17.1 it does not
+/// yet.
 #[test]
 fn numeric_bounds_reach_the_instance_and_no_fast_kernel_has_run() {
     use drt_config::{Numeric, Tier};
@@ -233,8 +233,8 @@ fn numeric_bounds_reach_the_instance_and_no_fast_kernel_has_run() {
         bounds,
         "the bounds the spec stated did not reach the instance"
     );
-    // No fast-tier backend exists in this workspace or in the pinned core,
-    // so no fast kernel can have run. `false` here is a fact, not a stub.
+    // No fast-tier backend exists in the pinned core, so no fast kernel can
+    // have run, and the core says so.
     assert!(!inst.numeric_touched_fast());
 
     // An instance loaded with no bounds states none, rather than inheriting

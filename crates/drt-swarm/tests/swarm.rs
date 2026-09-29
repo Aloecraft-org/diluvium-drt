@@ -1441,3 +1441,100 @@ fn a_non_map_message_is_delivered_untouched() {
         );
     }
 }
+
+/// Iteration order over table and function keys across a hibernation:
+/// pinned as the core behaves today, which is wrong.
+///
+/// Such a key hashes by an identity the object takes when it is created,
+/// from a per-state counter (diluvium 0.17.1), so a program's `pairs`
+/// order is meant to be a property of the program. Across a snapshot that
+/// holds only if the identities travel in it and the counter carries on
+/// from where it stopped, and in 0.17.1 neither does: `dsnap.c` never
+/// reads or writes `keyid` or `keyidcount`, so a restore gives every table
+/// and function a fresh identity from a fresh counter
+/// (doc/Snapshot-Identity-Upstream.md).
+///
+/// So the same program runs twice, once hibernating in the middle and once
+/// not. The resident twin must read one table the same way twice; the
+/// hibernated twin today does not, and its later identities are offset.
+/// When the core carries identities, the `assert_ne!` below fails: make it
+/// `assert_eq!` and drop the known issue from the changelog.
+#[test]
+fn pairs_order_across_a_hibernation_is_pinned_as_the_core_has_it() {
+    fn program(hibernate: bool) -> String {
+        format!(
+            r#"
+            local lc = queue.declare("system/lifecycle", {{ capacity = 4 }})
+            local requests = queue.declare("requests", {{ capacity = 4, exported = true }})
+            local out = queue.declare("out", {{ capacity = 8, exported = true }})
+            local function order(t)
+                local o = {{}}
+                for _, v in pairs(t) do o[#o + 1] = tostring(v) end
+                return table.concat(o, " ")
+            end
+            local before = {{}}
+            for n = 1, 12 do before[{{ n = n }}] = n end
+            queue.push(out, "before " .. order(before))
+            if {hibernate} then queue.push(lc, {{ op = "hibernate", wake_on_message = true }}) end
+            queue.wait({{requests}})
+            queue.push(out, "again " .. order(before))
+            local after = {{}}
+            for n = 1, 12 do after[function() return n end] = n end
+            queue.push(out, "after " .. order(after))
+            queue.push(out, "next " .. tostring({{}}))
+            -- Alive until read: an exited instance's queues go with it.
+            queue.wait({{requests}})
+            "#
+        )
+    }
+
+    let mut lines = Vec::new();
+    for hibernate in [false, true] {
+        let mut sw = swarm();
+        let root = sw
+            .root(SUPERVISOR.as_bytes(), lifecycle_caps(), Budget::default())
+            .unwrap();
+        sw.step();
+        push_value(
+            &mut sw,
+            root,
+            "requests",
+            &spawn_request(&program(hibernate), &["lifecycle", "queue:*"], None),
+        );
+        settle(&mut sw, 10);
+        let log = drain_out(&mut sw, root, "log");
+        let child = InstanceId(field(&log[0], "id").unwrap().as_u64().unwrap() as u32);
+        let mut got = drain_out(&mut sw, child, "out");
+        if hibernate {
+            assert!(
+                !sw.resident(child),
+                "the twin that asked to hibernate was swapped out"
+            );
+            assert!(sw.cached_size(child) > 0);
+        }
+        push_value(&mut sw, child, "requests", &rmpv::Value::from(1));
+        settle(&mut sw, 10);
+        got.extend(drain_out(&mut sw, child, "out"));
+        let got: Vec<String> = got
+            .iter()
+            .map(|v| v.as_str().expect("a report is a string").to_string())
+            .collect();
+        assert_eq!(got.len(), 4, "hibernate={hibernate}: {got:?}");
+        lines.push(got);
+    }
+    assert_eq!(
+        lines[0][0].strip_prefix("before "),
+        lines[0][1].strip_prefix("again "),
+        "a resident instance reads one table twice the same way"
+    );
+    assert_eq!(
+        lines[0][0], lines[1][0],
+        "the twins agree until one of them sleeps"
+    );
+    assert_ne!(
+        lines[0][1..],
+        lines[1][1..],
+        "hibernating no longer changes what the program observes: the core now carries \
+         key identities across a snapshot. Make this assert_eq! and drop the known issue"
+    );
+}

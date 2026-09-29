@@ -1,0 +1,6 @@
+{
+  "name": "02-exact",
+  "teaches": "What every profile answers the same on every target: integers, printing, the default random seed, iteration over scalar keys, sort with ties, and floats through json and msgpack.",
+  "cmd": "drt run exact.dlua",
+  "needs_network": false
+}

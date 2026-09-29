@@ -25,7 +25,7 @@
 //! - Entry points: [`Host::start`] (bind, then serve on the host's own
 //!   thread), [`Host::send`], [`Host::try_event`], [`Host::next_event`].
 //! - Configurable: [`WISP_BUFFER`], [`HIGH_WATER`], [`LOW_WATER`],
-//!   [`SETUP_DEADLINE`], [`STUN_RETRY`], [`STUN_REFRESH`], [`TICK`],
+//!   [`SETUP_DEADLINE`], [`STUN_RETRY`], [`TICK`],
 //!   [`HOST_STACK`], and everything in [`HostConfig`].
 //! - Fan-out: [`Command`] (what the program asks), [`Event`] (what the
 //!   host reports), [`Internal`] (what a stream's tasks tell the loop), and
@@ -65,9 +65,6 @@ pub const LOW_WATER: usize = 32 * 1024;
 pub const SETUP_DEADLINE: Duration = Duration::from_secs(30);
 /// How soon to ask the STUN servers again while no answer has come.
 pub const STUN_RETRY: Duration = Duration::from_secs(2);
-/// How often to ask once they have: often enough to hold the NAT mapping
-/// the record advertises open between sessions.
-pub const STUN_REFRESH: Duration = Duration::from_secs(25);
 /// The housekeeping interval: idle streams, setup deadlines, the gate.
 pub const TICK: Duration = Duration::from_secs(1);
 /// The host thread's stack. See the module note: str0m recurses once per
@@ -89,6 +86,11 @@ pub struct HostConfig {
     pub identity: Identity,
     /// `host:port` STUN servers the server-reflexive candidates come from.
     pub stun: Vec<String>,
+    /// How often to ask them once they have answered: often enough to hold
+    /// the NAT mapping the record advertises open between sessions (home
+    /// routers drop an idle UDP mapping after 30 to 120 s), and to notice
+    /// when it moves, which re-reports the record.
+    pub stun_refresh: Duration,
     /// Whether the record carries the host candidate (the LAN address).
     pub publish_host_candidates: bool,
     /// The label `hello` carries.
@@ -207,9 +209,10 @@ impl Host {
                     if !cfg.stun.is_empty() {
                         let servers = cfg.stun.clone();
                         let tx = internal_tx.clone();
-                        tokio::spawn(
-                            async move { resolve_stun(servers, bound.is_ipv4(), tx).await },
-                        );
+                        let refresh = cfg.stun_refresh;
+                        tokio::spawn(async move {
+                            resolve_stun(servers, bound.is_ipv4(), refresh, tx).await
+                        });
                     }
                     let mut state = Loop {
                         ctx: Ctx {
@@ -290,7 +293,12 @@ fn candidate_ip(bound: SocketAddr) -> Result<IpAddr, String> {
         })
 }
 
-async fn resolve_stun(servers: Vec<String>, v4: bool, tx: mpsc::UnboundedSender<Internal>) {
+async fn resolve_stun(
+    servers: Vec<String>,
+    v4: bool,
+    refresh: Duration,
+    tx: mpsc::UnboundedSender<Internal>,
+) {
     loop {
         let mut found = Vec::new();
         for s in &servers {
@@ -302,7 +310,7 @@ async fn resolve_stun(servers: Vec<String>, v4: bool, tx: mpsc::UnboundedSender<
         if tx.send(Internal::StunServers(found)).is_err() || done {
             return;
         }
-        tokio::time::sleep(STUN_REFRESH).await;
+        tokio::time::sleep(refresh).await;
     }
 }
 
@@ -556,10 +564,11 @@ impl Loop {
             + if self.mapped.is_empty() {
                 STUN_RETRY
             } else {
-                STUN_REFRESH
+                self.ctx.cfg.stun_refresh
             };
-        self.stun_pending
-            .retain(|_, (_, sent)| now.duration_since(*sent) < STUN_REFRESH);
+        self.stun_pending.retain(|_, (_, sent)| {
+            now.duration_since(*sent) < STUN_RETRY.max(self.ctx.cfg.stun_refresh)
+        });
         for server in &self.stun_servers {
             let txid = ego_transport::stun::TransactionId::random();
             let request = ego_transport::stun::encode_binding_request(&txid);

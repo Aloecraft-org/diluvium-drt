@@ -238,8 +238,9 @@ pub struct AllowEntry {
 }
 
 impl AllowEntry {
-    /// Whether the guest may set this header name on this origin.
-    fn guest_may_set(&self, lower: &str) -> bool {
+    /// Whether the guest may set this header name on this origin. Public
+    /// for `connectors/ws`, which grants origins in this same shape.
+    pub fn guest_may_set(&self, lower: &str) -> bool {
         // An operator-supplied header is not a default the guest can
         // override; overriding an injected `authorization` would be the
         // whole point of injecting it, undone.
@@ -428,6 +429,17 @@ impl RestScope {
         })
     }
 
+    /// Whether the allowlist names no origin at all, so every call would
+    /// be refused. For `connectors/ws`'s startup check, which is rest's.
+    pub fn is_empty(&self) -> bool {
+        self.allow.is_empty()
+    }
+
+    /// The certificates `extra_roots` named, trusted beside webpki's.
+    pub fn extra_roots(&self) -> &[tokio_rustls::rustls::pki_types::CertificateDer<'static>] {
+        &self.extra_roots
+    }
+
     /// Whether this URL is inside the granted origins.
     pub fn permits(&self, url: &Url) -> bool {
         self.matching(url).is_some()
@@ -482,7 +494,7 @@ fn is_private(ip: IpAddr) -> bool {
 /// Headers the connector owns. A guest that could set `content-length` or
 /// `transfer-encoding` could smuggle a second request past the origin, and
 /// one that could set `host` could aim it somewhere else entirely.
-fn is_reserved(lower: &str) -> bool {
+pub fn is_reserved(lower: &str) -> bool {
     matches!(
         lower,
         "host" | "connection" | "content-length" | "transfer-encoding"

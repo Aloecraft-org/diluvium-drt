@@ -8,12 +8,16 @@ on.
 
 - [`c-swarm_bench-baseline.json`](c-swarm_bench-baseline.json) — `make
   swarm_bench ARGS="--json --seed 7"` at `--scale 1`, from
-  `aloecraft-org/diluvium` at `7f952d86` (v0.15.1), gcc 13.3.0 `-O2`.
+  `aloecraft-org/diluvium` at `d8497b0d` (v0.17.1), gcc 13.3.0 `-O2`.
   Machine: 4-vCPU Intel(R) Xeon(R) Processor @ 2.10GHz, Linux container.
-  Re-captured 2026-09-17 when DRT's pin moved to that revision; the
-  previous capture was `850e00d7` (v5.5.1_build13), and the one byte
-  figure that moved between them is the core's own (`_DILUVIUM`, a table
-  every sealed guest now carries).
+  Re-captured 2026-09-24 when DRT's pin moved to that revision, with
+  `bench/ab.sh 5` against `swarm_bench` built from the pinned source. The
+  previous capture was `7f952d86` (v0.15.1), and the byte figure that
+  moved between them is the core's own: resident heap per agent went from
+  92,162 to 92,576 in the C, +414 B, and DRT moved by the same 414, from
+  92,210 to 92,624. Before re-capturing, `swarm_bench` rebuilt at
+  `7f952d86` on this machine reproduced 92,162 exactly, so the method
+  still measures what the old file measured.
 
   **One deliberate difference from DRT, named in `check-fidelity.py`
   rather than absorbed by a tolerance.** DRT opens every source instance
@@ -21,8 +25,9 @@ on.
   `load` in one C closure so it refuses bytecode too. `swarm_bench` opens
   its workers with flags 0 and has no option to do otherwise, so the C's
   resident heap per agent is DRT's minus exactly that closure, 48 B. The
-  checker compares net of it. Measured on this revision: stock C 92,162;
-  C patched to open workers text-only 92,210; DRT 92,210.
+  checker compares net of it. Measured on v0.17.1: stock C 92,576; DRT
+  92,624. On v0.15.1 it was stock C 92,162; C patched to open workers
+  text-only 92,210; DRT 92,210.
 
 - [`drt-bench-run.json`](drt-bench-run.json) — `cargo run --release -p
   drt-bench -- --json --seed 7 --repeat 5`, same machine, same day.

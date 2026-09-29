@@ -19,6 +19,9 @@
 //   --list   name the examples that would run, and exit
 //   example  a substring of the directory name: "04", "files"
 // env: TIMEOUT  seconds one example may take (default 120; 0 disables)
+//      EXAMPLES_DIR  another directory in the examples' layout to run
+//                    instead (tests/determinism/), with the page-only
+//                    checks after the examples left out
 //      DRT_WEB_BUILDINFO  a path: the page's `drt buildinfo` is written there,
 //                         which is how a release reads the profile off the
 //                         module (release.yml, build-web)
@@ -32,7 +35,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const EXAMPLES = path.resolve(HERE, '../../../examples');
+const EXAMPLES = process.env.EXAMPLES_DIR
+  ? path.resolve(process.env.EXAMPLES_DIR)
+  : path.resolve(HERE, '../../../examples');
+// The page-only checks (xterm, the swarm table, REPL parity) are about
+// the embedding, not about a directory of programs, so they run with the
+// examples and not with any other directory.
+const PAGE_CHECKS = !process.env.EXAMPLES_DIR;
 const MAXDIFF = 200;
 const TIMED_OUT = Symbol('timed out');
 const TIMEOUT = Number(process.env.TIMEOUT ?? 120);
@@ -137,6 +146,10 @@ for (const line of info.split('\n')) {
   if (/^(version|profile): /.test(line)) console.log(`     ${line}`);
 }
 const profile = (info.match(/^profile: (.*)$/m) ?? [])[1] ?? 'unknown';
+// What the core carries, as run-all.sh reads it. Empty when unreadable,
+// and then nothing is skipped for it: a gate that silently stops checking
+// is worse than one that reports a diff.
+const features = ((info.match(/^features: (.*)$/m) ?? [])[1] ?? '').split(',').filter(Boolean);
 if (process.env.DRT_WEB_BUILDINFO) fs.writeFileSync(process.env.DRT_WEB_BUILDINFO, info);
 console.log('');
 
@@ -184,6 +197,13 @@ for (const name of examples) {
   const builds = meta.needs_build == null ? [] : [].concat(meta.needs_build);
   if (builds.length > 0 && !builds.includes(profile) && profile !== 'unknown') {
     console.log(`skipped  ${name.padEnd(24)} (needs a ${builds.join(' or ')} build; this drt is ${profile})`);
+    wrongBuild.push(name);
+    continue;
+  }
+  const wantFeatures = meta.needs_features ?? [];
+  const missingFeatures = wantFeatures.filter((f) => !features.includes(f));
+  if (features.length > 0 && missingFeatures.length > 0) {
+    console.log(`skipped  ${name.padEnd(24)} (needs ${missingFeatures.join(', ')} in the core; this drt has ${features.join(',')})`);
     wrongBuild.push(name);
     continue;
   }
@@ -253,7 +273,7 @@ for (const name of examples) {
 // `Terminal` the homepage panel and the Lab already have -- by typing
 // real keystrokes into xterm's own input handling and reading back the
 // terminal's own rendered buffer.
-{
+if (PAGE_CHECKS) {
   const name = 'xterm-embedding';
   try {
     const xterm = await browser.newPage();
@@ -314,7 +334,7 @@ for (const name of examples) {
 // no, from the same `host:*` ceiling a config-less run gets, which is a
 // question about the capability set and not about which connectors the
 // build happens to carry.
-{
+if (PAGE_CHECKS) {
   const name = 'swarm-table';
   try {
     const r = await withTimeout(
@@ -360,7 +380,7 @@ for (const name of examples) {
 // separator included, and what it gives up is how far a terminal moved,
 // which is the terminal's business. And the shell prompt ^D returns to is
 // a line of its own rather than a dangling `$ `.
-{
+if (PAGE_CHECKS) {
   const name = 'repl-parity';
   const scriptLines = fs.readFileSync(path.join(HERE, 'repl-script.txt'), 'utf8').replace(/\n$/, '').split('\n');
   const expected = oneSpace(

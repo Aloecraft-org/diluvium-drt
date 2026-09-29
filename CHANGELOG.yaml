@@ -81,6 +81,211 @@ schema: 1
 repo: Aloecraft-org/diluvium-drt
 
 releases:
+  - version: 0.8.0
+    tag: v0.8.0
+    status: unreleased
+    stable: true
+    mirror: false
+    dv_abi: 2
+    diluvium: d8497b0dd917548c3e2bfa88ed539a6f527ba369
+    diluvium_version: "0.17.1"
+    connectors:
+      full: [time, fs, crypto, sql, ssh, rest, ssmtp, exec, data, socket, ws, listen]
+      slim: [time, fs, crypto, listen]
+      wasi: [time, fs, crypto, sql, listen]
+      web: [time, fs, crypto]
+    features:
+      full: [regex, json, msgpack, snapshot, numeric]
+      slim: [regex, json, msgpack, snapshot]
+      wasi: [regex, json, msgpack, snapshot]
+      web: [regex, json, msgpack, snapshot, numeric]
+    summary: |
+      **A browser reaches a DRT host directly, and the core is diluvium
+      0.17.1.** The `webrtc` block lets a stock browser open a data
+      channel to this process and carry TCP streams to the targets the
+      block names, with the WebRTC stack in the binary and the signaling
+      left to the program, which now holds a socket to the Discofetch API
+      through the new `ws` connector. Underneath it the embedded core moves from
+      0.15.1 to 0.17.1: dv ABI 2, the numeric tier on in `full` and `web`,
+      and `buildinfo` reading the core's features off the core. The plan
+      is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
+    added:
+      - |
+        **A determinism corpus, run on every target DRT ships**
+        (`tests/determinism/`). diluvium's own numeric corpus, vendored
+        unchanged, plus DRT's: what every profile answers the same (integer
+        arithmetic, float printing, the default random seed, iteration over
+        scalar keys, sort with ties, floats through `json` and `msgpack`),
+        and what holds wherever the core carries `numeric` (`math` and `^`
+        through the vendored libm, iteration over table and function
+        keys). CI runs it natively on `full` and `slim`, through wasmtime
+        and in Chromium, with one expected output per corpus.
+      - |
+        **SSH in a browser, over the relay** (`doc/Plan-0.8.0.md` §2).
+        `ssh.html` is one static file, shipped with every release and dev
+        build: an SSH client (russh, compiled to wasm) and a terminal
+        (xterm.js), inlined, with nothing fetched at run time. It claims a
+        label on the relay exactly as `ssh -o ProxyCommand="drt tunnel …"`
+        does, so the relay and the parked device are unchanged, and the
+        session is end to end between the page and sshd: the relay
+        carries ciphertext.
+        - **The host key is decided before anything authenticates.** A
+          pinned fingerprint that does not match fails the connect; with
+          no pin, the key is shown and trusted on first use.
+        - **Auth is an Ed25519 key the page generates and keeps**, or a
+          password. RSA host keys are accepted.
+        - A busy device (close 1013) is retried with backoff, and the page
+          sends its own keepalive so a quiet session outlives the relay's
+          idle close.
+
+        Proven by `script/drt-ssh-page-gate.sh` against a stock OpenSSH
+        sshd, in CI and before the release packages the page: stock `ssh`
+        over ProxyCommand, the page signing in with a pinned key, a
+        resize, a second page and stock `ssh` at once beside an open
+        session, a wrong pin refused before anything authenticates, TOFU,
+        an exit status, and no uncaught error in any page.
+      - |
+        **The `webrtc` block** (`doc/BrowserAccess.md`). A browser builds
+        its session from the host's presence record with no answer round
+        trip, and the host carries Wisp v1 streams over the data channel
+        to the block's `scope` and to nothing else: checked before any
+        connection, and again on the resolved address, so a name in scope
+        that resolves to loopback or a metadata address is refused. One
+        UDP socket and one set of ICE credentials serve every session. The
+        block reports its record, sessions and streams on a queue and
+        takes `open` and `close` on another; how the two records met is
+        the program's business, so Discofetch's API is not in the binary.
+        On str0m 0.23 with its pure-Rust crypto, in `full` by the owner's
+        decision at a measured +2.78 MB, until plugins can carry it.
+        `webrtc` and its event names are working names.
+      - |
+        **The `ws` connector**, in `full`: an outbound WebSocket a node
+        holds by handle, `host:ws/connect`, `send`, `recv` and `close`.
+        Node-owned like `socket`'s handles, with `vital` and `wake` meaning
+        what they mean there. The connection runs on the connector's own
+        runtime, so it answers pings while its owner is parked, and
+        `idle_ms` closes one that has gone silent. The scope is `rest`'s
+        origin allowlist, parsed by `rest`'s own code:
+        - `headers` go on the upgrade where the program cannot read them
+        - the resolved address is checked before anything connects
+        - `extra_roots` are trusted beside the public ones
+
+        **`wss://` only, with plain `ws://` to loopback alone**, because
+        the upgrade carries the credential. A plain origin off this
+        machine is refused in the scope at boot, at connect, and again on
+        the resolved address.
+      - |
+        **The browser access client library**, `drt_browser_access.js`
+        with `drt_browser_access.d.ts`: the browser half of
+        `doc/BrowserAccess.md` as one ES module with no dependencies,
+        shipped with every release and every dev build. `offer()` makes
+        the browser's record; `accept(hostRecord)` builds the answer from
+        the host's record, object or text, and resolves on `hello`;
+        `session.connect(host, port)` gives a TCP stream to the host's
+        scope as a `readable`/`writable` pair of Web Streams, split at the
+        16 KiB message cap and paced by Wisp credit. Signaling stays the
+        page's: the module never opens a socket. Proven against the shared
+        vectors, and in Chromium against a real host: three sessions at
+        once, 1 MiB each through the echo intact, and an out-of-scope
+        connect refused with `0x48`.
+      - |
+        **Browser access signals over a socket to the Discofetch API**
+        (`doc/BrowserAccess.md` §7.1). `stdlib:browser-access`, a program
+        the binary carries, does it:
+        - takes a browser's record as a JSON object, as the API sends
+          it, or as its text, and checks the same rules either way
+        - holds one socket, authenticated with the advertise token: from
+          `args.key` when set, else from an `authorization` header the
+          `ws` scope injects, so the program never holds it
+        - publishes the host's record on every connect and every change
+        - opens a session only for a browser the API announced, and
+          closes it on `bye`
+        - reports one `outcome` per session
+        - reconnects with jittered backoff from 1 s to 30 s, while
+          sessions carry on without the socket
+        - stops for good on a close code in 4000–4099 (4001 replaced,
+          4003 credential refused), so `drt start` exits
+
+        The contract's seven host tests run against a `wss://` stub of the
+        API, in `crates/drt/tests/signal.rs`.
+      - |
+        **`webrtc.stun_refresh_s`**, default 25 as before: how often the
+        host re-asks its STUN servers. This keeps the session socket's NAT
+        mapping alive between sessions and re-reports the record when the
+        mapping moves. It was a constant; a test can now shorten it.
+      - |
+        **The numeric tier**, on in `full` and `web`: `array`, its kernels,
+        and the vendored libm that makes float results the same bits on
+        every target. `slim` and `wasi` stay without it, byte for byte.
+        The config's `numeric` bounds now reach the core
+        (`dv_numeric_set_max_elements`, `dv_numeric_set_max_tier`), and the
+        fast-tier audit flag is the core's own reading.
+    changed:
+      - |
+        **diluvium 0.15.1 -> 0.17.1, dv ABI 1 -> 2.** The pin names the
+        tag, `v0.17.1`, rather than following diluvium's default branch,
+        where ABI 3 lands when 0.18.0 ships.
+      - |
+        **`buildinfo`'s `features` is read off the core** (`dv_features()`)
+        instead of stated per profile, and says what the core says:
+        `regex,json,msgpack,snapshot`, plus `numeric` where it is on, in
+        the core's own order. A custom build reports its core's list rather
+        than an empty one. `diluvium_version` is still stated, because
+        0.17.1 has no `dv_version()`.
+    upgrading: |
+      **Drain or replay hibernated instances before upgrading a
+      deployment that holds them.** A snapshot taken under dv ABI 1 does
+      not restore under ABI 2; that is the ABI bump doing its job.
+
+      Two things a program can see change, both from diluvium 0.16.0:
+      `tostring` of a table, function or coroutine prints `table: #N`, an
+      identity, where it printed an address; and `pairs` over keys that
+      are tables, functions, userdata or coroutines visits them in
+      creation order. A program that scraped the hex out of `tostring` was
+      scraping an address; `string.format("%p")` still gives one.
+    fixed:
+      - |
+        **Browser access readers skip the candidate lines §2.1 says they
+        skip** (issue #38). `Record::decode` and the client library's
+        `parseRecord` kept every `candidate:` line, so a TCP or relay line
+        in a record reached the answer SDP a browser applies. Both now drop
+        a line that is not UDP, not `host`/`srflx`/`prflx`, names an mDNS
+        `.local` address, or does not read as a candidate; the size and
+        count limits still apply to the record as received. The vectors
+        gain two records with such lines, and their expected answers.
+    known_issues:
+      - |
+        **`numeric.max_elements = 0` is not handed to the core.** Here a
+        stated zero is a real bound; in `dv.h` 0 means no limit, so passing
+        it on would turn the tightest bound into none. It is withheld
+        instead, which leaves the core at its default -- also no limit --
+        and 0.17.1 enforces neither bound yet, so nothing behaves
+        differently today. Needs a "no limit" sentinel upstream.
+      - |
+        **The `webrtc` block has only been proven on one machine.**
+        Chromium connects to it, several sessions at once, through
+        `drt start` and a signaling program; nothing has yet crossed a NAT,
+        and server-reflexive gathering has not met a real STUN server.
+      - |
+        **Hibernation changes `pairs` order over table and function
+        keys.** The core's snapshot does not carry the identities those
+        keys hash by, so a restored instance iterates an untouched table
+        in a different order, and the objects it makes after waking get
+        offset identities. Scalar keys are unaffected. Pinned by a test
+        and reported upstream (`doc/Snapshot-Identity-Upstream.md`).
+      - |
+        **Without `numeric`, `math` and `^` are the platform's.** `slim`
+        and `wasi` keep the platform libm, so their float results are not
+        guaranteed across targets: native `slim` on glibc answers
+        `math.atan(π)` one bit away from the `numeric` builds. And
+        iteration over table and function keys differs between builds
+        with and without `numeric`. The claim, tier by tier, is
+        `tests/determinism/README.md`.
+      - |
+        **`json` turns `-0.0` into the integer `0`.** The core writes an
+        integral float without a fraction, and `-0` decodes as an integer.
+        Same on every target; `msgpack` keeps sign and subtype.
+
   - version: 0.7.0
     tag: v0.7.0
     date: 2026-09-21

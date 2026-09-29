@@ -1,0 +1,7 @@
+{
+  "name": "03-reproducible",
+  "teaches": "What holds on every target only with the core's numeric feature: math and ^ through the vendored libm, and iteration over table and function keys.",
+  "cmd": "drt run reproducible.dlua",
+  "needs_network": false,
+  "needs_features": ["numeric"]
+}

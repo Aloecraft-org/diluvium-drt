@@ -67,6 +67,34 @@ fn records() -> Vec<Value> {
             "0",
         ),
         (
+            "a reader skips a TCP and a relay line, and keeps the UDP one (§2.1)",
+            Record {
+                ufrag: "SkipTcpRelay".into(),
+                pwd: "0123456789abcdefghijKL".into(),
+                fingerprint: digest(0x60),
+                candidates: vec![
+                    "candidate:1 1 udp 2130706430 192.0.2.1 50001 typ host".into(),
+                    "candidate:4 1 udp 41885439 198.51.100.1 3478 typ relay raddr 0.0.0.0 rport 0".into(),
+                    "candidate:5 1 tcp 1518280447 192.0.2.5 9 typ host tcptype active".into(),
+                ],
+            },
+            "0",
+        ),
+        (
+            "a reader skips an mDNS name and a line that does not read as a candidate",
+            Record {
+                ufrag: "SkipMdns".into(),
+                pwd: "0123456789abcdefghijKL".into(),
+                fingerprint: digest(0x70),
+                candidates: vec![
+                    "candidate:1 1 udp 2113937151 3f1a7c2e-0000-4000-8000-000000000000.local 61234 typ host".into(),
+                    "candidate:not a candidate at all".into(),
+                    "candidate:2 1 UDP 1694498815 203.0.113.7 50212 typ srflx raddr 0.0.0.0 rport 0".into(),
+                ],
+            },
+            "0",
+        ),
+        (
             "no candidates at all (the browser's checks still reach the host)",
             Record {
                 ufrag: "Empty0000".into(),
@@ -80,7 +108,11 @@ fn records() -> Vec<Value> {
     cases
         .into_iter()
         .map(|(name, r, mid)| {
+            // `rtc` is what was published; `decoded` and `answer_sdp` are
+            // what a reader makes of it, so a line §2.1 skips is in the
+            // first and in neither of the others.
             let rtc = r.encode().expect("a vector record encodes");
+            let r = Record::decode(&rtc).expect("a vector record decodes");
             json!({
                 "name": name,
                 "rtc": rtc,
@@ -226,11 +258,15 @@ fn the_vectors_file_is_what_this_implementation_says() {
         "{} disagrees with this implementation; rerun with {WRITE}=1 and review the diff",
         path.display()
     );
-    // And every record in the file decodes back to itself.
+    // And every record in the file decodes to the lines it says a reader
+    // keeps, and a record that has been read reads the same again: the
+    // §2.1 skip happens once, on the way in.
     for r in want["records"].as_array().unwrap() {
         let rtc = r["rtc"].as_str().unwrap();
-        let decoded = Record::decode(rtc).unwrap();
-        assert_eq!(decoded.encode().unwrap(), rtc);
         assert!(rtc.len() <= drt_rtc::record::MAX_BYTES);
+        let decoded = Record::decode(rtc).unwrap();
+        assert_eq!(serde_json::json!(decoded.candidates), r["decoded"]["c"]);
+        let again = decoded.encode().unwrap();
+        assert_eq!(Record::decode(&again).unwrap(), decoded);
     }
 }

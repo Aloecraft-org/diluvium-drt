@@ -83,15 +83,19 @@ are still there in a binary speaking ABI 2. A package asking for more than
 the binary speaks is refused by name, at admission, with both numbers in
 the message — never by a missing symbol at first call.
 
-`dv_abi` moves to `2` when the pin carrying the numeric round's `dv.h`
-additions lands (`doc/Plan-2026-09.md` §3.1). Nothing about the rule
-changes then; the number does.
+`dv_abi` moved to `2` in 0.8.0, with the pin to diluvium `v0.17.1`, which
+carries the numeric round's `dv.h` additions (`doc/Plan-2026-09.md` §3.1).
+Nothing about the rule changed; the number did. A snapshot taken under 1
+does not restore under 2, which is the bump doing its job.
 
 ### `features` is the same question one level down
 
 `dv_abi` says which ABI the embedded core speaks. `features` says what is
-*reachable* through it — `regex` today, `numeric` when it lands — per
-profile, because a profile is what decides which core was compiled. A
+*reachable* through it — `regex`, `json`, `msgpack` and `snapshot` in
+every build, and `numeric` in `full` and `web` from 0.8.0 — per profile,
+because a profile is what decides which core was compiled. Since 0.8.0
+the binary reads the list off the core (`dv_features()`) rather than
+stating it, so what `buildinfo` says is what was compiled. A
 package declaring `requires.features` is admitted or refused against that
 list by name, exactly as `requires.connectors` is against the connector
 list, and for the same reason: resemblance is not a check.
@@ -564,7 +568,9 @@ first second of life.
   tests and all platforms, artifacts left on the run, nothing published
   until `publish=true`.
 - **A `v*-dev.*` tag**, pushed or dispatched with `publish=true` → the dev
-  fast path (`doc/ALIGNMENT.md` §7): the suite, the Linux build only, no
+  fast path (`doc/ALIGNMENT.md` §7): the suite, the Linux build and the
+  web build (`drt_web.tar.gz`), the browser access client
+  (`drt_browser_access.js` and `.d.ts`), the SSH page (`ssh.html`), no
   changelog entry, always a prerelease, and the ten newest dev releases
   kept. `script/dev-tag.sh` prints the next free tag; the number is
   allocated from the tags that exist and never reused, so `dev.5` names

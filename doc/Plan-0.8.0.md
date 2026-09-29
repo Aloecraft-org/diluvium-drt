@@ -137,15 +137,20 @@ in those numbers.
 - **Host key trust**: trust on first use, kept in IndexedDB, and an
   optional pinned fingerprint in the link's fragment that must match.
 - **Auth**: an Ed25519 key generated in the page (the user adds its public
-  half to `authorized_keys` once), or password / keyboard-interactive.
+  half to `authorized_keys` once), or a password. Keyboard-interactive is
+  not built; nothing in 0.8.0 needs it.
 - **Retry a 1013.** The device keeps one parked leg and re-parks after a
   claim (`tunnel.rs:685`), so two claims at once give one of them close
   1013 until the pool depth in §5 exists. The client retries with backoff.
-- **Keepalive** from the SSH layer, so the relay's idle close never ends a
-  quiet session.
+- **Keepalive**, so the relay's idle close never ends a quiet session. An
+  SSH keepalive, but on the page's timer: russh's own timers are
+  `tokio::time`, which panics on `wasm32-unknown-unknown` (no clock std
+  can reach), so the module runs none and exposes `keepalive()`.
 
-**The link**: `https://<page>/ssh#relay=wss://…&label=…&k=…&hostkey=SHA256:…`.
-The fragment never reaches whoever serves the page.
+**The link**: `https://<page>/ssh.html#url=<claim URL>&user=<name>&hostkey=SHA256:…`,
+where the claim URL is the one `ProxyCommand` dials,
+`wss://<relay>/s/<label>?k=<caller key>`. The fragment never reaches
+whoever serves the page.
 
 **The CI gate**: one job, one stock OpenSSH `sshd`, one relay, one parked
 device; (a) stock `ssh` over `ProxyCommand`, (b) the page in Playwright
@@ -325,7 +330,34 @@ Each of these edits code `doc/Plan-2026-09.md` §0.2 froze:
     and server-reflexive gathering against a real STUN server (the code is
     there; no test reaches one). Both need the browser client and a
     Discofetch room, which is the next pairing.
+- 2026-09-24, **§1 done**: the pin names `tag = "v0.17.1"`; `numeric` is a
+  `drt` feature in `full` and `web`, through `drt-swarm`'s; `buildinfo`'s
+  `features` is `dv_features()`; `DILUVIUM_VERSION` is `0.17.1`; the
+  config's numeric bounds reach the core and the fast-tier flag is the
+  core's. The tree is `0.8.0` with an unreleased changelog entry, so dev
+  builds from here are `v0.8.0-dev.N`. Measured: `numeric` costs the
+  browser module +123.5 KB (3,284,888 → 3,408,417 bytes; +26.8 KB
+  gzipped), `release-small`, wasi-sdk 27. Verified: both test suites, the
+  native gate on `full`, the Chromium gate (12 ok, REPL parity included)
+  and the wasmtime gate on `wasi` (10 ok). Item 7 (`dv_array_adopt` in
+  `to_wire`) is not done and moves to 0.8.1 unless it is ready first.
+- 2026-09-24, **PR #37's CI overflowed a 2 MiB test thread** in the 4 MiB
+  download test. str0m's `Rtc::do_poll_output` recurses once per SCTP
+  packet it hands to DTLS (24.7 KB a frame in debug), and the host ran on
+  its caller's stack. Fixed in `f81dc97`: the host runs on its own thread
+  with a 16 MiB stack, and the test drives its client from 512 KiB so it
+  keeps proving the depth never lands on the caller. Worth an upstream
+  issue: the recursion should be a loop.
+- 2026-09-24, `sockets.rs`'s pin guard: acceptance 13 (a hibernated
+  service keeps its socket and queue handles across a whole-instance
+  snapshot, §3.5 of the 0.7.0 plan) re-proved on `d8497b0` and
+  `DILUVIUM_VERIFIED` moved to it.
 - Decisions made while building, per `doc/Plan-2026-09.md` §0.2:
+  - `numeric.max_elements = 0` is withheld from the core rather than
+    passed as dv's "no limit" 0; a known issue in the changelog, and an
+    upstream ask for a sentinel.
+  - `features` is reported in the core's own order, not sorted: `dv.h`
+    fixes that order so two builds' strings compare directly.
   - The M0 rehearsal deployment lives in `crates/drt-rtc/browser-check/`,
     not `examples/`: `examples/` is a declared human surface, and a config
     there must join the loader corpus. It becomes an example when the
@@ -334,3 +366,111 @@ Each of these edits code `doc/Plan-2026-09.md` §0.2 froze:
     mark, because str0m refuses writes past 128 KiB buffered.
   - UDP `CONNECT` is refused with `0x48`, the one departure from Wisp v1.
   - A browser must cap its wait for ICE gathering; the check uses 2 s.
+- 2026-09-24, **§2 built, not yet in CI**:
+  - `crates/drt-ssh-web`: russh 0.63.1 (`ring`, `rsa`) for
+    `wasm32-unknown-unknown` behind `Ssh.connect / authPassword / authKey /
+    shell / write / resize / keepalive / close` and `generateKey`. The
+    host key is decided between key exchange and authentication: a pin
+    that does not match fails the connect before anything authenticates.
+    Every dependency is wasm-only, so native russh's features are
+    unchanged.
+  - `crates/drt-ssh-web/page/`: `ssh.html`, one file with xterm.js 5.5 and
+    the module inlined (gzip, then base64). TOFU host keys and the page's
+    own key live in IndexedDB; a close 1013 is retried with backoff.
+    `script/drt-ssh-page.sh` builds it. Measured: 861,091 bytes on disk,
+    472,562 gzipped; the module inside is 956,993 bytes.
+  - `page/e2e.mjs` is the §2.2 gate: stock OpenSSH 9.6 sshd, `drt start`
+    as the relay, `drt tunnel --park`, then stock `ssh` over
+    `ProxyCommand`, the page signing in with a pinned key, a resize, a
+    second page and stock `ssh` at once beside the open session, a wrong
+    pin refused with nothing authenticated, TOFU shown and accepted, and
+    `exit 3` reaching the page. **All 7 passed**, with the harness and
+    sshd running as root.
+  - Found since that pass, and fixed, and re-run through the page on
+    2026-09-24 (see the entry below):
+    the connect's failure paths dropped the socket's Rust handlers while
+    the socket could still fire, so Chromium threw "closure invoked after
+    being dropped" on a refused pin. The socket and its handlers are now
+    one value that detaches them on drop, and the e2e gained an eighth
+    check, that no page raised an uncaught error.
+  - **The gate needs a root sshd.** An unprivileged OpenSSH cannot give a
+    pty to the `tty` group or write login records, and closes every pty
+    session; shown with stock `ssh -tt`, so it is sshd, not the page.
+    `e2e.mjs` runs sshd through `sudo -n` when it is not root, with
+    `UsePAM yes`, because a root sshd without PAM refuses a locked
+    account and a fresh CI user's is locked.
+- 2026-09-24, **browser access signaling moves to a socket** (the owner
+  took it into 0.8.0):
+  - `connectors/ws` is the `ws` connector, in `full`, under `rest`'s
+    origin allowlist. It allows `wss://` only, with plain `ws://` to
+    loopback alone, because the advertise token rides the upgrade.
+  - `stdlib:browser-access` (`crates/drt/src/stdlib/browser_access.dlua`),
+    carried in the binary, holds the socket.
+  - `webrtc.stun_refresh_s` defaults to 25 s, the old constant, at the
+    owner's word. `open`'s `peer` is capped at 64 bytes.
+  - Amended to discofetch 36ad148: close codes 4000–4099 end the host
+    (4001 replaced, 4003 credential refused), and there is no `answer`.
+    The API adopts the §2 record and its limits, so there is no `v` bump.
+  - The contract's seven host tests, plus a redial on any other close,
+    pass in `crates/drt/tests/signal.rs`,
+    against a `wss://` stub with the native client as the browser.
+  - Not proven: the real API (not live yet), and a browser rather than
+    the native client on this path.
+  - Decisions:
+    - `browser_access.signal` is `args.signal`, because args are flat.
+    - `record` goes out as an object spliced from the host's own text, and
+      comes in as an object or text. dlua's JSON turns `[]` into `{}`, so
+      an object is rebuilt field by field.
+    - A close in 4000–4099 ends `drt start`.
+    - Reconnect policy is the program's, not the connector's: the
+      connector reports how a connection ended and never redials.
+- 2026-09-24, **the browser half ships as a library** (the owner asked
+  for it with every dev build). Discofetch had read `drt_web.tar.gz` as
+  the browser client's transport; it is the dlua runtime for a page and
+  has no network connectors, and the browser half of
+  `doc/BrowserAccess.md` needs none: it is the browser's own
+  `RTCPeerConnection`.
+  - `crates/drt-rtc/client/drt_browser_access.js` and `.d.ts`, one ES
+    module with no dependencies, lifted from what `check.mjs` proved.
+    §9 of the wire doc is its contract.
+  - `check.mjs` now drives the shipped file. Per session: an echo, 1 MiB
+    through Wisp credit intact, and an out-of-scope connect refused with
+    `0x48`. It passes against both the `drt-rtc` example host (three
+    sessions) and `drt start` (two).
+  - The gate is `script/browser-access-client.sh`, run by CI (`--drt`)
+    and by the release's `build-client`, dev builds included, which
+    attaches the two files.
+  - Not proven: the library against the real Discofetch API, and the
+    whole path with `stdlib:browser-access` doing the signaling, since
+    `signal.rs` plays the browser with the native client.
+- 2026-09-24, **§2 finished: gated in CI and shipped.**
+  - The page is rebuilt from the fixed module, and `e2e.mjs` passes all
+    eight checks, twice, including "no page raised an uncaught error",
+    which the page built before the fix fails with "closure invoked
+    recursively or after being dropped".
+  - `script/drt-ssh-page-gate.sh` builds the page and `drt`, then runs
+    the gate. CI's `ssh-page` job runs it on every push; the release's
+    `build-ssh-page` runs it, dev builds included, and only then attaches
+    `ssh.html`. Publish requires it.
+  - Proven here as root only. On a runner the gate runs as `runner` and
+    starts sshd through `sudo -n`, with `UsePAM yes` for the locked
+    account: that path is exercised first by CI.
+- 2026-09-25, **the determinism corpus** (`tests/determinism/`), run by
+  the native, wasmtime and Chromium gates through a new `EXAMPLES_DIR`,
+  and natively on `slim` too. What it measured:
+  - diluvium's numeric corpus is bit-identical through `drt` on native
+    `full` and in Chromium (`web`), 103 of 103 lines.
+  - `02-exact` agrees on all four builds: native `full` and `slim`,
+    `wasi` under wasmtime, `web` in Chromium.
+  - Two things hold only with `numeric`, by the core's design: `math`
+    and `^` (native `slim` differs from the rest in one bit of
+    `math.atan(π)`), and iteration over table and function keys (a
+    rotation between builds with and without the feature).
+  - Hibernation changes iteration over table and function keys: the
+    snapshot does not carry key identities. Pinned by a twin test in
+    `crates/drt-swarm/tests/swarm.rs`; `doc/Snapshot-Identity-Upstream.md`
+    is the report.
+  - `json` turns `-0.0` into the integer `0`; pinned in `02-exact`.
+  - Not covered: Windows, macOS and arm64, which CI builds but only the
+    release's Windows smoke runs; and release native builds are musl
+    where this machine's `slim` is glibc.

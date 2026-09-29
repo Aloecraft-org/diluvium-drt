@@ -5,7 +5,7 @@
 //! ## surface block
 //!
 //! - Entry points: [`Record::decode`], [`Record::encode`], [`answer_sdp`],
-//!   [`fingerprint_hex`].
+//!   [`fingerprint_hex`], [`usable_candidate`].
 //! - Configurable: [`MAX_BYTES`], [`MAX_CANDIDATES`] and the ICE length
 //!   bounds below. They are the wire's, so changing one is a `v` bump, not
 //!   a tuning knob.
@@ -119,7 +119,11 @@ impl Record {
     }
 
     /// Read a record from a presence `rtc` string. Unknown keys are ignored;
-    /// anything else that breaks §2 refuses the whole record.
+    /// anything else that breaks §2 refuses the whole record. A candidate
+    /// line that is well formed but one v1 cannot use is dropped rather
+    /// than refused (§2.1, [`usable_candidate`]), so nothing downstream --
+    /// the answer a browser builds, the session a host builds -- ever sees
+    /// one. The budget and the line count are the record's as received.
     pub fn decode(s: &str) -> Result<Record, RecordError> {
         if s.len() > MAX_BYTES {
             return Err(RecordError::TooLong(s.len()));
@@ -151,13 +155,14 @@ impl Record {
             );
         }
         let fingerprint = decode_fingerprint(&f)?;
-        let record = Record {
+        let mut record = Record {
             ufrag,
             pwd,
             fingerprint,
             candidates,
         };
         record.check()?;
+        record.candidates.retain(|c| usable_candidate(c));
         Ok(record)
     }
 
@@ -178,6 +183,33 @@ impl Record {
         }
         Ok(())
     }
+}
+
+/// Whether v1 can use a candidate line (§2.1): it reads as RFC 8839 §5.1
+/// through `typ <type>`, its transport is UDP, its type is `host`, `srflx`
+/// or `prflx` -- never `relay`, since v1 has no TURN -- and its address is
+/// not an mDNS `.local` name, which the reader could not resolve. Trailing
+/// extensions are allowed here: a writer strips them to stay in budget,
+/// and nothing reads them.
+pub fn usable_candidate(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix("candidate:") else {
+        return false;
+    };
+    let t: Vec<&str> = rest.split_ascii_whitespace().collect();
+    // foundation component transport priority address port "typ" type
+    if t.len() < 8 || t[6] != "typ" {
+        return false;
+    }
+    let numeric = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    numeric(t[1])
+        && numeric(t[3])
+        && numeric(t[5])
+        && t[5].parse::<u16>().is_ok()
+        && t[2].eq_ignore_ascii_case("udp")
+        && ["host", "srflx", "prflx"]
+            .iter()
+            .any(|k| t[7].eq_ignore_ascii_case(k))
+        && !t[4].to_ascii_lowercase().ends_with(".local")
 }
 
 /// RFC 8839 `ice-char`: `ALPHA / DIGIT / "+" / "/"`.
@@ -301,6 +333,33 @@ mod tests {
             Record::decode(&long),
             Err(RecordError::TooLong(_))
         ));
+    }
+
+    #[test]
+    fn a_candidate_is_usable_only_as_section_2_1_says() {
+        let yes = [
+            "candidate:1 1 udp 2130706431 192.168.1.20 50212 typ host",
+            "candidate:2 1 UDP 1694498815 203.0.113.7 50212 typ srflx raddr 0.0.0.0 rport 0",
+            "candidate:3 1 udp 1845501695 198.51.100.9 4000 typ prflx",
+            "candidate:4 1 udp 2130706431 fd00::1 50212 typ host generation 0",
+        ];
+        let no = [
+            "candidate:1 1 tcp 1518280447 192.0.2.5 9 typ host tcptype active",
+            "candidate:1 1 udp 41885439 198.51.100.1 3478 typ relay raddr 0.0.0.0 rport 0",
+            "candidate:1 1 udp 2113937151 x.local 61234 typ host",
+            "candidate:1 1 udp 2130706431 192.0.2.1 +5 typ host",
+            "candidate:1 1 udp 2130706431 192.0.2.1 70000 typ host",
+            "candidate:1 1 udp 2130706431 192.0.2.1 5000 host",
+            "candidate:1 x udp 2130706431 192.0.2.1 5000 typ host",
+            "candidate:not a candidate",
+            "a=candidate:1 1 udp 2130706431 192.0.2.1 5000 typ host",
+        ];
+        for l in yes {
+            assert!(usable_candidate(l), "{l}");
+        }
+        for l in no {
+            assert!(!usable_candidate(l), "{l}");
+        }
     }
 
     #[test]

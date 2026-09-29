@@ -54,6 +54,13 @@ pub const STUN: &str = "stun";
 pub const TURN: &str = "turn";
 pub const WG: &str = "wg";
 
+/// Browser access's host program: the signaling half of the `webrtc`
+/// block, over the Discofetch API's socket (`doc/BrowserAccess.md` §7.1).
+/// Unlike the readers it arbitrates -- it opens and closes sessions -- and
+/// it is here because a deployment Discofetch generates should need
+/// nothing on disk but its config.
+pub const BROWSER_ACCESS: &str = "browser-access";
+
 /// One reader, four blocks.
 ///
 /// A deployment is config plus a program, and these four blocks used to be
@@ -199,6 +206,12 @@ pub fn lookup(name: &str) -> Option<Kind> {
         TURN => Some(Kind::Source(turn_source())),
         #[cfg(feature = "wireguard")]
         WG => Some(Kind::Source(wg_source())),
+        #[cfg(all(
+            feature = "webrtc",
+            feature = "connector-ws",
+            feature = "connector-time"
+        ))]
+        BROWSER_ACCESS => Some(Kind::Source(include_str!("stdlib/browser_access.dlua"))),
         _ => None,
     }
 }
@@ -237,7 +250,7 @@ reader_source!(wg_source, "wg_in");
 /// Filtered through [`lookup`], so the list cannot advertise what does not
 /// resolve.
 pub fn names() -> Vec<&'static str> {
-    [PREFLIGHT, NETCHECK, RELAY, STUN, TURN, WG]
+    [PREFLIGHT, NETCHECK, RELAY, STUN, TURN, WG, BROWSER_ACCESS]
         .into_iter()
         .filter(|n| lookup(n).is_some())
         .collect()
@@ -518,6 +531,14 @@ mod tests {
         assert_eq!(cfg!(feature = "stun"), names().contains(&"stun"));
         assert_eq!(cfg!(feature = "turn"), names().contains(&"turn"));
         assert_eq!(cfg!(feature = "wireguard"), names().contains(&"wg"));
+        assert_eq!(
+            cfg!(all(
+                feature = "webrtc",
+                feature = "connector-ws",
+                feature = "connector-time"
+            )),
+            names().contains(&"browser-access")
+        );
 
         // Not built, and not pretended.
         assert!(lookup("tunnel").is_none());
