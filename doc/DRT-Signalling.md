@@ -189,21 +189,15 @@ way the server is built.
   response, and the reply may come later, so the held `POST` of §3 is a
   reply the program sends when the answer arrives (within the listener's
   `conn_deadline_ms`).
-- **The call notification stream does not fit the `http` listener.** The
-  listener sends exactly one complete response per request and then
-  closes the connection. A call notification stream is a response whose
-  headers go out first and whose body is then written a few lines at a
-  time, as calls arrive, for as long as the answerer holds it open. The
-  listener has no way to send part of a response and more later.
-- **The `socket` connector can serve it.** It gives the program the TCP
-  connection itself: the program reads the request bytes and writes the
-  response bytes, whenever it likes. To serve §5, the program accepts the
-  connection, reads the `GET` request, writes the response headers, and
-  then writes one event each time a call arrives. Discofetch's API serves
-  its WebSockets this way (`api/df/park.dlua`); an event stream needs less,
-  since it has no upgrade handshake and no framing.
-- **One port or two.** A server that uses the listener for §2 and the
-  socket connector for §5 has two ports, which a reverse proxy can put
-  under one origin. A server that does all of it through the socket
-  connector, reading and writing HTTP itself as Discofetch's does, has
-  one.
+- **The call notification stream** fits the same listener with
+  `streaming` set (`crates/drt/src/listen.rs`). The program answers
+  `GET /v1/<name>/events` with a reply carrying `stream = true` and
+  `content_type = "text/event-stream"`, keeps that request's `conn`, and
+  sends one `chunk` per call notification and one per keepalive. When the
+  answerer disconnects, the program gets `{conn, event = "closed"}` on its
+  request queue and forgets the `conn`. `examples/31-streaming-responses`
+  is an event stream written this way.
+- **One port.** Every request of §2, the stream included, arrives on one
+  listener. The stream's keepalive (§5) is shorter than the listener's
+  `stream_idle_ms`, so the host never closes a stream the program is
+  still holding.

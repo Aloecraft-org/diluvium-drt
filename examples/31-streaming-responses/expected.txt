@@ -1,0 +1,12 @@
+drt start: http listening on 127.0.0.1:18496
+data: 1
+
+data: 2
+
+data: 3
+
+data: 4
+
+data: 5
+
+closed: client

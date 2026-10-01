@@ -44,6 +44,7 @@ reference. Everything here is v0.6.0.
 | [`28-fft`](28-fft) | `rfft` on a real signal, printed as `real:imag` bit patterns. The example where a compiler flag that failed to reach one target shows up as a differing hex digit. | `drt run app.dlua` |
 | [`29-browser-access`](29-browser-access) | Signaling is a program: one HTTP endpoint on the host swaps records with a browser, which then reaches the host's scope directly over WebRTC. | `./demo.sh` |
 | [`30-signaling-room`](30-signaling-room) | Signaling for an answerer that cannot host an endpoint, such as a page: a caller's request is held until the answerer, polling, answers it. | `./demo.sh` |
+| [`31-streaming-responses`](31-streaming-responses) | Server-Sent Events from a program: a reply with `stream = true` sends the head at once, the body follows in pieces, and a client that leaves is reported back. | `./demo.sh` |
 
 `drt run` executes one program to completion and exits — no swarm, no
 listeners, no second instance — and it is what `01`–`07`, `10`, `12`, `16`,

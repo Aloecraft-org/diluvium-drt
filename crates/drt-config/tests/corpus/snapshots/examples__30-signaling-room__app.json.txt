@@ -32,6 +32,8 @@ RootConfig {
             resp_headers: [
                 "access-control-allow-origin",
             ],
+            streaming: false,
+            stream_idle_ms: 60000,
         },
     ],
     residency: None,

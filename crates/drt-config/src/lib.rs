@@ -425,6 +425,18 @@ pub struct Listener {
         alias = "response_headers"
     )]
     pub resp_headers: Vec<String>,
+    /// Whether a reply may open a streamed response: `stream = true` sends
+    /// the head, later `chunk` replies send the body as they arrive, and
+    /// `done` ends it. Off by default, because a streamed response holds
+    /// its connection, and one of `max_conns`, for as long as it runs. DRT's
+    /// own; the C host has no streaming.
+    #[serde(default)]
+    pub streaming: bool,
+    /// How long a streamed response may go without a chunk before the
+    /// host closes it and tells the program. `0` is no limit, which leaves
+    /// a stream the program forgets open until the client leaves.
+    #[serde(default = "default_stream_idle_ms")]
+    pub stream_idle_ms: u64,
 }
 
 fn default_request_queue() -> String {
@@ -441,6 +453,12 @@ fn default_conn_deadline_ms() -> u64 {
 }
 fn default_max_conns() -> usize {
     64
+}
+/// A minute: past the keepalive interval of any event stream worth
+/// holding open (an SSE comment every 15 to 30 seconds is the custom), so
+/// only a stream the program has stopped writing to reaches it.
+fn default_stream_idle_ms() -> u64 {
+    60_000
 }
 /// Two seconds: long enough to cover a program's declare-before-serve
 /// boot (measured in tens of milliseconds on a real deployment), short

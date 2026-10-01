@@ -1,0 +1,24 @@
+-- Server-Sent Events. GET /events opens a stream and gets one event every
+-- 200 ms, five in all; any number of clients may hold one at a time.
+local requests = queue.declare('http_in',  {capacity = 16})
+local replies  = queue.declare('http_out', {capacity = 64, exported = true})
+local streams  = {}   -- conn -> events sent so far
+
+while true do
+  local _, m = queue.wait({requests}, 200)
+  if m == nil then                         -- 200 ms passed: one event each
+    for conn, sent in pairs(streams) do
+      sent = sent + 1
+      queue.push(replies, {conn = conn, chunk = 'data: ' .. sent .. '\n\n', done = sent == 5})
+      streams[conn] = sent < 5 and sent or nil
+    end
+  elseif m.event == 'closed' then          -- the client left before the fifth
+    print('closed: ' .. m.reason)
+    streams[m.conn] = nil
+  elseif m.path == '/events' then
+    queue.push(replies, {conn = m.conn, stream = true, content_type = 'text/event-stream'})
+    streams[m.conn] = 0
+  else
+    queue.push(replies, {conn = m.conn, status = 404, content_type = 'text/plain', body = 'GET /events\n'})
+  end
+end

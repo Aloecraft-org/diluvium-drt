@@ -42,6 +42,26 @@ is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
 
 ### Added
 
+- **Streamed responses from the `http` listener.** With `streaming`
+  set on a listener, a reply carrying `stream = true` sends the
+  response head at once, each later reply with a `chunk` for the same
+  `conn` is written as it arrives, and `done = true` ends the
+  response. An event stream, or a download the program produces as it
+  goes, reaches the client while the program is still writing it.
+  - The body is chunked, and only `done` writes the terminating
+    chunk, so a client can tell a stream that was cut from one that
+    finished.
+  - A stream that ends without `done` is reported on the request
+    queue as `{conn, event = "closed", reason}`: `client` when the
+    client left, `idle` after `stream_idle_ms` (default 60 s) with no
+    chunk, and `backlog` when the program wrote over a megabyte ahead
+    of a client that was not reading.
+  - Off by default. A listener without `streaming` answers a stream
+    500 and names the setting, and a `chunk` sent before a head is
+    answered 500. Both acceptors serve it, so it works on `wasi` too.
+  - `examples/31-streaming-responses` serves Server-Sent Events this
+    way, and `doc/DRT-Signalling.md` §9 now puts the call notification
+    stream on the same listener as the rest of the profile.
 - **`examples/30-signaling-room`**: signaling for an answerer that
   cannot host an endpoint, such as a page. A caller's `POST /call` is
   held until the answerer, polling `GET /calls`, answers with `POST
