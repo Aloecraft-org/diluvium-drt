@@ -34,7 +34,12 @@ pub enum How {
     /// `http(s)://host[:port]/v1/<name>` when the address names an
     /// answerer, or `http(s)://host[:port]` for a `--listen` peer's
     /// `--signal` port, which answers `/`.
-    Signal { base: String, name: Option<String> },
+    Signal {
+        base: String,
+        name: Option<String>,
+        /// A query to put on every request: `k=<token>`.
+        query: Option<String>,
+    },
     /// The answerer's record itself: direct mode, nothing is sent.
     Record(Record),
     /// A WebSocket relay leg, as a carrier only (`doc/P2P.md` §4.3).
@@ -100,12 +105,20 @@ impl Peer {
     /// answerer, `<base>/` for a peer's own signalling port.
     pub fn calls_url(&self) -> Option<String> {
         match &self.how {
-            How::Signal {
-                base,
-                name: Some(_),
-            } => Some(format!("{base}/calls")),
-            How::Signal { base, name: None } => Some(format!("{base}/")),
+            How::Signal { name: Some(_), .. } => Some(self.url("/calls")),
+            How::Signal { name: None, .. } => Some(self.url("/")),
             _ => None,
+        }
+    }
+
+    /// `<base><path>`, with the address's query on it when it had one.
+    pub fn url(&self, path: &str) -> String {
+        match &self.how {
+            How::Signal { base, query, .. } => match query {
+                Some(q) => format!("{base}{path}?{q}"),
+                None => format!("{base}{path}"),
+            },
+            _ => String::new(),
         }
     }
 
@@ -132,7 +145,12 @@ fn signal(rest: &str, scheme: Option<&str>) -> Result<How, String> {
         Some(at) => (&rest[..at], &rest[at..]),
         None => (rest, ""),
     };
-    let authority = authority.split_once('?').map_or(authority, |(a, _)| a);
+    let (authority, path) = match authority.split_once('?') {
+        // `drt://host?k=…`: a query with no path belongs to the path.
+        Some((a, q)) => (a, format!("?{q}")),
+        None => (authority, path.to_string()),
+    };
+    let path = path.as_str();
     let host = authority
         .rsplit_once(':')
         .filter(|(h, p)| {
@@ -147,6 +165,12 @@ fn signal(rest: &str, scheme: Option<&str>) -> Result<How, String> {
     let loopback = host.eq_ignore_ascii_case("localhost")
         || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback());
     let scheme = scheme.unwrap_or(if loopback { "http" } else { "https" });
+    // A query (`?k=<token>`) rides on every request made of the base, so a
+    // caller token in the URL reaches the server as the profile says.
+    let (path, query) = match path.split_once('?') {
+        Some((p, q)) => (p, Some(q.to_string())),
+        None => (path, None),
+    };
     let path = path.trim_end_matches('/');
     let path = path.strip_suffix("/calls").unwrap_or(path);
     let name = match path.strip_prefix("/v1/") {
@@ -158,7 +182,7 @@ fn signal(rest: &str, scheme: Option<&str>) -> Result<How, String> {
     } else {
         format!("{scheme}://{authority}{path}")
     };
-    Ok(How::Signal { base, name })
+    Ok(How::Signal { base, name, query })
 }
 
 /// One `-p`: a local port to bind, and what each connection to it asks
@@ -446,7 +470,7 @@ mod tests {
     #[test]
     fn a_peer_address_is_read_as_section_3_says() {
         let signal = |s: &str| match Peer::parse(s).unwrap().how {
-            How::Signal { base, name } => (base, name),
+            How::Signal { base, name, .. } => (base, name),
             other => panic!("{other:?}"),
         };
         assert_eq!(
@@ -498,6 +522,23 @@ mod tests {
             Peer::parse("wss://relay.example/s/xps?k=1").unwrap().how,
             How::Ws(_)
         ));
+        // A query rides on every request: the profile's `?k=<token>`.
+        let keyed = Peer::parse("http://127.0.0.1:18495/v1/page/calls?k=tok").unwrap();
+        assert_eq!(
+            keyed.calls_url().as_deref(),
+            Some("http://127.0.0.1:18495/v1/page/calls?k=tok")
+        );
+        assert_eq!(
+            keyed.url("/events"),
+            "http://127.0.0.1:18495/v1/page/events?k=tok"
+        );
+        assert_eq!(
+            Peer::parse("drt://signal.example?k=tok")
+                .unwrap()
+                .calls_url()
+                .as_deref(),
+            Some("https://signal.example/?k=tok")
+        );
         let record = r#"{"v":1,"u":"abcd","p":"0123456789abcdefghijKL","f":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","c":[]}"#;
         assert!(matches!(Peer::parse(record).unwrap().how, How::Record(_)));
         let dir = tempfile::tempdir().unwrap();

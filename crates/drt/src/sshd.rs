@@ -237,6 +237,7 @@ pub fn session(shell: Shell, grants: Vec<Grant>, config: Arc<RootConfig>) {
     thread(ShellInput { reader, window }, out, grants, config);
 }
 
+#[cfg(feature = "p2p")]
 /// A REPL of its own on one byte stream whose other end is a terminal:
 /// `drt p2p`'s `repl` service (`doc/P2P.md` §5.2), where the stream carries
 /// the PTY's bytes and `window` is what the peer reported over `control`.
@@ -345,11 +346,13 @@ impl Input for ShellInput {
     }
 }
 
+#[cfg(feature = "p2p")]
 struct RawInput {
     reader: tokio::io::ReadHalf<std::pin::Pin<Box<dyn drt_rtc::host::Duplex>>>,
     window: drt_rtc::Window,
 }
 
+#[cfg(feature = "p2p")]
 impl Input for RawInput {
     async fn read(&mut self) -> Option<Vec<u8>> {
         use tokio::io::AsyncReadExt;

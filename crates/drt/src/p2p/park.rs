@@ -75,8 +75,8 @@ async fn park_signal(
         let ranges: Vec<String> = role.accept.iter().map(|c| c.to_string()).collect();
         headers.push((ACCEPT_HEADER.to_string(), ranges.join(", ")));
     }
-    let calls_url = format!("{base}/calls");
-    let events_url = format!("{base}/events");
+    let calls_url = role.signalling.url("/calls");
+    let events_url = role.signalling.url("/events");
     eprintln!(
         "drt p2p: parked at {}, serving {}",
         crate::tunnel::shown(base),
@@ -121,6 +121,7 @@ async fn park_signal(
     let mut said = false;
     loop {
         let url = match &cursor {
+            Some(c) if calls_url.contains('?') => format!("{calls_url}&since={c}"),
             Some(c) => format!("{calls_url}?since={c}"),
             None => calls_url.clone(),
         };
@@ -145,7 +146,7 @@ async fn park_signal(
                         peer: id.to_string(),
                         rtc: record.to_string(),
                     });
-                    let answer = format!("{calls_url}/{id}/answer");
+                    let answer = role.signalling.url(&format!("/calls/{id}/answer"));
                     let mine = serving.record.borrow().clone();
                     match http::request("POST", &answer, &headers, Some(&mine), roots).await {
                         Ok(r) if r.status == 204 || r.status == 200 => {
