@@ -178,12 +178,19 @@ ssh -o ProxyCommand="drt tunnel wss://relay.example/s/page?k=$CALLER_KEY" user@p
 ### 8. Browser to browser
 
 Both ends have WebRTC built in, so no DRT process is in the path. One
-page runs the SSH server and answers through a signalling server, as in
-row 6; the other runs `ssh.html`, which calls through the same server:
+page runs the SSH server and answers through a signalling server with
+`listen` from `drt_browser_access.js`, as in row 6; the other runs
+`ssh.html`, which calls through the same server and reaches the
+answerer's service `ssh`:
 
 ```
-ssh.html#call=https://signal.example/v1/page/calls?k=…&user=me&hostkey=SHA256:…
+ssh.html#call=<https://signal.example/v1/page/calls?k=…, encoded>&user=me&hostkey=SHA256:…
 ```
+
+The same link to a DRT host's signalling, such as
+`examples/29-browser-access`'s `/v1/box/calls`, is row 5 without direct
+mode: the host serves no named service, so `to` or the host's scope picks
+the target, as for a record.
 
 Across a network each page needs a STUN server for its public address,
 since a browser hides its local ones. A relay fallback is row 7 with

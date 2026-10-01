@@ -146,6 +146,12 @@ const server = http.createServer((req, res) => {
     res.end(fs.readFileSync(BROWSER_ACCESS));
     return;
   }
+  // The SSH page as it ships, CSP and all: what row 8 opens from a link.
+  if (url === '/ssh.html' && fs.existsSync(SSH_PAGE)) {
+    res.writeHead(200, { 'content-type': TYPES['.html'] });
+    res.end(fs.readFileSync(SSH_PAGE));
+    return;
+  }
   if (url === '/ssh-rtc.html' && fs.existsSync(SSH_PAGE)) {
     res.writeHead(200, { 'content-type': TYPES['.html'] });
     res.end(fs.readFileSync(SSH_PAGE, 'utf8').replace(/<meta http-equiv="Content-Security-Policy"[^>]*>/, ''));
@@ -791,6 +797,85 @@ if (PAGE_CHECKS) {
     }
   }
   fs.rmSync(keys, { recursive: true, force: true });
+}
+
+// Row 8, from a link: the SSH page as it ships opens
+// `ssh.html#call=<server>/v1/page/calls?k=…`, calls through
+// examples/30-signaling-room, and signs in to this page's SSH server,
+// which answers through the client library's `listen`. Two pages, one
+// signalling server, and no DRT process in the session's path.
+{
+  const name = 'ssh-html-call-to-a-page';
+  let room;
+  let caller;
+  if (!fs.existsSync(SSH_PAGE)) noSshPage.push(name);
+  else if (!drtBin) noRelay.push(name);
+  else {
+    try {
+      const port = await freePort();
+      const example = path.resolve(HERE, '../../../examples/30-signaling-room');
+      const roomConfig = JSON.parse(fs.readFileSync(path.join(example, 'app.json'), 'utf8'));
+      roomConfig.program.path = path.join(example, 'app.dlua');
+      roomConfig.listeners[0].address = `127.0.0.1:${port}`;
+      const { name: roomName, answerer_token: answererToken, caller_token: callerToken } = roomConfig.args;
+      const config = path.join(os.tmpdir(), `drt-room-${port}.json`);
+      fs.writeFileSync(config, JSON.stringify(roomConfig));
+      room = spawn(drtBin, ['--config', config, 'start'], { stdio: ['ignore', 'pipe', 'pipe'] });
+      let roomSaid = '';
+      room.stdout.on('data', (b) => (roomSaid += b));
+      room.stderr.on('data', (b) => (roomSaid += b));
+      if (!(await waitFor(() => accepting(port), 10000))) throw new Error(`the server never listened: ${roomSaid.trim()}`);
+
+      // The SSH page makes this browser's key, as a person would.
+      const context = await browser.newContext();
+      caller = await context.newPage();
+      caller.on('pageerror', (e) => consoleLines.push(`ssh.html pageerror: ${e.message}`));
+      await caller.goto(`${origin}/ssh.html`);
+      await caller.click('#makekey');
+      await caller.waitForFunction(() => !document.getElementById('haskey').hidden);
+      const pub = await caller.inputValue('#pub');
+
+      const base = `http://127.0.0.1:${port}/v1/${roomName}`;
+      const hostKey = await page.evaluate(() => window.drtBrowserTest.sshHostKey());
+      const listening = await page.evaluate(
+        ([hk, ak, url, k]) => window.drtBrowserTest.sshListen(hk, ak, url, k),
+        [hostKey, pub, base, answererToken],
+      );
+      const link = new URLSearchParams({
+        call: `${base}/calls?k=${callerToken}`, user: 'whoever', hostkey: listening.fingerprint,
+      });
+      const linked = await context.newPage();
+      linked.on('pageerror', (e) => consoleLines.push(`ssh.html pageerror: ${e.message}`));
+      await caller.close();
+      caller = linked;
+      await caller.goto(`${origin}/ssh.html#${link}`);
+      await caller.waitForFunction(() => !!window.drtSsh?.term, null, { timeout: TIMEOUT * 1000 }).catch(async () => {
+        throw new Error(`no shell; the page says: ${await caller.textContent('#status')}`);
+      });
+      await caller.keyboard.type('drt run hello.dlua\n');
+      const screen = () => caller.evaluate(() => {
+        const b = window.drtSsh.term.buffer.active;
+        const lines = [];
+        for (let i = 0; i < b.length; i++) lines.push(b.getLine(i).translateToString(true));
+        return lines.join('\n');
+      });
+      let shown = '';
+      const said = await waitFor(async () => (shown = await screen()).includes('hello from a page, over webrtc'), TIMEOUT * 1000);
+      const status = await caller.textContent('#status');
+      if (said && status.includes(`call:127.0.0.1:${port}/v1/${roomName}/calls/ssh`)) {
+        console.log(`ok       ${name.padEnd(24)} ssh.html#call=<server>/v1/page/calls -> a page, ${listening.fingerprint.slice(0, 18)}...`);
+        nOk += 1;
+      } else {
+        fail(name, `status ${JSON.stringify(status)}; screen ${JSON.stringify(plain(shown).slice(-300))}`);
+      }
+    } catch (e) {
+      fail(name, `threw: ${String(e.message).split('\n')[0].slice(0, 300)}`);
+    } finally {
+      await page.evaluate(() => window.drtBrowserTest.sshStopListening()).catch(() => {});
+      await caller?.context().close().catch(() => {});
+      if (room) room.kill('SIGKILL');
+    }
+  }
 }
 
 // The REPL, typed at drt-term.js, against what the native binary said to

@@ -44,7 +44,7 @@ function asClassic(src) {
   }
   const body = src.replace(/^export (?=(async function|function|const|class) )/gm, '');
   return `const drtBrowserAccess = (() => {\n'use strict';\n${body}\n` +
-    'return { direct, parseRecord, StreamClosed, CLOSE_REASON };\n})();';
+    'return { direct, offer, parseRecord, StreamClosed, CLOSE_REASON };\n})();';
 }
 
 // Inlined text must not end the element it is inlined into.

@@ -1,7 +1,8 @@
 <!doctype html>
 <!--
-  SSH in a browser (doc/Plan-0.8.0.md §2), over the DRT relay or directly
-  to a DRT host over WebRTC (doc/ssh-transport-matrix.md, rows 4 and 5).
+  SSH in a browser (doc/Plan-0.8.0.md §2), over the DRT relay, or over
+  WebRTC to a DRT host or to a page that serves SSH
+  (doc/ssh-transport-matrix.md, rows 4, 5 and 8).
   One file: build.mjs inlines xterm.js, the browser access client, the
   drt-ssh-web module and its glue at the placeholders below, and nothing is
   fetched at run time.
@@ -11,24 +12,33 @@
 
     ssh.html#url=<the relay claim URL, encoded>&user=<name>[&hostkey=SHA256:…]
     ssh.html#rtc=<a host's record, encoded>&user=<name>[&to=host:port][&hostkey=SHA256:…]
+    ssh.html#call=<a signalling URL, encoded>&user=<name>[&to=…][&hostkey=SHA256:…]
 
   The claim URL is wss://<relay>/s/<label>?k=<caller key>, the same one
   `ssh -o ProxyCommand="drt tunnel …"` dials. The record is the one a
   `webrtc` block with `direct` on reports (doc/BrowserAccess.md §3.4), and
   `to` picks which of its scope to reach: by default its first `ssh://`
-  entry, else its `default`. A `hostkey` in the link is a pin: any other key
+  entry, else its `default`. The signalling URL is a caller's of
+  doc/DRT-Signalling.md, https://<server>/v1/<name>/calls?k=<caller token>:
+  this page's record is POSTed there and the answerer's comes back. An
+  answerer that serves a service named `ssh` (a page, doc/BrowserAccess.md
+  §10) is reached on it unless `to` names another; otherwise `to` and the
+  scope are read as for a record. A `hostkey` in the link is a pin: any other key
   refuses the connection. Without one, the first key seen is shown and
   trusted on confirmation, and remembered per relay and label, or per host
   record and target; a key that later changes is refused.
 
   surface block
-  - Entry point: loading the page. With `url` or `rtc`, and `user`, in the
-    fragment it connects at once; otherwise the form does.
+  - Entry point: loading the page. With `url`, `rtc` or `call`, and `user`,
+    in the fragment it connects at once; otherwise the form does.
   - Configurable: RETRIES and RETRY_MS (a claim that finds nothing parked,
     close 1013, is retried with backoff); KEEPALIVE_MS, how often an idle
     session says it is alive (the module runs no timers of its own);
-    STORE, the IndexedDB name.
-  - Fan-out: open() picks the transport, the relay or a direct session;
+    STORE, the IndexedDB name; SIGNAL_MS, how long a call may be held by
+    its signalling server (the profile's 30 s hold and a margin).
+  - Fan-out: open() picks the transport: the relay, a direct session, or
+    a session through a signalling server; REFUSALS, what each status the
+    signalling profile names means to a caller;
     start() is the rest of the flow -- check the host key, authenticate
     (this browser's key, then a password), open the shell.
 -->
@@ -37,7 +47,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; connect-src ws: wss:">
+      content="default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; connect-src ws: wss: http: https:">
 <title>SSH</title>
 <style>@@XTERM_CSS@@</style>
 <style>
@@ -67,6 +77,8 @@
   <input id="url" name="url" placeholder="wss://relay.example/s/label?k=…" autocomplete="off">
   <label for="rtc">Host record (direct mode, instead of a relay)</label>
   <textarea id="rtc" name="rtc" placeholder='{"v":1,"u":"…","p":"…","f":"…","c":[…]}' autocomplete="off"></textarea>
+  <label for="call">Signalling URL (instead of a relay or a record)</label>
+  <input id="call" name="call" placeholder="https://signal.example/v1/name/calls?k=…" autocomplete="off">
   <label for="user">User</label>
   <input id="user" name="user" autocomplete="username" required>
   <button type="submit">Connect</button>
@@ -92,6 +104,19 @@ const RETRIES = 5;
 const RETRY_MS = 250;
 const KEEPALIVE_MS = 20000;
 const STORE = 'drt-ssh';
+const SIGNAL_MS = 35000;
+// doc/DRT-Signalling.md §2's statuses, as a caller reads them.
+const REFUSALS = {
+  400: 'the request was malformed',
+  401: 'no token, or one the server does not know',
+  403: 'this token may not call',
+  404: 'no such name on this server',
+  410: 'the answerer refused the call',
+  413: 'this page\'s record is too large',
+  429: 'too many calls are waiting; try again',
+  503: 'no answerer is present',
+  504: 'nobody answered in time',
+};
 
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -164,6 +189,7 @@ async function showKey() {
 // stream to its scope. Resolves with the SSH session, where its host key is
 // remembered, and what else to close when it ends.
 async function open(where, pinned) {
+  if (where.call) return called(where, pinned);
   if (!where.rtc) return { ssh: await connect(where.url, pinned), place: place(where.url), session: null };
   say('Connecting directly…');
   const record = drtBrowserAccess.parseRecord(where.rtc);
@@ -173,6 +199,50 @@ async function open(where, pinned) {
     const stream = session.connect(target.host, target.port);
     const ssh = await wasm_bindgen.Ssh.connect(stream, pinned || undefined);
     return { ssh, place: `rtc:${record.f}/${target.host}:${target.port}`, session };
+  } catch (e) {
+    session.close();
+    throw e;
+  }
+}
+
+// A session through a signalling server: this page's record out in one
+// POST, held until the answerer answers, and the answerer's record back.
+// The host key is remembered per server and name, never per token.
+async function called(where, pinned) {
+  say('Calling…');
+  const pending = await drtBrowserAccess.offer();
+  let reply;
+  try {
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), SIGNAL_MS);
+    let res;
+    try {
+      res = await fetch(where.call, {
+        method: 'POST', body: pending.recordText, signal: abort.signal,
+        headers: { 'content-type': 'text/plain;charset=utf-8' },
+      });
+      reply = await res.text();
+    } catch (e) {
+      throw new Error(`${place(where.call)} could not be reached: ${e.message || e}`);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res.ok) {
+      const why = REFUSALS[res.status];
+      throw new Error(`${place(where.call)} answered ${res.status}${why ? `: ${why}` : ''}.`);
+    }
+  } catch (e) {
+    pending.close?.();
+    throw e;
+  }
+  say('Answered; connecting…');
+  const session = await pending.accept(reply);
+  try {
+    const named = !where.to && (session.hello.services || []).includes('ssh');
+    const target = named ? null : pick(session.hello, where.to);
+    const stream = named ? session.connect('ssh') : session.connect(target.host, target.port);
+    const ssh = await wasm_bindgen.Ssh.connect(stream, pinned || undefined);
+    return { ssh, place: `call:${place(where.call)}/${named ? 'ssh' : `${target.host}:${target.port}`}`, session };
   } catch (e) {
     session.close();
     throw e;
@@ -307,18 +377,22 @@ async function start(target, user, pinned) {
   const link = new URLSearchParams(location.hash.slice(1));
   $('url').value = link.get('url') || '';
   $('rtc').value = link.get('rtc') || '';
+  $('call').value = link.get('call') || '';
   $('user').value = link.get('user') || '';
   const target = () => {
     const rtc = $('rtc').value.trim();
-    return rtc ? { rtc, to: link.get('to') } : { url: $('url').value.trim() };
+    const call = $('call').value.trim();
+    if (rtc) return { rtc, to: link.get('to') };
+    if (call) return { call, to: link.get('to') };
+    return { url: $('url').value.trim() };
   };
   $('setup').onsubmit = (e) => {
     e.preventDefault();
     const t = target();
-    if (!t.rtc && !t.url) return say('Enter a relay claim URL or a host record.', true);
+    if (!t.rtc && !t.call && !t.url) return say('Enter a relay claim URL, a host record or a signalling URL.', true);
     go(t, $('user').value.trim(), link.get('hostkey'));
   };
-  if ((link.get('url') || link.get('rtc')) && link.get('user')) go(target(), link.get('user'), link.get('hostkey'));
+  if ((link.get('url') || link.get('rtc') || link.get('call')) && link.get('user')) go(target(), link.get('user'), link.get('hostkey'));
   else say('Not connected.');
 })();
 </script>

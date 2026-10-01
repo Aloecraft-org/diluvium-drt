@@ -91,6 +91,18 @@ is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
   page's record posted back. `accept` may refuse a call, which
   withdraws it, and `onSession` gets each session once it is up. The
   browser suite's row 6 now answers through it.
+- **`ssh.html#call=`**: the SSH page calls through a signalling
+  server (`doc/DRT-Signalling.md`). Its record goes out in one
+  `POST` to the link's URL, the answerer's comes back, and the page
+  signs in over the session. A page that serves `ssh` is reached on
+  that service, which is row 8 of `doc/ssh-transport-matrix.md`,
+  browser to browser from a link. A DRT host is reached on its
+  scope, as for `#rtc=`. A refused call says what its status means.
+  The page's CSP now admits `fetch` to `http:` and `https:` for this
+  one request. The browser suite opens the page as it ships, calls
+  through `examples/30-signaling-room`, and signs in to a page
+  answering with `listen`; the SSH page's gate does the same through
+  `examples/29-browser-access` to sshd.
 - **`drt tunnel rtc:`**, the relay's `ProxyCommand` over WebRTC
   instead (row 3 of `doc/ssh-transport-matrix.md`). The process is
   the caller in a browser access session and moves stdio over one

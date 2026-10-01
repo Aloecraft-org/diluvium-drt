@@ -428,6 +428,35 @@ await check('the shipped page, CSP and all, follows a direct-mode link to a shel
   await p.close();
 });
 
+await check('the shipped page follows a call= link through examples/29 to sshd', async () => {
+  const call = `http://127.0.0.1:${PORTS.post}/v1/box/calls`;
+  const p = await openSession(new URLSearchParams({ call, user: USER, hostkey: fingerprint }).toString());
+  await until('a shell', () => p.evaluate(() => !!window.drtSsh?.term)).catch(async (e) => {
+    throw new Error(`${e.message}; the page says: ${await p.textContent('#status')}`);
+  });
+  await typeAndWait(p, 'echo page-called-$((6*7))', 'page-called-42');
+  // A host serves no named service, so the page read its scope.
+  const status = await p.textContent('#status');
+  if (!status.includes(`call:127.0.0.1:${PORTS.post}/v1/box/calls/127.0.0.1:${PORTS.sshd}`)) {
+    throw new Error(`the status says ${JSON.stringify(status)}`);
+  }
+  await p.keyboard.type('exit 6\n');
+  const ended = await until('the end', () => p.evaluate(() => window.drtSsh.ended));
+  if (ended !== 6) throw new Error(`ended with ${ended}`);
+  await p.close();
+});
+
+await check('a call the server refuses is reported by what its status means', async () => {
+  const call = `http://127.0.0.1:${PORTS.post}/v1/nobody/calls`;
+  const p = await openSession(new URLSearchParams({ call, user: USER, hostkey: fingerprint }).toString());
+  const said = await until('a refusal', async () => {
+    const s = await p.textContent('#status');
+    return s.includes('answered') ? s : false;
+  });
+  if (!said.includes('answered 404: no such name on this server')) throw new Error(`the page says ${JSON.stringify(said)}`);
+  await p.close();
+});
+
 // depth: the native caller, `drt tunnel rtc:` (rows 3 and 6 of the matrix)
 
 await check('stock ssh through ProxyCommand="drt tunnel rtc:<record>" reaches the named service ssh', async () => {
