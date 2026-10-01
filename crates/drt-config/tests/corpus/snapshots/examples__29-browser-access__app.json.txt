@@ -58,7 +58,9 @@ RootConfig {
             scope: [
                 "ssh://127.0.0.1:22",
             ],
-            services: {},
+            services: {
+                "ssh": "ssh://127.0.0.1:22",
+            },
             max_sessions: 12,
             max_streams_per_session: 64,
             idle_stream_timeout_s: 300,

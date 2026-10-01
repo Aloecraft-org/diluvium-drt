@@ -136,7 +136,8 @@ fs.writeFileSync(path.join(tmp, 'host.json'), JSON.stringify({
   caps: [{ capability: 'host:rest/*' }, { capability: 'host:time/monotonic' }],
   connectors: { time: {}, rest: { scope: { allow: [{ origin: signal }], allow_private: true } } },
   args: { signal, room: ROOM },
-  webrtc: { identity_file: path.join(tmp, 'host-identity.json'), service: 'SSH', scope: [`ssh://127.0.0.1:${PORTS.sshd}`] },
+  // `hello_scope`: this host names no service, so the page reads its scope.
+  webrtc: { identity_file: path.join(tmp, 'host-identity.json'), service: 'SSH', scope: [`ssh://127.0.0.1:${PORTS.sshd}`], hello_scope: true },
 }));
 const rtcHost = run('rtc-host', DRT, ['--config', path.join(tmp, 'host.json'), 'start']);
 await until('the browser access host in the room', () => rtcHost.lines.some((l) => l.startsWith('signal: joined')));
@@ -166,7 +167,7 @@ fs.writeFileSync(path.join(tmp, 'post.json'), JSON.stringify({
   listeners: [{ scheme: 'http', address: `127.0.0.1:${PORTS.post}`, queue: 'http_in', reply_queue: 'http_out',
                 resp_headers: ['access-control-allow-origin', 'location'] }],
   webrtc: { bind: `127.0.0.1:${PORTS.postRtc}`, identity_file: path.join(tmp, 'post-identity.json'),
-            scope: [`ssh://127.0.0.1:${PORTS.sshd}`] },
+            scope: [`ssh://127.0.0.1:${PORTS.sshd}`], hello_scope: true },
 }));
 const postHost = run('post-host', DRT, ['--config', path.join(tmp, 'post.json'), 'start']);
 await until('the example\'s listener', () => postHost.lines.some((l) => l.includes(`listening on 127.0.0.1:${PORTS.post}`)));

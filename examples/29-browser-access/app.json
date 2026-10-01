@@ -13,6 +13,7 @@
   "webrtc": {
     "bind": "127.0.0.1:18491",
     "identity_file": "webrtc-identity.json",
-    "scope": ["ssh://127.0.0.1:22"]
+    "scope": ["ssh://127.0.0.1:22"],
+    "services": { "ssh": "ssh://127.0.0.1:22" }
   }
 }

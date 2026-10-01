@@ -200,10 +200,14 @@ async function open(where, pinned) {
   const record = drtBrowserAccess.parseRecord(where.rtc);
   const session = await drtBrowserAccess.direct(record, { fingerprint: where.fingerprint });
   try {
-    const target = pick(session.hello, where.to);
-    const stream = target ? session.connect(target.host, target.port) : session.connect();
+    // The service `ssh` when the host names one, else `to` or its scope,
+    // else whatever it forwards to (doc/P2P.md §5.1, §7.3).
+    const named = !where.to && (session.hello.services || []).includes('ssh') ? 'ssh' : null;
+    const target = named ? null : pick(session.hello, where.to);
+    const stream = named ? session.connect(named) : target ? session.connect(target.host, target.port) : session.connect();
     const ssh = await wasm_bindgen.Ssh.connect(stream, pinned || undefined);
-    return { ssh, place: `rtc:${record.f}/${target ? `${target.host}:${target.port}` : 'forward'}`, session };
+    const at = named || (target ? `${target.host}:${target.port}` : 'forward');
+    return { ssh, place: `rtc:${record.f}/${at}`, session };
   } catch (e) {
     session.close();
     throw e;
