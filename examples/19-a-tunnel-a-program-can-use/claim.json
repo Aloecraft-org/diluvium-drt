@@ -1,8 +1,8 @@
 {
-  "_comment": "The caller's half, from a file: a local port, one fresh leg to the relay per accepted connection. The URL is `claim` and `--local` is `bind`. `drt --config claim.json tunnel`.",
+  "_comment": "The caller's half, from a file: a local port, one fresh leg to the relay per accepted connection. The relay's label names the destination, so `relay` is the URL and `-p` is `ports`. `drt --config claim.json p2p`.",
 
-  "tunnel": {
-    "claim": "ws://127.0.0.1:18490/s/fp?k=caller-key-for-the-example-only",
-    "bind": "127.0.0.1:18492"
+  "p2p": {
+    "relay": "ws://127.0.0.1:18490/s/fp?k=caller-key-for-the-example-only",
+    "ports": ["18492"]
   }
 }

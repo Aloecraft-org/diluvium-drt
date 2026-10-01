@@ -159,6 +159,21 @@ once on connecting, then on each call notification.
 - A server may rate-limit calls per name and per address, answering 429
   with `retry-after`.
 
+## 6.1 Claimable names, admission and a caller token
+
+Three optional parts a server may offer; `drt p2p --match` does, and
+`examples/30-signaling-room` does not (`doc/P2P.md` §2.4, §7.1).
+
+- **A name is claimed on first use.** The first answerer token to poll a
+  free name holds it while that token is present (§4.2); a different token
+  gets 403 until the claim lapses, and the same token shares the name.
+- **`DRT-Caller-Token: <token>`**, sent by the answerer on its poll, sets
+  the name's caller token. Without one, any caller may call the name.
+- **`DRT-Accept: <cidr>, …`**, sent likewise, is the range of caller
+  addresses the answerer admits; a server that knows the caller's address
+  answers 403 outside it, and the answerer checks the connection's own
+  address as well.
+
 ## 7. What a server sees
 
 Both records: addresses, ICE credentials and fingerprints. Never the
@@ -170,7 +185,7 @@ that wants to read less can be handed less: direct mode
 
 | Party | Role | As |
 |---|---|---|
-| `drt tunnel rtc:https://…/v1/<name>/calls` | caller | stdio over the session (`doc/ssh-transport-matrix.md`) |
+| `drt p2p drt://…/v1/<name>` | caller | stdio or mapped ports over the session (`doc/P2P.md`); `drt p2p --park` is the answerer, `drt p2p --match` a server |
 | `ssh.html#call=…` | caller | the SSH page |
 | `drt_browser_access.js` | caller, answerer | `offer`/`accept` to call; `listen(base, {token, services})` to answer every call for a name, holding the call notification stream and polling without it |
 | a DRT host (`webrtc` block) | answerer | a stdlib program, as `stdlib:browser-access` is for Discofetch's socket |

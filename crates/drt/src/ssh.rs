@@ -5,7 +5,10 @@
 //! `host:ssh/shell` runs too. What this file adds is the person's side:
 //! a target they type, OpenSSH's `known_hosts` with a question on first
 //! use, the agent and `~/.ssh` keys, and a choice of how the bytes travel
-//! -- straight to the host, or through what `drt tunnel` reaches.
+//! -- straight to the host over TCP, or to a peer `drt p2p` reaches
+//! (`doc/P2P.md` §11): `drt ssh me@drt+ssh://signal.example/v1/mypc`, a
+//! record or a file holding one, with `--relay` and `--fallback` as on
+//! `drt p2p`.
 //!
 //! ## surface block
 //!
@@ -14,9 +17,8 @@
 //!   [`from_line`] (`:ssh …` as the REPL typed it).
 //! - Configurable: [`DIAL_TIMEOUT`].
 //! - Fan-out: [`dial`], one arm per way the bytes travel: TCP to
-//!   `host:port`; a relay claim (`ws://`, `wss://`), as `drt tunnel` dials
-//!   it; `rtc:` and a record, file or signalling URL, as `drt tunnel
-//!   rtc:` reaches it.
+//!   `host:port`; a peer address, as `drt p2p` reaches it; `--via` a relay
+//!   claim (`ws://`, `wss://`) or `rtc:<peer>`, the older spelling.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -29,9 +31,17 @@ pub const DIAL_TIMEOUT: Duration = Duration::from_secs(20);
 /// `drt ssh [user@]host[:port]`, and what `:ssh` takes after it.
 #[derive(clap::Args, Debug, Clone)]
 pub struct SshArgs {
-    /// `[user@]host[:port]`. With --via, the name the host key is
-    /// remembered under in known_hosts; nothing is dialed by it.
+    /// `[user@]host[:port]` over TCP, or `[user@]<peer>` as `drt p2p` takes
+    /// a peer: drt://host/v1/<name>, drt+ssh://…, a record or a file
+    /// holding one, an http(s):// URL. With --via, the name the host key
+    /// is remembered under in known_hosts; nothing is dialed by it.
     pub target: String,
+    /// Carry the session through this peer, as `drt p2p --relay` does.
+    #[arg(long, value_name = "PEER")]
+    pub relay: Option<String>,
+    /// Like --relay, but only when no direct path exists.
+    #[arg(long, value_name = "PEER")]
+    pub fallback: Option<String>,
     /// Reach the host through this instead of TCP: a relay claim URL
     /// (`wss://<relay>/s/<label>?k=…`, what `drt tunnel` dials), or `rtc:`
     /// and a host record, a file holding one, or a signalling URL.
@@ -41,8 +51,8 @@ pub struct SshArgs {
     /// open. The service `ssh` if omitted.
     #[arg(long, value_name = "SERVICE|HOST:PORT")]
     pub to: Option<String>,
-    /// The user, when the target does not say.
-    #[arg(short = 'l', long = "login", value_name = "USER")]
+    /// The user, when the target does not say. `-u` is the same flag.
+    #[arg(short = 'l', long = "login", short_alias = 'u', value_name = "USER")]
     pub login: Option<String>,
     /// A private key to sign in with, in place of ~/.ssh's. Repeatable.
     #[arg(short = 'i', value_name = "FILE")]
@@ -69,10 +79,17 @@ pub struct SshArgs {
 
 /// `[user@]host[:port]`, IPv6 in brackets.
 fn split_target(target: &str) -> Result<(Option<String>, String, u16), String> {
-    let (user, rest) = match target.rsplit_once('@') {
-        Some((u, r)) if !u.is_empty() => (Some(u.to_string()), r),
+    let (user, rest) = match target.split_once('@') {
+        Some((u, r)) if !u.is_empty() && !u.contains("://") && !u.starts_with('{') => {
+            (Some(u.to_string()), r)
+        }
         _ => (None, target),
     };
+    // A peer address is not split: `drt p2p` reads it whole, and its port,
+    // if any, is the signalling server's.
+    if rest.contains("://") || rest.starts_with('{') || std::path::Path::new(rest).is_file() {
+        return Ok((user, rest.to_string(), 0));
+    }
     let (host, port) = if let Some(inner) = rest.strip_prefix('[') {
         let (h, after) = inner
             .split_once(']')
@@ -161,6 +178,9 @@ pub fn run(args: &SshArgs) -> Result<Option<u32>, String> {
 
 async fn session(args: &SshArgs) -> Result<Option<u32>, String> {
     let (user, host, port) = split_target(&args.target)?;
+    // A peer address in place of a host: the session rides a `drt p2p`
+    // call, and the host key is remembered under the address.
+    let peer = peer_target(&host);
     let user = user
         .or_else(|| args.login.clone())
         .or_else(|| std::env::var("USER").ok())
@@ -188,8 +208,76 @@ async fn session(args: &SshArgs) -> Result<Option<u32>, String> {
         trust,
         credentials: interactive::discover(args.identity.clone()),
     };
-    let stream = dial(args, &host, port).await?;
+    let stream = match peer {
+        Some(peer) => peer_stream(&peer, args).await?,
+        None => dial(args, &host, port).await?,
+    };
     interactive::on_this_terminal(stream, login).await
+}
+
+/// The host half of the target as a peer address, when it is one: it has a
+/// scheme `drt p2p` takes, it is a record, or it names a file.
+fn peer_target(host: &str) -> Option<String> {
+    let scheme = host
+        .split_once("://")
+        .map(|(s, _)| s.to_ascii_lowercase())
+        .filter(|s| s == "drt" || s.starts_with("drt+") || s == "http" || s == "https");
+    if scheme.is_some() || host.starts_with('{') || std::path::Path::new(host).is_file() {
+        Some(host.to_string())
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "p2p")]
+async fn peer_stream(peer: &str, args: &SshArgs) -> Result<Stream, String> {
+    use crate::p2p::call::{self, Dial};
+    use crate::p2p::peer::Peer;
+    let peer = Peer::parse(peer)?;
+    let roots = crate::roots::load_roots_named("--extra-root", &args.extra_root)?;
+    let headers = args
+        .header
+        .iter()
+        .map(|h| {
+            h.split_once(':')
+                .map(|(n, v)| (n.trim().to_string(), v.trim().to_string()))
+                .ok_or_else(|| format!("--header {h}: expected `Name: value`"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let role = crate::p2p::CallRole {
+        destination: args
+            .target
+            .rsplit_once('@')
+            .map_or(args.target.clone(), |(_, r)| r.to_string()),
+        maps: Vec::new(),
+        dial: Dial {
+            stun: Vec::new(),
+            headers,
+            fingerprint: None,
+        },
+        relay: args.relay.as_deref().map(Peer::parse).transpose()?,
+        fallback: args.fallback.as_deref().map(Peer::parse).transpose()?,
+        peer: peer.clone(),
+    };
+    let connected = call::session(&role, &roots).await?;
+    if connected.forwarding {
+        eprintln!("drt ssh: via relay");
+    }
+    let target = match (&peer.service, args.to.as_deref()) {
+        (_, Some(to)) => drt_rtc::caller::Target::parse(to).map_err(|e| format!("--to: {e}"))?,
+        (Some(s), None) => drt_rtc::caller::Target::Service(s.clone()),
+        (None, None) => drt_rtc::caller::Target::Service("ssh".into()),
+    };
+    let (stream, _closed) = connected.call.open(&target).await?;
+    Ok(Box::new(Held {
+        stream,
+        _call: connected.call,
+    }))
+}
+
+#[cfg(not(feature = "p2p"))]
+async fn peer_stream(_peer: &str, _args: &SshArgs) -> Result<Stream, String> {
+    Err("a peer address needs a build with `p2p`".into())
 }
 
 /// A byte stream to the host's sshd, however it travels.
@@ -334,7 +422,30 @@ impl tokio::io::AsyncWrite for Held {
 
 #[cfg(test)]
 mod tests {
-    use super::{from_line, split_target};
+    use super::{from_line, peer_target, split_target};
+
+    /// A peer address is one piece: the user in front, the rest whole, and
+    /// no port split off a URL (doc/P2P.md §11).
+    #[test]
+    fn a_peer_address_is_kept_whole() {
+        assert_eq!(
+            split_target("me@drt+ssh://signal.example/v1/mypc").unwrap(),
+            (
+                Some("me".into()),
+                "drt+ssh://signal.example/v1/mypc".into(),
+                0
+            )
+        );
+        assert_eq!(
+            split_target("drt://127.0.0.1:5001").unwrap(),
+            (None, "drt://127.0.0.1:5001".into(), 0)
+        );
+        let record = r#"{"v":1,"u":"abcd","p":"0123456789abcdefghijKL","f":"x","c":[]}"#;
+        assert_eq!(split_target(record).unwrap(), (None, record.into(), 0));
+        assert!(peer_target("drt+ssh://x/v1/a").is_some());
+        assert!(peer_target("box.lan").is_none());
+        assert!(peer_target("{").is_some());
+    }
 
     #[test]
     fn targets_split_like_ssh() {

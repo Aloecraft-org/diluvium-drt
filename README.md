@@ -26,7 +26,7 @@ hostcall encoding (moved here from diluvium).
 | [`crates/drt-platform`](crates/drt-platform) | The leaf adapters: clock, entropy, the fs backend (a disk, or a page's memory) and stdio, `cfg`-gated per target so nothing above them is. See [`doc/Wasm.md`](doc/Wasm.md). |
 | [`crates/drt-connector`](crates/drt-connector) | The `Connector` trait, registry, capability gating, and the dispatcher that guarantees every drained request is answered. Mocks implement the same trait; guests cannot tell. |
 | [`crates/drt-swarm`](crates/drt-swarm) | The swarm: `dvs.c` semantics ported over the `Engine` seam (instance table, attenuated caps with provenance, lifecycle drain, budgets, hibernation + `wake_on_message`); the snapshot store; endpoint refs. |
-| [`crates/drt`](crates/drt) | The binary: `run` \| `start` \| `repl` \| `relay` \| `tunnel` \| `ps` — see SPEC.md §13a. |
+| [`crates/drt`](crates/drt) | The binary: `run` \| `start` \| `repl` \| `p2p` \| `ssh` \| `ps` — see SPEC.md §13a. |
 | [`crates/drt-web`](crates/drt-web) | The browser tier: the same `drt`, C core linked in, behind a terminal contract a page attaches xterm.js to. See [`doc/Browser.md`](doc/Browser.md). |
 | [`connectors/`](connectors) | Connector implementations, each feature-gated: `time`, `crypto`, `fs`, `sql` and `data` (each a granted directory), `rest` and `ssmtp` (each an allowlist), `ssh` (client, `host:ssh/exec` and the interactive `host:ssh/shell`) and `exec` (local, `host:exec/run`, wired only by name and announced when it is). |
 
@@ -124,10 +124,12 @@ drt repl                             # a REPL, which is an instance
 drt repl --unsafe                    # ... with os, io and require in scope
 drt --config app.json start          # the deployment: swarm + listeners + relay
 drt --config rv.json start           # the rendezvous relay, on its own
-drt tunnel --park wss://…/park/xps?k=… --to 127.0.0.1:22   # the device half
-ssh -o ProxyCommand="drt tunnel wss://…/s/xps?k=…" user@xps # the caller half
-drt tunnel wss://…/s/xps?k=… --local 127.0.0.1:2222       # the caller half, for a program
-drt --config tn.json tunnel          # either half, with the key in a 0600 file
+drt p2p --listen 5000                # serve the REPL on a UDP port; prints the record that calls it
+ssh -o ProxyCommand="drt p2p drt://signal.example/v1/xps" me@xps   # call a peer, direct
+drt p2p drt://signal.example/v1/xps -p 8080:80            # or map a port to it
+drt p2p --park drt://signal.example/v1/xps --H auth=…     # answer calls for a name
+drt p2p --match 8443                 # be the signalling server
+drt --config p2p.json p2p            # any role, with the token in a 0600 file
 drt --config nc.json netcheck        # what can this network do, with the evidence
 drt --config st.json start           # a STUN server: what address did that come from
 drt --config tn.json start           # a TURN relay, for what cannot be punched

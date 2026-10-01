@@ -12,20 +12,19 @@ Three terminals, or `./demo.sh` which is all of them:
 cd examples/19-a-tunnel-a-program-can-use
 drt start --config rendezvous.json
 drt start --config device.json
-drt --config park.json tunnel
-drt --config claim.json tunnel
+drt --config park.json p2p
+drt --config claim.json p2p
 ```
 
-The two tunnel files are the flags under the block's names -- `park.json`
-is `--park … --to 127.0.0.1:18491`, `claim.json` is the claim URL with
-`--local 127.0.0.1:18492` as `bind` -- and either command takes the flags
-instead:
+The two p2p files are the flags under the block's names -- `park.json` is
+`--park … --forward 127.0.0.1:18491`, `claim.json` is the relay URL with
+`-p 18492` as `ports` -- and either command takes the flags instead:
 
 ```
-drt tunnel --park "ws://127.0.0.1:18490/park/fp?k=park-key-for-the-example-only" \
-           --to 127.0.0.1:18491
-drt tunnel "ws://127.0.0.1:18490/s/fp?k=caller-key-for-the-example-only" \
-           --local 127.0.0.1:18492
+drt p2p --park "ws://127.0.0.1:18490/park/fp?k=park-key-for-the-example-only" \
+        --forward 127.0.0.1:18491
+drt p2p --relay "ws://127.0.0.1:18490/s/fp?k=caller-key-for-the-example-only" \
+        -p 18492
 ```
 
 Then anything that speaks TCP:
@@ -46,13 +45,13 @@ them.
 
 ## What it teaches
 
-**`--local` is the half `ssh -o ProxyCommand` could not give a program.**
-The caller side of a tunnel used to be stdio only, which suits `ssh` and
-nothing else: a connector dials a `host:port` and cannot hand its stdio to a
-subprocess. `--local` binds a port instead, so `ssh/exec` scoped to
-`127.0.0.1:18492`, `rest` pointed at it, or a desktop client with no
-ProxyCommand support all reach the device. `--listen` is the *other* half —
-it serves the device side — which is why this is not spelled with it.
+**`-p` is the half `ssh -o ProxyCommand` could not give a program.** The
+caller side used to be stdio only, which suits `ssh` and nothing else: a
+connector dials a `host:port` and cannot hand its stdio to a subprocess.
+`-p 18492` binds a port instead, so `ssh/exec` scoped to `127.0.0.1:18492`,
+`rest` pointed at it, or a desktop client with no ProxyCommand support all
+reach the device. A relay's label names the destination, so the port maps
+to whatever the device forwards.
 
 **One connection, one leg.** Each accepted connection opens its own WSS
 connection and claims its own parked leg; nothing is multiplexed over one.

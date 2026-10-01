@@ -5,8 +5,9 @@
 //! ## surface block
 //!
 //! - Entry points: [`connect`], a peer reached and the session up, for this
-//!   role and for anything else that wants a [`Call`] (`drt ssh`, the
-//!   `drt://` forward); [`run`], the role carried out.
+//!   role and for anything else that wants a [`Call`] (the `drt://`
+//!   forward); [`session`], the same with the role's carrier (`drt ssh`);
+//!   [`run`], the role carried out.
 //! - Configurable: [`EOF_GRACE`]; [`Dial`], what every call is made with.
 //! - Fan-out: the match on [`How`] in `connect`: a record in hand, a
 //!   signalling request, or a WebSocket relay, which carries bytes and not
@@ -119,20 +120,7 @@ pub async fn run(role: &CallRole, roots: &[CertificateDer<'static>]) -> Result<(
     {
         return Err("--fallback takes a DRT peer; a wss:// relay is a carrier for --relay".into());
     }
-    let connected = match (&role.relay, &role.fallback) {
-        (Some(relay), _) => through(relay, role, roots).await?,
-        (None, Some(fallback)) => match connect(&role.peer, &role.dial, roots).await {
-            Ok(c) => c,
-            Err(why) => {
-                eprintln!(
-                    "drt p2p: no direct path ({why}); through {}",
-                    fallback.shown()
-                );
-                through(fallback, role, roots).await?
-            }
-        },
-        (None, None) => connect(&role.peer, &role.dial, roots).await?,
-    };
+    let connected = session(role, roots).await?;
     let interactive = std::io::IsTerminal::is_terminal(&std::io::stdin());
     if connected.forwarding {
         eprintln!("drt p2p: via relay");
@@ -226,6 +214,28 @@ pub async fn run(role: &CallRole, roots: &[CertificateDer<'static>]) -> Result<(
         }
     }
     Ok(())
+}
+
+/// The session a call role gets: direct, through its relay, or through its
+/// fallback once no direct path was found. What `run` and `drt ssh` share.
+pub async fn session(
+    role: &CallRole,
+    roots: &[CertificateDer<'static>],
+) -> Result<Connected, String> {
+    match (&role.relay, &role.fallback) {
+        (Some(relay), _) => through(relay, role, roots).await,
+        (None, Some(fallback)) => match connect(&role.peer, &role.dial, roots).await {
+            Ok(c) => Ok(c),
+            Err(why) => {
+                eprintln!(
+                    "drt p2p: no direct path ({why}); through {}",
+                    fallback.shown()
+                );
+                through(fallback, role, roots).await
+            }
+        },
+        (None, None) => connect(&role.peer, &role.dial, roots).await,
+    }
 }
 
 /// `--relay <peer>` (§4.1): call the relay as any peer, name the destination

@@ -752,3 +752,68 @@ fn drt_ssh_reaches_the_repl_drt_start_serves() {
     t.send("\x04");
     assert_eq!(t.status(), 0, "the served REPL's ^D is drt ssh's exit 0");
 }
+
+/// `drt ssh me@<record>`: the peer-address positional (doc/P2P.md §11)
+/// against `drt p2p --listen`'s REPL, signing in with the key its
+/// `--authorized-keys` names, the host key pinned from what it printed.
+#[test]
+fn drt_ssh_reaches_the_repl_drt_p2p_serves_by_its_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    if !keygen(d, "client") {
+        eprintln!("skipped: ssh-keygen did not run");
+        return;
+    }
+    let port = std::net::UdpSocket::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut listening = Command::new(env!("CARGO_BIN_EXE_drt"))
+        .args(["p2p", "--listen", &port.to_string(), "--authorized-keys"])
+        .arg(d.join("client.pub"))
+        .env("HOME", d)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut err = std::io::BufReader::new(listening.stderr.take().unwrap());
+    let (mut record, mut fingerprint) = (None, None);
+    let start = Instant::now();
+    while record.is_none() && start.elapsed() < WITHIN {
+        let mut line = String::new();
+        if std::io::BufRead::read_line(&mut err, &mut line).unwrap() == 0 {
+            break;
+        }
+        if let Some(r) = line.strip_prefix("drt p2p: record ") {
+            record = Some(r.trim().to_string());
+        }
+        if let Some(rest) = line.split("ssh host key is ").nth(1) {
+            fingerprint = rest.split(',').next().map(|f| f.trim().to_string());
+        }
+    }
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        while std::io::BufRead::read_line(&mut err, &mut line).unwrap_or(0) > 0 {
+            line.clear();
+        }
+    });
+    let (record, fingerprint) = (record.expect("a record"), fingerprint.expect("a host key"));
+    let args: Vec<String> = vec![
+        "ssh".into(),
+        "-i".into(),
+        d.join("client").display().to_string(),
+        "--hostkey".into(),
+        fingerprint,
+        format!("me@{record}"),
+    ];
+    let mut t = Pty::spawn(&args, 100, 30);
+    t.expect("dv> ");
+    t.send("6 * 7\r");
+    t.expect("42");
+    t.send("\x04");
+    assert_eq!(t.status(), 0, "the served REPL's ^D is drt ssh's exit 0");
+    let _ = listening.kill();
+    let _ = listening.wait();
+}

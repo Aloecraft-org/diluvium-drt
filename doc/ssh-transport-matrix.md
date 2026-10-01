@@ -22,18 +22,19 @@ SSH server. DRT supplies the transport, which is one of three things:
 
 ## Order of attempts
 
-A connection tries direct first. It falls back to TURN when a TURN server
-is configured, and to the relay when a relay URL is configured. A
-configuration that provides neither TURN nor a relay gets direct or
-reports a failure to the user, and the failure carries `drt netcheck`'s
-verdict for the network it ran on.
+A connection is direct, or it fails and says so (`doc/P2P.md` §1). Nothing
+falls back on its own: `drt p2p --fallback <relay>` tries direct first and
+goes through the relay only when no path reached the peer, and `--relay
+<relay>` goes through it always. A failure carries `drt netcheck`'s verdict
+for the network it ran on. TURN is not used by these rows: browser access
+v1 drops relay candidates from records.
 
 ## The pieces
 
 | Piece | Runs in | What it is |
 |---|---|---|
-| `drt tunnel` | native | stdin/stdout transport for `ssh -o ProxyCommand`. Dials a relay (`ws://`, `wss://`) or, with `rtc:`, is the caller in a WebRTC session: `rtc:` and the answerer's record (or a file holding it), or an `http(s)://` signaling URL. `--to` names a service or `host:port`, the service `ssh` if omitted; `--stun` names the STUN servers it asks for its public address. `--park` holds a leg on a relay for a device. |
-| `drt ssh` | native | An interactive SSH client on this terminal, and the REPL's `:ssh`. Straight to `host:port` over TCP, or `--via` a relay claim or `rtc:` as `drt tunnel` reaches them. Trusts `~/.ssh/known_hosts`, asking about a host it has not seen; signs in with the agent, `~/.ssh` keys, then a password. `:ssh` alone in the REPL is the config's `host:ssh/shell` instead: the scope's host, key and pinned host key. In a page (`drt-term.js` with `{ ssh }`), the same command and `:ssh` run `ssh.html`'s client, `--via` only (doc/Browser.md). |
+| `drt p2p` | native | One verb for peer-to-peer sessions (`doc/P2P.md`). **Call**: `drt p2p <peer>` is the stdin/stdout transport for `ssh -o ProxyCommand`, the caller in a WebRTC session; the peer is a `drt://host/v1/<name>` address at a signalling server, `drt+ssh://` to open the service `ssh`, a record (or a file holding one) for direct mode, or an `http(s)://` URL. `-p` maps ports, `--fingerprint` holds the answerer to a DTLS fingerprint, `--stun` names STUN servers, `--relay`/`--fallback` ask for a carrier. **Listen**: `drt p2p --listen <port>` serves `--forward` on a fixed record, the REPL by default. **Park**: `drt p2p --park drt://…/v1/<name>` answers calls at a signalling server, or holds a leg at a `wss://` relay. **Match**: `drt p2p --match <port>` is the signalling server. `drt tunnel` is an alias for one release. |
+| `drt ssh` | native | An interactive SSH client on this terminal, and the REPL's `:ssh`. Straight to `host:port` over TCP, or `--via` a relay claim or `rtc:<peer>` as `drt p2p` reaches them. Trusts `~/.ssh/known_hosts`, asking about a host it has not seen; signs in with the agent, `~/.ssh` keys, then a password. `:ssh` alone in the REPL is the config's `host:ssh/shell` instead: the scope's host, key and pinned host key. In a page (`drt-term.js` with `{ ssh }`), the same command and `:ssh` run `ssh.html`'s client, `--via` only (doc/Browser.md). |
 | `webrtc` block | native, `drt start` | The browser access host (`doc/BrowserAccess.md`): one UDP socket, a fixed record, Wisp streams to the targets in `scope`, for example `ssh://127.0.0.1:22`. `services` names scope entries (`{"ssh": "ssh://127.0.0.1:22"}`); `direct` lets a caller holding the record connect with no signaling. |
 | `wireguard` block | native, `drt start` | WireGuard in the process (`doc/WireGuard.md`). Kernel mode makes an interface. Userspace mode needs no privilege and is reached through `forward` and `expose`. |
 | `relay` block | native, `drt start` | The relay (`doc/Relay.md`). |
@@ -43,7 +44,7 @@ verdict for the network it ran on.
 | `drt_browser_access.js` | browser | The browser half of browser access: `offer` and `accept` to call, `direct` to call a host in direct mode, `answer` for a page that answers, `listen` to answer every call a signalling server holds for a page, `services` for what a side serves, and `session.connect(service)` or `session.connect(host, port)` as Web Streams. |
 
 The relay speaks URLs and binary WebSocket frames and nothing else, so
-`websocat --binary` stands in for `drt tunnel` wherever a relay is the
+`websocat --binary` stands in for `drt p2p --relay` wherever a relay is the
 transport. That is the guarantee that no row needing only a relay depends
 on a DRT client.
 
@@ -72,24 +73,25 @@ travel in the config, or through a program that serves them.
 
 | # | Caller | Callee | Transport | Path | DRT at the caller | DRT at the callee |
 |---|---|---|---|---|---|---|
-| 1 | `ssh` | `sshd` | relay | relayed | `drt tunnel` or `websocat` | `drt tunnel --park` |
+| 1 | `ssh` | `sshd` | relay | relayed, by request | `drt p2p --relay wss://…` or `websocat` | `drt p2p --park wss://… --forward ssh://127.0.0.1:22` |
 | 2 | `ssh` | `sshd` | WireGuard | direct | `wireguard` block | `wireguard` block |
-| 3 | `ssh` | `sshd` | WebRTC | direct or TURN, then row 1 | `drt tunnel rtc:` | `webrtc` block |
-| 4 | `ssh.html` | `sshd` | WebSocket | direct (reachable) or relayed | none | `websocat`, or a relay and `drt tunnel --park` |
-| 5 | `ssh.html` | `sshd` | WebRTC | direct or TURN, then row 4 | none | `webrtc` block |
-| 6 | `ssh` | page SSH server | WebRTC | direct or TURN, then row 7 | `drt tunnel rtc:` | none (the page) |
-| 7 | `ssh` | page SSH server | relay | relayed | `drt tunnel` or `websocat` | none (the page parks a leg) |
-| 8 | `ssh.html` | page SSH server | WebRTC | direct or TURN, then row 7 | none | none |
+| 3 | `ssh` | `sshd` | WebRTC | direct; `--fallback` to row 1 | `drt p2p <peer>` | `drt p2p --listen` or `--park` with `--forward ssh://…`, or a `webrtc` block |
+| 4 | `ssh.html` | `sshd` | WebSocket | direct (reachable) or relayed | none | `websocat`, or a relay and `drt p2p --park wss://…` |
+| 5 | `ssh.html` | `sshd` | WebRTC | direct | none | as row 3's callee |
+| 6 | `ssh` | page SSH server | WebRTC | direct; `--fallback` to row 7 | `drt p2p drt+ssh://…` | none (the page) |
+| 7 | `ssh` | page SSH server | relay | relayed, by request | `drt p2p --relay wss://…` or `websocat` | none (the page parks a leg) |
+| 8 | `ssh.html` | page SSH server | WebRTC | direct | none | none |
 
-"Then row N" is the relay fallback, taken when a relay URL is configured.
-"None" means no DRT process. A page counts as none because its runtime is
-the page itself.
+Nothing falls back on its own: a relayed row is one the caller asked for
+with `--relay`, or reached with `--fallback` after no direct path was
+found. "None" means no DRT process. A page counts as none because its
+runtime is the page itself.
 
 ### 1. Native to native, through a relay
 
 ```
-drt tunnel --park "wss://relay.example/park/box?k=$PARK_KEY" --to 127.0.0.1:22
-ssh -o ProxyCommand="drt tunnel wss://relay.example/s/box?k=$CALLER_KEY" user@box
+drt p2p --park "wss://relay.example/park/box?k=$PARK_KEY" --forward ssh://127.0.0.1:22
+ssh -o ProxyCommand="drt p2p --relay wss://relay.example/s/box?k=$CALLER_KEY" user@box
 ```
 
 For a device with no inbound address and no punchable NAT. With
@@ -110,18 +112,20 @@ works as it would on a LAN. One tunnel carries every port, not only SSH.
 
 ### 3. Native to native, over WebRTC
 
-The callee runs `drt start` with a `webrtc` block whose `scope` includes
-`ssh://127.0.0.1:22`, named as the service `ssh`. In direct mode the
-caller names the callee's record; otherwise it names a signaling URL that
-yields it:
+The callee serves its sshd as one target: `drt p2p --listen 5000 --forward
+ssh://127.0.0.1:22` prints a record, and a caller holding it needs no
+signalling; `drt p2p --park drt://signal.example/v1/box --forward
+ssh://127.0.0.1:22` answers calls by name instead. A `drt start` with a
+`webrtc` block naming the service `ssh` serves the same thing beside a
+program.
 
 ```
-ssh -o ProxyCommand="drt tunnel rtc:box.record.json" user@box
-ssh -o ProxyCommand="drt tunnel rtc:https://box.example/v1/box/calls" user@box
+ssh -o ProxyCommand="drt p2p box.record.json" user@box
+ssh -o ProxyCommand="drt p2p drt://signal.example/v1/box --fingerprint SHA256:…" user@box
 ```
 
-`--to 127.0.0.1:22` reaches the same sshd by address. The same host
-serves browsers (row 5) with no second configuration.
+With no `--forward`, the callee serves its REPL instead (`doc/P2P.md` §5).
+The same host serves browsers (row 5) with no second configuration.
 
 ### 4. Browser to `sshd`, over a WebSocket
 
@@ -133,8 +137,8 @@ websocat --binary ws-l:127.0.0.1:8080 tcp:127.0.0.1:22
 ```
 
 and in the page, `Ssh.connect("wss://server.example/ssh")`. A relay on the
-same machine with `drt tunnel --park … --to 127.0.0.1:22` does the same job
-with per-label keys. Through a relay elsewhere, it is row 1 with a browser
+same machine with `drt p2p --park wss://… --forward ssh://127.0.0.1:22`
+does the same job with per-label keys. Through a relay elsewhere, it is row 1 with a browser
 as the caller.
 
 ### 5. Browser to `sshd`, over WebRTC
@@ -162,7 +166,7 @@ a signalling server, and answers each one. The native side calls through
 the same server, with the caller token:
 
 ```
-ssh -o ProxyCommand="drt tunnel 'rtc:https://signal.example/v1/page/calls?k=$CALLER_TOKEN'" user@page
+ssh -o ProxyCommand="drt p2p drt+ssh://signal.example/v1/page --H auth=$CALLER_TOKEN" user@page
 ```
 
 What the session gets is the page's shell: every `drt` verb the page's
@@ -170,11 +174,11 @@ build carries, and whatever the page has exposed to it.
 
 ### 7. Native `ssh` to a browser page, through a relay
 
-The page parks a leg on the relay the way `drt tunnel --park` does, and
+The page parks a leg on the relay the way `drt p2p --park wss://` does, and
 parks a fresh one each time a leg is claimed:
 
 ```
-ssh -o ProxyCommand="drt tunnel wss://relay.example/s/page?k=$CALLER_KEY" user@page
+ssh -o ProxyCommand="drt p2p --relay wss://relay.example/s/page?k=$CALLER_KEY" user@page
 ```
 
 ### 8. Browser to browser

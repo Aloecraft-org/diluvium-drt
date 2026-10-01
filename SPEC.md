@@ -319,18 +319,19 @@ protocol**.
 
 Two shapes, one principle (the bridge never looks inside):
 
-- **`drt tunnel <wss-url>`** — bridge this process's stdio to the WSS
-  connection: the OpenSSH `ProxyCommand` contract. This is what buys
-  "works like normal SSH" without reimplementing any of it: `ssh -o
-  ProxyCommand="drt tunnel wss://gate/fp" user@fp`, and rsync/sftp/`-L`/
-  `-R`/agent forwarding are all the real ssh client's, inherited. Host-key
-  verification and auth stay end-to-end between ssh and sshd; a gateway
-  relaying the WSS leg can drop the connection but reads ciphertext. TLS
-  on the `wss://` leg is belt over braces — middleboxes see ordinary
-  HTTPS; it is not load-bearing for secrecy.
-- **`drt tunnel --listen <addr> --to <host:port>`** — the other half:
-  accept WebSockets, bridge each to a TCP target, in front of any sshd
-  (today a stock one; later `drt start`'s own control endpoint).
+- **`drt p2p <peer>`** — the OpenSSH `ProxyCommand` contract over a
+  direct WebRTC session (`doc/P2P.md`): `ssh -o ProxyCommand="drt p2p
+  drt://signal.example/v1/box" user@box`, and rsync/sftp/`-L`/`-R`/agent
+  forwarding are all the real ssh client's, inherited. Host-key
+  verification and auth stay end-to-end between ssh and sshd. With no
+  `--relay` and no `--fallback`, no machine other than the two ends
+  carries a byte of the session; `--relay wss://…` is the old relay leg,
+  as a carrier the user asked for.
+- **`drt p2p --listen <port> --forward <host:port>`** — the other half:
+  a fixed record on a UDP port, every stream to one target, in front of
+  any sshd; with no `--forward`, the REPL itself (§9). `drt tunnel` is an
+  alias for one release and prints the `drt p2p` form of what it was
+  given.
 
 **The seam this names upstream (ego-transport):** in-process composition —
 the `host:ssh/exec` connector dialing *via* wss or webrtc, and the browser

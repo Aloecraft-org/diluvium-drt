@@ -4,7 +4,7 @@
 // A page has no inbound address, which is the same problem a laptop behind
 // CGNAT has, and it gets the same answer: park an outbound leg on a relay
 // by label, and let the relay splice it to whoever claims the label. Then
-// `ssh -o ProxyCommand="drt tunnel wss://.../s/<label>?k=..."` reaches the
+// `ssh -o ProxyCommand="drt p2p --relay wss://.../s/<label>?k=..."` reaches the
 // page with no new protocol on either side.
 //
 // The relay's wire is URLs, HTTP status and raw bytes -- there is no

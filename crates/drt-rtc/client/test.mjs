@@ -15,7 +15,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  parseRecord, recordFromSdp, answerSdp, fingerprintHex, isUsableCandidate, encodeWisp, decodeWisp,
+  parseRecord, recordFromSdp, answerSdp, fingerprintHex, fingerprintText, isUsableCandidate, encodeWisp, decodeWisp,
   RecordError, StreamClosed, WISP, DATA_MAX,
 } from './drt_browser_access.js';
 
@@ -136,11 +136,11 @@ class FakeChannel extends EventTarget {
     this.sent = [];
   }
   send(b) {
-    this.sent.push(decodeWisp(b));
+    this.sent.push(typeof b === 'string' ? b : decodeWisp(b));
   }
 }
 
-async function fakeSession() {
+async function fakeSession(acceptOptions = {}) {
   // Reach the Session class through offer(), with a peer connection whose
   // every step succeeds at once and whose host answers as §5 and §6 say.
   const { offer } = await import('./drt_browser_access.js');
@@ -177,9 +177,9 @@ async function fakeSession() {
     }
   }
   const pending = await offer({ RTCPeerConnection: PC });
-  const session = await pending.accept(vectors.records[0].rtc);
+  const session = await pending.accept(vectors.records[0].rtc, acceptOptions);
   const host = (packet) => channels[1].onmessage({ data: packet.buffer });
-  return { session, wisp: channels[1], host };
+  return { session, wisp: channels[1], control: channels[0], host };
 }
 
 test('accept waits for both channels, hello and the initial credit', async () => {
@@ -204,6 +204,41 @@ test('a stream sends CONNECT, splits DATA at 16379 bytes, and waits for credit',
   await p;
   const data = wisp.sent.filter((x) => x.type === WISP.DATA);
   assert.deepEqual(data.map((x) => x.payload.length), [DATA_MAX, DATA_MAX, DATA_MAX]);
+});
+
+test('connect() with no target, or a port alone, is an empty host on the wire (doc/P2P.md §5.1)', async () => {
+  const { session, wisp } = await fakeSession();
+  session.connect();
+  session.connect(8080);
+  session.connect('', 22);
+  const asked = wisp.sent.filter((p) => p.type === WISP.CONNECT).map((p) => [p.host, p.port]);
+  assert.deepEqual(asked, [['', 0], ['', 8080], ['', 22]]);
+  assert.throws(() => session.connect(0), /1\.\.65535/);
+  assert.throws(() => session.connect('', 70000), /1\.\.65535/);
+});
+
+test('resize reports a stream\'s terminal size on control', async () => {
+  const { session, control } = await fakeSession();
+  const s = session.connect('repl');
+  session.resize(s, 120, 40);
+  session.resize(s.id, 80, 24);
+  assert.deepEqual(control.sent.map((m) => JSON.parse(m)), [
+    { t: 'resize', stream: s.id, cols: 120, rows: 40 },
+    { t: 'resize', stream: s.id, cols: 80, rows: 24 },
+  ]);
+});
+
+test('a fingerprint is checked before the answer is applied: a pin compares, a function asks', async () => {
+  const text = fingerprintText(parseRecord(vectors.records[0].rtc).f);
+  assert.match(text, /^SHA256:[A-Za-z0-9+/]+$/);
+  // A matching pin, padded or not, and a function that says yes.
+  for (const fingerprint of [text, `${text}=`, async (fp) => fp === text]) {
+    const { session } = await fakeSession({ fingerprint });
+    assert.equal(session.hello.service, 'test');
+  }
+  // A pin that differs, and a function that says no, before anything flows.
+  await assert.rejects(fakeSession({ fingerprint: 'SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }), /not the/);
+  await assert.rejects(fakeSession({ fingerprint: () => false }), /not trusted/);
 });
 
 test('data arrives on readable, and a clean CLOSE ends it', async () => {

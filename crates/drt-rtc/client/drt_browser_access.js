@@ -11,7 +11,8 @@
 //   const pending = await offer();              // gathers, then resolves
 //   send(pending.record);                       // to the API, as the page does
 //   const session = await pending.accept(hostRecord);
-//   session.hello.scope;                        // what the host serves
+//   session.hello.services;                     // what the host serves, by name
+//   const t = session.connect();                // whatever it forwards to
 //   const s = session.connect('127.0.0.1', 8123);
 //   s.writable / s.readable / await s.closed    // Web Streams, bytes
 //
@@ -359,10 +360,17 @@ export async function offer(options = {}) {
       record,
       recordText: JSON.stringify(record),
       pc,
-      accept(hostRecord, acceptOptions = {}) {
-        if (used) return Promise.reject(new Error('accept was already called; a session needs a fresh offer'));
+      async accept(hostRecord, acceptOptions = {}) {
+        if (used) throw new Error('accept was already called; a session needs a fresh offer');
         used = true;
-        return open(pc, control, wisp, early, answerSdp(hostRecord, mid), { ...options, ...acceptOptions });
+        const merged = { ...options, ...acceptOptions };
+        try {
+          await trusted(hostRecord, merged);
+        } catch (e) {
+          pc.close();
+          throw e;
+        }
+        return open(pc, control, wisp, early, answerSdp(hostRecord, mid), merged);
       },
       close: () => pc.close(),
     };
@@ -384,6 +392,7 @@ export async function offer(options = {}) {
  */
 export async function direct(hostRecord, options = {}) {
   parseRecord(hostRecord);
+  await trusted(hostRecord, options);
   const PC = options.RTCPeerConnection ?? globalThis.RTCPeerConnection;
   if (!PC) throw new Error('no RTCPeerConnection in this runtime');
   const pc = new PC({ iceServers: options.iceServers ?? [] });
@@ -626,6 +635,32 @@ function earlyInbox(control, wisp) {
   return inbox;
 }
 
+/**
+ * `options.fingerprint`: a `SHA256:<base64>` string the answerer's DTLS
+ * fingerprint must equal, or `fp => boolean | Promise<boolean>` asked
+ * with that fingerprint before the answer is applied, so a stored pin is a
+ * comparison and a missing one is the "trust this peer?" prompt. The
+ * digest is the record's `f`, so nothing has flowed when this runs.
+ */
+async function trusted(hostRecord, options) {
+  const want = options.fingerprint;
+  if (want === undefined || want === null) return;
+  const have = fingerprintText(parseRecord(hostRecord).f);
+  if (typeof want === 'function') {
+    if (!(await want(have))) throw new Error(`the peer's fingerprint ${have} was not trusted`);
+    return;
+  }
+  const expected = String(want).replace(/^sha256:/i, 'SHA256:').replace(/=+$/, '');
+  if (expected !== have && expected !== `SHA256:${have}`) {
+    throw new Error(`the peer's fingerprint is ${have}, not the ${want} expected; a signalling server answering with another peer's record looks exactly like this`);
+  }
+}
+
+/** A record's `f` as `drt p2p` prints and takes it: `SHA256:` and base64 without padding. */
+export function fingerprintText(f) {
+  return `SHA256:${String(f).replace(/=+$/, '')}`;
+}
+
 async function open(pc, control, wisp, early, answer, options) {
   const session = new Session(pc, control, wisp, { role: 'caller', ...options });
   const ready = session.ready(options.timeoutMs ?? ACCEPT_TIMEOUT_MS);
@@ -821,8 +856,19 @@ class Session {
    */
   connect(host, port) {
     if (this.ended) throw new Error('the session has ended');
-    if (typeof host !== 'string' || host.length === 0) throw new TypeError('host must be a non-empty string');
-    if (port === undefined) {
+    // `connect()` asks for whatever the peer forwards to, and `connect(80)`
+    // for port 80 of it (doc/P2P.md §5.1): an empty host on the wire.
+    if (host === undefined || host === '') {
+      host = '';
+      port = port ?? 0;
+      if (port !== 0 && (!Number.isInteger(port) || port < 1 || port > 65535)) throw new TypeError('port must be 1..65535');
+    } else if (typeof host === 'number' && port === undefined) {
+      port = host;
+      host = '';
+      if (!Number.isInteger(port) || port < 1 || port > 65535) throw new TypeError('port must be 1..65535');
+    } else if (typeof host !== 'string') {
+      throw new TypeError('host must be a string');
+    } else if (port === undefined) {
       if (!isServiceName(host)) throw new TypeError(`"${host}" cannot name a service (§10.3); pass a port for an address`);
       port = 0;
     } else if (!Number.isInteger(port) || port < 1 || port > 65535) throw new TypeError('port must be 1..65535');
@@ -838,6 +884,16 @@ class Session {
   send(packet) {
     if (this.wisp.readyState !== 'open') throw new Error('the wisp channel is not open');
     this.wisp.send(packet);
+  }
+
+  /**
+   * Report a stream's terminal size over `control` (doc/P2P.md §5.2), for
+   * a peer service that is a terminal, such as a DRT host's `repl`.
+   */
+  resize(stream, cols, rows) {
+    if (this.control.readyState !== 'open') return;
+    const id = typeof stream === 'number' ? stream : stream.id;
+    this.control.send(JSON.stringify({ t: 'resize', stream: id, cols: cols | 0, rows: rows | 0 }));
   }
 
   /** Resolves when the channel has room for more; see SEND_HIGH_WATER. */

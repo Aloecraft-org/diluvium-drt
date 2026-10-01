@@ -30,7 +30,7 @@ one. Without the stream it polls every three seconds.
 and from anywhere with `drt`:
 
 ```
-ssh -o ProxyCommand="drt tunnel 'rtc:http://127.0.0.1:18495/v1/page/calls?k=caller-token-for-the-example-only'" you@page
+ssh -o ProxyCommand="drt p2p drt+ssh://127.0.0.1:18495/v1/page --H auth=caller-token-for-the-example-only" you@page
 ```
 
 `./demo.sh` plays both halves with `curl`, which is how the gate runs it.

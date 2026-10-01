@@ -302,6 +302,17 @@ The host sends one message after the channel opens:
   operator's network layout, and it never reaches Discofetch.
 - `default` is omitted when the host names none; `service` is the block's
   label.
+- **`scope` and `default` are optional** (`doc/P2P.md` §7.2). A host sends
+  them only when its block's `hello_scope` is on; by default `hello` names
+  the services and nothing about the addresses behind them. A reader that
+  finds no `scope` asks for a named service, or for no target at all (§6).
+- **`forwarding`**: `true` when the host is a relay (`doc/P2P.md` §4.4),
+  which calls a destination the caller names and joins the two sessions.
+- **The caller's messages.** `{"t":"resize","stream":N,"cols":C,"rows":R}`
+  reports the terminal size of one of the caller's streams, for a service
+  that is a terminal (`doc/P2P.md` §5.2). `{"t":"call","to":"<peer>"}`
+  names a relay's destination (§4.1); the relay answers
+  `{"t":"called","hello":…}` or `{"t":"failed","why":…}`.
 
 ## 6. `wisp`: the host's Wisp v1 profile
 
@@ -327,8 +338,13 @@ host does, and where it departs:
   - **UDP (`0x02`) is refused with `0x48`.** Wisp v1 makes UDP
     mandatory; this profile does not carry it. This is the one
     departure from the protocol.
-  - An unknown stream type, an empty or non-UTF-8 hostname, port 0, or a
-    stream id already open: `CLOSE 0x41`.
+  - **An empty hostname asks for whatever the host forwards to**
+    (`doc/P2P.md` §5.1): with port 0, that target itself; with a port, the
+    forward's host at that port. A host that forwards nothing (the
+    `webrtc` block's shape) refuses it with `0x41`, as it always did.
+  - An unknown stream type, a non-UTF-8 hostname, port 0 with a hostname
+    that is not a service name (§10.3), or a stream id already open:
+    `CLOSE 0x41`.
   - A name that does not resolve: `0x42`. No answer within the connect
     timeout: `0x43`. Refused: `0x44`. Any other failure: `0x03`.
   - Past `max_streams` open streams on the session: `0x49`.

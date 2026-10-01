@@ -13,13 +13,13 @@ for _ in $(seq 1 50); do curl -s -o /dev/null "http://127.0.0.1:18491/" && break
 
 # The device holds an outbound leg open, ready to be claimed. From a file,
 # so the park key is in park.json and not on this command line: the flag
-# form is `drt tunnel --park "$RV/park/fp?k=…" --to 127.0.0.1:18491`.
-"$DRT" --config park.json tunnel 2>/dev/null &
+# form is `drt p2p --park "$RV/park/fp?k=…" --forward 127.0.0.1:18491`.
+"$DRT" --config park.json p2p 2>/dev/null &
 
 # The caller half, as a program can use it: a local port, one fresh leg per
 # connection. Anything that speaks TCP now reaches the device. The flag
-# form is `drt tunnel "$RV/s/fp?k=…" --local 127.0.0.1:18492`.
-"$DRT" --config claim.json tunnel 2>/dev/null &
+# form is `drt p2p --relay "$RV/s/fp?k=…" -p 18492`.
+"$DRT" --config claim.json p2p 2>/dev/null &
 for _ in $(seq 1 50); do curl -s -o /dev/null "http://127.0.0.1:18492/ready" && break; sleep 0.1; done
 
 curl -s "http://127.0.0.1:18492/hello"

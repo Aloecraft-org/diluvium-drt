@@ -499,9 +499,11 @@ form of what it was given.
    `DRT-Caller-Token: <token>`, sent on the answerer's poll. `--accept`
    sets the first; the second is any `--H DRT-Caller-Token=…` the parked
    side chooses to send, since `--H` already reaches the signalling side.
-5. **`drt ssh`** takes a peer address as its positional, the user in its
-   `name@` (`drt ssh drt+ssh://me@signal.example/v1/mypc`), or `-u` / `-l`;
-   `--relay` and `--fallback` as on `drt p2p`.
+5. **`drt ssh`** takes a peer address as its positional, the user in front
+   of it (`drt ssh me@drt+ssh://signal.example/v1/mypc`), or `-u` / `-l`;
+   `--relay` and `--fallback` as on `drt p2p`. Built: a target with a
+   scheme `drt p2p` takes, a record, or a file holding one rides a call,
+   opening the service `ssh` (or `--to`); anything else is TCP as before.
 6. **`--match` and example 30.** The verb's server grows from example
    30's program. Example 30 is a declared human surface, one screen per
    file, so what claimable names, `--capacity` and admission add lives

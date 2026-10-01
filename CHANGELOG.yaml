@@ -114,11 +114,10 @@ releases:
         **`drt p2p`: one verb for peer-to-peer sessions (`doc/P2P.md`).**
         With no `--relay` and no `--fallback`, no machine other than the
         two ends carries a byte of the session; when no such path exists it
-        fails and says so. Built so far: the call and listen roles, the
-        park role against a `doc/DRT-Signalling.md` server or a `wss://`
-        relay, and `drt tunnel` as an alias that prints the `drt p2p` form
-        of what it was given and runs it. `--match`, `--relay` through a
-        DRT peer and `--fallback` are refused by name until they land.
+        fails and says so. Four roles: call, listen, park and match, with
+        `--relay` and `--fallback` as the carriers, and `drt tunnel` as an
+        alias that prints the `drt p2p` form of what it was given and runs
+        it.
         - **Call:** `drt p2p <peer>` with a peer address of §3
           (`drt://host/v1/<name>`, `drt+<service>://…`, a bare host, an
           `http(s)://` URL, a record or a file holding one). Stdio is the
@@ -153,8 +152,29 @@ releases:
           `webrtc` block's new `hello_scope` asks; a `resize` message on
           `control` sizes a stream's terminal. Every host is upgraded with
           this, so nothing negotiates it.
+        - **Match:** `drt p2p --match <port>` is the reference signalling
+          server (`stdlib:p2p-match`, grown from example 30): names claimed
+          by the first answerer token to poll them, a caller token and an
+          admission range set on the claim, `--capacity` names at once, and
+          `access-control-allow-origin: *` on every reply, since admission
+          is by token and not origin.
+        - **Carriers:** a peer with a bare `--forward` is a relay. The
+          caller names the destination on `control`, the relay calls it and
+          mirrors the two sessions' Wisp packets, reading none, and its
+          `hello` says `forwarding`, so the caller prints `via relay`.
+          `--fallback` tries direct first.
+        - **`drt ssh`** takes a peer address in place of a host
+          (`drt ssh me@drt+ssh://signal.example/v1/mypc`, a record, a
+          file), `-u` beside `-l`, and `--relay`/`--fallback`.
+        - **In the browser:** `session.connect()` with no target, or a port
+          alone, asks for whatever the peer forwards to; `session.resize`
+          reports a terminal's size on `control`; `offer().accept`,
+          `accept` and `direct` take `fingerprint`, a `SHA256:…` to compare
+          or a function asked before anything flows. `ssh.html#call=` takes
+          `drt://` and `drt+ssh://` addresses and a `fingerprint`.
         - The `p2p` config block, every flag a key; `tunnel` is read as an
-          alias for one release with a warning per key.
+          alias for one release with a warning per key. `doc/P2P.md` is the
+          design, `doc/ssh-transport-matrix.md` every row in its terms.
       - |
         **Streamed responses from the `http` listener.** With `streaming`
         set on a listener, a reply carrying `stream = true` sends the

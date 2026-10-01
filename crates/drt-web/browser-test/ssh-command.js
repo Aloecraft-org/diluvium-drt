@@ -4,7 +4,7 @@
 // The client is ssh.html's (crates/drt-ssh-web): russh compiled to wasm,
 // the page handing it a transport. A page cannot open a TCP connection, so
 // where the native `drt ssh` dials host:port, this reaches the host the
-// ways ssh.html does: a relay claim (what `drt tunnel` dials), or WebRTC --
+// ways ssh.html does: a relay claim (what `drt p2p --relay` dials), or WebRTC --
 // a host's record (direct mode) or a signalling URL (doc/DRT-Signalling.md).
 // The arguments are the native command's, so a line works in both places
 // or is refused here by name.
@@ -203,7 +203,8 @@ async function transport(args, client, io) {
     const session = /^https?:\/\//.test(rest) ? await called(access, rest) : await access.direct(access.parseRecord(rest));
     try {
       const named = !args.to && (session.hello.services || []).includes('ssh');
-      const stream = named ? session.connect('ssh') : session.connect(...pick(session.hello, args.to));
+      const target = named ? null : pick(session.hello, args.to);
+      const stream = named ? session.connect('ssh') : target ? session.connect(...target) : session.connect();
       return { ssh: await client.Ssh.connect(stream, args.hostkey || undefined), session };
     } catch (e) {
       session.close();
@@ -255,6 +256,8 @@ function pick(hello, to) {
     if (at < 0) return [to];
     return [to.slice(0, at).replace(/^\[|\]$/g, ''), Number(to.slice(at + 1))];
   }
+  // No scope named: a stream to whatever the host forwards to (doc/P2P.md §5.1).
+  if (!hello.scope) return null;
   const entry = hello.scope.find((e) => e.scheme === 'ssh') ?? hello.default;
   if (!entry) throw new Error('the host serves no ssh:// target; name one with --to host:port');
   return [entry.host, entry.port];

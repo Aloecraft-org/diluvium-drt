@@ -7,7 +7,7 @@ it unchanged, because the pipe never looks inside.
 
 ```text
   device (no inbound address)      relay (public)              you
-  drt tunnel --park … --to  ──►    drt start    ◄──   drt tunnel wss://…
+  drt p2p --park … --forward ──►   drt start    ◄──   drt p2p --relay wss://…
        │                        spliced by label               │
    127.0.0.1:22                                        ssh, rsync, sftp
 ```
@@ -41,23 +41,29 @@ exit 1
 front of an sshd you can already reach, `--park`/`--to` on one you cannot.
 Given none of them, `drt tunnel` names all three rather than guessing.
 
-**Or one file.** Every flag is a key of a `tunnel` block, so the device's
-half is a file a setup script writes and a unit runs, with the key out of
-`ps` and shell history:
+**`drt tunnel` is `drt p2p` now** (`doc/P2P.md`). The verb stays as an alias
+for one release and prints the `drt p2p` form of what it was given: the
+device half is `drt p2p --park wss://… --forward ssh://127.0.0.1:22`, and
+the caller's `ssh -o ProxyCommand="drt p2p --relay wss://…/s/xps?k=…"`. The
+relay is a carrier the caller asked for by name; without `--relay`, `drt
+p2p` is direct or fails and says so.
+
+**Or one file.** Every flag is a key of a `p2p` block, so the device's half
+is a file a setup script writes and a unit runs, with the key out of `ps`
+and shell history:
 
 ```json
-{ "tunnel": { "park": "wss://rendezvous.example/park/xps?k=…", "to": "127.0.0.1:22" } }
+{ "p2p": { "park": "wss://rendezvous.example/park/xps?k=…", "forward": "ssh://127.0.0.1:22" } }
 ```
 
 ```
-drt --config park.json tunnel
+drt --config park.json p2p
 ```
 
-The URL is `claim` and `--local` is `bind`; `listen`, `to` and `park` are
-spelled as the flags are. A flag typed beside the file replaces the key it
-names, and a flag that names a different mode than the file is refused as
-the conflict it is. `19-a-tunnel-a-program-can-use` runs both halves that
-way.
+A `tunnel` block is still read, each key warned about with its replacement.
+A flag typed beside the file replaces the key it names, and a flag that
+names a different role than the file is refused as the conflict it is.
+`19-a-tunnel-a-program-can-use` runs both halves that way.
 
 **The relay is configured, not flagged.** It reads the `relay` block of a
 config; its keys ship blank, and a blank key is refused when the file loads
@@ -78,8 +84,8 @@ The relay on a public machine, the device holding a leg open, and you:
 
 ```
 drt start --config rendezvous.json
-drt tunnel --park "wss://rendezvous.example/park/xps?k=$PARK_KEY" --to 127.0.0.1:22
-ssh -o ProxyCommand="drt tunnel wss://rendezvous.example/s/xps?k=$CALLER_KEY" user@xps
+drt p2p --park "wss://rendezvous.example/park/xps?k=$PARK_KEY" --forward ssh://127.0.0.1:22
+ssh -o ProxyCommand="drt p2p --relay wss://rendezvous.example/s/xps?k=$CALLER_KEY" user@xps
 ```
 
 `rsync -e`, `sftp -o`, `-L`/`-R` and agent forwarding all work through that

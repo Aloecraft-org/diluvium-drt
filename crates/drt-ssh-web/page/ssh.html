@@ -11,20 +11,25 @@
   serves this page:
 
     ssh.html#url=<the relay claim URL, encoded>&user=<name>[&hostkey=SHA256:…]
-    ssh.html#rtc=<a host's record, encoded>&user=<name>[&to=host:port][&hostkey=SHA256:…]
-    ssh.html#call=<a signalling URL, encoded>&user=<name>[&to=…][&hostkey=SHA256:…]
+    ssh.html#rtc=<a host's record, encoded>&user=<name>[&to=host:port][&hostkey=SHA256:…][&fingerprint=SHA256:…]
+    ssh.html#call=<a peer address, encoded>&user=<name>[&to=…][&hostkey=SHA256:…][&fingerprint=SHA256:…]
 
   The claim URL is wss://<relay>/s/<label>?k=<caller key>, the same one
-  `ssh -o ProxyCommand="drt tunnel …"` dials. The record is the one a
+  `ssh -o ProxyCommand="drt p2p --relay …"` dials. The record is the one a
   `webrtc` block with `direct` on reports (doc/BrowserAccess.md §3.4), and
   `to` picks which of its scope to reach: by default its first `ssh://`
-  entry, else its `default`. The signalling URL is a caller's of
-  doc/DRT-Signalling.md, https://<server>/v1/<name>/calls?k=<caller token>:
-  this page's record is POSTed there and the answerer's comes back. An
-  answerer that serves a service named `ssh` (a page, doc/BrowserAccess.md
-  §10) is reached on it unless `to` names another; otherwise `to` and the
-  scope are read as for a record. A `hostkey` in the link is a pin: any other key
-  refuses the connection. Without one, the first key seen is shown and
+  entry, else its `default`, else whatever the host forwards to. The peer
+  address is one of doc/P2P.md §3: drt://<server>/v1/<name> (HTTPS, or
+  HTTP on loopback), drt+ssh://… to open the service `ssh`, or the caller's
+  URL of doc/DRT-Signalling.md as written,
+  https://<server>/v1/<name>/calls?k=<caller token>: this page's record is
+  POSTed there and the answerer's comes back. An answerer that serves a
+  service named `ssh` (a page, doc/BrowserAccess.md §10) is reached on it
+  unless `to` names another; otherwise `to` and the scope are read as for a
+  record, and a host with no scope gets no target named. A `fingerprint`
+  in the link holds the answerer to that DTLS fingerprint, as `drt p2p
+  --fingerprint` does, before anything flows. A `hostkey` in the link is a
+  pin: any other key refuses the connection. Without one, the first key seen is shown and
   trusted on confirmation, and remembered per relay and label, or per host
   record and target; a key that later changes is refused.
 
@@ -193,12 +198,12 @@ async function open(where, pinned) {
   if (!where.rtc) return { ssh: await connect(where.url, pinned), place: place(where.url), session: null };
   say('Connecting directly…');
   const record = drtBrowserAccess.parseRecord(where.rtc);
-  const session = await drtBrowserAccess.direct(record);
+  const session = await drtBrowserAccess.direct(record, { fingerprint: where.fingerprint });
   try {
     const target = pick(session.hello, where.to);
-    const stream = session.connect(target.host, target.port);
+    const stream = target ? session.connect(target.host, target.port) : session.connect();
     const ssh = await wasm_bindgen.Ssh.connect(stream, pinned || undefined);
-    return { ssh, place: `rtc:${record.f}/${target.host}:${target.port}`, session };
+    return { ssh, place: `rtc:${record.f}/${target ? `${target.host}:${target.port}` : 'forward'}`, session };
   } catch (e) {
     session.close();
     throw e;
@@ -210,6 +215,7 @@ async function open(where, pinned) {
 // The host key is remembered per server and name, never per token.
 async function called(where, pinned) {
   say('Calling…');
+  const { url, service } = callUrl(where.call);
   const pending = await drtBrowserAccess.offer();
   let reply;
   try {
@@ -217,32 +223,33 @@ async function called(where, pinned) {
     const timer = setTimeout(() => abort.abort(), SIGNAL_MS);
     let res;
     try {
-      res = await fetch(where.call, {
+      res = await fetch(url, {
         method: 'POST', body: pending.recordText, signal: abort.signal,
         headers: { 'content-type': 'text/plain;charset=utf-8' },
       });
       reply = await res.text();
     } catch (e) {
-      throw new Error(`${place(where.call)} could not be reached: ${e.message || e}`);
+      throw new Error(`${place(url)} could not be reached: ${e.message || e}`);
     } finally {
       clearTimeout(timer);
     }
     if (!res.ok) {
       const why = REFUSALS[res.status];
-      throw new Error(`${place(where.call)} answered ${res.status}${why ? `: ${why}` : ''}.`);
+      throw new Error(`${place(url)} answered ${res.status}${why ? `: ${why}` : ''}.`);
     }
   } catch (e) {
     pending.close?.();
     throw e;
   }
   say('Answered; connecting…');
-  const session = await pending.accept(reply);
+  const session = await pending.accept(reply, { fingerprint: where.fingerprint });
   try {
-    const named = !where.to && (session.hello.services || []).includes('ssh');
+    const named = !where.to && (service || ((session.hello.services || []).includes('ssh') ? 'ssh' : null));
     const target = named ? null : pick(session.hello, where.to);
-    const stream = named ? session.connect('ssh') : session.connect(target.host, target.port);
+    const stream = named ? session.connect(named) : target ? session.connect(target.host, target.port) : session.connect();
     const ssh = await wasm_bindgen.Ssh.connect(stream, pinned || undefined);
-    return { ssh, place: `call:${place(where.call)}/${named ? 'ssh' : `${target.host}:${target.port}`}`, session };
+    const at = named || (target ? `${target.host}:${target.port}` : 'forward');
+    return { ssh, place: `call:${place(url)}/${at}`, session };
   } catch (e) {
     session.close();
     throw e;
@@ -250,15 +257,37 @@ async function called(where, pinned) {
 }
 
 // Which of the host's scope to reach: `to` when the link names it, else
-// the first ssh:// entry, else the host's default.
+// the first ssh:// entry, else the host's default; null when the host names
+// no scope, which is a stream to whatever it forwards to (doc/P2P.md §5.1).
 function pick(hello, to) {
   if (to) {
     const at = to.lastIndexOf(':');
     return { host: to.slice(0, at).replace(/^\[|\]$/g, ''), port: Number(to.slice(at + 1)) };
   }
+  if (!hello.scope) return null;
   const entry = hello.scope.find((e) => e.scheme === 'ssh') ?? hello.default;
   if (!entry) throw new Error('The host serves no ssh:// target. Name one with to=host:port.');
   return entry;
+}
+
+// A peer address (doc/P2P.md §3) as the URL the caller's request goes to,
+// and the service it names: drt:// is HTTPS, or HTTP on loopback; a path of
+// /v1/<name> gets /calls; drt+<service>:// opens that service.
+function callUrl(text) {
+  const m = /^(drt(?:\+([a-z0-9-]{1,32}))?):\/\/(.*)$/i.exec(text.trim());
+  if (!m) return { url: text, service: null };
+  const service = m[2] ? m[2].toLowerCase() : null;
+  const rest = m[3];
+  const slash = rest.indexOf('/');
+  const authority = slash < 0 ? rest : rest.slice(0, slash);
+  let path = slash < 0 ? '' : rest.slice(slash);
+  const host = authority.replace(/^\[|\]:?\d*$/g, '').replace(/:\d+$/, '');
+  const loopback = /^(localhost|127\.|::1$)/i.test(host);
+  const [bare, query] = path.split('?');
+  let trimmed = bare.replace(/\/+$/, '');
+  if (/^\/v1\/[^/]+$/.test(trimmed)) trimmed += '/calls';
+  if (trimmed === '') trimmed = '/';
+  return { url: `${loopback ? 'http' : 'https'}://${authority}${trimmed}${query ? `?${query}` : ''}`, service };
 }
 
 async function connect(url, pinned) {
@@ -382,8 +411,8 @@ async function start(target, user, pinned) {
   const target = () => {
     const rtc = $('rtc').value.trim();
     const call = $('call').value.trim();
-    if (rtc) return { rtc, to: link.get('to') };
-    if (call) return { call, to: link.get('to') };
+    if (rtc) return { rtc, to: link.get('to'), fingerprint: link.get('fingerprint') };
+    if (call) return { call, to: link.get('to'), fingerprint: link.get('fingerprint') };
     return { url: $('url').value.trim() };
   };
   $('setup').onsubmit = (e) => {

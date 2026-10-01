@@ -29,7 +29,7 @@ const ssh = session.connect('127.0.0.1', 22);   // a stream: ssh.readable, ssh.w
 Stock `ssh` calls the same way:
 
 ```
-ssh -o ProxyCommand="drt tunnel rtc:http://127.0.0.1:18490/v1/box/calls" you@box
+ssh -o ProxyCommand="drt p2p http://127.0.0.1:18490/v1/box" you@box
 ```
 
 `./demo.sh` plays the browser's half with `curl`, which is how the gate runs

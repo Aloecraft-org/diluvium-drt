@@ -49,7 +49,14 @@ export interface OfferOptions {
   RTCPeerConnection?: typeof RTCPeerConnection;
 }
 
+/**
+ * The answerer's DTLS fingerprint, checked before the answer is applied:
+ * `SHA256:<base64>` to compare against, or a function asked with it.
+ */
+export type Fingerprint = string | ((fingerprint: string) => boolean | Promise<boolean>);
+
 export interface AcceptOptions {
+  fingerprint?: Fingerprint;
   /** How long to wait for both channels, `hello` and the first CONTINUE. Default 15000. */
   timeoutMs?: number;
 }
@@ -80,11 +87,15 @@ export interface Session {
   readonly role: 'caller' | 'answerer';
   /**
    * A TCP stream to `host:port`, which must match an entry in
-   * `hello.scope`, or with no port a stream to the named service `host`
-   * (§10.3). Usable at once: Wisp v1 has no "connected" packet, so a
-   * refusal arrives as `closed` rejecting with a StreamClosed.
+   * `hello.scope`; with no port, a stream to the named service `host`
+   * (§10.3); with no arguments, or a port alone, a stream to whatever the
+   * peer forwards to, at that port (doc/P2P.md §5.1). Usable at once: Wisp
+   * v1 has no "connected" packet, so a refusal arrives as `closed`
+   * rejecting with a StreamClosed.
    */
-  connect(host: string, port?: number): Stream;
+  connect(host?: string | number, port?: number): Stream;
+  /** Report a stream's terminal size over `control` (doc/P2P.md §5.2). */
+  resize(stream: Stream | number, cols: number, rows: number): void;
   /** End the session: every stream fails, and the connection closes. */
   close(): void;
   /** Resolves, with why, when the session ends for any reason. */
@@ -195,6 +206,8 @@ export function parseRecord(input: string | object): BrowserAccessRecord;
 export function recordFromSdp(sdp: string): BrowserAccessRecord;
 export function answerSdp(hostRecord: string | object, mid: string): string;
 export function fingerprintHex(f: string): string;
+/** A record's `f` as `drt p2p` prints and takes it: `SHA256:` and unpadded base64. */
+export function fingerprintText(f: string): string;
 /** Whether v1 can use a candidate line (§2.1); parseRecord drops the rest. */
 export function isUsableCandidate(line: string): boolean;
 

@@ -409,7 +409,7 @@ The snippet above assumes the page already has a socket. A page has no
 inbound address, so where the socket comes from is the other half of the
 question, and the answer is DRT's rendezvous relay -- the same one a
 laptop behind CGNAT uses. The page parks an outbound leg by label; a
-caller claims the label through `drt tunnel`; the relay splices them.
+caller claims the label through `drt p2p --relay`; the relay splices them.
 
 ```js
 const leg = park(
@@ -422,7 +422,7 @@ const leg = park(
 Then, from anywhere:
 
 ```sh
-ssh -o ProxyCommand="drt tunnel wss://<label>--tunnel.<zone>/s/<label>?k=<caller>" you@<label>
+ssh -o ProxyCommand="drt p2p --relay wss://<label>--tunnel.<zone>/s/<label>?k=<caller>" you@<label>
 ```
 
 `open` is called once per claim, and a claimed leg is replaced

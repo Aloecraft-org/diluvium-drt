@@ -218,7 +218,7 @@ written for. So the page is the *device*: `relay-leg.js` parks an outbound
 leg by label, and `drt tunnel` claims it as `ssh`'s `ProxyCommand`.
 
 ```
-ssh -o ProxyCommand="drt tunnel wss://<label>--tunnel.<zone>/s/<label>?k=<caller>"
+ssh -o ProxyCommand="drt p2p --relay wss://<label>--tunnel.<zone>/s/<label>?k=<caller>"
       |
    drt start (relay)  park/claim by URL, spliced, byte-counted
       |
