@@ -1,5 +1,16 @@
 drt start: http listening on 127.0.0.1:18495
-calls:  [{"id":1,"record":"{\"caller\":\"record\"}"}]
-answer: 204
-caller: {"answerer":"record"}
-calls:  []
+call:    {"error":"no answerer is present"} 503
+poll:    {"cursor":"0","calls":[]}
+poll:    {"cursor":"1","calls":[{"id":"c1","record":"{\"caller\":\"record\"}","expires_in":25}]}
+answer:  204
+caller:  HTTP/1.1 200 OK location: /v1/page/calls/c1 {"answerer":"record"}
+poll:    {"cursor":"1","calls":[]}
+again:   {"error":"the call was already answered"} 409
+wrong:   {"error":"this token may not do that"} 403
+events:
+  retry: 2000
+  
+  id: 1
+  event: call
+  data: {"cursor":"1"}
+  

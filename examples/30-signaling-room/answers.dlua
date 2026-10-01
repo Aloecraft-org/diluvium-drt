@@ -1,0 +1,26 @@
+-- The answerer's two replies to a call (§2): answer it, or refuse it.
+-- Either peer may withdraw a call; it is the same request.
+local http = require('http')
+local room = require('room')
+local M = {}
+
+function M.answer(m, r)
+  local _, c = room.find(r.id)
+  if not c then return http.fail(m.conn, 404, 'no such call') end
+  if c.answered then return http.fail(m.conn, 409, 'the call was already answered') end
+  if not room.checked(m) then return end
+  c.answered = true                   -- kept until it would have expired, for 409
+  http.json(c.conn, 200, m.body, {location = r.base .. r.id})   -- the held call gets it
+  http.json(m.conn, 204, '')
+end
+
+function M.withdraw(m, r)
+  local n, c = room.find(r.id)
+  if not c then return http.fail(m.conn, 404, 'no such call') end
+  if c.answered then return http.fail(m.conn, 409, 'the call was already answered') end
+  http.fail(c.conn, 410, 'the call was withdrawn or refused')
+  room.forget(n)
+  http.json(m.conn, 204, '')
+end
+
+return M

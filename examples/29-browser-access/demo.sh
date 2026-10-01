@@ -7,9 +7,9 @@ DRT="${DRT:-drt}"
 "$DRT" start --config app.json &
 for _ in $(seq 1 50); do curl -s -o /dev/null http://127.0.0.1:18490/ && break; sleep 0.1; done
 BROWSER='{"v":1,"u":"Xk3fQ9aBc2Dd7eFg","p":"8bqS0lK1vT6YpR2eWm4nHc","f":"EBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8=","c":[]}'
-curl -s -i --data-binary "$BROWSER" http://127.0.0.1:18490/session | tr -d '\r' | grep -E '^(HTTP|access-control|\{)'
+curl -s -i --data-binary "$BROWSER" http://127.0.0.1:18490/v1/box/calls | tr -d '\r' | grep -E '^(HTTP|access-control|location|\{)'
 echo
-curl -s --data-binary 'not a record' http://127.0.0.1:18490/session >/dev/null
+curl -s --data-binary 'not a record' http://127.0.0.1:18490/v1/box/calls >/dev/null
 sleep 0.5
 kill %1 2>/dev/null
 wait 2>/dev/null

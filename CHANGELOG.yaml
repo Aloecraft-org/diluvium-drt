@@ -132,14 +132,26 @@ releases:
           way, and `doc/DRT-Signalling.md` §9 now puts the call notification
           stream on the same listener as the rest of the profile.
       - |
-        **`examples/30-signaling-room`**: signaling for an answerer that
-        cannot host an endpoint, such as a page. A caller's `POST /call` is
-        held until the answerer, polling `GET /calls`, answers with `POST
-        /answer/<id>`, and the held request's reply is the answerer's
-        record, so `drt tunnel rtc:http://…/call` works unchanged. With it,
-        stock `ssh` reaches a page over WebRTC (row 6 of
+        **`doc/DRT-Signalling.md`, and `examples/30-signaling-room` as its
+        reference server.** The profile is how a caller, an answerer and a
+        signalling server written by different people still meet: plain
+        HTTP under `/v1/<name>/`, a caller token and an answerer token, and
+        records the server never reads.
+        - A caller's `POST /v1/<name>/calls` is held until the answerer
+          answers, and its reply is the answerer's record, so `drt tunnel
+          rtc:http://…/v1/<name>/calls` works unchanged.
+        - The answerer reads calls with `GET …/calls?since=<cursor>`, which
+          never repeats or misses one, and answers with `POST
+          …/calls/<id>/answer` or refuses with `DELETE`.
+        - `GET …/events` is the call notification stream, Server-Sent
+          Events on a streaming listener, saying only when to poll.
+        - 503 when no answerer is present, 504 after the hold time, 410 to
+          a refused caller, and 429 past sixteen waiting calls.
+        The example is the whole profile in four `.dlua` files, and a test
+        runs it for the refusals its demo does not show. With it, stock
+        `ssh` reaches a page over WebRTC (row 6 of
         `doc/ssh-transport-matrix.md`); the browser suite runs exactly that
-        in Chromium, the room being the example's program unchanged.
+        in Chromium, with the example's program and config unchanged.
       - |
         **`drt tunnel rtc:`**, the relay's `ProxyCommand` over WebRTC
         instead (row 3 of `doc/ssh-transport-matrix.md`). The process is
@@ -147,8 +159,10 @@ releases:
         stream; nothing between the ends carries a byte.
         - `rtc:<record>` or `rtc:<file>`: the answerer's record in hand,
           for a host in direct mode. No signaling at all.
-        - `rtc:https://…`: `POST` this caller's record, read the answerer's
-          back, which is what `examples/29-browser-access` serves.
+        - `rtc:https://…/v1/<name>/calls`: `POST` this caller's record and
+          read the answerer's back, the caller's request of
+          `doc/DRT-Signalling.md`. A refusal is reported by its meaning in
+          that profile: `503: no answerer is present`.
         - `--to` names the service or `host:port`; the service `ssh` if
           omitted. A refused stream says why: `blocked (0x48)`.
         Underneath it, `drt_rtc::caller` is the caller natively: its own
@@ -211,10 +225,10 @@ releases:
         exactly that in Chromium, with no DRT process between the pages.
       - |
         **`examples/29-browser-access`**: a host that does its own
-        signaling. One `http` listener answers `POST /session` with the
-        host's record and hands the browser's to the `webrtc` block as
-        `open`; the browser then reaches the host's scope directly. No
-        room and no third party. The SSH page's gate runs the example's
+        signalling. One `http` listener answers the profile's `POST
+        /v1/box/calls` with the host's record and hands the caller's to
+        the `webrtc` block as `open`; the browser then reaches the host's
+        scope directly. No room and no third party. The SSH page's gate runs the example's
         program unchanged and signs in to a stock sshd through it.
       - |
         **Three numeric examples**: `26-arrays` (a typed buffer the core

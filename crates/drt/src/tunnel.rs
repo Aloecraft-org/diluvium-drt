@@ -962,9 +962,9 @@ mod tests {
         };
         let mode = |f: Flags| resolve(None, &f).map(|r| r.mode);
         assert_eq!(
-            mode(flags("rtc:https://box.example/session", None, None)),
+            mode(flags("rtc:https://box.example/v1/box/calls", None, None)),
             Ok(Mode::Rtc {
-                source: Source::Post("https://box.example/session".into()),
+                source: Source::Post("https://box.example/v1/box/calls".into()),
                 to: "ssh".into()
             })
         );
@@ -977,7 +977,7 @@ mod tests {
             })
         );
         let e = mode(flags(
-            "rtc:https://box.example/session",
+            "rtc:https://box.example/v1/box/calls",
             None,
             Some("127.0.0.1:2222"),
         ))

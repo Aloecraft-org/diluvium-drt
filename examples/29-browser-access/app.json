@@ -1,5 +1,5 @@
 {
-  "_comment": "The signaling endpoint and the WebRTC host in one deployment. In front of a browser on an https page, a TLS terminator faces the listener.",
+  "_comment": "Signalling for this host, as doc/DRT-Signalling.md's caller sees it, and the WebRTC host, in one deployment. It admits any caller: SSH's own authentication guards the one target in scope. In front of a browser on an https page, a TLS terminator faces the listener.",
   "program": { "path": "app.dlua" },
   "listeners": [
     {
@@ -7,7 +7,7 @@
       "address": "127.0.0.1:18490",
       "queue": "http_in",
       "reply_queue": "http_out",
-      "resp_headers": ["access-control-allow-origin"]
+      "resp_headers": ["access-control-allow-origin", "location"]
     }
   ],
   "webrtc": {

@@ -1,38 +1,46 @@
--- A room for callers and one answerer that cannot host an endpoint, such
--- as a page. A caller POSTs its record to /call and the reply is the
--- answerer's record; the answerer polls /calls and POSTs to /answer/<id>.
-local requests = queue.declare('http_in',  {capacity = 16})
-local replies  = queue.declare('http_out', {capacity = 16, exported = true})
-local cors     = {['access-control-allow-origin'] = '*'}
-local MAX_WAITING = 16
-local waiting, order, next_id = {}, {}, 0   -- id -> {record, conn, handed}
+-- A signalling server for doc/DRT-Signalling.md, v1, serving one name.
+-- room.dlua holds the calls, answers.dlua answers or refuses one,
+-- events.dlua is the call notification stream, http.dlua the replies and
+-- the two tokens.
+local http    = require('http')
+local room    = require('room')
+local answers = require('answers')
+local events  = require('events')
 
-local function reply(conn, status, body)
-  queue.push(replies, {conn = conn, status = status, body = body, headers = cors,
-                       content_type = 'application/json'})
+local requests = queue.declare('http_in', {capacity = 32})   -- first: requests wait here
+local _, args = queue.wait({queue.declare('args', {capacity = 1})})
+http.tokens(args.answerer_token, args.caller_token)
+
+-- The five requests of §2: method, path, whose token, handler.
+local routes = {
+  {'POST',   '^/v1/([^/]+)/calls$',                'caller',   room.call},
+  {'GET',    '^/v1/([^/]+)/calls$',                'answerer', room.list},
+  {'POST',   '^/v1/([^/]+)/calls/([^/]+)/answer$', 'answerer', answers.answer},
+  {'DELETE', '^/v1/([^/]+)/calls/([^/]+)$',        'either',   answers.withdraw},
+  {'GET',    '^/v1/([^/]+)/events$',               'answerer', events.open},
+}
+
+local function route(m, now)
+  local path, query = http.split(m.path)
+  if m.method == 'OPTIONS' then return http.json(m.conn, 204, '') end   -- a CORS preflight
+  for _, r in ipairs(routes) do
+    local method, pattern, who, handler = table.unpack(r)
+    local name, id = path:match(pattern)
+    if m.method == method and name then
+      if name ~= args.name then return http.fail(m.conn, 404, 'no such name') end
+      local refused = http.refuse(m, query, who)
+      if refused then return http.fail(m.conn, refused, 'this token may not do that') end
+      return handler(m, {id = id, query = query, now = now, base = '/v1/' .. name .. '/calls/'})
+    end
+  end
+  http.fail(m.conn, 404, 'no such request')
 end
 
 while true do
-  local _, m = queue.wait({requests})
-  local answer_id = m.path:match('^/answer/(%d+)$')
-  if m.method == 'POST' and m.path == '/call' then
-    next_id = next_id + 1
-    waiting[next_id] = {record = m.body, conn = m.conn}   -- held: no reply yet
-    table.insert(order, next_id)
-    if #order > MAX_WAITING then waiting[table.remove(order, 1)] = nil end
-  elseif m.method == 'GET' and m.path == '/calls' then
-    local calls = {}
-    for _, id in ipairs(order) do
-      local c = waiting[id]
-      if c and not c.handed then c.handed = true; table.insert(calls, {id = id, record = c.record}) end
-    end
-    reply(m.conn, 200, #calls > 0 and json.encode(calls) or '[]')   -- an empty table is not an array
-  elseif m.method == 'POST' and answer_id and waiting[tonumber(answer_id)] then
-    local id = tonumber(answer_id)
-    reply(waiting[id].conn, 200, m.body)   -- the held call gets the answer
-    waiting[id] = nil
-    reply(m.conn, 204, '')
-  else
-    reply(m.conn, 404, '"POST /call, GET /calls, POST /answer/<id>"')
-  end
+  local _, m = queue.wait({requests}, 1000)   -- once a second at least: expiries, keepalives
+  local now = host.monotonic()
+  if m and m.event == 'closed' then events.closed(m.conn)   -- an answerer left its stream
+  elseif m then route(m, now) end
+  room.expire(now)
+  events.keepalive(now)
 end

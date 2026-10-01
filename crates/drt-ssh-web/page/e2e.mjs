@@ -10,8 +10,9 @@
 // library, drt_browser_access.js. And once more in direct mode
 // (doc/BrowserAccess.md §3.4): a second host with `direct` on, whose record
 // is all the page is given -- no room, no signaling. And through
-// examples/29-browser-access's program, unchanged: the host signaling for
-// itself over one HTTP endpoint, as that example's README shows a page.
+// examples/29-browser-access's program, unchanged: the host signalling for
+// itself over the caller's request of doc/DRT-Signalling.md, as that
+// example's README shows a page.
 //
 //   script/drt-ssh-page.sh && cargo build -p drt --features full
 //   cd crates/drt-ssh-web/page && npm test
@@ -163,7 +164,7 @@ fs.writeFileSync(path.join(tmp, 'direct.json'), JSON.stringify({
 fs.writeFileSync(path.join(tmp, 'post.json'), JSON.stringify({
   program: { path: path.resolve(here, '../../../examples/29-browser-access/app.dlua') },
   listeners: [{ scheme: 'http', address: `127.0.0.1:${PORTS.post}`, queue: 'http_in', reply_queue: 'http_out',
-                resp_headers: ['access-control-allow-origin'] }],
+                resp_headers: ['access-control-allow-origin', 'location'] }],
   webrtc: { bind: `127.0.0.1:${PORTS.postRtc}`, identity_file: path.join(tmp, 'post-identity.json'),
             scope: [`ssh://127.0.0.1:${PORTS.sshd}`] },
 }));
@@ -406,7 +407,7 @@ await check('in direct mode, the page signs in with only the host\'s record', as
 });
 
 await check('examples/29-browser-access\'s program signals for its own host, and the page signs in', async () => {
-  const r = await overRtc({ post: `http://127.0.0.1:${PORTS.post}/session`, command: 'echo posted-$((6*7)); exit 8' });
+  const r = await overRtc({ post: `http://127.0.0.1:${PORTS.post}/v1/box/calls`, command: 'echo posted-$((6*7)); exit 8' });
   if (r.refused) throw new Error(`refused: ${r.refused} (${r.code})`);
   if (r.hostKey !== fingerprint || !r.signedIn) throw new Error(`got ${JSON.stringify(r)}`);
   if (!r.out.includes('posted-42')) throw new Error(`the shell printed: ${JSON.stringify(r.out)}`);
@@ -437,9 +438,9 @@ await check('stock ssh through ProxyCommand="drt tunnel rtc:<record>" reaches th
   if (!directHost.lines.some((l) => /^session direct:\S+ connected$/.test(l))) throw new Error('the host saw no direct session');
 });
 
-await check('stock ssh through "drt tunnel rtc:http://…/session" signals through examples/29 and reaches sshd', async () => {
+await check('stock ssh through "drt tunnel rtc:http://…/v1/box/calls" signals through examples/29 and reaches sshd', async () => {
   const r = await nativeSsh('echo rtc-posted-ok',
-    `${DRT} tunnel rtc:http://127.0.0.1:${PORTS.post}/session --to 127.0.0.1:${PORTS.sshd}`);
+    `${DRT} tunnel rtc:http://127.0.0.1:${PORTS.post}/v1/box/calls --to 127.0.0.1:${PORTS.sshd}`);
   if (r.code !== 0 || !r.out.includes('rtc-posted-ok')) throw new Error(`exit ${r.code}\n${r.err}`);
 });
 

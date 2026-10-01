@@ -215,11 +215,12 @@
       sshAnswered.push(answering);
       return { record: answering.recordText, fingerprint: server.fingerprint };
     },
-    // Row 6: the same, for callers that arrive through a signaling room
-    // (examples/30-signaling-room) rather than through the suite. The page
-    // polls for waiting callers, answers each, and posts its record back;
-    // `drt tunnel rtc:<room>/call` is the caller.
-    async sshListen(hostKey, authorizedKeys, room) {
+    // Row 6: the same, for callers that arrive through a signalling server
+    // (doc/DRT-Signalling.md; examples/30-signaling-room) rather than
+    // through the suite. The page holds the call notification stream,
+    // polls once on connecting and once per notification, and answers each
+    // call; `drt tunnel rtc:<server>/v1/<name>/calls` is the caller.
+    async sshListen(hostKey, authorizedKeys, base, token) {
       const { answer } = await import('/drt_browser_access.js');
       const server = new DrtSshServer(hostKey, authorizedKeys);
       const ssh = (stream) =>
@@ -229,24 +230,36 @@
           bound.term.putFile('/hello.dlua', new TextEncoder().encode('print("hello from a page, over webrtc")\n'));
           bound.term.setCwd('/');
         }));
-      const listening = { stop: false, answered: 0 };
-      (async () => {
-        while (!listening.stop) {
-          const calls = await fetch(`${room}/calls`).then((r) => r.json()).catch(() => []);
-          for (const call of calls) {
-            const answering = await answer(call.record, { services: { ssh }, label: 'drt in a page' });
-            sshAnswered.push(answering);
-            await fetch(`${room}/answer/${call.id}`, { method: 'POST', body: answering.recordText });
-            listening.answered++;
-          }
-          await new Promise((r) => setTimeout(r, 200));
+      const k = `k=${encodeURIComponent(token)}`;
+      const listening = { stop: false, answered: 0, cursor: '0', events: null };
+      let polling = Promise.resolve();
+      const poll = () => (polling = polling.then(async () => {
+        if (listening.stop) return;
+        const got = await fetch(`${base}/calls?since=${listening.cursor}&${k}`).then((r) => r.json()).catch(() => null);
+        if (!got) return;
+        listening.cursor = got.cursor;
+        for (const call of got.calls) {
+          const answering = await answer(call.record, { services: { ssh }, label: 'drt in a page' });
+          sshAnswered.push(answering);
+          await fetch(`${base}/calls/${call.id}/answer?${k}`, { method: 'POST', body: answering.recordText });
+          listening.answered++;
         }
-      })();
+      }));
+      listening.events = new EventSource(`${base}/events?${k}`);
+      listening.events.onopen = poll;
+      listening.events.addEventListener('call', poll);
+      await new Promise((resolve) => {
+        listening.events.addEventListener('open', resolve, { once: true });
+        setTimeout(resolve, 5000);
+      });
       sshListening.push(listening);
       return { fingerprint: server.fingerprint };
     },
     sshStopListening() {
-      for (const l of sshListening) l.stop = true;
+      for (const l of sshListening) {
+        l.stop = true;
+        l.events?.close();
+      }
     },
     sshParkEvents: () => (sshParked.get(1) ? sshParked.get(1).events : []),
     sshUnpark() {

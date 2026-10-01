@@ -10,7 +10,7 @@
 //!
 //! ```text
 //! ssh -o ProxyCommand="drt tunnel rtc:box.record.json" user@box       # direct mode
-//! ssh -o ProxyCommand="drt tunnel rtc:https://box.example/session" user@box
+//! ssh -o ProxyCommand="drt tunnel rtc:https://box.example/v1/box/calls" user@box
 //! ```
 //!
 //! ## surface block
@@ -19,8 +19,11 @@
 //! - Configurable: [`MAX_REPLY`], [`SIGNAL_TIMEOUT`].
 //! - Fan-out: [`Source`], the two ways the answerer's record is had: in
 //!   hand, which is direct mode (`doc/BrowserAccess.md` §3.4), or by
-//!   `POST`ing this caller's record to a signaling endpoint that answers
-//!   with the answerer's (the shape of `examples/29-browser-access`).
+//!   `POST`ing this caller's record to a signalling server that answers
+//!   with the answerer's: the caller's request of `doc/DRT-Signalling.md`
+//!   §3, which `examples/29-browser-access` and `examples/30-signaling-room`
+//!   both serve. [`REFUSALS`]: what each status that profile names means
+//!   to a caller.
 
 use std::time::Duration;
 
@@ -31,8 +34,27 @@ use tokio_rustls::rustls::pki_types::CertificateDer;
 
 /// A record is 512 bytes (§2); this bounds a reply that is not one.
 pub const MAX_REPLY: usize = 16 * 1024;
-/// How long the signaling endpoint may take to answer.
-pub const SIGNAL_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long the signalling server may take to answer: the profile's
+/// longest hold time (`doc/DRT-Signalling.md` §3, 30 s) and a margin, so
+/// a server's own 504 arrives before this gives up.
+pub const SIGNAL_TIMEOUT: Duration = Duration::from_secs(35);
+
+/// The statuses `doc/DRT-Signalling.md` §2 names, as a caller reads them.
+/// A status not here is reported by its number alone.
+pub const REFUSALS: &[(u16, &str)] = &[
+    (400, "the request was malformed"),
+    (
+        401,
+        "no token, or one this server does not know (`?k=` or --header)",
+    ),
+    (403, "this token may not call"),
+    (404, "no such name on this server"),
+    (410, "the answerer refused the call"),
+    (413, "this caller's record is too large"),
+    (429, "too many calls are waiting; try again"),
+    (503, "no answerer is present"),
+    (504, "nobody answered within the server's hold time"),
+];
 
 /// Where the answerer's record comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,7 +241,10 @@ async fn exchange<S: AsyncReadExt + AsyncWriteExt + Unpin>(
         .and_then(|c| c.parse().ok())
         .ok_or_else(|| format!("{url} answered something that is not HTTP"))?;
     if !(200..300).contains(&status) {
-        return Err(format!("{url} answered {status}"));
+        return Err(match REFUSALS.iter().find(|(s, _)| *s == status) {
+            Some((_, meaning)) => format!("{url} answered {status}: {meaning}"),
+            None => format!("{url} answered {status}"),
+        });
     }
     if head
         .to_ascii_lowercase()

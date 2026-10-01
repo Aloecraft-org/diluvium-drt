@@ -16,7 +16,12 @@ RootConfig {
             max_tier: None,
         },
     },
-    connectors: {},
+    connectors: {
+        "time": ConnectorWiring {
+            backing: None,
+            scope: None,
+        },
+    },
     plugins: {},
     listeners: [
         Listener {
@@ -24,15 +29,24 @@ RootConfig {
             address: "127.0.0.1:18495",
             queue: "http_in",
             reply_queue: "http_out",
-            max_body: 65536,
-            conn_deadline_ms: 15000,
+            max_body: 1024,
+            conn_deadline_ms: 30000,
             max_conns: 64,
             admit_timeout_ms: 2000,
-            headers: [],
+            headers: [
+                "authorization",
+                "last-event-id",
+            ],
             resp_headers: [
                 "access-control-allow-origin",
+                "access-control-allow-methods",
+                "access-control-allow-headers",
+                "access-control-expose-headers",
+                "cache-control",
+                "location",
+                "retry-after",
             ],
-            streaming: false,
+            streaming: true,
             stream_idle_ms: 60000,
         },
     ],
@@ -50,5 +64,15 @@ RootConfig {
     principals: [],
     dlua_dir: None,
     entry: None,
-    args: {},
+    args: {
+        "answerer_token": Str(
+            "answerer-token-for-the-example-only",
+        ),
+        "caller_token": Str(
+            "caller-token-for-the-example-only",
+        ),
+        "name": Str(
+            "page",
+        ),
+    },
 }

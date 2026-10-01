@@ -1,8 +1,8 @@
 # DRT signalling, v1
 
-**Status:** draft, 2026-10-01. Not yet implemented: `examples/29` and `examples/30`
-speak earlier, unversioned shapes of this, and are brought into line with
-it (§9).
+**Status:** draft, 2026-10-01. `examples/30-signaling-room` is the
+reference server (§9); `examples/29-browser-access` serves the caller's
+request (§3) for a host that is its own answerer.
 
 Signalling is how two peers that cannot yet reach each other swap the one
 record each needs to connect directly (`doc/BrowserAccess.md` §2). It
@@ -82,8 +82,10 @@ and begin `/v1/<name>/`.
 
 One request. `POST /v1/<name>/calls` with the caller's record, then wait:
 the reply is the answerer's record, or a status that says why not. The
-response carries `location: /v1/<name>/calls/<id>`, so a caller that gives
-up early can `DELETE` it.
+reply carries `location: /v1/<name>/calls/<id>`, naming the call. A held
+request has no response head until it is answered, so a caller that gives
+up early has no id to `DELETE`: it closes the connection, and its call
+lapses at the end of the hold time.
 
 The **hold time** is the server's, at most 30 seconds, and stated in its
 documentation. A caller should allow it, plus a margin.
@@ -173,6 +175,7 @@ that wants to read less can be handed less: direct mode
 | `drt_browser_access.js` | caller, answerer | `offer`/`accept`, and an answerer helper that holds the call notification stream and falls back to polling |
 | a DRT host (`webrtc` block) | answerer | a stdlib program, as `stdlib:browser-access` is for Discofetch's socket |
 | a signalling server | server | any HTTP server; `examples/30` is the reference, in dlua |
+| `examples/29-browser-access` | server and answerer | §3 only: a host answering every call with its own record as it arrives |
 
 Discofetch can serve this profile on its API beside its own socket
 (`doc/BrowserAccess.md` §7.1), with that socket also carrying call notifications, and
@@ -195,8 +198,9 @@ way the server is built.
   `content_type = "text/event-stream"`, keeps that request's `conn`, and
   sends one `chunk` per call notification and one per keepalive. When the
   answerer disconnects, the program gets `{conn, event = "closed"}` on its
-  request queue and forgets the `conn`. `examples/31-streaming-responses`
-  is an event stream written this way.
+  request queue and forgets the `conn`. `examples/30-signaling-room`'s
+  `events.dlua` is this, and `examples/31-streaming-responses` is a
+  smaller event stream written the same way.
 - **One port.** Every request of §2, the stream included, arrives on one
   listener. The stream's keepalive (§5) is shorter than the listener's
   `stream_idle_ms`, so the host never closes a stream the program is

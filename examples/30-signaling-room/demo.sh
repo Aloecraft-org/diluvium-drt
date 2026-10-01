@@ -1,17 +1,29 @@
 #!/usr/bin/env bash
-# The room, a caller and an answerer, orchestrated so the gate can run them
+# The server, a caller and an answerer, orchestrated so the gate can run them
 # unattended: curl plays both, as README.md's commands do by hand.
 set -u
 DRT="${DRT:-drt}"
+BASE=http://127.0.0.1:18495/v1/page
+A=answerer-token-for-the-example-only
+C=caller-token-for-the-example-only
 "$DRT" start --config app.json &
 for _ in $(seq 1 50); do curl -s -o /dev/null http://127.0.0.1:18495/ && break; sleep 0.1; done
-curl -s --data-binary '{"caller":"record"}' http://127.0.0.1:18495/call > answered.txt &
+
+echo "call:    $(curl -s -w ' %{http_code}' --data-binary '{"caller":"record"}' "$BASE/calls?k=$C")"
+echo "poll:    $(curl -s "$BASE/calls?k=$A")"
+curl -sN "$BASE/events?k=$A" > events.txt &
+sleep 0.3
+curl -s -i --data-binary '{"caller":"record"}' "$BASE/calls?k=$C" > called.txt &
 sleep 0.5
-echo "calls:  $(curl -s http://127.0.0.1:18495/calls)"
-curl -s -o /dev/null -w 'answer: %{http_code}\n' --data-binary '{"answerer":"record"}' http://127.0.0.1:18495/answer/1
-wait %2
-echo "caller: $(cat answered.txt)"
-echo "calls:  $(curl -s http://127.0.0.1:18495/calls)"
-kill %1 2>/dev/null
+echo "poll:    $(curl -s "$BASE/calls?since=0&k=$A")"
+echo "answer:  $(curl -s -w '%{http_code}' --data-binary '{"answerer":"record"}' "$BASE/calls/c1/answer?k=$A")"
+wait %3
+echo "caller:  $(tr -d '\r' < called.txt | grep -E '^(HTTP|location|\{)' | paste -sd ' ')"
+echo "poll:    $(curl -s "$BASE/calls?since=1&k=$A")"
+echo "again:   $(curl -s -w ' %{http_code}' -X DELETE "$BASE/calls/c1?k=$C")"
+echo "wrong:   $(curl -s -w ' %{http_code}' "$BASE/calls?k=$C")"
+echo "events:"
+sed 's/^/  /' events.txt
+kill %2 %1 2>/dev/null
 wait 2>/dev/null
-rm -f answered.txt
+rm -f events.txt called.txt

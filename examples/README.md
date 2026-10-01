@@ -42,8 +42,8 @@ reference. Everything here is v0.6.0.
 | [`26-arrays`](26-arrays) | The `array` library: a typed buffer the core owns rather than a Lua table, elementwise arithmetic with a scalar broadcast, and why the contents print as IEEE bits and never as decimals. | `drt run app.dlua` |
 | [`27-reductions-and-grouping`](27-reductions-and-grouping) | The three rules that make a reduction answer the same thing on every target: a canonical summation order, one total ordering with NaN last, and first-appearance group ids. | `drt run app.dlua` |
 | [`28-fft`](28-fft) | `rfft` on a real signal, printed as `real:imag` bit patterns. The example where a compiler flag that failed to reach one target shows up as a differing hex digit. | `drt run app.dlua` |
-| [`29-browser-access`](29-browser-access) | Signaling is a program: one HTTP endpoint on the host swaps records with a browser, which then reaches the host's scope directly over WebRTC. | `./demo.sh` |
-| [`30-signaling-room`](30-signaling-room) | Signaling for an answerer that cannot host an endpoint, such as a page: a caller's request is held until the answerer, polling, answers it. | `./demo.sh` |
+| [`29-browser-access`](29-browser-access) | Signalling is a program: the host answers `doc/DRT-Signalling.md`'s caller request with its own record, and the browser then reaches the host's scope directly over WebRTC. | `./demo.sh` |
+| [`30-signaling-room`](30-signaling-room) | The reference server for `doc/DRT-Signalling.md`: a caller's request is held until an answerer that cannot take requests, such as a page, reads it by cursor and answers. Its event stream says when to read. | `./demo.sh` |
 | [`31-streaming-responses`](31-streaming-responses) | Server-Sent Events from a program: a reply with `stream = true` sends the head at once, the body follows in pieces, and a client that leaves is reported back. | `./demo.sh` |
 
 `drt run` executes one program to completion and exits — no swarm, no

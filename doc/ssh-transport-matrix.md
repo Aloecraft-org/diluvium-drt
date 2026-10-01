@@ -55,7 +55,7 @@ none of the traffic. It comes in three modes:
 | Mode | Where the records travel | Rows |
 |---|---|---|
 | **None (direct mode)** | The host's record is fixed, so it travels in a link, a QR code or a config. The caller chooses its own ICE credentials, and the host makes a session from the first connectivity check. | 3 and 5: the answerer is a DRT host with a UDP port the caller can reach, such as a VPS. No server of any kind. |
-| **Program** | A `drt start` program behind an `http` listener. `examples/29-browser-access` is a host signaling for itself: a caller `POST`s its record and the reply is the host's. `examples/30-signaling-room` is a room: a meeting point for an answerer that cannot take a request, such as a page. A caller's `POST /call` is held until the answerer, polling `GET /calls`, answers with `POST /answer/<id>`, and the held request's reply is the answerer's record. | Every WebRTC row. Needs a TLS terminator for callers on `https://` pages. |
+| **Program** | A `drt start` program behind an `http` listener, speaking `doc/DRT-Signalling.md`. `examples/29-browser-access` is a host signaling for itself: a caller `POST`s its record to `/v1/box/calls` and the reply is the host's. `examples/30-signaling-room` is a server for an answerer that cannot take a request, such as a page. A caller's `POST /v1/<name>/calls` is held until the answerer, polling `GET /v1/<name>/calls` or told by its call notification stream, answers, and the held request's reply is the answerer's record. | Every WebRTC row. Needs a TLS terminator for callers on `https://` pages. |
 | **External service** | A third party's API. For Discofetch that is `stdlib:browser-access` on the host's side. | Every WebRTC row, as the service supports it. |
 
 **A page that answers always needs signaling** (rows 6 and 8): a browser
@@ -64,7 +64,7 @@ callers whose records reach it through a program or a service. Direct
 mode is a DRT host's alone.
 
 WireGuard rows need the peer's public key and endpoint instead. They
-travel in the config, or through a program that reads them from a room.
+travel in the config, or through a program that serves them.
 
 ## The matrix
 
@@ -115,7 +115,7 @@ yields it:
 
 ```
 ssh -o ProxyCommand="drt tunnel rtc:box.record.json" user@box
-ssh -o ProxyCommand="drt tunnel rtc:https://box.example/session" user@box
+ssh -o ProxyCommand="drt tunnel rtc:https://box.example/v1/box/calls" user@box
 ```
 
 `--to 127.0.0.1:22` reaches the same sshd by address. The same host
@@ -155,11 +155,12 @@ ssh.html#rtc=<the host's record>&user=me&hostkey=SHA256:…
 
 ### 6. Native `ssh` to a browser page
 
-The page runs the SSH server as its service `ssh`, polls a room for
-callers, and answers each one. The native side calls through the room:
+The page runs the SSH server as its service `ssh`, reads its calls from
+a signalling server, and answers each one. The native side calls through
+the same server, with the caller token:
 
 ```
-ssh -o ProxyCommand="drt tunnel rtc:https://signal.example/call" user@page
+ssh -o ProxyCommand="drt tunnel 'rtc:https://signal.example/v1/page/calls?k=$CALLER_TOKEN'" user@page
 ```
 
 What the session gets is the page's shell: every `drt` verb the page's
@@ -177,11 +178,11 @@ ssh -o ProxyCommand="drt tunnel wss://relay.example/s/page?k=$CALLER_KEY" user@p
 ### 8. Browser to browser
 
 Both ends have WebRTC built in, so no DRT process is in the path. One
-page runs the SSH server and answers through a room, as in row 6; the
-other runs `ssh.html`, which calls through the same room:
+page runs the SSH server and answers through a signalling server, as in
+row 6; the other runs `ssh.html`, which calls through the same server:
 
 ```
-ssh.html#call=https://signal.example/call&user=me&hostkey=SHA256:…
+ssh.html#call=https://signal.example/v1/page/calls?k=…&user=me&hostkey=SHA256:…
 ```
 
 Across a network each page needs a STUN server for its public address,
@@ -207,5 +208,6 @@ evaluation) is debuggable from anywhere this row reaches.
   direct mode (§3.4), and either peer serving named services (§10).
 - `doc/WireGuard.md`: both WireGuard modes, and what hole punching relies
   on there.
+- `doc/DRT-Signalling.md`: the signalling profile.
 - `examples/29-browser-access` and `examples/30-signaling-room`: the two
   signaling programs.

@@ -1,8 +1,10 @@
 {
   "name": "30-signaling-room",
-  "teaches": "A room is signaling for an answerer that cannot host an endpoint, such as a page: a caller's POST is held until the answerer, polling, answers it, and the held request's reply is the answerer's record.",
+  "teaches": "A signalling server for doc/DRT-Signalling.md is a drt start program: a caller's POST is held until the answerer, polling with a cursor or told by a call notification stream, answers it, and the held request's reply is the answerer's record.",
   "cmd": "./demo.sh",
   "needs_network": false,
   "needs_listener": true,
-  "normalise": []
+  "normalise": [
+    "s|\"expires_in\":[0-9][0-9]*|\"expires_in\":<s>|"
+  ]
 }

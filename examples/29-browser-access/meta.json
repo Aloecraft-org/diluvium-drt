@@ -1,6 +1,6 @@
 {
   "name": "29-browser-access",
-  "teaches": "Signaling is a program, not a service: one HTTP endpoint on the host takes a browser's record and answers with the host's, and the browser then reaches the host's scope directly over WebRTC.",
+  "teaches": "Signalling is a program, not a service: the caller's request of doc/DRT-Signalling.md, POST /v1/box/calls, is answered by the host itself with its record, and the browser then reaches the host's scope directly over WebRTC.",
   "cmd": "./demo.sh",
   "needs_network": false,
   "needs_listener": true,

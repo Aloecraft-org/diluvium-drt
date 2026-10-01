@@ -1,22 +1,34 @@
--- The whole of signaling, on this host: a browser POSTs its record to
--- /session and the reply is the host's record. No room and no third party.
+-- Signalling for this host (doc/DRT-Signalling.md), under the name 'box'.
+-- The host is its own answerer, so a call is answered as it arrives: the
+-- reply to POST /v1/box/calls is the host's record. No room, no third party.
 local requests = queue.declare('http_in',    {capacity = 8})
 local replies  = queue.declare('http_out',   {capacity = 8, exported = true})
 local reports  = queue.declare('webrtc',     {capacity = 64})
 local commands = queue.declare('webrtc_cmd', {capacity = 8, exported = true})
+local cors     = {['access-control-allow-origin'] = '*'}
 local record, n = nil, 0
+
+local function reply(conn, status, body, headers)
+  headers = headers or {}
+  for k, v in pairs(cors) do headers[k] = v end
+  queue.push(replies, {conn = conn, status = status, body = body,
+                       content_type = 'application/json', headers = headers})
+end
 
 while true do
   local from, m = queue.wait({requests, reports})
   if from == reports then
     if m.event == 'webrtc_record' then record = m.rtc end
     if m.event == 'webrtc_session' then print(m.peer, m.state, m.reason or '') end
-  elseif m.method == 'POST' and m.path == '/session' and record then
-    n = n + 1
-    queue.push(commands, {command = 'open', peer = 'browser-' .. n, rtc = m.body})
-    queue.push(replies, {conn = m.conn, status = 200, content_type = 'application/json',
-                         body = record, headers = {['access-control-allow-origin'] = '*'}})
+  elseif m.method == 'POST' and m.path == '/v1/box/calls' then
+    if not record then
+      reply(m.conn, 503, '{"error":"the host has not reported its record yet"}')
+    else
+      n = n + 1
+      queue.push(commands, {command = 'open', peer = 'browser-' .. n, rtc = m.body})
+      reply(m.conn, 200, record, {location = '/v1/box/calls/c' .. n})
+    end
   else
-    queue.push(replies, {conn = m.conn, status = 404, body = 'POST a record to /session\n'})
+    reply(m.conn, 404, '{"error":"POST a record to /v1/box/calls"}')
   end
 end

@@ -1,0 +1,69 @@
+-- The calls waiting for one name (§3, §4.1). A call's cursor is its
+-- number; its id is that number with a 'c' in front. answers.dlua is the
+-- answerer's two replies to one.
+local http   = require('http')
+local events = require('events')
+local M = {}
+local HOLD_MS     = 25000   -- §3: a call nobody answers gets 504 after this
+local PRESENT_MS  = 30000   -- §4.2: an answerer is present this long after a poll
+local WAITING_CAP = 16      -- §6
+local RECORD_MAX  = 512     -- §1
+local calls, last, polled = {}, 0, nil   -- number -> {record, conn, ends, answered}
+
+-- 'c3' -> 3 and the call, if it is still here.
+function M.find(id)
+  local n = tonumber(id:match('^c(%d+)$') or '')
+  return n, n and calls[n]
+end
+
+function M.forget(n) calls[n] = nil end
+
+local function waiting()
+  local count = 0
+  for _, c in pairs(calls) do if not c.answered then count = count + 1 end end
+  return count
+end
+
+function M.checked(m)
+  if not utf8.len(m.body) then return http.fail(m.conn, 400, 'a record is text') end
+  if #m.body > RECORD_MAX then return http.fail(m.conn, 413, 'a record is at most 512 bytes') end
+  return true
+end
+
+function M.call(m, r)
+  if not M.checked(m) then return end
+  local present = (polled and r.now - polled < PRESENT_MS) or events.held()
+  if not present then return http.fail(m.conn, 503, 'no answerer is present') end
+  if waiting() >= WAITING_CAP then
+    return http.fail(m.conn, 429, 'too many calls waiting', {['retry-after'] = '5'})
+  end
+  last = last + 1
+  calls[last] = {record = m.body, conn = m.conn, ends = r.now + HOLD_MS}   -- held: no reply yet
+  events.notify(last, r.now)
+end
+
+function M.list(m, r)
+  local since = r.query.since or '0'
+  if not since:match('^%d+$') then return http.fail(m.conn, 400, 'a malformed cursor') end
+  polled = r.now
+  local out = {}
+  for n = tonumber(since) + 1, last do
+    local c = calls[n]
+    if c and not c.answered then
+      out[#out + 1] = {id = 'c' .. n, record = c.record, expires_in = math.ceil((c.ends - r.now) / 1000)}
+    end
+  end
+  -- An empty table encodes as an object, so an empty list is written out.
+  http.json(m.conn, 200, '{"cursor":"' .. last .. '","calls":' .. (#out > 0 and json.encode(out) or '[]') .. '}')
+end
+
+function M.expire(now)
+  for n, c in pairs(calls) do
+    if now >= c.ends then
+      if not c.answered then http.fail(c.conn, 504, 'no answer within the hold time') end
+      calls[n] = nil
+    end
+  end
+end
+
+return M
