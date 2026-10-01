@@ -121,6 +121,16 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      # crates/drt/tests/ssh_cli.rs runs `drt ssh` against sshd as root,
+      # through `sudo -n`, as the ssh-page job's e2e.mjs does, and a root
+      # sshd needs its privilege separation directory. Without it the
+      # tests report themselves skipped, which is not a pass.
+      - name: A stock OpenSSH sshd
+        run: |
+          set -eu
+          sudo apt-get install -y --no-install-recommends openssh-server
+          sudo mkdir -p /run/sshd
+          /usr/sbin/sshd -V 2>&1 || true
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
@@ -305,6 +315,13 @@ jobs:
         run: |
           npm ci
           npx playwright install --with-deps chromium
+      # drt-ssh-in-the-page signs in to sshd as root, as the ssh-page job.
+      - name: A stock OpenSSH sshd
+        run: |
+          set -eu
+          sudo apt-get install -y --no-install-recommends openssh-server
+          sudo mkdir -p /run/sshd
+          /usr/sbin/sshd -V 2>&1 || true
       - name: The examples gate, in Chromium
         working-directory: crates/drt-web/browser-test
         run: npm test
