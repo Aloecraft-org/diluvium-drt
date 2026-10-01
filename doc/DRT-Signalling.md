@@ -12,9 +12,11 @@ each be written by somebody else and still meet.
 
 **HTTP is the protocol.** Every record moves in a plain HTTP request, and
 an answerer that only polls is correct. A server may also offer a
-**doorbell**, a stream of Server-Sent Events that says "something changed,
-go and look", and carries no records. A dropped doorbell costs latency,
-never correctness.
+**call notification stream** (§5): the response to `GET /v1/<name>/events`,
+which stays open and carries one Server-Sent Event, a **call
+notification**, each time a call arrives. A notification says only that
+there is something to read and carries no record. A lost notification
+costs latency, never correctness.
 
 ## surface
 
@@ -22,7 +24,7 @@ never correctness.
   (§4), which may be unable to take one (a browser page is the case this
   exists for); the **server** (§2), which both reach.
 - Configurable values a server states: the hold time (§3), the call
-  lifetime (§4.1), the waiting cap (§6), the doorbell's keepalive (§5).
+  lifetime (§4.1), the waiting cap (§6), the call notification stream's keepalive (§5).
 - Fan-out: the five requests of §2's table.
 
 ## 1. Names, tokens and records
@@ -53,7 +55,7 @@ and begin `/v1/<name>/`.
 | `GET /v1/<name>/calls?since=<cursor>` | answerer | The calls waiting after `cursor`, and the new cursor (§4). |
 | `POST /v1/<name>/calls/<id>/answer` | answerer | Body: the answerer's record. 204; the held call gets it. |
 | `DELETE /v1/<name>/calls/<id>` | either | Withdraw a call, or refuse one. The held call gets 410. |
-| `GET /v1/<name>/events` | answerer | The doorbell (§5): `text/event-stream`. |
+| `GET /v1/<name>/events` | answerer | The call notification stream (§5): `text/event-stream`. |
 
 - **Bodies are sent as `text/plain;charset=utf-8`.** A browser then sends a
   simple request, with no CORS preflight; a server accepts
@@ -103,7 +105,7 @@ This is WHIP's shape (RFC 9725: `POST`, a `Location` for the session,
   given, and gets every call that arrived after it. With no `since`, it
   gets every call still waiting. A cursor is never reused, so a call is
   never missed and never repeated across polls, whatever happened to the
-  doorbell.
+  call notification stream.
 - **`calls`** is always an array, empty when nothing waits.
 - **`expires_in`** is seconds until the call's hold ends. Answering after
   that is 404.
@@ -113,11 +115,11 @@ This is WHIP's shape (RFC 9725: `POST`, a `Location` for the session,
 ### 4.2 Being present
 
 A server counts an answerer **present** while it has polled within the
-last 30 seconds or holds a doorbell. A call to a name with no present
+last 30 seconds or holds a call notification stream open. A call to a name with no present
 answerer is answered 503 at once, rather than held for an answer that will
 not come. An answerer that only polls polls at least that often.
 
-## 5. The doorbell
+## 5. The call notification stream
 
 `GET /v1/<name>/events`, with the answerer token, is an event stream
 (`text/event-stream`, the HTML standard's Server-Sent Events):
@@ -132,21 +134,21 @@ data: {"cursor":"17"}
 : keepalive
 ```
 
-- **`event: call`** says calls have arrived; `data` carries the newest
+- **`event: call`** is a call notification: calls have arrived, and `data` carries the newest
   cursor. The answerer polls (§4.1) with the cursor it already has. The
   event carries no record and no call id: the poll is the only way a call
   is read.
 - **`id`** is the cursor, so a browser's `EventSource` sends it back as
-  `Last-Event-ID` when it reconnects, and the server may ring at once if
-  calls arrived meanwhile.
+  `Last-Event-ID` when it reconnects, and the server may send a call
+  notification at once if calls arrived meanwhile.
 - **A comment line every 25 seconds** keeps proxies from closing an idle
   stream.
-- A server may also offer the doorbell over a WebSocket at
-  `/v1/<name>/events` (one text message per event, the same `data`). It is
-  the same doorbell and changes nothing else.
+- A server may also offer the same notifications over a WebSocket at
+  `/v1/<name>/events` (one text message per notification, the same
+  `data`). It changes nothing else.
 
 An answerer that cannot hold a stream polls. One that holds a stream polls
-once on connecting, then on each ring.
+once on connecting, then on each call notification.
 
 ## 6. Limits
 
@@ -168,29 +170,40 @@ that wants to read less can be handed less: direct mode
 |---|---|---|
 | `drt tunnel rtc:https://…/v1/<name>/calls` | caller | stdio over the session (`doc/ssh-transport-matrix.md`) |
 | `ssh.html#call=…` | caller | the SSH page |
-| `drt_browser_access.js` | caller, answerer | `offer`/`accept`, and an answerer helper that holds the doorbell and falls back to polling |
+| `drt_browser_access.js` | caller, answerer | `offer`/`accept`, and an answerer helper that holds the call notification stream and falls back to polling |
 | a DRT host (`webrtc` block) | answerer | a stdlib program, as `stdlib:browser-access` is for Discofetch's socket |
 | a signalling server | server | any HTTP server; `examples/30` is the reference, in dlua |
 
 Discofetch can serve this profile on its API beside its own socket
-(`doc/BrowserAccess.md` §7.1), with that socket as a second doorbell, and
+(`doc/BrowserAccess.md` §7.1), with that socket also carrying call notifications, and
 every DRT client then reaches a Discofetch-hosted answerer unchanged.
 
 ## 9. In dlua
 
-All of it can be written as a `drt start` program:
+All of it can be written as a `drt start` program. What follows is about
+the server's implementation only: every client sees plain HTTP, whichever
+way the server is built.
 
-- **The requests of §2** fit the `http` listener: a request is a message,
-  and a reply may come later, so the held `POST` is a reply sent when the
-  answer arrives, within the listener's `conn_deadline_ms`.
-- **The doorbell does not fit the `http` listener**, which sends one whole
-  reply per request. It is served with the `socket` connector instead:
-  the program accepts the connection, reads the request line and headers,
-  writes the event-stream head and then each event as it happens. That is
-  how Discofetch's API serves its WebSockets (`api/df/park.dlua`), and an
-  event stream is simpler than a WebSocket: no upgrade handshake and no
-  frames, only lines.
-- **One port or two.** With the listener for §2 and the socket connector
-  for §5, the server has two ports, and a reverse proxy in front puts them
-  under one origin. A program that serves everything through the socket
-  connector, parsing HTTP itself as Discofetch's does, needs one.
+- **The requests of §2** fit DRT's `http` listener. The listener hands the
+  program each request as a message and sends the program's reply as the
+  response, and the reply may come later, so the held `POST` of §3 is a
+  reply the program sends when the answer arrives (within the listener's
+  `conn_deadline_ms`).
+- **The call notification stream does not fit the `http` listener.** The
+  listener sends exactly one complete response per request and then
+  closes the connection. A call notification stream is a response whose
+  headers go out first and whose body is then written a few lines at a
+  time, as calls arrive, for as long as the answerer holds it open. The
+  listener has no way to send part of a response and more later.
+- **The `socket` connector can serve it.** It gives the program the TCP
+  connection itself: the program reads the request bytes and writes the
+  response bytes, whenever it likes. To serve §5, the program accepts the
+  connection, reads the `GET` request, writes the response headers, and
+  then writes one event each time a call arrives. Discofetch's API serves
+  its WebSockets this way (`api/df/park.dlua`); an event stream needs less,
+  since it has no upgrade handshake and no framing.
+- **One port or two.** A server that uses the listener for §2 and the
+  socket connector for §5 has two ports, which a reverse proxy can put
+  under one origin. A server that does all of it through the socket
+  connector, reading and writing HTTP itself as Discofetch's does, has
+  one.
