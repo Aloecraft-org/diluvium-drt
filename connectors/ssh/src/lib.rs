@@ -1,4 +1,18 @@
-//! The ssh client connector: `host:ssh/exec` (SPEC.md §7).
+//! The ssh client connector: `host:ssh/exec` and `host:ssh/shell` (SPEC.md §7).
+//!
+//! - `ssh/exec {command}` -> `{exit?, stdout, stderr}`: one command, its
+//!   output collected.
+//! - `ssh/shell` -> `{exit?}`: an interactive login shell on this
+//!   process's terminal, until the person ends it. Refused without a
+//!   terminal on stdin. The session is [`interactive`]'s, the same one
+//!   `drt ssh` runs, with the scope's key and pinned host key and nothing
+//!   asked. `timeout_ms` bounds reaching the host; the session itself is
+//!   bounded by the person at the terminal, and `max_output_bytes` does
+//!   not apply, because nothing is collected. A program calls it
+//!   with a reply deadline as long as a session may be --
+//!   `host.call('ssh/shell', nil, ms)` -- since `host.call`'s default is
+//!   ten seconds, after which the program has stopped waiting while the
+//!   shell still holds the terminal.
 //!
 //! The scope is the place, per the capability model: *which host, as which
 //! user, with which key* is the host's wiring; the program names only the
@@ -20,6 +34,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::Deserialize;
+
+pub mod interactive;
 
 use drt_caps::{Scope, ScopeType};
 use drt_connector::{CallError, CallResult, Connector};
@@ -187,9 +203,17 @@ impl Connector for SshConnector {
         args: Option<rmpv::Value>,
         scope: Option<&Scope>,
     ) -> CallResult {
+        if call == "ssh/shell" {
+            let scope = SshScope::parse(scope).map_err(CallError::new)?;
+            let work = shell_once(scope);
+            return match tokio::runtime::Handle::try_current() {
+                Ok(_) => work.await,
+                Err(_) => own_runtime().block_on(work),
+            };
+        }
         if call != "ssh/exec" {
             return Err(CallError::new(format!(
-                "the ssh connector answers 'ssh/exec'; '{call}' is not it"
+                "the ssh connector answers 'ssh/exec' and 'ssh/shell'; '{call}' is neither"
             )));
         }
         let scope = SshScope::parse(scope).map_err(CallError::new)?;
@@ -258,4 +282,58 @@ async fn exec_once(host: &str, config: SshClientConfig, command: &str, cap: usiz
     }
     let _ = conn.disconnect().await;
     Ok(exec_value(exit, stdout, stderr))
+}
+
+/// `ssh/shell`: the scope's host, user, key and pinned host key, on this
+/// process's terminal.
+async fn shell_once(scope: SshScope) -> CallResult {
+    use interactive::{Credentials, Login, Trust};
+
+    let key = russh::keys::load_secret_key(&scope.key_path, None).map_err(|e| {
+        CallError::new(format!(
+            "cannot read key file {}: {e}",
+            scope.key_path.display()
+        ))
+    })?;
+    let mut keys = Vec::new();
+    if let Some(line) = &scope.host_key {
+        keys.push(public_key_from_openssh(line).map_err(|e| CallError::new(e.to_string()))?);
+    }
+    let (host, port) = match scope.host.rsplit_once(':') {
+        Some((h, p)) => (
+            h.trim_matches(['[', ']']).to_string(),
+            p.parse().unwrap_or(22),
+        ),
+        None => (scope.host.clone(), 22),
+    };
+    let timeout = Duration::from_millis(scope.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
+    let tcp = tokio::time::timeout(timeout, tokio::net::TcpStream::connect(&scope.host))
+        .await
+        .map_err(|_| {
+            CallError::new(format!(
+                "ssh/shell: {} did not answer within {}ms",
+                scope.host,
+                timeout.as_millis()
+            ))
+        })?
+        .map_err(|e| CallError::new(format!("connecting to {}: {e}", scope.host)))?;
+    let _ = tcp.set_nodelay(true);
+    let login = Login {
+        user: scope.user.clone(),
+        host,
+        port,
+        trust: Trust::Pinned {
+            fingerprints: scope.host_fingerprint.iter().cloned().collect(),
+            keys,
+        },
+        credentials: Credentials::Key(Box::new(key)),
+    };
+    let status = interactive::on_this_terminal(tcp, login)
+        .await
+        .map_err(CallError::new)?;
+    let mut map = Vec::new();
+    if let Some(code) = status {
+        map.push(("exit".into(), rmpv::Value::from(code)));
+    }
+    Ok(rmpv::Value::Map(map))
 }

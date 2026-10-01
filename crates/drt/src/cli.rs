@@ -350,6 +350,16 @@ pub enum Command {
     /// credential in a park or claim URL can live in a 0600 file. Flags
     /// win per key; a flag naming a different mode than the file is
     /// refused as the conflict it is.
+    /// An interactive shell on another host, on this terminal.
+    ///
+    /// `drt ssh [user@]host[:port]` over TCP, trusting OpenSSH's
+    /// ~/.ssh/known_hosts (asking about a host it has not seen) and signing
+    /// in with the agent, ~/.ssh's keys, then a password. `--via` reaches
+    /// the host through a relay claim or `rtc:` instead, as `drt tunnel`
+    /// would. `~.` at the start of a line disconnects. The REPL's `:ssh`
+    /// takes the same arguments.
+    #[cfg(feature = "connector-ssh")]
+    Ssh(crate::ssh::SshArgs),
     #[cfg(feature = "tunnel")]
     Tunnel {
         /// The wss:// or ws:// URL to bridge stdio to, or `rtc:` and a
@@ -589,6 +599,9 @@ pub fn buildinfo(json: bool) -> String {
     ];
     if cfg!(feature = "netcheck") {
         verbs.push("netcheck");
+    }
+    if cfg!(feature = "connector-ssh") {
+        verbs.push("ssh");
     }
     if cfg!(feature = "tunnel") {
         verbs.push("tunnel");
@@ -1884,6 +1897,15 @@ pub fn main(cli: Cli) -> ExitCode {
                 }
             }
         }
+        #[cfg(feature = "connector-ssh")]
+        Command::Ssh(ref args) => match crate::ssh::run(args) {
+            // The remote shell's status is this command's, as with `ssh`.
+            Ok(status) => ExitCode::from(status.map_or(0, |s| s.min(255) as u8)),
+            Err(e) => {
+                eprintln!("drt ssh: {e}");
+                ExitCode::from(255)
+            }
+        },
         Command::Buildinfo { json } => {
             print!("{}", buildinfo(json));
             ExitCode::SUCCESS

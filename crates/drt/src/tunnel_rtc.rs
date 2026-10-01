@@ -15,7 +15,8 @@
 //!
 //! ## surface block
 //!
-//! - Entry point: [`stdio`], a [`Source`] and a target carried out.
+//! - Entry points: [`stdio`], a [`Source`] and a target carried out;
+//!   [`open`], the same session handing back the stream (`drt ssh`).
 //! - Configurable: [`MAX_REPLY`], [`SIGNAL_TIMEOUT`].
 //! - Fan-out: [`Source`], the two ways the answerer's record is had: in
 //!   hand, which is direct mode (`doc/BrowserAccess.md` §3.4), or by
@@ -27,7 +28,7 @@
 
 use std::time::Duration;
 
-use drt_rtc::caller::{Caller, Target, CONNECT_TIMEOUT};
+use drt_rtc::caller::{Call, Caller, Target, CONNECT_TIMEOUT};
 use drt_rtc::Record;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_rustls::rustls::pki_types::CertificateDer;
@@ -90,32 +91,7 @@ pub async fn stdio(
     extra_roots: &[CertificateDer<'static>],
     headers: &[(String, String)],
 ) -> Result<(), String> {
-    let target = Target::parse(to).map_err(|e| format!("--to: {e}"))?;
-    let any = "0.0.0.0:0".parse().expect("a literal");
-    let (caller, answerer) = match source {
-        Source::Record(text) => {
-            let record = Record::decode(text).map_err(|e| format!("the answerer's record: {e}"))?;
-            (Caller::direct(any).await?, record)
-        }
-        Source::Post(url) => {
-            let caller = Caller::new(any).await?;
-            let mine = caller
-                .record()
-                .encode()
-                .map_err(|e| format!("this caller's record: {e}"))?;
-            let reply =
-                tokio::time::timeout(SIGNAL_TIMEOUT, post(url, &mine, extra_roots, headers))
-                    .await
-                    .map_err(|_| {
-                        format!("{url} did not answer within {}s", SIGNAL_TIMEOUT.as_secs())
-                    })??;
-            let record = Record::decode(reply.trim())
-                .map_err(|e| format!("{url} answered something that is not a record: {e}"))?;
-            (caller, record)
-        }
-    };
-    let call = caller.connect(&answerer, CONNECT_TIMEOUT).await?;
-    let (stream, closed) = call.open(&target).await?;
+    let (_call, stream, closed) = open(source, to, extra_roots, headers).await?;
     if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
         eprintln!("drt tunnel: connected over WebRTC to {to}; stdin and stdout are the session");
     }
@@ -147,6 +123,52 @@ pub async fn stdio(
         }
     }
     Ok(())
+}
+
+/// Reach the answerer and open one stream to `to` on it: the session
+/// `stdio` carries, for a caller that wants the stream itself (`drt ssh
+/// --via rtc:…`). The [`Call`] is the session; dropping it ends the
+/// stream.
+pub async fn open(
+    source: &Source,
+    to: &str,
+    extra_roots: &[CertificateDer<'static>],
+    headers: &[(String, String)],
+) -> Result<
+    (
+        Call,
+        tokio::io::DuplexStream,
+        tokio::sync::oneshot::Receiver<u8>,
+    ),
+    String,
+> {
+    let target = Target::parse(to).map_err(|e| format!("--to: {e}"))?;
+    let any = "0.0.0.0:0".parse().expect("a literal");
+    let (caller, answerer) = match source {
+        Source::Record(text) => {
+            let record = Record::decode(text).map_err(|e| format!("the answerer's record: {e}"))?;
+            (Caller::direct(any).await?, record)
+        }
+        Source::Post(url) => {
+            let caller = Caller::new(any).await?;
+            let mine = caller
+                .record()
+                .encode()
+                .map_err(|e| format!("this caller's record: {e}"))?;
+            let reply =
+                tokio::time::timeout(SIGNAL_TIMEOUT, post(url, &mine, extra_roots, headers))
+                    .await
+                    .map_err(|_| {
+                        format!("{url} did not answer within {}s", SIGNAL_TIMEOUT.as_secs())
+                    })??;
+            let record = Record::decode(reply.trim())
+                .map_err(|e| format!("{url} answered something that is not a record: {e}"))?;
+            (caller, record)
+        }
+    };
+    let call = caller.connect(&answerer, CONNECT_TIMEOUT).await?;
+    let (stream, closed) = call.open(&target).await?;
+    Ok((call, stream, closed))
 }
 
 // depth: one POST, and its reply

@@ -129,6 +129,11 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 drt-rtc = { workspace = true }
 str0m = { version = "0.23", default-features = false, features = ["rust-crypto"] }
 
+[target.'cfg(unix)'.dev-dependencies]
+# `drt ssh` and the REPL's `:ssh` under a pseudo-terminal, against OpenSSH
+# (tests/ssh_cli.rs): openpty and the window-size ioctl.
+libc = "0.2"
+
 [features]
 # One codebase, feature profiles (SPEC.md §3): `slim` runs a script with
 # fs/time/stdio only; `full` is everything this build can carry. Each

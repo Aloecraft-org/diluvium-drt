@@ -61,6 +61,9 @@ pub mod stun;
 /// lock is not one.
 #[cfg(test)]
 mod testfs;
+// `drt ssh` and the REPL's `:ssh`: an interactive shell on another host.
+#[cfg(feature = "connector-ssh")]
+pub mod ssh;
 #[cfg(feature = "tunnel")]
 pub mod tunnel;
 // `drt tunnel rtc:…`: the caller's side of a WebRTC session as a

@@ -484,7 +484,7 @@ pub async fn connect(
 /// It also answers pings, which the caller half did not. A gate that
 /// pings an idle `ProxyCommand` session — an hour into an ssh session
 /// with nothing typed — was previously answered with silence.
-async fn pump<S, T>(stream: S, ws: Ws<T>) -> Result<(), String>
+pub(crate) async fn pump<S, T>(stream: S, ws: Ws<T>) -> Result<(), String>
 where
     S: AsyncRead + AsyncWrite + Send + 'static,
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,

@@ -26,6 +26,9 @@
 //!   history, word motions, undo, Tab); through a pipe it is [`piped`],
 //!   whose prompts go to stderr so a redirect stays clean.
 //! - [`PROGRAM`], [`IN`], [`OUT`]: the guest and the two queues.
+//! - Fan-out: [`meta`], the lines the host answers instead of the guest:
+//!   `:ssh` (the config's `host:ssh/shell`) and `:ssh <target> …`
+//!   (`drt ssh`, on this terminal).
 
 use std::io::{BufRead, Write};
 use std::sync::{Arc, Mutex};
@@ -317,6 +320,9 @@ fn piped(mut repl: Repl) -> Result<(), String> {
                     eprintln!();
                     return Ok(());
                 };
+                if !repl.continuing() && meta(&mut repl, &line)? {
+                    continue;
+                }
                 repl.feed(&line)?;
             }
             Next::Done(_) => return Ok(()),
@@ -326,6 +332,77 @@ fn piped(mut repl: Repl) -> Result<(), String> {
             }
         }
     }
+}
+
+// depth: commands the host answers itself
+
+/// A line the terminal's side answers rather than the guest: `:ssh`. True
+/// when it was one. A Diluvium line never starts with `:`, so nothing a
+/// program could say is taken.
+///
+/// `:ssh` alone is the config's `host:ssh/shell`, evaluated as a guest
+/// line, so the grant and the scope decide it exactly as they would for a
+/// program. `:ssh <target> …` is `drt ssh <target> …`: the person at this
+/// terminal naming a host, trusted through known_hosts. Either way the
+/// editor is not reading while the session runs, so the terminal is the
+/// session's, and the prompt comes back when it ends.
+/// How long the guest waits on `:ssh`'s `host:ssh/shell` reply.
+const SESSION_WAIT_MS: u32 = i32::MAX as u32;
+
+fn meta(repl: &mut Repl, line: &str) -> Result<bool, String> {
+    let trimmed = line.trim_start();
+    let Some(rest) = trimmed.strip_prefix(":ssh") else {
+        return Ok(false);
+    };
+    if !(rest.is_empty() || rest.starts_with(char::is_whitespace)) {
+        return Ok(false);
+    }
+    if rest.trim().is_empty() {
+        // The reply deadline is the session's length, and a person decides
+        // that: `host.call`'s default ten seconds would have the guest give
+        // up while the shell still has the terminal. The longest wait a
+        // queue takes, which is ~24 days.
+        repl.feed(&format!(
+            "return host.call('ssh/shell', nil, {SESSION_WAIT_MS})"
+        ))?;
+        return Ok(true);
+    }
+    ssh_to(rest);
+    Ok(true)
+}
+
+#[cfg(feature = "connector-ssh")]
+fn ssh_to(rest: &str) {
+    let args = match crate::ssh::from_line(rest) {
+        Ok(a) => a,
+        Err(e) => {
+            let _ = writeln!(stdio::stderr(), "{e}");
+            return;
+        }
+    };
+    match crate::ssh::run(&args) {
+        Ok(Some(status)) => {
+            let _ = writeln!(
+                stdio::stderr(),
+                "ssh: {} closed, exit {status}",
+                args.target
+            );
+        }
+        Ok(None) => {
+            let _ = writeln!(stdio::stderr(), "ssh: {} closed", args.target);
+        }
+        Err(e) => {
+            let _ = writeln!(stdio::stderr(), "ssh: {e}");
+        }
+    }
+}
+
+#[cfg(not(feature = "connector-ssh"))]
+fn ssh_to(_rest: &str) {
+    let _ = writeln!(
+        stdio::stderr(),
+        "ssh: this build has no ssh client (it is in `full`)"
+    );
 }
 
 // depth: the edited path
@@ -545,6 +622,9 @@ pub async fn edit<T: ego_cli::term::Terminal>(
                 session.set_prompt(if repl.continuing() { ">> " } else { "dv> " });
                 match session.read_line().await {
                     Ok(ReadOutcome::Line(line)) => {
+                        if !repl.continuing() && meta(repl, &line)? {
+                            continue;
+                        }
                         repl.feed(&line)?;
                     }
                     // ^C: the line is gone, and so is anything it was

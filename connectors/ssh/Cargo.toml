@@ -1,6 +1,6 @@
 [package]
 name = "drt-connector-ssh"
-description = "The ssh client connector: host:ssh/exec over ego-transport's ssh scheme"
+description = "The ssh client connector: host:ssh/exec and host:ssh/shell"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,9 +11,22 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 rmpv = { workspace = true }
 ego_transport = { workspace = true }
-tokio = { version = "1", default-features = false, features = ["time", "rt", "rt-multi-thread"] }
+tokio = { version = "1", default-features = false, features = ["time", "rt", "rt-multi-thread", "net", "macros"] }
 drt-caps = { workspace = true }
 drt-connector = { workspace = true }
+# The interactive client (`interactive`): russh directly, the version the
+# workspace already resolves through ego_transport and patches to the
+# fork, so this adds no second copy. `rsa` and an agent because a person's
+# servers and keys are not all Ed25519.
+russh = { version = "0.63.2", default-features = false, features = ["ring", "rsa"] }
+# Raw mode and the window size for a session on this process's terminal.
+# The version ego_cli already brings in.
+crossterm = { version = "0.29", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+# poll(2) on stdin, so the reader thread ends with the session; termios to
+# read a password without echo.
+libc = "0.2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

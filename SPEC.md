@@ -141,7 +141,8 @@ One trait, several backings, zero distinctions at the call site:
 - v1 set: `time`, `fs`, `sql`, `listen` (over ego-transport), `exec` (behind a
   loud flag — granting it is leaving the sandbox, the instruction budget cannot
   bound it), `ssh` client (`host:ssh/exec`, scoped `{host, user, key}`, exec's
-  caveats verbatim).
+  caveats verbatim; `host:ssh/shell`, the same scope as an interactive
+  session on the process's terminal).
 - Hostcall metering (open in `doc/Hostcall.md`): settle it here as host-side
   arithmetic — charge per message and per byte at the queue layer. Not a
   format change.

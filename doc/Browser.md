@@ -128,7 +128,7 @@ term.putFile('/app.dlua', new TextEncoder().encode('print("hello")'));
 ```
 
 ```
-  attach(DrtTerm, terminal, { prompt, banner, DrtEditor }) -> handle
+  attach(DrtTerm, terminal, { prompt, banner, DrtEditor, ssh }) -> handle
   handle.term            the DrtTerm: putFile, putDir, getFile, listFiles, setCwd
   handle.run(line)       submit a line nobody typed; resolves with its exit status
   handle.reset()         abandon whatever is running, return to the prompt
@@ -146,6 +146,37 @@ rather than importing it so a host can pass its own, and `drt-term.js`
 decides only *when* a line is wanted and with which prompt. `shell.js` behind it is just enough sh for the examples'
 `meta.json` commands: `;`, single and double quotes, `$?`, `echo`, and
 `drt` -- the real one. Anything else is `command not found`, status 127.
+
+### `drt ssh` and `:ssh` in a page
+
+With `ssh`, the page's shell answers `drt ssh` and the REPL answers `:ssh`
+as the native ones do, with the SSH client `ssh.html` uses
+(`drt_ssh_web.js` and its wasm, shipped beside `drt-term.js`):
+
+```js
+// drt_ssh_web.js is a classic script defining `wasm_bindgen`.
+await wasm_bindgen({ module_or_path: './drt_ssh_web_bg.wasm' });
+const access = await import('./drt_browser_access.js'); // for --via rtc:
+attach(DrtTerm, terminal, { DrtEditor, ssh: { Ssh: wasm_bindgen.Ssh, access, store } });
+```
+
+```
+$ drt ssh me@box --via wss://relay.example/s/box?k=…
+$ drt ssh me@box --via rtc:https://signal.example/v1/box/calls?k=…
+dv> :ssh me@box --via rtc:<the host's record>
+```
+
+A page cannot open a TCP connection, so `--via` is required: a relay
+claim, or `rtc:` and a host's record or a signalling URL. With no `--to`, a
+page that serves the service `ssh` is reached on it, and a host on its
+first `ssh://` scope entry. Host keys are remembered per name in `store`
+(`get(key)` and `set(key, value)`, async), asked about the first time and
+refused when they change; `--hostkey` pins one instead. Sign-in tries
+`store`'s `key` (`{privateOpenssh}`, the record `ssh.html` keeps) and then
+a password. While a session runs the keyboard is the session's: the
+editor sees no key until it ends, so nothing typed into the remote shell
+comes back at the prompt. Without `store`, the page remembers for as long
+as it lives.
 
 `run` is there because a panel has buttons as well as a keyboard -- a
 "try this example" link, a restored session, a test. It submits the line

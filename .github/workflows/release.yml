@@ -416,7 +416,9 @@ jobs:
     # module, wasm-bindgen's glue, drt-term.js with shell.js behind it, and
     # ssh-terminal.js and relay-leg.js, which are what make an SSH session
     # into the terminal object drt-term.js already takes and what parks the
-    # page on a rendezvous relay (doc/SshInBrowser.md).
+    # page on a rendezvous relay (doc/SshInBrowser.md), and ssh-command.js
+    # with ssh.html's client module, which are `drt ssh` and `:ssh` in a
+    # page.
     # `buildinfo` is read off the module inside Chromium (run.mjs writes
     # it out) so publish can put the profile in BUILDINFO the same way it
     # does for every other leg: from the bytes, not from YAML.
@@ -480,6 +482,11 @@ jobs:
         run: cargo build -p drt --no-default-features --features full
       - name: Build the web profile
         run: DRT_WEB_PROFILE=release-small script/drt-web.sh
+      # ssh.html's client as its own module: what `drt ssh` and `:ssh` in a
+      # page hand to ssh-command.js, and what the browser suite's
+      # drt-ssh-in-the-page check needs. The step CI's browser job runs.
+      - name: Build the SSH client
+        run: script/drt-ssh-page.sh
       - name: The browser suite, in Chromium
         working-directory: crates/drt-web/browser-test
         run: |
@@ -495,7 +502,9 @@ jobs:
           pkg=crates/drt-web/browser-test
           cp "$pkg/pkg/drt_web.js" "$pkg/pkg/drt_web_bg.wasm" "$pkg/pkg/drt_web.d.ts" \
              "$pkg/pkg/drt_web_bg.wasm.d.ts" "$pkg/drt-term.js" "$pkg/shell.js" \
-             "$pkg/ssh-terminal.js" "$pkg/relay-leg.js" drt_web/
+             "$pkg/ssh-terminal.js" "$pkg/relay-leg.js" "$pkg/ssh-command.js" \
+             crates/drt-ssh-web/page/pkg/drt_ssh_web.js crates/drt-ssh-web/page/pkg/drt_ssh_web_bg.wasm \
+             drt_web/
           tar -czf drt_web.tar.gz drt_web
       - uses: actions/upload-artifact@v4
         with:

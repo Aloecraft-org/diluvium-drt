@@ -306,7 +306,63 @@
       term = null;
       return rendered.join('\n').replace(/\n+$/, '') + '\n';
     },
+    // `drt ssh` and `:ssh` at a real terminal: ssh.html's client
+    // (drt-ssh-web, a classic script defining `wasm_bindgen`) handed to
+    // `attach`, the page's key in its store. One terminal per call; the
+    // suite types with `sshType` and reads with `sshScreen`.
+    async sshTerminal(privateOpenssh) {
+      // A top-level `let` in a classic script: a global binding, and not a
+      // property of `window`, so it is named, not looked up.
+      if (typeof wasm_bindgen === 'undefined') {
+        await new Promise((ok, fail) => {
+          const tag = document.createElement('script');
+          tag.src = '/drt_ssh_web.js';
+          tag.onload = ok;
+          tag.onerror = () => fail(new Error('/drt_ssh_web.js did not load'));
+          document.head.append(tag);
+        });
+        // eslint-disable-next-line no-undef
+        await wasm_bindgen({ module_or_path: '/drt_ssh_web_bg.wasm' });
+      }
+      const access = await import('/drt_browser_access.js');
+      const store = new Map([['key', { privateOpenssh }]]);
+      const terminal = new Terminal({ cols: 100, rows: 30, convertEol: false, scrollback: 2000 });
+      terminal.open(document.getElementById('offscreen'));
+      const bound = attach(DrtTerm, terminal, {
+        DrtEditor,
+        ssh: {
+          // eslint-disable-next-line no-undef
+          Ssh: wasm_bindgen.Ssh,
+          access,
+          store: { get: async (k) => store.get(k), set: async (k, v) => void store.set(k, v) },
+        },
+      });
+      bound.term.setCwd('/');
+      sshTerminals.push({ terminal, bound });
+      return sshTerminals.length - 1;
+    },
+    sshType(i, text) {
+      sshTerminals[i].terminal.input(text, true);
+    },
+    sshResize(i, cols, rows) {
+      sshTerminals[i].terminal.resize(cols, rows);
+    },
+    sshScreen(i) {
+      const buf = sshTerminals[i].terminal.buffer.active;
+      const lines = [];
+      for (let n = 0; n < buf.length; n++) lines.push(buf.getLine(n).translateToString(true));
+      return lines.join('\n');
+    },
+    sshIdle: (i) => sshTerminals[i].bound.whenIdle(),
+    sshDispose(i) {
+      const t = sshTerminals[i];
+      if (!t) return;
+      t.bound.dispose();
+      t.terminal.dispose();
+      sshTerminals[i] = null;
+    },
   };
+  const sshTerminals = [];
   window.drtBrowserTest = harness;
 
   // depth: the person's terminal, a <pre> with a keyboard.

@@ -44,7 +44,7 @@ import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -139,8 +139,19 @@ if (!fs.existsSync(path.join(HERE, 'pkg', 'drt_web.js'))) {
 // that signals (the page's own CSP admits only WebSocket connections).
 const BROWSER_ACCESS = path.resolve(HERE, '../../drt-rtc/client/drt_browser_access.js');
 const SSH_PAGE = path.resolve(HERE, '../../drt-ssh-web/page/dist/ssh.html');
+// ssh.html's client as its own module (script/drt-ssh-page.sh leaves it in
+// pkg/), for `drt ssh` and `:ssh` in a page.
+const SSH_CLIENT = path.resolve(HERE, '../../drt-ssh-web/page/pkg');
 const server = http.createServer((req, res) => {
   const url = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+  if (url === '/drt_ssh_web.js' || url === '/drt_ssh_web_bg.wasm') {
+    const file = path.join(SSH_CLIENT, url.slice(1));
+    if (fs.existsSync(file)) {
+      res.writeHead(200, { 'content-type': TYPES[path.extname(file)] });
+      res.end(fs.readFileSync(file));
+      return;
+    }
+  }
   if (url === '/drt_browser_access.js') {
     res.writeHead(200, { 'content-type': TYPES['.js'] });
     res.end(fs.readFileSync(BROWSER_ACCESS));
@@ -797,6 +808,135 @@ if (PAGE_CHECKS) {
     }
   }
   fs.rmSync(keys, { recursive: true, force: true });
+}
+
+// `drt ssh` and `:ssh` in a page: typed at a real xterm.js Terminal
+// attached with ssh.html's client, reaching OpenSSH's sshd through a
+// WebSocket bridge (`drt tunnel --listen`, the device side of a relay
+// without the relay). From the shell, then from inside `drt repl`, whose
+// state must survive the session and whose prompt must not receive a key
+// typed into the remote shell.
+{
+  const name = 'drt-ssh-in-the-page';
+  const sshdBin = process.env.SSHD ?? '/usr/sbin/sshd';
+  const keys = fs.mkdtempSync(path.join(os.tmpdir(), 'drt-page-ssh-'));
+  let sshd;
+  let bridge;
+  let slot = null;
+  if (!fs.existsSync(path.join(SSH_CLIENT, 'drt_ssh_web.js'))) noSshPage.push(name);
+  else if (!drtBin) noRelay.push(name);
+  else if (!fs.existsSync(sshdBin)) noSsh.push(name);
+  else {
+    try {
+      const keygen = (n) => execFileSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', n, '-f', path.join(keys, n)]);
+      keygen('host');
+      keygen('client');
+      fs.copyFileSync(path.join(keys, 'client.pub'), path.join(keys, 'authorized'));
+      const user = os.userInfo().username;
+      const sshdPort = await freePort();
+      fs.writeFileSync(path.join(keys, 'sshd_config'), [
+        `Port ${sshdPort}`, 'ListenAddress 127.0.0.1', `HostKey ${path.join(keys, 'host')}`,
+        `AuthorizedKeysFile ${path.join(keys, 'authorized')}`, 'PasswordAuthentication no',
+        'KbdInteractiveAuthentication no', 'UsePAM yes', 'StrictModes no',
+        'PermitRootLogin prohibit-password', 'PrintMotd no', 'PrintLastLog no',
+        `PidFile ${path.join(keys, 'pid')}`,
+      ].join('\n') + '\n');
+      // Root, through sudo when this is not: an unprivileged sshd ends
+      // every pty session it opens (crates/drt-ssh-web/page/e2e.mjs).
+      const [cmd, ...pre] = process.getuid() === 0 ? [sshdBin] : ['sudo', '-n', sshdBin];
+      sshd = spawn(cmd, [...pre, '-D', '-e', '-f', path.join(keys, 'sshd_config')], { stdio: 'ignore' });
+      // Its pid file, written once it has bound: a port that answers could
+      // be anyone's.
+      if (!(await waitFor(() => fs.existsSync(path.join(keys, 'pid')), 10000))) throw new Error('sshd never listened');
+      const wsPort = await freePort();
+      bridge = spawn(drtBin, ['tunnel', '--listen', `127.0.0.1:${wsPort}`, '--to', `127.0.0.1:${sshdPort}`], { stdio: 'ignore' });
+      if (!(await waitFor(() => accepting(wsPort), 10000))) throw new Error('the bridge never listened');
+      const via = `ws://127.0.0.1:${wsPort}/`;
+
+      slot = await page.evaluate((k) => window.drtBrowserTest.sshTerminal(k), fs.readFileSync(path.join(keys, 'client'), 'utf8'));
+      const screen = () => page.evaluate((i) => window.drtBrowserTest.sshScreen(i), slot);
+      const type = (text) => page.evaluate(([i, t]) => window.drtBrowserTest.sshType(i, t), [slot, text]);
+      const see = async (text, after = 0) => {
+        if (await waitFor(async () => (await screen()).indexOf(text, after) >= 0, TIMEOUT * 1000)) {
+          return (await screen()).indexOf(text, after) + text.length;
+        }
+        throw new Error(`never saw ${JSON.stringify(text)}; the terminal shows:\n${(await screen()).slice(-1500)}`);
+      };
+      // Settled: the screen grew and then stopped changing for a moment,
+      // which is a remote shell's prompt whatever it looks like.
+      const settle = async () => {
+        const start = (await screen()).length;
+        let last = start;
+        let since = Date.now();
+        await waitFor(async () => {
+          const now = (await screen()).length;
+          if (now !== last) {
+            last = now;
+            since = Date.now();
+          }
+          return now > start && Date.now() - since > 400;
+        }, TIMEOUT * 1000);
+      };
+      const wrong = [];
+
+      // From the shell: first contact asks, the key signs in, the remote
+      // status is `$?`.
+      await page.evaluate((i) => window.drtBrowserTest.sshIdle(i), slot);
+      await type(`drt ssh ${user}@box --via ${via}\r`);
+      let at = await see('(yes/no) ');
+      await type('yes\r');
+      at = await see('Remembered box.', at);
+      await settle();
+      await type('stty size; echo PAGE-$((6*7)); exit 6\r');
+      at = await see('30 100', at);
+      at = await see('PAGE-42', at);
+      await page.evaluate((i) => window.drtBrowserTest.sshIdle(i), slot);
+      await type('echo "status $?"\r');
+      at = await see('status 6', at);
+
+      // A pin that is not the host's key: refused before anything signs in.
+      await type(`drt ssh ${user}@box --via ${via} --hostkey SHA256:not-it\r`);
+      at = await see('not the one --hostkey pins', at);
+
+      // From the REPL: known now, so no question; the instance survives.
+      await page.evaluate((i) => window.drtBrowserTest.sshIdle(i), slot);
+      await type('drt repl\r');
+      at = await see('dv> ', at);
+      await type('x = 40\r');
+      at = await see('dv> ', at);
+      await type(`:ssh ${user}@box --via ${via}\r`);
+      await settle();
+      const asked = (await screen()).slice(at).includes('(yes/no)');
+      if (asked) wrong.push('asked about a host already remembered');
+      await type('echo INSIDE-$((6*7)); exit 2\r');
+      at = await see('INSIDE-42', at);
+      at = await see('closed, exit 2', at);
+      at = await see('dv> ', at);
+      await type('x + 2\r');
+      at = await see('42', at);
+      if (/syntax error|unexpected symbol/.test(await screen())) wrong.push('a key typed into the session reached the REPL');
+      await type('\x04');
+      await page.evaluate((i) => window.drtBrowserTest.sshIdle(i), slot);
+
+      if (wrong.length === 0) {
+        console.log(`ok       ${name.padEnd(24)} drt ssh and :ssh --via ws://… to sshd: $? 6, exit 2, REPL state kept`);
+        nOk += 1;
+      } else {
+        fail(name, wrong.join('; '));
+      }
+    } catch (e) {
+      fail(name, `threw: ${String(e.message).split('\n').slice(0, 30).join('\n')}`);
+    } finally {
+      if (slot !== null) await page.evaluate((i) => window.drtBrowserTest.sshDispose(i), slot).catch(() => {});
+      if (bridge) bridge.kill('SIGKILL');
+      if (sshd) {
+        const pid = fs.existsSync(path.join(keys, 'pid')) ? fs.readFileSync(path.join(keys, 'pid'), 'utf8').trim() : null;
+        if (pid && process.getuid() !== 0) spawnSync('sudo', ['-n', 'kill', pid]);
+        else if (pid) spawnSync('kill', [pid]);
+        sshd.kill('SIGKILL');
+      }
+    }
+  }
 }
 
 // Row 8, from a link: the SSH page as it ships opens
