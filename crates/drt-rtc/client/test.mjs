@@ -388,3 +388,179 @@ test('the answerer opens even ids to what the caller serves', async () => {
   peer(encodeWisp(WISP.CONTINUE, 0, { buffer: 16 }));
   assert.deepEqual([session.connect('dom').id, session.connect('dom').id], [2, 4]);
 });
+
+// depth: listen, against a fake signalling server (doc/DRT-Signalling.md)
+
+/** A peer connection that answers at once and whose channels open. */
+function answeringPC() {
+  const fp = vectors.records[0].decoded.f_hex;
+  return class extends EventTarget {
+    constructor() {
+      super();
+      this.iceGatheringState = 'complete';
+      this.channels = [];
+    }
+    createDataChannel() {
+      const c = new FakeChannel();
+      this.channels.push(c);
+      return c;
+    }
+    async setRemoteDescription() {}
+    async createAnswer() {
+      return { type: 'answer', sdp: `a=ice-ufrag:pageUfrag\r\na=ice-pwd:pagePassword0123456789ab\r\na=fingerprint:sha-256 ${fp}\r\na=mid:0\r\n` };
+    }
+    async setLocalDescription(d) {
+      this.localDescription = d;
+      const [control, wisp] = this.channels;
+      control.send = () => {};
+      queueMicrotask(() => {
+        control.onopen();
+        wisp.onopen();
+      });
+    }
+    close() {}
+  };
+}
+
+/** One name's calls, served the way §2 says, and every request it saw. */
+function fakeServer(calls) {
+  const seen = [];
+  let cursor = 0;
+  const waiting = new Map();
+  const add = (record) => {
+    cursor += 1;
+    waiting.set(`c${cursor}`, { id: `c${cursor}`, record, expires_in: 25, n: cursor });
+  };
+  for (const r of calls) add(r);
+  const reply = (status, body) => ({ ok: status < 300, status, json: async () => body });
+  const fetch = async (url, init = {}) => {
+    const u = new URL(url);
+    const method = init.method ?? 'GET';
+    seen.push({ method, path: u.pathname, query: u.search, auth: init.headers?.authorization, body: init.body });
+    if (method === 'GET' && u.pathname.endsWith('/calls')) {
+      const since = Number(u.searchParams.get('since') ?? 0);
+      const out = [...waiting.values()].filter((c) => c.n > since).map(({ n, ...c }) => c);
+      return reply(200, { cursor: String(cursor), calls: out });
+    }
+    const id = u.pathname.split('/')[4];
+    if (!waiting.has(id)) return reply(404, { error: 'no such call' });
+    waiting.delete(id);
+    return reply(method === 'POST' || method === 'DELETE' ? 204 : 404, null);
+  };
+  return { fetch, seen, add };
+}
+
+/** An EventSource the test opens, notifies and breaks by hand. */
+function fakeEvents() {
+  const made = [];
+  class ES extends EventTarget {
+    constructor(url) {
+      super();
+      this.url = url;
+      made.push(this);
+    }
+    close() {
+      this.closed = true;
+    }
+    fire(type) {
+      this.dispatchEvent(new Event(type));
+    }
+  }
+  return { ES, made };
+}
+
+const until = async (what, cond) => {
+  for (let i = 0; i < 200; i++) {
+    if (cond()) return;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  assert.fail(`never: ${what}`);
+};
+
+test('listen answers each waiting call, posts the page\'s record, and carries the cursor', async () => {
+  const { listen } = await import('./drt_browser_access.js');
+  const server = fakeServer([vectors.records[0].rtc, vectors.records[1].rtc]);
+  const sessions = [];
+  const l = listen('https://signal.example/v1/page/', {
+    token: 'tok', events: false, pollMs: 20, fetch: server.fetch, RTCPeerConnection: answeringPC(),
+    services: { ssh: () => {} }, onSession: (s, call) => sessions.push(call.id),
+  });
+  await until('two sessions', () => sessions.length === 2);
+  const answers = server.seen.filter((r) => r.method === 'POST');
+  assert.deepEqual(answers.map((r) => r.path), ['/v1/page/calls/c1/answer', '/v1/page/calls/c2/answer']);
+  assert.equal(JSON.parse(answers[0].body).u, 'pageUfrag');
+  assert.equal(answers[0].auth, 'Bearer tok');
+  // The next poll passes back the cursor it was given.
+  await until('a poll from cursor 2', () => server.seen.some((r) => r.query.includes('since=2')));
+  assert.equal(l.cursor, '2');
+  server.add(vectors.records[0].rtc);
+  await until('the third', () => sessions.length === 3);
+  assert.deepEqual(sessions, ['c1', 'c2', 'c3']);
+  l.close();
+});
+
+test('listen withdraws a call accept refuses, and one whose record answer cannot take', async () => {
+  const { listen } = await import('./drt_browser_access.js');
+  const server = fakeServer([vectors.records[0].rtc, 'not a record']);
+  const errors = [];
+  const l = listen('https://signal.example/v1/page', {
+    events: false, pollMs: 1000, fetch: server.fetch, RTCPeerConnection: answeringPC(),
+    accept: (call) => call.id !== 'c1', onError: (e, call) => errors.push(call?.id),
+  });
+  await until('two withdrawals', () => server.seen.filter((r) => r.method === 'DELETE').length === 2);
+  assert.deepEqual(server.seen.filter((r) => r.method === 'DELETE').map((r) => r.path),
+    ['/v1/page/calls/c1', '/v1/page/calls/c2']);
+  assert.deepEqual(errors, ['c2']);
+  assert.equal(server.seen.filter((r) => r.method === 'POST').length, 0);
+  l.close();
+});
+
+test('listen holds the call notification stream, and polls on a timer only while it has none', async () => {
+  const { listen } = await import('./drt_browser_access.js');
+  const server = fakeServer([]);
+  const { ES, made } = fakeEvents();
+  const polls = () => server.seen.filter((r) => r.method === 'GET').length;
+  const l = listen('https://signal.example/v1/page', {
+    token: 'a b', pollMs: 30, fetch: server.fetch, EventSource: ES, RTCPeerConnection: answeringPC(),
+  });
+  assert.equal(made[0].url, 'https://signal.example/v1/page/events?k=a%20b');
+  await until('the first poll', () => polls() === 1);
+  made[0].fire('open');
+  assert.equal(l.streaming, true);
+  await until('a poll on connecting', () => polls() === 2);
+  // Streaming: the timer stops, and a notification is what polls.
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(polls(), 2);
+  server.add(vectors.records[0].rtc);
+  made[0].fire('call');
+  await until('the answer', () => server.seen.some((r) => r.method === 'POST'));
+  // The stream breaks: the timer is back until it reconnects.
+  made[0].fire('error');
+  assert.equal(l.streaming, false);
+  await until('timer polls again', () => polls() >= 5);
+  l.close();
+  assert.equal(made[0].closed, true);
+  const after = polls();
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(polls(), after);
+});
+
+test('listen closes an answer the server no longer wanted, and keeps listening', async () => {
+  const { listen } = await import('./drt_browser_access.js');
+  const server = fakeServer([vectors.records[0].rtc]);
+  const real = server.fetch;
+  // The call expires between the poll and the answer.
+  const fetch = async (url, init = {}) => {
+    if (init.method === 'POST') return { ok: false, status: 404, json: async () => ({}) };
+    return real(url, init);
+  };
+  const errors = [];
+  const l = listen('https://signal.example/v1/page', {
+    events: false, pollMs: 1000, fetch, RTCPeerConnection: answeringPC(),
+    onError: (e, call) => errors.push([call?.id, String(e.message)]),
+  });
+  await until('the error', () => errors.length === 1);
+  assert.equal(errors[0][0], 'c1');
+  assert.match(errors[0][1], /answered 404/);
+  l.close();
+});

@@ -172,7 +172,7 @@ that wants to read less can be handed less: direct mode
 |---|---|---|
 | `drt tunnel rtc:https://…/v1/<name>/calls` | caller | stdio over the session (`doc/ssh-transport-matrix.md`) |
 | `ssh.html#call=…` | caller | the SSH page |
-| `drt_browser_access.js` | caller, answerer | `offer`/`accept`, and an answerer helper that holds the call notification stream and falls back to polling |
+| `drt_browser_access.js` | caller, answerer | `offer`/`accept` to call; `listen(base, {token, services})` to answer every call for a name, holding the call notification stream and polling without it |
 | a DRT host (`webrtc` block) | answerer | a stdlib program, as `stdlib:browser-access` is for Discofetch's socket |
 | a signalling server | server | any HTTP server; `examples/30` is the reference, in dlua |
 | `examples/29-browser-access` | server and answerer | §3 only: a host answering every call with its own record as it arrives |

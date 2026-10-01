@@ -38,7 +38,7 @@ verdict for the network it ran on.
 | `relay` block | native, `drt start` | The relay (`doc/Relay.md`). |
 | `ssh.html` | browser | SSH client (`crates/drt-ssh-web`). Connects over a WebSocket URL or over a browser access stream, which it opens from a link: a relay claim URL, a host's record, or a signaling URL that reaches a page. Pins host keys; holds its own Ed25519 key in IndexedDB. |
 | page SSH server | browser | An SSH server in a page (`drt-web`). Keys only; an empty authorized list admits nobody. A session gets the page's shell. It runs over any byte stream: a relay leg, or a browser access stream to the page's service `ssh`. |
-| `drt_browser_access.js` | browser | The browser half of browser access: `offer` and `accept` to call, `direct` to call a host in direct mode, `answer` for a page that answers, `services` for what a side serves, and `session.connect(service)` or `session.connect(host, port)` as Web Streams. |
+| `drt_browser_access.js` | browser | The browser half of browser access: `offer` and `accept` to call, `direct` to call a host in direct mode, `answer` for a page that answers, `listen` to answer every call a signalling server holds for a page, `services` for what a side serves, and `session.connect(service)` or `session.connect(host, port)` as Web Streams. |
 
 The relay speaks URLs and binary WebSocket frames and nothing else, so
 `websocat --binary` stands in for `drt tunnel` wherever a relay is the

@@ -2,10 +2,11 @@
 // peer connection to a DRT host, its `hello`, and TCP streams to the host's
 // scope over Wisp v1. One ES module, no dependencies, no build step.
 //
-// Signaling is the caller's. This module makes the browser's record and
-// takes the host's; how the two cross -- the Discofetch API's socket and
-// presence (§7.1) -- is the page's business, so this never opens a
-// WebSocket and never polls.
+// Signaling is mostly the page's. This module makes the browser's record
+// and takes the host's; how the two cross -- the Discofetch API's socket
+// and presence (§7.1), or a server of doc/DRT-Signalling.md -- is the
+// page's business. The one exception is `listen`, the answerer's half of
+// that profile, which is the only part of this module that makes requests.
 //
 //   const pending = await offer();              // gathers, then resolves
 //   send(pending.record);                       // to the API, as the page does
@@ -25,13 +26,22 @@
 //   send(a.record);
 //   const session = await a.session;
 //
+// Or the page answers every call that reaches it through a server of
+// doc/DRT-Signalling.md, with no signalling code of its own:
+//
+//   const l = listen('https://signal.example/v1/page', { token, services: { ssh } });
+//   l.close();
+//
 // ## surface block
 //
 // - Entry points: `offer(options)` -> Pending {record, recordText,
 //   accept(hostRecord, options)} -> Session {hello, connect(host, port),
 //   close(), closed}; `direct(hostRecord, options)` -> Session, for direct
 //   mode; `answer(callerRecord, options)` -> Answering {record, recordText,
-//   session}, for a page that answers (§10.4); Session.connect(host, port)
+//   session}, for a page that answers (§10.4); `listen(base, options)` ->
+//   Listening {cursor, streaming, poll(), close()}, which answers every
+//   call a signalling server holds for one name (doc/DRT-Signalling.md
+//   §4, §5); Session.connect(host, port)
 //   or Session.connect(service) -> Stream {id, readable, writable, close(),
 //   closed}; `options.services`, name -> (stream, session), for what a page
 //   serves (§10.3). And the pure pieces, for a client that drives its own
@@ -44,13 +54,17 @@
 //   CONTINUE;
 //   SEND_HIGH_WATER, the data channel buffer past which a stream's writer
 //   waits; SERVE_BUFFER and SERVE_MAX_STREAMS, what a page that serves
-//   grants each stream and how many it holds open. The wire's own limits -- RECORD_MAX_BYTES, MAX_CANDIDATES, the
+//   grants each stream and how many it holds open; LISTEN_POLL_MS, how
+//   often `listen` polls while it holds no call notification stream. The
+//   wire's own limits -- RECORD_MAX_BYTES, MAX_CANDIDATES, the
 //   ICE lengths, DIRECT_UFRAG_LEN, MESSAGE_MAX -- are constants of v1, not
 //   knobs: changing one is a `v` bump.
 // - Fan-out: `onWispPacket`, one branch per packet type the host sends
 //   (CONNECT, DATA, CONTINUE, CLOSE); RecordError's `code`, one per rule a record can
 //   break, named as crates/drt-rtc/src/record.rs names them; CLOSE_REASON,
-//   the reasons a stream can end with (§6).
+//   the reasons a stream can end with (§6); `listen`'s handling of one
+//   call: refused by `accept` -> DELETE, a record `answer` cannot take ->
+//   DELETE, otherwise answered -> `onSession`.
 
 export const GATHER_CAP_MS = 2000;
 export const ACCEPT_TIMEOUT_MS = 15000;
@@ -59,6 +73,12 @@ export const SEND_HIGH_WATER = 1 << 20;
 export const SERVE_BUFFER = 128;
 /** Streams a page that serves holds open at once; one more is 0x49. */
 export const SERVE_MAX_STREAMS = 64;
+/**
+ * How often `listen` polls while it holds no call notification stream:
+ * well inside DRT-Signalling.md §4.2's 30 seconds, so the server counts
+ * the page present, and short enough that a caller waits little.
+ */
+export const LISTEN_POLL_MS = 3000;
 
 export const RECORD_VERSION = 1;
 export const RECORD_MAX_BYTES = 512;
@@ -430,6 +450,140 @@ export async function answer(callerRecord, options = {}) {
     session.close();
     throw e;
   }
+}
+
+/**
+ * Answer every call a signalling server holds for one name
+ * (doc/DRT-Signalling.md): `base` is the name's URL, `…/v1/<name>`, and
+ * `options.token` its answerer token.
+ *
+ * It holds the call notification stream (§5) where the runtime has an
+ * `EventSource`, and polls once when it connects and once per
+ * notification. Without the stream, or while it is reconnecting, it polls
+ * every `pollMs` (LISTEN_POLL_MS). Polls run one at a time and carry the
+ * cursor, so no call is read twice.
+ *
+ * Each call is answered with `answer(call.record, options)` and the
+ * page's record posted back; `options.onSession(session, call)` gets the
+ * session once it is up. `options.accept(call)`, if given, may refuse a
+ * call (false, or a promise of false), which withdraws it: the caller
+ * gets 410. A record `answer` cannot take is refused the same way.
+ * Failures that do not stop listening -- a poll the server refused, an
+ * answer that came too late -- go to `options.onError(error, call)`.
+ *
+ * Every other option is `answer`'s. `fetch` and `EventSource` may be
+ * given for a runtime without global ones; `events: false` polls only.
+ */
+export function listen(base, options = {}) {
+  const fetchFn = options.fetch ?? globalThis.fetch?.bind(globalThis);
+  if (!fetchFn) throw new Error('no fetch in this runtime');
+  const ES = options.events === false ? null : (options.EventSource ?? globalThis.EventSource);
+  const root = String(base).replace(/\/+$/, '');
+  const token = options.token;
+  const headers = token ? { authorization: `Bearer ${token}` } : {};
+  const onError = options.onError ?? (() => {});
+  const pollMs = options.pollMs ?? LISTEN_POLL_MS;
+  const state = { cursor: '0', stopped: false, events: null, streaming: false, timer: null };
+  let chain = Promise.resolve();
+
+  const request = async (method, path, body) => {
+    const init = { method, headers: { ...headers } };
+    if (body !== undefined) {
+      init.body = body;
+      init.headers['content-type'] = 'text/plain;charset=utf-8';
+    }
+    const res = await fetchFn(`${root}${path}`, init);
+    if (!res.ok) throw new Error(`${method} ${root}${path} answered ${res.status}`);
+    return res;
+  };
+  const refuse = (call) => request('DELETE', `/calls/${encodeURIComponent(call.id)}`).catch((e) => onError(e, call));
+
+  const take = async (call) => {
+    try {
+      if (options.accept && !(await options.accept(call))) return refuse(call);
+    } catch (e) {
+      onError(e, call);
+      return refuse(call);
+    }
+    let answering;
+    try {
+      answering = await answer(call.record, options);
+    } catch (e) {
+      onError(e, call);
+      return refuse(call);
+    }
+    try {
+      await request('POST', `/calls/${encodeURIComponent(call.id)}/answer`, answering.recordText);
+    } catch (e) {
+      // Expired, withdrawn or answered elsewhere: nobody will connect.
+      answering.close();
+      return onError(e, call);
+    }
+    answering.session.then(
+      (session) => options.onSession?.(session, call),
+      (e) => onError(e, call),
+    );
+  };
+
+  const pollOnce = async () => {
+    if (state.stopped) return;
+    let got;
+    try {
+      const res = await request('GET', `/calls?since=${encodeURIComponent(state.cursor)}`);
+      got = await res.json();
+    } catch (e) {
+      return onError(e, null);
+    }
+    if (typeof got?.cursor === 'string') state.cursor = got.cursor;
+    for (const call of Array.isArray(got?.calls) ? got.calls : []) {
+      if (state.stopped) return;
+      await take(call);
+    }
+  };
+  const poll = () => (chain = chain.then(pollOnce));
+
+  // Poll on a timer only while no stream is held (§5).
+  const tick = () => {
+    state.timer = null;
+    if (state.stopped || state.streaming) return;
+    poll();
+    state.timer = setTimeout(tick, pollMs);
+  };
+
+  if (ES) {
+    const k = token ? `?k=${encodeURIComponent(token)}` : '';
+    const events = new ES(`${root}/events${k}`);
+    state.events = events;
+    events.addEventListener('open', () => {
+      state.streaming = true;
+      poll();
+    });
+    events.addEventListener('call', () => poll());
+    events.addEventListener('error', () => {
+      state.streaming = false;
+      if (!state.timer && !state.stopped) tick();
+    });
+  }
+  tick();
+
+  return {
+    get cursor() {
+      return state.cursor;
+    },
+    /** Whether the call notification stream is open now. */
+    get streaming() {
+      return state.streaming;
+    },
+    /** Poll now, after any poll already running. */
+    poll,
+    /** Stop: close the stream and the timer. Sessions already made stay up. */
+    close() {
+      state.stopped = true;
+      state.events?.close();
+      if (state.timer) clearTimeout(state.timer);
+      state.timer = null;
+    },
+  };
 }
 
 /** `sdp` with every `a=ice-ufrag` and `a=ice-pwd` line replaced. */

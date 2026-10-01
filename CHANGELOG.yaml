@@ -153,6 +153,16 @@ releases:
         `doc/ssh-transport-matrix.md`); the browser suite runs exactly that
         in Chromium, with the example's program and config unchanged.
       - |
+        **`listen` in `drt_browser_access.js`**: a page answers every call
+        a signalling server holds for one name, with no signalling code of
+        its own. `listen('https://…/v1/page', { token, services: { ssh } })`
+        holds the call notification stream, polls by cursor once on
+        connecting and once per notification, and polls every three
+        seconds while it has no stream. Each call is answered and the
+        page's record posted back. `accept` may refuse a call, which
+        withdraws it, and `onSession` gets each session once it is up. The
+        browser suite's row 6 now answers through it.
+      - |
         **`drt tunnel rtc:`**, the relay's `ProxyCommand` over WebRTC
         instead (row 3 of `doc/ssh-transport-matrix.md`). The process is
         the caller in a browser access session and moves stdio over one

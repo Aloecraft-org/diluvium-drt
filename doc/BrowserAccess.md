@@ -547,10 +547,16 @@ session.connect('ssh');                            // §10.3: a named service
 const a = await answer(callerRecord, { services: { ssh: (stream) => { /* … */ } } });
 // a.record goes back to the caller through signaling.
 const served = await a.session;
+
+// The same for every call a server of doc/DRT-Signalling.md holds for
+// one name: the event stream, polling by cursor, and an answer each.
+const l = listen('https://signal.example/v1/page', { token, services: { ssh } });
 ```
 
-- **Signaling is the caller's.** The module makes and takes records; it
-  never opens a WebSocket and never polls.
+- **Signaling is the page's**, with one exception. The module makes and
+  takes records and never opens a WebSocket. `listen` is the exception:
+  it is the answerer's half of `doc/DRT-Signalling.md`, and it holds the
+  call notification stream and polls while it has none.
 - **`accept` resolves once** both channels are open, `hello` has arrived
   and the stream-0 `CONTINUE` has given the initial credit, and rejects
   after 15 s otherwise, closing the connection. One `accept` per `offer`:

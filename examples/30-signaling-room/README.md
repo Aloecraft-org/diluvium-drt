@@ -12,24 +12,20 @@ cd examples/30-signaling-room
 drt start --config app.json
 ```
 
-A page serving `ssh` reads calls and answers each one
-(`drt_browser_access.js`, `doc/BrowserAccess.md` §10.4):
+A page serving `ssh` answers every call with `listen`, from
+`drt_browser_access.js` (`doc/BrowserAccess.md` §10.4):
 
 ```js
-const base = 'http://127.0.0.1:18495/v1/page', k = '?k=answerer-token-for-the-example-only';
-let cursor = '0';
-async function poll() {
-  const got = await (await fetch(`${base}/calls${k}&since=${cursor}`)).json();
-  cursor = got.cursor;
-  for (const call of got.calls) {
-    const a = await answer(call.record, { services: { ssh } });
-    await fetch(`${base}/calls/${call.id}/answer${k}`, { method: 'POST', body: a.recordText });
-  }
-}
-const events = new EventSource(`${base}/events${k}`);
-events.onopen = poll;                     // once on connecting, then once per call
-events.addEventListener('call', poll);
+import { listen } from './drt_browser_access.js';
+
+listen('http://127.0.0.1:18495/v1/page', {
+  token: 'answerer-token-for-the-example-only',
+  services: { ssh },
+});
 ```
+
+`listen` holds the event stream, reads calls by cursor and answers each
+one. Without the stream it polls every three seconds.
 
 and from anywhere with `drt`:
 

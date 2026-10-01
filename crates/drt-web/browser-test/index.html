@@ -217,11 +217,11 @@
     },
     // Row 6: the same, for callers that arrive through a signalling server
     // (doc/DRT-Signalling.md; examples/30-signaling-room) rather than
-    // through the suite. The page holds the call notification stream,
-    // polls once on connecting and once per notification, and answers each
-    // call; `drt tunnel rtc:<server>/v1/<name>/calls` is the caller.
+    // through the suite. The client library's `listen` holds the call
+    // notification stream, polls, and answers each call;
+    // `drt tunnel rtc:<server>/v1/<name>/calls` is the caller.
     async sshListen(hostKey, authorizedKeys, base, token) {
-      const { answer } = await import('/drt_browser_access.js');
+      const { listen } = await import('/drt_browser_access.js');
       const server = new DrtSshServer(hostKey, authorizedKeys);
       const ssh = (stream) =>
         splice(stream, server.serve((shell) => {
@@ -230,36 +230,18 @@
           bound.term.putFile('/hello.dlua', new TextEncoder().encode('print("hello from a page, over webrtc")\n'));
           bound.term.setCwd('/');
         }));
-      const k = `k=${encodeURIComponent(token)}`;
-      const listening = { stop: false, answered: 0, cursor: '0', events: null };
-      let polling = Promise.resolve();
-      const poll = () => (polling = polling.then(async () => {
-        if (listening.stop) return;
-        const got = await fetch(`${base}/calls?since=${listening.cursor}&${k}`).then((r) => r.json()).catch(() => null);
-        if (!got) return;
-        listening.cursor = got.cursor;
-        for (const call of got.calls) {
-          const answering = await answer(call.record, { services: { ssh }, label: 'drt in a page' });
-          sshAnswered.push(answering);
-          await fetch(`${base}/calls/${call.id}/answer?${k}`, { method: 'POST', body: answering.recordText });
-          listening.answered++;
-        }
-      }));
-      listening.events = new EventSource(`${base}/events?${k}`);
-      listening.events.onopen = poll;
-      listening.events.addEventListener('call', poll);
+      const listening = listen(base, { token, services: { ssh }, label: 'drt in a page' });
+      // Present (§4.2) before the suite starts a caller.
       await new Promise((resolve) => {
-        listening.events.addEventListener('open', resolve, { once: true });
-        setTimeout(resolve, 5000);
+        const start = Date.now();
+        const check = () => (listening.streaming || Date.now() - start > 5000 ? resolve() : setTimeout(check, 20));
+        check();
       });
       sshListening.push(listening);
       return { fingerprint: server.fingerprint };
     },
     sshStopListening() {
-      for (const l of sshListening) {
-        l.stop = true;
-        l.events?.close();
-      }
+      for (const l of sshListening) l.close();
     },
     sshParkEvents: () => (sshParked.get(1) ? sshParked.get(1).events : []),
     sshUnpark() {

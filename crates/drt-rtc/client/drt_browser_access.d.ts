@@ -134,6 +134,47 @@ export interface Answering {
   close(): void;
 }
 export function answer(callerRecord: BrowserAccessRecord | string | object, options?: AnswerOptions): Promise<Answering>;
+
+/** A call as a signalling server lists it (doc/DRT-Signalling.md §4.1). */
+export interface IncomingCall {
+  id: string;
+  /** The caller's record, as text. */
+  record: string;
+  /** Seconds until the server stops holding it. */
+  expires_in: number;
+}
+export interface ListenOptions extends AnswerOptions {
+  /** The name's answerer token: a bearer header on requests, `?k=` on the event stream. */
+  token?: string;
+  /** Poll interval while no call notification stream is held; LISTEN_POLL_MS. */
+  pollMs?: number;
+  /** false polls only, never opening the call notification stream. */
+  events?: boolean;
+  /** Return false to refuse a call; the server tells its caller 410. */
+  accept?(call: IncomingCall): boolean | Promise<boolean>;
+  /** A call answered and connected. */
+  onSession?(session: Session, call: IncomingCall): void;
+  /** A failure that did not stop listening; `call` is null for a poll's own. */
+  onError?(error: unknown, call: IncomingCall | null): void;
+  fetch?: typeof fetch;
+  EventSource?: typeof EventSource;
+}
+/** What `listen` returns. */
+export interface Listening {
+  /** The cursor the next poll passes back. */
+  readonly cursor: string;
+  /** Whether the call notification stream is open now. */
+  readonly streaming: boolean;
+  /** Poll now, after any poll already running. */
+  poll(): Promise<void>;
+  /** Stop listening. Sessions already made stay up. */
+  close(): void;
+}
+/**
+ * Answer every call a signalling server holds for one name:
+ * `base` is `…/v1/<name>` (doc/DRT-Signalling.md).
+ */
+export function listen(base: string, options?: ListenOptions): Listening;
 /** The caller's record as the offer a page that answers applies (§10.4). */
 export function offerSdp(callerRecord: BrowserAccessRecord | string | object, mid?: string): string;
 /** Whether `name` can name a service (§10.3). */
@@ -187,6 +228,7 @@ export const UFRAG_LEN: [number, number];
 export const PWD_LEN: [number, number];
 export const DIRECT_UFRAG_LEN: 32;
 export const SERVE_BUFFER: number;
+export const LISTEN_POLL_MS: number;
 export const SERVE_MAX_STREAMS: number;
 export const MESSAGE_MAX: 16384;
 export const DATA_MAX: 16379;
