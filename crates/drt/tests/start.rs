@@ -71,12 +71,12 @@ fn an_unserved_scheme_is_refused() {
     let cfg = config(
         r#"{
             "program": {"source": "local x = 1"},
-            "listeners": [{"scheme": "ssh", "address": "127.0.0.1:0"}]
+            "listeners": [{"scheme": "ftp", "address": "127.0.0.1:0"}]
         }"#,
     );
     let err = start::start(&cfg, Dispatcher::new(Registry::new())).unwrap_err();
-    assert!(err.contains("'ssh'"), "{err}");
-    assert!(err.contains("only 'http'"), "{err}");
+    assert!(err.contains("'ftp'"), "{err}");
+    assert!(err.contains("'http'") && err.contains("'ssh'"), "{err}");
 }
 
 #[test]

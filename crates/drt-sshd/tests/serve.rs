@@ -1,4 +1,4 @@
-//! A real SSH connection into `drt_web::ssh`, over memory.
+//! A real SSH connection into `drt_sshd`, over memory.
 //!
 //! Native on purpose (doc/SshInBrowser.md §5): what is browser-specific is
 //! the socket and the executor, and both are below this. What is *here* is
@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use drt_web::ssh::{serve, Authorized, HostKey, Shell};
+use drt_sshd::{serve, Authorized, HostKey, Shell};
 use russh::keys::{Algorithm, PrivateKey, PrivateKeyWithHashAlg};
 use tokio::sync::mpsc;
 

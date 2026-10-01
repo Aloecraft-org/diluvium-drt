@@ -91,6 +91,7 @@ jobs:
           - connector-rest
           - connector-ssmtp
           - connector-ssh
+          - sshd
           - connector-exec
           - connector-socket
           - connector-ws

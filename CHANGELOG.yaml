@@ -163,6 +163,29 @@ releases:
         withdraws it, and `onSession` gets each session once it is up. The
         browser suite's row 6 now answers through it.
       - |
+        **The REPL over SSH: `drt start`'s `ssh` listener** (SPEC.md §9).
+        A stock `ssh` client that signs in with a known key gets a REPL
+        instance of its own, holding that key's grants.
+        - `{"scheme": "ssh", "address": "127.0.0.1:2222"}` in `listeners`,
+          with `identity.host_key_path` as the host key.
+        - A key in `principals` holds its principal's grants, which must
+          sit inside the deployment's own; a principal granted more is
+          refused at startup, by name. A key in the listener's
+          `authorized_keys` file, `~/.ssh/authorized_keys` when it names
+          none, holds what `drt repl` here would, the stance sshd takes. A
+          line with options (`from=`, `command=`) is skipped with a
+          warning rather than honoured without its restriction.
+        - One REPL per session, on its own thread. `print` reaches the
+          session that typed it, and `:ssh` is refused there, since it
+          would take the server's terminal.
+        - Not yet: the subsystem channel for programs, and attaching to a
+          running deployment's instances.
+        The server is the page's, moved to its own crate, `drt-sshd`, so
+        the page and native DRT share one SSH posture. Tested with stock
+        OpenSSH `ssh` and with `drt ssh`: a session, `print`, state between
+        lines, a principal's grants, an unknown key, and an overreaching
+        principal.
+      - |
         **Ctrl+Backspace deletes a word in `drt repl` on a native terminal.**
         Terminals send BS for it, and crossterm reported BS as Ctrl+H, which
         nothing binds, so the word stayed while Ctrl+arrows moved by words.

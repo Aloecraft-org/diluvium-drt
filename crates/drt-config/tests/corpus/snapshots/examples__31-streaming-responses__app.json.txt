@@ -32,6 +32,7 @@ RootConfig {
             resp_headers: [],
             streaming: true,
             stream_idle_ms: 5000,
+            authorized_keys: None,
         },
     ],
     residency: None,

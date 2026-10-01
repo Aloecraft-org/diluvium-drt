@@ -170,7 +170,7 @@ plumbing before a protocol is in the way.
 
 ### The server, and what a standard client gets
 
-`crates/drt-web/src/ssh.rs`, exported as `DrtSshServer`. The posture is
+`crates/drt-sshd` (`drt-web` re-exports it as `ssh`), exported as `DrtSshServer`. Native `drt start` serves the REPL on the same server (`ssh` listeners). The posture is
 the ssh *client* connector's pointed the other way, and it is in the types
 rather than in a warning: no password method, and `Authorized` is a list
 of `authorized_keys` lines with no "accept anyone" variant, so an empty

@@ -81,6 +81,8 @@ drt-connector = { workspace = true }
 drt-swarm = { workspace = true }
 drt-connector-time = { workspace = true, optional = true }
 drt-connector-ssh = { workspace = true, optional = true }
+# The REPL over SSH (src/sshd.rs): the SSH server a page runs too.
+drt-sshd = { workspace = true, optional = true }
 drt-connector-fs = { workspace = true, optional = true }
 drt-connector-sql = { workspace = true, optional = true }
 drt-connector-crypto = { workspace = true, optional = true }
@@ -140,7 +142,7 @@ libc = "0.2"
 # connector is its own gate so a profile is a feature list, not a fork.
 default = ["slim"]
 slim = ["connector-time", "connector-fs", "connector-crypto", "listen", "cli"]
-full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "connector-exec", "connector-socket", "connector-ws", "connector-data", "tunnel", "relay", "stun", "netcheck", "turn", "wireguard", "webrtc", "numeric"]
+full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "connector-exec", "connector-socket", "connector-ws", "connector-data", "tunnel", "relay", "stun", "netcheck", "turn", "wireguard", "webrtc", "numeric", "sshd"]
 # The portable build (doc/Wasm.md D2): what `drt` carries on
 # wasm32-wasip2, under wasmtime. Every connector here compiles for that
 # target with no source change and is exercised by the examples gate
@@ -188,6 +190,10 @@ web = ["connector-time", "connector-fs", "connector-crypto", "cli", "numeric"]
 cli = ["dep:ego_cli", "dep:futures-executor"]
 connector-time = ["dep:drt-connector-time"]
 connector-ssh = ["dep:drt-connector-ssh", "runtime"]
+# `drt start`'s `ssh` listener: the REPL over SSH (SPEC.md §9), on
+# drt-sshd, the server a page runs. Native: it binds a socket and drives a
+# REPL per session on a thread of its own.
+sshd = ["dep:drt-sshd", "cli", "runtime", "listen"]
 connector-fs = ["dep:drt-connector-fs"]
 connector-sql = ["dep:drt-connector-sql"]
 connector-crypto = ["dep:drt-connector-crypto"]

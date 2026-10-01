@@ -61,6 +61,9 @@ pub mod stun;
 /// lock is not one.
 #[cfg(test)]
 mod testfs;
+// The REPL over SSH: `drt start`'s `ssh` listener (SPEC.md §9).
+#[cfg(feature = "sshd")]
+pub mod sshd;
 // `drt ssh` and the REPL's `:ssh`: an interactive shell on another host.
 #[cfg(feature = "connector-ssh")]
 pub mod ssh;

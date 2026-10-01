@@ -481,6 +481,20 @@ pub fn prepare(config: &RootConfig, dispatcher: Dispatcher) -> Result<DeployDriv
     DeployDriver::new(config, dispatcher)
 }
 
+#[cfg(feature = "sshd")]
+fn ssh_listener(config: &RootConfig, listener: &drt_config::Listener) -> Result<(), String> {
+    crate::sshd::spawn(config, listener).map(|_| ())
+}
+
+#[cfg(all(feature = "listen", not(feature = "sshd")))]
+fn ssh_listener(_config: &RootConfig, listener: &drt_config::Listener) -> Result<(), String> {
+    Err(format!(
+        "the listener on {} is `ssh`, and this build does not carry `sshd` (it is \
+         in `full`)",
+        listener.address
+    ))
+}
+
 fn no_listeners_here(count: usize) -> String {
     format!(
         "this config names {count} listener(s), and this build does not carry \
@@ -496,8 +510,18 @@ fn no_listeners_here(count: usize) -> String {
 pub fn start(config: &RootConfig, dispatcher: Dispatcher) -> Result<(), String> {
     #[cfg(feature = "listen")]
     {
-        let bound = crate::listen::bind(&config.listeners)?;
-        for (listener, addr) in config.listeners.iter().zip(bound.addrs()) {
+        // `ssh` listeners are the REPL over SSH, served beside the swarm on
+        // the process's runtime; the queue bridge serves the rest.
+        let (ssh, http): (Vec<_>, Vec<_>) = config
+            .listeners
+            .iter()
+            .cloned()
+            .partition(|l| l.scheme == "ssh");
+        for listener in &ssh {
+            ssh_listener(config, listener)?;
+        }
+        let bound = crate::listen::bind(&http)?;
+        for (listener, addr) in http.iter().zip(bound.addrs()) {
             eprintln!("drt start: {} listening on {addr}", listener.scheme);
         }
         serve(config, dispatcher, bound)

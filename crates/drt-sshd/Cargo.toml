@@ -1,0 +1,21 @@
+[package]
+name = "drt-sshd"
+description = "DRT's SSH server: public keys only, a shell's two ends handed to whatever serves it. The page's and the native REPL's."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The server builds for a page (wasm32-unknown-unknown, through the fork the
+# workspace patches russh to) and natively, so nothing here may want a
+# runtime or sockets: the stream it serves is whatever the host hands it.
+russh = { version = "0.63", default-features = false, features = ["ring"] }
+tokio = { version = "1", default-features = false, features = ["sync", "io-util"] }
+# What russh generates keys with, so the RNG here is the one the crate's
+# own key types expect. In a page it reaches `crypto.getRandomValues`
+# through getrandom's `wasm_js` backend.
+rand = { version = "0.10", features = ["thread_rng"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "sync", "time"] }

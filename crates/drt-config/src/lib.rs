@@ -368,8 +368,10 @@ pub struct PluginWiring {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Listener {
-    /// `http` today; `ssh` lands with the control endpoint. Non-local
-    /// schemes resolve through ego-transport.
+    /// `http`, the queue bridge below, or `ssh`, the REPL over SSH
+    /// (SPEC.md §9): a PTY gets a REPL instance holding its key's grants,
+    /// with `identity.host_key_path` as the host key. The queue and HTTP
+    /// fields mean nothing to `ssh`.
     pub scheme: String,
     /// e.g. `127.0.0.1:8080`. The C defaults its bind to the loopback —
     /// the LB's side — and so should configs here: the edge terminates
@@ -437,6 +439,12 @@ pub struct Listener {
     /// a stream the program forgets open until the client leaves.
     #[serde(default = "default_stream_idle_ms")]
     pub stream_idle_ms: u64,
+    /// `ssh` only: an `authorized_keys` file whose keys get the REPL with
+    /// what `drt repl` here would hold. `~/.ssh/authorized_keys` when
+    /// unset and present, which is the stance sshd takes: the account's
+    /// own list of who may act as it. `principals` grant per key instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorized_keys: Option<PathBuf>,
 }
 
 fn default_request_queue() -> String {

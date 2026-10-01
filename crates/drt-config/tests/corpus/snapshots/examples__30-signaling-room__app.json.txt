@@ -48,6 +48,7 @@ RootConfig {
             ],
             streaming: true,
             stream_idle_ms: 60000,
+            authorized_keys: None,
         },
     ],
     residency: None,

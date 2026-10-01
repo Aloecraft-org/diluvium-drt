@@ -1265,6 +1265,7 @@ dependencies = [
  "drt-platform",
  "drt-plugin",
  "drt-rtc",
+ "drt-sshd",
  "drt-swarm",
  "ego_cli",
  "ego_transport",
@@ -1589,6 +1590,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "drt-sshd"
+version = "0.8.0"
+dependencies = [
+ "rand 0.10.2",
+ "russh",
+ "tokio",
+]
+
+[[package]]
 name = "drt-swarm"
 version = "0.8.0"
 dependencies = [
@@ -1616,12 +1626,11 @@ dependencies = [
  "drt-config",
  "drt-connector",
  "drt-platform",
+ "drt-sshd",
  "drt-swarm",
  "ego_cli",
  "js-sys",
- "rand 0.10.2",
  "ring",
- "russh",
  "serde_json",
  "tokio",
  "wasm-bindgen",

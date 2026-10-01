@@ -1,10 +1,13 @@
-//! An SSH server in a page (doc/SshInBrowser.md).
+//! DRT's SSH server: in a page (doc/SshInBrowser.md), and natively as the
+//! REPL's (SPEC.md §9, `drt start`'s `ssh` listener).
 //!
-//! Over [`crate::ws::WsStream`], so what reaches it is the page's socket
-//! and what it hands back is a shell's two ends. The whole point is a
-//! *standard* client: `ssh -o ProxyCommand="drt tunnel wss://..."` and a
-//! terminal into a page, not a bespoke protocol between two things we
-//! wrote.
+//! Over any byte stream -- a page's socket (`drt-web`'s `WsStream`), a
+//! browser access stream, a TCP connection -- and what it hands back is a
+//! shell's two ends and the key that opened it. The whole point is a
+//! *standard* client: `ssh` and a terminal into a page or a REPL, not a
+//! bespoke protocol between two things we wrote. Nothing here wants a
+//! runtime or a socket, which is why it builds for a page and natively
+//! alike.
 //!
 //! The posture is the ssh *client* connector's, pointed the other way, and
 //! it is in the types rather than in a warning. There is no password
@@ -15,13 +18,17 @@
 //!
 //! ## surface block
 //!
-//! - [`Authorized`]: who may log in. `authorized_keys` lines, parsed once.
+//! - [`Authorized`]: who may log in. `authorized_keys` lines, parsed once,
+//!   or keys a host already holds ([`Authorized::from_keys`]).
+//! - [`PublicKey`]: russh's, re-exported, so a host compares keys without
+//!   depending on russh itself.
 //! - [`HostKey`]: what the client pins. [`HostKey::generate`] makes one;
 //!   the page is expected to *keep* it, because a host key that changes
 //!   every load is a warning every load.
 //! - [`serve`]: one connection. Returns when the client hangs up.
 //! - [`Shell`]: one session channel, once the client asks for a shell --
-//!   bytes both ways and the window size. This is a terminal in all but
+//!   bytes both ways, the window size, and the key and user that signed
+//!   in. This is a terminal in all but
 //!   name, which is the point: `ego_cli`'s `Terminal` is a trait, M8
 //!   implemented it over xterm.js, and this is the second thing that fits
 //!   the same shape.
@@ -45,7 +52,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use russh::keys::ssh_encoding::bytes::Bytes;
-use russh::keys::{Algorithm, HashAlg, PrivateKey, PublicKey};
+pub use russh::keys::PublicKey;
+use russh::keys::{Algorithm, HashAlg, PrivateKey};
 use russh::server::{Auth, ChannelOpenHandle, Config, Handler, Msg, Session};
 use russh::{Channel, ChannelId};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -109,6 +117,12 @@ impl Authorized {
             keys.push(PublicKey::from_openssh(line).map_err(|e| Error::Key(e.to_string()))?);
         }
         Ok(Authorized(Arc::new(keys)))
+    }
+
+    /// Keys already parsed, for a host that gathers them from more than
+    /// one place.
+    pub fn from_keys(keys: Vec<PublicKey>) -> Self {
+        Authorized(Arc::new(keys))
     }
 
     /// Whether this key may log in. Compares the key itself, not a
@@ -200,6 +214,13 @@ impl Window {
 pub struct Shell {
     /// The client's window, in characters, and still changing.
     pub window: Window,
+    /// The key that signed in. A host that grants by key (SPEC.md §9's
+    /// principals) reads it here; one that admits a list and nothing more
+    /// can ignore it.
+    pub key: PublicKey,
+    /// The user name the client gave. Informational: who may do what is
+    /// the key's, never the name's.
+    pub user: String,
     from_client: mpsc::Receiver<Vec<u8>>,
     handle: russh::server::Handle,
     channel: ChannelId,
@@ -304,6 +325,7 @@ where
         authorized,
         shells,
         to_page: None,
+        signed_in: None,
         window: Window::new(),
     };
     let running = russh::server::run_stream(config, stream, handshake)
@@ -324,6 +346,10 @@ struct Handshake {
     shells: mpsc::Sender<Shell>,
     /// Set once a shell starts: where the client's keystrokes go.
     to_page: Option<mpsc::Sender<Vec<u8>>>,
+    /// Who signed in: set by the verified public-key step, and nothing
+    /// else, so a shell is never handed out under a key that was only
+    /// offered.
+    signed_in: Option<(String, PublicKey)>,
     /// Shared with the shell this connection opens, so a resize after it
     /// started still lands. One per connection rather than per channel:
     /// this serves one shell, which is what a terminal session is.
@@ -357,8 +383,9 @@ impl Handler for Handshake {
     }
 
     /// The real check, after russh has proved the client holds the key.
-    async fn auth_publickey(&mut self, _user: &str, key: &PublicKey) -> Result<Auth, Self::Error> {
+    async fn auth_publickey(&mut self, user: &str, key: &PublicKey) -> Result<Auth, Self::Error> {
         Ok(if self.authorized.admits(key) {
+            self.signed_in = Some((user.to_string(), key.clone()));
             Auth::Accept
         } else {
             Auth::reject()
@@ -417,9 +444,15 @@ impl Handler for Handshake {
         channel: ChannelId,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        let Some((user, key)) = self.signed_in.clone() else {
+            session.channel_failure(channel)?;
+            return Ok(());
+        };
         let (to_page, from_client) = mpsc::channel(DEPTH);
         let shell = Shell {
             window: self.window.clone(),
+            key,
+            user,
             from_client,
             handle: session.handle(),
             channel,

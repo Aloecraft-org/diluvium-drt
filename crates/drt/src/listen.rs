@@ -242,8 +242,8 @@ impl ListenerRt {
     fn new(idx: usize, cfg: &Listener) -> Result<Self, String> {
         if cfg.scheme != "http" {
             return Err(format!(
-                "listener {idx} speaks '{}', and only 'http' is served today \
-                 ('ssh' lands with the control endpoint)",
+                "listener {idx} speaks '{}'; a listener is 'http' (this queue \
+                 bridge) or 'ssh' (the REPL over SSH)",
                 cfg.scheme
             ));
         }

@@ -77,6 +77,7 @@ const PROFILE_FULL: &[&str] = &[
     "numeric",
     "relay",
     "runtime",
+    "sshd",
     "stun",
     "tunnel",
     "turn",
@@ -738,6 +739,7 @@ fn enabled_features() -> Vec<&'static str> {
     feature!("plugins");
     feature!("relay");
     feature!("runtime");
+    feature!("sshd");
     feature!("stun");
     feature!("tunnel");
     feature!("turn");

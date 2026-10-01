@@ -9,6 +9,10 @@
 //! the command's, the REPL's prompt returning afterwards, and the
 //! config-scoped `:ssh` going through the grant.
 //!
+//! The REPL served over SSH (`drt start`'s `ssh` listener) is here too,
+//! reached by OpenSSH's own `ssh`, since a stock client is the one that
+//! matters.
+//!
 //! Needs `/usr/sbin/sshd` and `ssh-keygen`. Without them every test says
 //! it was skipped, on stderr, and passes: a machine with no sshd cannot
 //! answer this question either way.
@@ -240,6 +244,10 @@ fn winsize(cols: u16, rows: u16) -> libc::winsize {
 
 impl Pty {
     fn spawn(args: &[String], cols: u16, rows: u16) -> Pty {
+        Pty::spawn_program(env!("CARGO_BIN_EXE_drt"), args, cols, rows)
+    }
+
+    fn spawn_program(program: &str, args: &[String], cols: u16, rows: u16) -> Pty {
         let (mut master, mut slave): (RawFd, RawFd) = (-1, -1);
         let size = winsize(cols, rows);
         // SAFETY: openpty writes two descriptors this test then owns.
@@ -256,7 +264,7 @@ impl Pty {
         // SAFETY: fresh descriptors from openpty, owned from here.
         let (master, slave) =
             unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_drt"));
+        let mut cmd = Command::new(program);
         cmd.args(args)
             .env("TERM", "xterm")
             .env_remove("SSH_AUTH_SOCK")
@@ -496,4 +504,251 @@ fn a_bare_ssh_in_the_repl_is_the_config_s_grant_and_scope() {
     t.expect("dv> ");
     t.send("\x04");
     assert_eq!(t.status(), 0);
+}
+
+// depth: the REPL served over SSH, to stock `ssh`
+
+/// `drt start` with an `ssh` listener on a port of its own choosing, and
+/// three keys: `host`, `client` and `stranger`. `extra` is merged into the
+/// config, its `listener` into the listener; `@DIR@` in it is the keys'
+/// directory and `@CLIENT_PUB@` the client's public key.
+struct Served {
+    child: Child,
+    port: u16,
+    dir: tempfile::TempDir,
+}
+
+fn keygen(dir: &Path, name: &str) -> bool {
+    Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+        .arg(dir.join(name))
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+impl Served {
+    /// None when this machine has no `ssh` or `ssh-keygen`; the test says
+    /// it was skipped.
+    fn start(extra: serde_json::Value) -> Option<Result<Served, String>> {
+        if Command::new("ssh").arg("-V").output().is_err() {
+            eprintln!("skipped: no ssh client on this machine");
+            return None;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        for name in ["host", "client", "stranger"] {
+            if !keygen(d, name) {
+                eprintln!("skipped: ssh-keygen did not run");
+                return None;
+            }
+        }
+        // An authorized_keys file naming nobody, for a test whose keys are
+        // all principals.
+        std::fs::write(d.join("none"), "").unwrap();
+        std::fs::write(
+            d.join("app.dlua"),
+            "queue.wait({queue.declare('idle', {capacity = 1})})\n",
+        )
+        .unwrap();
+        let mut config = serde_json::json!({
+            "program": { "path": d.join("app.dlua") },
+            "identity": { "host_key_path": d.join("host") },
+            "listeners": [{ "scheme": "ssh", "address": "127.0.0.1:0" }],
+        });
+        for (k, v) in extra.as_object().unwrap() {
+            if k == "listener" {
+                for (lk, lv) in v.as_object().unwrap() {
+                    config["listeners"][0][lk] = lv.clone();
+                }
+            } else {
+                config[k] = v.clone();
+            }
+        }
+        let text = config
+            .to_string()
+            .replace("@DIR@", &d.display().to_string())
+            .replace(
+                "@CLIENT_PUB@",
+                std::fs::read_to_string(d.join("client.pub"))
+                    .unwrap()
+                    .trim(),
+            );
+        std::fs::write(d.join("app.json"), text).unwrap();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_drt"))
+            .arg("--config")
+            .arg(d.join("app.json"))
+            .arg("start")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut lines =
+            std::io::BufRead::lines(std::io::BufReader::new(child.stderr.take().unwrap()));
+        let mut said = String::new();
+        let port = loop {
+            match lines.next() {
+                Some(Ok(line)) => {
+                    said.push_str(&line);
+                    said.push('\n');
+                    if let Some(rest) = line.strip_prefix("drt start: ssh listening on 127.0.0.1:")
+                    {
+                        break rest.split(',').next().unwrap().parse::<u16>().unwrap();
+                    }
+                }
+                _ => {
+                    let _ = child.wait();
+                    return Some(Err(said));
+                }
+            }
+        };
+        std::thread::spawn(move || for _ in lines {});
+        Some(Ok(Served { child, port, dir }))
+    }
+
+    fn ssh(&self, key: &str) -> Pty {
+        let args: Vec<String> = [
+            "-tt",
+            "-p",
+            &self.port.to_string(),
+            "-i",
+            &self.dir.path().join(key).display().to_string(),
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+            "-F",
+            "/dev/null",
+            "me@127.0.0.1",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        Pty::spawn_program("ssh", &args, 100, 30)
+    }
+}
+
+impl Drop for Served {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[test]
+fn the_repl_is_served_to_a_stock_ssh_client() {
+    let Some(served) = Served::start(serde_json::json!({
+        "listener": { "authorized_keys": "@DIR@/client.pub" }
+    })) else {
+        return;
+    };
+    let served = served.expect("drt start with an ssh listener");
+    let mut t = served.ssh("client");
+    t.expect("drt repl");
+    t.expect("dv> ");
+    t.send("x = 40\r");
+    t.expect("dv> ");
+    t.send("x + 2\r");
+    t.expect("42");
+    // `print` reaches the session that typed it, before the answer.
+    t.send("for i = 1, 3 do print('line', i) end; return 'done'\r");
+    t.expect("line\t1");
+    t.expect("line\t3");
+    t.expect("\"done\"");
+    // `:ssh` would take the server's terminal, so it is refused.
+    t.send(":ssh box\r");
+    t.expect("not available in a REPL reached over SSH");
+    t.send("\x04");
+    assert_eq!(t.status(), 0, "^D ends the session cleanly");
+}
+
+#[test]
+fn a_principal_holds_its_own_grants_and_no_more() {
+    let Some(served) = Served::start(serde_json::json!({
+        "connectors": { "time": {} },
+        "principals": [{ "key": "@CLIENT_PUB@", "caps": [{ "capability": "host:time" }] }],
+        "listener": { "authorized_keys": "@DIR@/none" }
+    })) else {
+        return;
+    };
+    let served = served.expect("drt start with a principal");
+    let mut t = served.ssh("client");
+    t.expect("dv> ");
+    t.send("type(host.call('time'))\r");
+    t.expect("\"number\"");
+    // Wired, and the deployment holds it, but this key was not granted it.
+    t.send("host.try('time/monotonic')\r");
+    t.expect("denied");
+    t.send("\x04");
+    assert_eq!(t.status(), 0);
+}
+
+#[test]
+fn an_unknown_key_and_an_overreaching_principal_are_refused() {
+    let Some(served) = Served::start(serde_json::json!({
+        "listener": { "authorized_keys": "@DIR@/client.pub" }
+    })) else {
+        return;
+    };
+    let served = served.expect("drt start with an ssh listener");
+    let mut t = served.ssh("stranger");
+    t.expect("Permission denied");
+    assert_eq!(t.status(), 255);
+    drop(served);
+
+    // A principal granted what the deployment does not hold: refused at
+    // startup, by name, before anything listens.
+    let Some(refused) = Served::start(serde_json::json!({
+        "caps": [{ "capability": "host:time" }],
+        "principals": [{ "key": "@CLIENT_PUB@", "caps": [{ "capability": "host:fs/*" }] }]
+    })) else {
+        return;
+    };
+    let said = refused.err().expect("an overreaching principal is refused");
+    assert!(said.contains("host:fs/*"), "{said}");
+    assert!(said.contains("does not hold"), "{said}");
+}
+
+#[test]
+fn drt_ssh_reaches_the_repl_drt_start_serves() {
+    let Some(served) = Served::start(serde_json::json!({
+        "listener": { "authorized_keys": "@DIR@/client.pub" }
+    })) else {
+        return;
+    };
+    let served = served.expect("drt start with an ssh listener");
+    let d = served.dir.path();
+    let fingerprint = String::from_utf8(
+        Command::new("ssh-keygen")
+            .arg("-lf")
+            .arg(d.join("host.pub"))
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .split_whitespace()
+    .nth(1)
+    .unwrap()
+    .to_string();
+    let args: Vec<String> = vec![
+        "ssh".into(),
+        "-i".into(),
+        d.join("client").display().to_string(),
+        "--hostkey".into(),
+        fingerprint,
+        format!("me@127.0.0.1:{}", served.port),
+    ];
+    let mut t = Pty::spawn(&args, 100, 30);
+    t.expect("dv> ");
+    t.send("6 * 7\r");
+    t.expect("42");
+    t.send("\x04");
+    assert_eq!(t.status(), 0, "the served REPL's ^D is drt ssh's exit 0");
 }

@@ -60,6 +60,9 @@ pub struct Repl {
     names_stale: bool,
     /// What [`Repl::banner`] says, and what the lines evaluate under.
     unsafe_stdlib: bool,
+    /// Served to someone else's terminal (SSH): `print` comes back with the
+    /// answers, and nothing reaches for this process's own terminal.
+    served: bool,
 }
 
 impl Repl {
@@ -126,7 +129,42 @@ impl Repl {
             names: Arc::new(Mutex::new(Vec::new())),
             names_stale: true,
             unsafe_stdlib,
+            served: false,
         })
+    }
+
+    /// A sealed REPL for a terminal that is not this process's: an SSH
+    /// session (`drt-sshd`, `crate::sshd`). `print` is collected and
+    /// printed with each answer, because the core's own `print` writes to
+    /// this process's stdout, and `:ssh` is refused, because it would take
+    /// over this process's terminal rather than the session's.
+    pub fn served(
+        dispatcher: Arc<Dispatcher>,
+        caps: Vec<Grant>,
+        budget: drt_config::Budget,
+    ) -> Result<Self, String> {
+        let mut repl = Self::build(dispatcher, caps, budget, false)?;
+        repl.served = true;
+        // The guest declares its queues on its first slice; until then
+        // there is nowhere to say it is served.
+        for _ in 0..8 {
+            if repl.solo.queue(IN).is_some() {
+                break;
+            }
+            let _ = repl.solo.tick(Some(IN));
+        }
+        let input = repl
+            .solo
+            .queue(IN)
+            .ok_or("the repl program never declared its input queue")?;
+        let served = rmpv::Value::Map(vec![(
+            rmpv::Value::from("served"),
+            rmpv::Value::Boolean(true),
+        )]);
+        let mut msg = Vec::new();
+        rmpv::encode::write_value(&mut msg, &served).map_err(|e| e.to_string())?;
+        repl.solo.push(input, &msg)?;
+        Ok(repl)
     }
 
     /// What to print before the first prompt.
@@ -356,6 +394,14 @@ fn meta(repl: &mut Repl, line: &str) -> Result<bool, String> {
     };
     if !(rest.is_empty() || rest.starts_with(char::is_whitespace)) {
         return Ok(false);
+    }
+    if repl.served {
+        let _ = writeln!(
+            stdio::stderr(),
+            ":ssh is not available in a REPL reached over SSH: the session it \
+             would open is this server's terminal, not yours"
+        );
+        return Ok(true);
     }
     if rest.trim().is_empty() {
         // The reply deadline is the session's length, and a person decides
@@ -751,6 +797,10 @@ impl Answer {
                     .filter_map(|v| v.as_str().map(str::to_string))
                     .collect(),
             );
+        }
+        // What a served REPL's line printed, before its answer.
+        if let Some(printed) = get("printed").and_then(|v| v.as_str().map(str::to_string)) {
+            let _ = write!(stdio::stdout(), "{printed}");
         }
         let text = get("text").and_then(|v| v.as_str().map(str::to_string));
         if get("more").and_then(|v| v.as_bool()).unwrap_or(false) {
