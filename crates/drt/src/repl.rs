@@ -655,7 +655,7 @@ pub async fn edit<T: ego_cli::term::Terminal>(
     not(all(target_arch = "wasm32", target_os = "unknown"))
 ))]
 fn edited(mut repl: Repl) -> Result<(), String> {
-    let terminal = ego_cli::term::platform().map_err(|e| format!("no terminal: {e}"))?;
+    let terminal = Keys(ego_cli::term::platform().map_err(|e| format!("no terminal: {e}"))?);
     let mut session = editor(&repl, terminal);
 
     // `block_on` and nothing else: with ego-cli's `runtime` feature off,
@@ -665,6 +665,60 @@ fn edited(mut repl: Repl) -> Result<(), String> {
     // tokio teardown bug `cli.rs` still works around for the relay.
     eprintln!("{}", repl.banner());
     futures_executor::block_on(edit(&mut repl, &mut session))
+}
+
+/// The native tty, with Ctrl+Backspace read the way the page reads it.
+///
+/// Most terminals send BS (0x08) for Ctrl+Backspace and DEL for a plain
+/// Backspace. crossterm, which `ego_cli` reads a native tty through, turns
+/// BS into Ctrl+H, which nothing binds, so Ctrl+Backspace deleted nothing
+/// while Ctrl+arrows (escape sequences crossterm does name) moved by
+/// words. `ego_cli`'s own byte decoder, the page's, already reads BS as
+/// Ctrl+Backspace, and so does this. It belongs in `ego_cli`'s crossterm
+/// mapping; until it is there, it is here.
+#[cfg(all(
+    feature = "cli",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
+pub struct Keys<T>(pub T);
+
+#[cfg(all(
+    feature = "cli",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
+impl<T: ego_cli::term::Terminal> ego_cli::term::Terminal for Keys<T> {
+    fn capabilities(&self) -> ego_cli::term::Capabilities {
+        self.0.capabilities()
+    }
+
+    fn size(&self) -> ego_cli::term::Size {
+        self.0.size()
+    }
+
+    fn set_raw(&mut self, enabled: bool) -> ego_cli::Result<()> {
+        self.0.set_raw(enabled)
+    }
+
+    async fn next_event(&mut self) -> ego_cli::Result<ego_cli::term::Event> {
+        use ego_cli::{KeyCode, KeyPress, Mods};
+        Ok(match self.0.next_event().await? {
+            ego_cli::term::Event::Key(KeyPress {
+                code: KeyCode::Char('h'),
+                mods,
+            }) if mods == Mods::CTRL => {
+                ego_cli::term::Event::Key(KeyPress::new(KeyCode::Backspace, Mods::CTRL))
+            }
+            other => other,
+        })
+    }
+
+    async fn write(&mut self, text: &str) -> ego_cli::Result<()> {
+        self.0.write(text).await
+    }
+
+    async fn flush(&mut self) -> ego_cli::Result<()> {
+        self.0.flush().await
+    }
 }
 
 /// What came back on `repl/out`: something to show, or the names Tab

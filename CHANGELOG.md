@@ -91,6 +91,10 @@ is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
   page's record posted back. `accept` may refuse a call, which
   withdraws it, and `onSession` gets each session once it is up. The
   browser suite's row 6 now answers through it.
+- **Ctrl+Backspace deletes a word in `drt repl` on a native terminal.**
+  Terminals send BS for it, and crossterm reported BS as Ctrl+H, which
+  nothing binds, so the word stayed while Ctrl+arrows moved by words.
+  The REPL now reads it as the page always has.
 - **`drt ssh`, and `:ssh` in the REPL**: an interactive SSH client on
   this terminal. The REPL hands its terminal to the session and gets
   it back, with the instance and its state as they were.
