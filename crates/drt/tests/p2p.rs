@@ -383,3 +383,115 @@ fn a_parked_peer_answers_calls_at_a_signalling_server() {
     let _ = parked.kill();
     let _ = parked.wait();
 }
+
+// depth: the match role
+
+/// `drt p2p --match` on a free port, read until it listens.
+struct Match {
+    child: Child,
+    base: String,
+}
+
+impl Match {
+    fn start(capacity: usize) -> Match {
+        let port = free_port();
+        let mut child = drt()
+            .arg("p2p")
+            .arg("--match")
+            .arg(port.to_string())
+            .arg("--capacity")
+            .arg(capacity.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut out = BufReader::new(child.stdout.take().unwrap()).lines();
+        let line = out.next().expect("the server says what it serves").unwrap();
+        assert!(line.contains("admission is by token"), "{line}");
+        std::thread::spawn(move || for _ in out {});
+        let stderr = child.stderr.take().unwrap();
+        std::thread::spawn(move || for _ in BufReader::new(stderr).lines() {});
+        Match {
+            child,
+            base: format!("http://127.0.0.1:{port}"),
+        }
+    }
+
+    fn get(&self, path: &str) -> (u16, String) {
+        let mut conn = TcpStream::connect(self.base.trim_start_matches("http://")).unwrap();
+        conn.set_read_timeout(Some(WAIT)).unwrap();
+        conn.write_all(
+            format!("GET {path} HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n").as_bytes(),
+        )
+        .unwrap();
+        let mut reply = String::new();
+        conn.read_to_string(&mut reply).unwrap();
+        let status = reply.split_whitespace().nth(1).unwrap().parse().unwrap();
+        let body = reply.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+        (status, body)
+    }
+}
+
+impl Drop for Match {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[test]
+fn the_match_server_claims_names_by_token_and_holds_a_capacity() {
+    let server = Match::start(2);
+    let port = echo();
+    let name = format!("{}/v1/mypc", server.base);
+    let mut parked = drt()
+        .arg("p2p")
+        .arg("--park")
+        .arg(&name)
+        .arg("--H")
+        .arg("auth=answerer-token")
+        .arg("--H")
+        .arg("DRT-Caller-Token=caller-token")
+        .arg("--forward")
+        .arg(format!("127.0.0.1:{port}"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut err = BufReader::new(parked.stderr.take().unwrap());
+    loop {
+        let mut line = String::new();
+        assert!(
+            err.read_line(&mut line).unwrap() > 0,
+            "the parked peer ended"
+        );
+        if line.contains("present at ") {
+            break;
+        }
+    }
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        while err.read_line(&mut line).unwrap_or(0) > 0 {
+            line.clear();
+        }
+    });
+    // The caller token set at the claim admits a caller, and nothing else.
+    let (out, errs) = call(&name, &["--H", "auth=caller-token"], b"matched\n");
+    assert_eq!(out, "matched\n", "{errs}");
+    let (_, errs) = call(&name, &[], b"x\n");
+    assert!(errs.contains("401"), "{errs}");
+    let (_, errs) = call(&name, &["--H", "auth=wrong"], b"x\n");
+    assert!(errs.contains("403"), "{errs}");
+    // Another answerer token may not take the held name; two more names fit
+    // one, and the capacity refuses the third.
+    assert_eq!(server.get("/v1/mypc/calls?k=other").0, 403);
+    assert_eq!(server.get("/v1/second/calls?k=t").0, 200);
+    let (status, body) = server.get("/v1/third/calls?k=t");
+    assert_eq!((status, body.contains("no room")), (429, true), "{body}");
+    // A name nobody holds has no answerer present.
+    assert_eq!(server.get("/v1/third/calls?k=t").0, 429);
+    let _ = parked.kill();
+    let _ = parked.wait();
+}

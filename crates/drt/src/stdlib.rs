@@ -61,6 +61,12 @@ pub const WG: &str = "wg";
 /// nothing on disk but its config.
 pub const BROWSER_ACCESS: &str = "browser-access";
 
+/// `drt p2p --match`'s server (`doc/P2P.md` §2.4): `doc/DRT-Signalling.md`
+/// with claimable names, grown from `examples/30-signaling-room`. The verb
+/// assembles its listener from flags; a config that wants the same program
+/// under its own listener names this entry.
+pub const P2P_MATCH: &str = "p2p-match";
+
 /// One reader, four blocks.
 ///
 /// A deployment is config plus a program, and these four blocks used to be
@@ -212,6 +218,8 @@ pub fn lookup(name: &str) -> Option<Kind> {
             feature = "connector-time"
         ))]
         BROWSER_ACCESS => Some(Kind::Source(include_str!("stdlib/browser_access.dlua"))),
+        #[cfg(feature = "p2p")]
+        P2P_MATCH => Some(Kind::Source(include_str!("stdlib/p2p_match.dlua"))),
         _ => None,
     }
 }

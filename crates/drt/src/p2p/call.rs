@@ -7,7 +7,7 @@
 //! - Entry points: [`connect`], a peer reached and the session up, for this
 //!   role and for anything else that wants a [`Call`] (`drt ssh`, the
 //!   `drt://` forward); [`run`], the role carried out.
-//! - Configurable: [`Dial`], what every call is made with.
+//! - Configurable: [`EOF_GRACE`]; [`Dial`], what every call is made with.
 //! - Fan-out: the match on [`How`] in `connect`: a record in hand, a
 //!   signalling request, or a WebSocket relay, which carries bytes and not
 //!   a session and so is its own path in `run`.
@@ -20,6 +20,9 @@ use tokio_rustls::rustls::pki_types::CertificateDer;
 use super::http;
 use super::peer::{fingerprint_text, How, Peer, PortMap};
 use super::CallRole;
+
+/// How long, after stdin ends, the far side may still answer.
+pub const EOF_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// What every call is made with.
 #[derive(Debug, Clone, Default)]
@@ -193,10 +196,13 @@ pub async fn run(role: &CallRole, roots: &[CertificateDer<'static>]) -> Result<(
         let _ = out.flush().await;
         n
     };
-    // Either direction ending ends the session, as `drt tunnel` did.
+    // The far side ending ends the session. Stdin ending does too, after a
+    // grace for what the far side still has to say: Wisp has no half-close,
+    // so `printf x | drt p2p <peer>` would otherwise lose its answer.
+    let mut down = std::pin::pin!(down);
     let received = tokio::select! {
-        _ = up => None,
-        n = down => Some(n),
+        _ = up => tokio::time::timeout(EOF_GRACE, &mut down).await.ok(),
+        n = &mut down => Some(n),
     };
     // A stream refused before a byte came back says why, in the words the
     // wire has for it.

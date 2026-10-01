@@ -1,0 +1,249 @@
+-- `drt p2p --match`: the reference signalling server for
+-- doc/DRT-Signalling.md (doc/P2P.md §2.4), grown from
+-- examples/30-signaling-room with what the example leaves out: names
+-- claimed on first use, a caller token and an admission range set by the
+-- answerer when it claims, and a cap on names held at once. The example
+-- stays its readable core; this is the whole server.
+--
+-- ## surface block
+--
+-- - Entry point: the verb runs it with an http listener on --host:<port>,
+--   `args.capacity` the names held at once.
+-- - Configurable: HOLD_MS (§3), PRESENT_MS (§4.2), WAITING_CAP (§6),
+--   RECORD_MAX (§1), KEEPALIVE_MS (§5), the CORS headers.
+-- - Fan-out: `routes`, the five requests of §2, each with whose token it
+--   takes; `claim`, how a name is held.
+--
+-- Admission is by token, not origin: every reply carries
+-- access-control-allow-origin: *, so a page opened from file:// (Origin:
+-- null) reaches a named peer as a page served from anywhere does.
+
+local HOLD_MS      = 25000
+local PRESENT_MS   = 30000
+local WAITING_CAP  = 16
+local RECORD_MAX   = 512
+local KEEPALIVE_MS = 25000
+local CORS = {
+  ['access-control-allow-origin']   = '*',
+  ['access-control-allow-methods']  = 'GET, POST, DELETE, OPTIONS',
+  ['access-control-allow-headers']  = 'authorization, content-type, last-event-id, drt-accept, drt-caller-token',
+  ['access-control-expose-headers'] = 'location, retry-after',
+}
+
+local requests = queue.declare('http_in', {capacity = 64})
+local replies  = queue.declare('http_out', {capacity = 128, exported = true})
+local _, args  = queue.wait({queue.declare('args', {capacity = 1})})
+local CAPACITY = tonumber(args.capacity) or 256
+
+-- depth: replies
+
+local function with(extra)
+  local h = {}
+  for k, v in pairs(CORS) do h[k] = v end
+  for k, v in pairs(extra or {}) do h[k] = v end
+  return h
+end
+
+-- `json` is the reply; the encoder is Diluvium's `json` module under another name.
+local json_text = json.encode
+
+local function json(conn, status, body, extra)
+  queue.push(replies, {conn = conn, status = status, body = body,
+                       content_type = 'application/json', headers = with(extra)})
+end
+
+local function fail(conn, status, why, extra) json(conn, status, json_text({error = why}), extra) end
+
+-- '/v1/page/calls?since=3&k=t' -> '/v1/page/calls', {since = '3', k = 't'}
+local function split(target)
+  local path, query = target:match('^([^?]*)%??(.*)$')
+  local params = {}
+  for k, v in query:gmatch('([^&=]+)=([^&]*)') do params[k] = v end
+  return path, params
+end
+
+local function token_of(m, params)
+  local bearer = m.headers and m.headers.authorization
+    and m.headers.authorization:match('^Bearer%s+(%S+)$')
+  return bearer or params.k
+end
+
+-- depth: names, claimed on first use
+
+local names = {}   -- name -> {token, caller, accept, polled, streams, calls, last}
+local function held_count()
+  local n = 0
+  for _ in pairs(names) do n = n + 1 end
+  return n
+end
+
+local function present(r, now)
+  return (r.polled and now - r.polled < PRESENT_MS) or next(r.streams) ~= nil
+end
+
+-- The answerer's claim: a free name is taken by the first answerer token to
+-- poll it, held while that token is present, and shared by every holder of
+-- the same token. A name past the cap is 429; another token's name is 403.
+-- Returns the name's record, or nil after replying.
+local function claim(m, name, token, now)
+  local r = names[name]
+  if r and not present(r, now) then names[name] = nil; r = nil end
+  if r and r.token ~= token then fail(m.conn, 403, 'this name is held by another answerer'); return nil end
+  if not r then
+    if held_count() >= CAPACITY then
+      fail(m.conn, 429, 'no room for another name', {['retry-after'] = '30'}); return nil
+    end
+    r = {token = token, streams = {}, calls = {}, last = 0}
+    names[name] = r
+  end
+  local h = m.headers or {}
+  if h['drt-caller-token'] then r.caller = h['drt-caller-token'] end
+  if h['drt-accept'] then r.accept = h['drt-accept'] end
+  return r
+end
+
+-- depth: the room, one per name
+
+local function waiting(r)
+  local count = 0
+  for _, c in pairs(r.calls) do if not c.answered then count = count + 1 end end
+  return count
+end
+
+local function checked(m)
+  if not utf8.len(m.body) then fail(m.conn, 400, 'a record is text'); return false end
+  if #m.body > RECORD_MAX then fail(m.conn, 413, 'a record is at most 512 bytes'); return false end
+  return true
+end
+
+local function find(r, id)
+  local n = tonumber(id:match('^c(%d+)$') or '')
+  return n, n and r.calls[n]
+end
+
+local function event(cursor)
+  return 'id: ' .. cursor .. '\nevent: call\ndata: {"cursor":"' .. cursor .. '"}\n\n'
+end
+
+local function notify(r, cursor, now)
+  for conn in pairs(r.streams) do
+    queue.push(replies, {conn = conn, chunk = event(cursor)}); r.streams[conn] = now
+  end
+end
+
+-- The caller's one request (§3): held until answered, or refused now.
+local function call(m, name, token, now)
+  local r = names[name]
+  if not r or not present(r, now) then return fail(m.conn, 503, 'no answerer is present') end
+  if r.caller and token ~= r.caller then
+    return fail(m.conn, token and 403 or 401, token and 'this token may not call' or 'this name takes a caller token')
+  end
+  if not checked(m) then return end
+  if waiting(r) >= WAITING_CAP then return fail(m.conn, 429, 'too many calls waiting', {['retry-after'] = '5'}) end
+  r.last = r.last + 1
+  r.calls[r.last] = {record = m.body, conn = m.conn, ends = now + HOLD_MS}
+  notify(r, r.last, now)
+end
+
+local function list(m, r, params, now)
+  local since = params.since or '0'
+  if not since:match('^%d+$') then return fail(m.conn, 400, 'a malformed cursor') end
+  r.polled = now
+  local out = {}
+  for n = tonumber(since) + 1, r.last do
+    local c = r.calls[n]
+    if c and not c.answered then
+      out[#out + 1] = {id = 'c' .. n, record = c.record, expires_in = math.ceil((c.ends - now) / 1000)}
+    end
+  end
+  -- An empty table encodes as an object, so an empty list is written out.
+  json(m.conn, 200, '{"cursor":"' .. r.last .. '","calls":' .. (#out > 0 and json_text(out) or '[]') .. '}')
+end
+
+local function answer(m, r, id, base)
+  local _, c = find(r, id)
+  if not c then return fail(m.conn, 404, 'no such call') end
+  if c.answered then return fail(m.conn, 409, 'the call was already answered') end
+  if not checked(m) then return end
+  c.answered = true
+  json(c.conn, 200, m.body, {location = base .. id})
+  json(m.conn, 204, '')
+end
+
+local function withdraw(m, r, id)
+  local n, c = find(r, id)
+  if not c then return fail(m.conn, 404, 'no such call') end
+  if c.answered then return fail(m.conn, 409, 'the call was already answered') end
+  fail(c.conn, 410, 'the call was withdrawn or refused')
+  r.calls[n] = nil
+  json(m.conn, 204, '')
+end
+
+local function events(m, r, now)
+  queue.push(replies, {conn = m.conn, stream = true, body = 'retry: 2000\n\n',
+                       content_type = 'text/event-stream', headers = with({['cache-control'] = 'no-cache'})})
+  r.streams[m.conn] = now
+  local seen = tonumber((m.headers or {})['last-event-id'] or '')
+  if seen and seen < r.last then queue.push(replies, {conn = m.conn, chunk = event(r.last)}) end
+end
+
+-- depth: the five requests of §2
+
+local routes = {
+  {'POST',   '^/v1/([^/]+)/calls$',                'caller'},
+  {'GET',    '^/v1/([^/]+)/calls$',                'answerer'},
+  {'POST',   '^/v1/([^/]+)/calls/([^/]+)/answer$', 'answerer'},
+  {'DELETE', '^/v1/([^/]+)/calls/([^/]+)$',        'either'},
+  {'GET',    '^/v1/([^/]+)/events$',               'answerer'},
+}
+
+local function route(m, now)
+  local path, params = split(m.path)
+  if m.method == 'OPTIONS' then return json(m.conn, 204, '') end
+  for i, rt in ipairs(routes) do
+    local method, pattern, who = table.unpack(rt)
+    local name, id = path:match(pattern)
+    if m.method == method and name then
+      local token = token_of(m, params)
+      if i == 1 then return call(m, name, token, now) end
+      if not token then return fail(m.conn, 401, 'an answerer token is needed') end
+      local r = names[name]
+      if who == 'either' and r and r.caller == token then return withdraw(m, r, id) end
+      r = claim(m, name, token, now)
+      if not r then return end
+      if i == 2 then return list(m, r, params, now) end
+      if i == 3 then return answer(m, r, id, '/v1/' .. name .. '/calls/') end
+      if i == 4 then return withdraw(m, r, id) end
+      return events(m, r, now)
+    end
+  end
+  fail(m.conn, 404, 'no such request')
+end
+
+local function closed(conn)
+  for _, r in pairs(names) do r.streams[conn] = nil end
+end
+
+local function housekeep(now)
+  for name, r in pairs(names) do
+    for n, c in pairs(r.calls) do
+      if now >= c.ends then
+        if not c.answered then fail(c.conn, 504, 'no answer within the hold time') end
+        r.calls[n] = nil
+      end
+    end
+    for conn, at in pairs(r.streams) do
+      if now - at >= KEEPALIVE_MS then queue.push(replies, {conn = conn, chunk = ': keepalive\n\n'}); r.streams[conn] = now end
+    end
+    if not present(r, now) and next(r.calls) == nil then names[name] = nil end
+  end
+end
+
+print('p2p match: serving ' .. CAPACITY .. ' name(s) at most; admission is by token, not origin')
+while true do
+  local _, m = queue.wait({requests}, 1000)
+  local now = host.monotonic()
+  if m and m.event == 'closed' then closed(m.conn)
+  elseif m then route(m, now) end
+  housekeep(now)
+end
