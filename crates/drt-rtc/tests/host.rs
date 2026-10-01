@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use drt_rtc::host::{Event, SessionState, StreamState};
 use drt_rtc::wisp::{self, reason};
-use drt_rtc::{Command, Entry, Host, HostConfig, Identity, Record, Scope};
+use drt_rtc::{Command, Entry, Forward, Host, HostConfig, Identity, Record, Scope, Sink};
 use str0m::IceCreds;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -96,7 +96,7 @@ async fn host_in_mode(scope: &[String], direct: bool, services: &[(&str, &str)])
         scope: Scope::new(entries),
         services: services
             .iter()
-            .map(|(name, entry)| (name.to_string(), Entry::parse(entry).unwrap()))
+            .map(|(name, entry)| (name.to_string(), Sink::Dial(Entry::parse(entry).unwrap())))
             .collect(),
         max_sessions: 4,
         max_streams: 8,
@@ -104,6 +104,9 @@ async fn host_in_mode(scope: &[String], direct: bool, services: &[(&str, &str)])
         connect_timeout: Duration::from_secs(5),
         stun_refresh: Duration::from_secs(25),
         direct,
+        hello_scope: true,
+        forward: Forward::None,
+        accept: Vec::new(),
     };
     let mut host = Host::start(cfg).unwrap();
     let rtc = match host.next_event().await {

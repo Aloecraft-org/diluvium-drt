@@ -53,6 +53,9 @@ async fn main() {
         connect_timeout: Duration::from_secs(5),
         stun_refresh: Duration::from_secs(25),
         direct: false,
+        hello_scope: true,
+        forward: drt_rtc::Forward::None,
+        accept: Vec::new(),
     };
     let mut host = Host::start(cfg).expect("the host starts");
     let mut lines = BufReader::new(tokio::io::stdin()).lines();

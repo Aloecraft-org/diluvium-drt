@@ -42,6 +42,50 @@ is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
 
 ### Added
 
+- **`drt p2p`: one verb for peer-to-peer sessions (`doc/P2P.md`).**
+  With no `--relay` and no `--fallback`, no machine other than the
+  two ends carries a byte of the session; when no such path exists it
+  fails and says so. Built so far: the call and listen roles, the
+  park role against a `doc/DRT-Signalling.md` server or a `wss://`
+  relay, and `drt tunnel` as an alias that prints the `drt p2p` form
+  of what it was given and runs it. `--match`, `--relay` through a
+  DRT peer and `--fallback` are refused by name until they land.
+  - **Call:** `drt p2p <peer>` with a peer address of §3
+    (`drt://host/v1/<name>`, `drt+<service>://…`, a bare host, an
+    `http(s)://` URL, a record or a file holding one). Stdio is the
+    session, as `ProxyCommand` wants; `-p <local>:<remote>` binds
+    ports in `ssh -L`'s shape, `<remote>` a port, a service name or
+    `host:port`. `--fingerprint SHA256:…` (also `--fingerp`) refuses
+    a record whose DTLS fingerprint differs, the defence against a
+    signalling server answering with its own. `--H name=value`
+    (`auth=` for a bearer token) goes to the signalling side only;
+    `--stun` gives the caller the public address the host already
+    gathered.
+  - **Listen:** `drt p2p --listen <port>` binds UDP with a fixed
+    record and prints it with the command that calls it. `--forward`
+    is one target, `ssh://host:port` as the service `ssh`, a host
+    with `-P`/`-A` for its ports, `-` for this process's stdio, or
+    `drt://…` for another peer; absent, the REPL: the built-in SSH
+    server as the service `ssh` (keys from `principals` and
+    `~/.ssh/authorized_keys`), and raw terminal bytes as the service
+    `repl`, with the window reported over `control`, so a page
+    attaches with no SSH client and no key. `--host` binds an
+    address, `0.0.0.0`, or a CIDR that is also who may connect;
+    `--signal [port]` answers the caller's request at `POST /` and
+    `/v1/<any>/calls` with `access-control-allow-origin: *`.
+  - **Park:** `drt p2p --park drt://host/v1/<name>` is the profile's
+    answerer natively: it polls by cursor, holds the call
+    notification stream when there is one, answers each call with
+    its record, and serves the same `--forward`. `--accept <cidr>`
+    travels as `DRT-Accept` and is checked on the packets themselves.
+  - **The wire:** a Wisp `CONNECT` with an empty host asks for
+    whatever the far side forwards to, at the port named or at none;
+    `hello` names services and carries `scope` only when the
+    `webrtc` block's new `hello_scope` asks; a `resize` message on
+    `control` sizes a stream's terminal. Every host is upgraded with
+    this, so nothing negotiates it.
+  - The `p2p` config block, every flag a key; `tunnel` is read as an
+    alias for one release with a warning per key.
 - **Streamed responses from the `http` listener.** With `streaming`
   set on a listener, a reply carrying `stream = true` sends the
   response head at once, each later reply with a `chunk` for the same

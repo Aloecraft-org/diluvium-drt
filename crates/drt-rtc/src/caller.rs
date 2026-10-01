@@ -19,9 +19,9 @@
 //! ## surface block
 //!
 //! - Entry points: [`Caller::new`] (and [`Caller::direct`] for direct mode,
-//!   §3.4), [`Caller::record`], [`Caller::connect`], [`Call::open`],
-//!   [`Call::hello`].
-//! - Configurable: [`PIPE`], [`CONNECT_TIMEOUT`].
+//!   §3.4), [`Caller::gather`], [`Caller::record`], [`Caller::connect`],
+//!   [`Call::open`], [`Call::hello`].
+//! - Configurable: [`PIPE`], [`CONNECT_TIMEOUT`], [`GATHER_TIMEOUT`].
 //! - Fan-out: [`Target`], what a stream is opened to; [`Order`], what a
 //!   [`Call`] asks of the task that owns the connection; the match over
 //!   str0m's output in `Driver::drain`, and over Wisp packets in
@@ -49,6 +49,10 @@ use crate::wisp::{self, reason, Packet};
 pub const PIPE: usize = 256 * 1024;
 /// How long [`Caller::connect`] waits for the channels, `hello` and credit.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long [`Caller::gather`] waits for the STUN servers it asked. One
+/// answer is usually here in a round trip; a server that is down should
+/// not hold the call for long.
+pub const GATHER_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The largest datagram read off the socket.
 const RECV_MTU: usize = 2000;
@@ -58,18 +62,38 @@ const WISP_ID: u16 = 1;
 /// A DATA packet's payload: 16 KiB less the 5-byte header (§4, §6).
 const DATA_MAX: usize = 16384 - 5;
 
-/// What a stream is opened to (§6, §10.3).
+/// What a stream is opened to (§6, §10.3, and `doc/P2P.md` §5.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
     /// A named service the answerer serves: `ssh`.
     Service(String),
     /// An address in the answerer's scope.
     Address { host: String, port: u16 },
+    /// Whatever the answerer forwards to: an empty host and port 0.
+    Default,
+    /// Whatever the answerer forwards to, at this port: an empty host.
+    Port(u16),
 }
 
 impl Target {
-    /// `ssh` is a service; `host:port` is an address.
+    /// `ssh` is a service; `host:port` is an address; `:port` is a port
+    /// of whatever the answerer forwards to, and nothing at all is that
+    /// target itself.
     pub fn parse(s: &str) -> Result<Target, String> {
+        if s.is_empty() {
+            return Ok(Target::Default);
+        }
+        // Digits alone are a port of what the far side forwards to, as
+        // `-p 8080:80` means. A service named by digits alone cannot be
+        // asked for here; none is, and `drt+<service>://` can still say it.
+        if s.bytes().all(|b| b.is_ascii_digit()) {
+            return s
+                .parse::<u16>()
+                .ok()
+                .filter(|p| *p != 0)
+                .map(Target::Port)
+                .ok_or_else(|| format!("'{s}': the port is not 1..65535"));
+        }
         if crate::scope::is_service_name(s) {
             return Ok(Target::Service(s.to_string()));
         }
@@ -83,7 +107,7 @@ impl Target {
             .ok_or_else(|| format!("'{s}': the port is not 1..65535"))?;
         let host = host.trim_start_matches('[').trim_end_matches(']');
         if host.is_empty() {
-            return Err(format!("'{s}' has no host"));
+            return Ok(Target::Port(port));
         }
         Ok(Target::Address {
             host: host.to_string(),
@@ -95,6 +119,19 @@ impl Target {
         match self {
             Target::Service(name) => wisp::connect(stream, wisp::STREAM_TCP, 0, name),
             Target::Address { host, port } => wisp::connect(stream, wisp::STREAM_TCP, *port, host),
+            Target::Default => wisp::connect(stream, wisp::STREAM_TCP, 0, ""),
+            Target::Port(port) => wisp::connect(stream, wisp::STREAM_TCP, *port, ""),
+        }
+    }
+}
+
+impl std::fmt::Display for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Target::Service(name) => write!(f, "the service {name}"),
+            Target::Address { host, port } => write!(f, "{host}:{port}"),
+            Target::Default => f.write_str("what the far side forwards to"),
+            Target::Port(port) => write!(f, "port {port} of what the far side forwards to"),
         }
     }
 }
@@ -166,6 +203,62 @@ impl Caller {
     /// (or not at all, in direct mode).
     pub fn record(&self) -> &Record {
         &self.record
+    }
+
+    /// Ask `servers` (`host:port`) for this socket's public address and
+    /// add what they say to the record as server-reflexive candidates, so
+    /// a peer behind another NAT has an address to reach (`doc/P2P.md`
+    /// §2.5). Waits at most [`GATHER_TIMEOUT`], or until every server has
+    /// answered. Returns the addresses found; a server that does not
+    /// answer is left out, never an error, since the host candidate still
+    /// stands.
+    pub async fn gather(&mut self, servers: &[String]) -> Vec<SocketAddr> {
+        use ego_transport::stun::{decode, encode_binding_request, StunMessage, TransactionId};
+        let v4 = self.local.is_ipv4();
+        let mut pending: HashMap<[u8; 12], SocketAddr> = HashMap::new();
+        for server in servers {
+            let Ok(addrs) = tokio::net::lookup_host(server.as_str()).await else {
+                continue;
+            };
+            for addr in addrs.filter(|a| a.is_ipv4() == v4).take(1) {
+                let txid = TransactionId::random();
+                if self
+                    .socket
+                    .send_to(&encode_binding_request(&txid), addr)
+                    .await
+                    .is_ok()
+                {
+                    pending.insert(*txid.as_bytes(), addr);
+                }
+            }
+        }
+        let mut found: Vec<SocketAddr> = Vec::new();
+        let deadline = Instant::now() + GATHER_TIMEOUT;
+        let mut buf = vec![0u8; RECV_MTU];
+        while !pending.is_empty() {
+            let Ok(Ok((n, _))) =
+                tokio::time::timeout_at(deadline, self.socket.recv_from(&mut buf)).await
+            else {
+                break;
+            };
+            let Ok(StunMessage::BindingSuccess { txid, mapped }) = decode(&buf[..n]) else {
+                continue;
+            };
+            if pending.remove(txid.as_bytes()).is_none() {
+                continue;
+            }
+            if mapped == self.local || found.contains(&mapped) {
+                continue;
+            }
+            if let Ok(c) = Candidate::server_reflexive(mapped, self.local, "udp") {
+                self.rtc.add_local_candidate(c.clone());
+                self.record
+                    .candidates
+                    .push(crate::host::srflx_line(&c, &mapped));
+                found.push(mapped);
+            }
+        }
+        found
     }
 
     /// Connect to the answerer whose record this is. Resolves once both

@@ -1009,6 +1009,94 @@ pub struct TunnelConfig {
     pub headers: BTreeMap<String, String>,
 }
 
+/// `drt p2p`, from a file: `drt --config mypc.json p2p` (`doc/P2P.md` §8).
+///
+/// Every flag of the verb is a key here under the flag's name (`-p` is
+/// `ports`, `-P` is `forward_ports`, `-A` is `all_ports`, `--H` is the
+/// `headers` map), so a credential -- a signalling token in `headers`, a
+/// caller token -- lives in a 0600 file and not in `ps` or a paste. Which
+/// role this is (call, park, listen, match) is told by which keys are
+/// present, exactly as the flags tell it, and two roles in one block are
+/// refused by name. Flags merge over the file per key: a flag naming a key
+/// the file also names replaces it, and a flag naming a different role than
+/// the file is the conflict two flags would be.
+///
+/// Two keys have no flag: `identity_file`, the ICE credentials and DTLS
+/// certificate a listening or parked peer keeps so its record and
+/// fingerprint survive a restart (`~/.drt/p2p/identity.json` when absent),
+/// and `authorized_keys`, which the `--authorized-keys` flag also sets.
+///
+/// `tunnel` is read as an alias of this block for one release, each of its
+/// keys mapped to its replacement here with a warning naming both.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct P2pConfig {
+    /// The positional: the peer to call (`doc/P2P.md` §3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<String>,
+    /// `-p`, repeatable: `<local>:<remote>`, `:<remote>`, or `<local>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ports: Vec<String>,
+    /// `--relay`: a peer that carries the session, by request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<String>,
+    /// `--fallback`: `relay`, tried only when no direct path exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<String>,
+    /// `--park`: the signalling server to answer calls at, by name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub park: Option<String>,
+    /// `--listen`: the UDP port to serve on, with a fixed record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listen: Option<u16>,
+    /// `--match`: the TCP port to be a signalling server on.
+    #[serde(default, rename = "match", skip_serializing_if = "Option::is_none")]
+    pub match_port: Option<u16>,
+    /// `--host`: an address to bind, `0.0.0.0`, or a CIDR to admit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// `--accept`, repeatable: the caller ranges a parked peer admits.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accept: Vec<String>,
+    /// `--forward`: what a serving peer serves (`doc/P2P.md` §5). An empty
+    /// string is a bare `--forward`: a relay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward: Option<String>,
+    /// `-A`: every port of the `forward` host.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub all_ports: bool,
+    /// `-P`: the ports of the `forward` host, `80,8080:8090,31200`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward_ports: Option<String>,
+    /// `--signal`: a listening peer's own signalling port; 0 for one the
+    /// system chooses, as the bare flag does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<u16>,
+    /// `--stun`, repeatable: `host:port` servers asked for a public address.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stun: Vec<String>,
+    /// `--fingerprint`: the answerer's DTLS fingerprint, `SHA256:…`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    /// `--H`, by name: HTTP headers for the signalling side. `auth` is
+    /// shorthand for `Authorization: Bearer <value>`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    /// `--capacity`: names a `match` server holds at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capacity: Option<usize>,
+    /// `--extra-root`: PEM files trusted beside the public roots.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_roots: Vec<PathBuf>,
+    /// `--authorized-keys`: the REPL default's key file, in place of the
+    /// running user's `~/.ssh/authorized_keys`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorized_keys: Option<PathBuf>,
+    /// The ICE credentials and DTLS certificate a serving peer keeps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_file: Option<PathBuf>,
+}
+
 /// Process identity. The host key doubles as the node identity and the
 /// snapshot stamp source (SPEC.md §§8–9).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1145,6 +1233,13 @@ pub struct WebrtcConfig {
     /// its scope. Signaled sessions work beside it either way.
     #[serde(default)]
     pub direct: bool,
+    /// Whether `hello` carries `scope` and `default`. Off by default: the
+    /// scope is this side's policy and, for a forward into a private
+    /// network, a map of it for anyone admitted (`doc/P2P.md` §7.2). A
+    /// deployment that wants callers to see it, for diagnostics on its own
+    /// machines, turns it on. `hello` names the services either way.
+    #[serde(default)]
+    pub hello_scope: bool,
     /// Reports: `webrtc_record`, `webrtc_session`, `webrtc_stream`.
     #[serde(default = "default_webrtc_queue")]
     pub queue: String,
@@ -1209,6 +1304,8 @@ pub struct RootConfig {
     pub wireguard: Option<WireguardConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tunnel: Option<TunnelConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p2p: Option<P2pConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub netcheck: Option<NetcheckConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

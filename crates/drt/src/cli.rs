@@ -75,6 +75,7 @@ const PROFILE_FULL: &[&str] = &[
     "listen",
     "netcheck",
     "numeric",
+    "p2p",
     "relay",
     "runtime",
     "sshd",
@@ -361,6 +362,14 @@ pub enum Command {
     /// takes the same arguments.
     #[cfg(feature = "connector-ssh")]
     Ssh(crate::ssh::SshArgs),
+    /// Peer-to-peer sessions (doc/P2P.md): call a peer, park at a
+    /// signalling server, listen on a UDP port, or be the signalling
+    /// server. With no --relay and no --fallback, no machine other than
+    /// the two ends carries a byte of the session; when no such path
+    /// exists, this fails and says so. Every flag is also a key of the
+    /// `p2p` block in --config.
+    #[cfg(feature = "p2p")]
+    P2p(crate::p2p::Args),
     #[cfg(feature = "tunnel")]
     Tunnel {
         /// The wss:// or ws:// URL to bridge stdio to, or `rtc:` and a
@@ -607,6 +616,9 @@ pub fn buildinfo(json: bool) -> String {
     if cfg!(feature = "tunnel") {
         verbs.push("tunnel");
     }
+    if cfg!(feature = "p2p") {
+        verbs.push("p2p");
+    }
     // `relay`, `stun` and `turn` were verbs here and are not any more: each
     // is a config block plus `stdlib:<name>` under `start`. `wg` stays,
     // carrying keygen/pubkey/check -- the three things that are not serving.
@@ -731,6 +743,7 @@ fn enabled_features() -> Vec<&'static str> {
     feature!("listen");
     feature!("netcheck");
     feature!("numeric");
+    feature!("p2p");
     // Probed and reportable, and in no named profile yet: the plugin
     // channel is built and reachable from a config, and the segments that
     // make it worth shipping (`doc/Plan-0.7.0.md` §7) are not all in. A
@@ -1878,6 +1891,26 @@ pub fn main(cli: Cli) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+            // `drt tunnel` is `drt p2p` now (doc/P2P.md §9): every mode but
+            // the WebSocket to TCP bridge prints its `drt p2p` form and runs
+            // as that.
+            #[cfg(feature = "p2p")]
+            if let Some((form, args)) = crate::p2p::from_tunnel(&resolved.mode, &resolved) {
+                eprintln!("drt tunnel: this is `{form}` now; `drt tunnel` goes away in a release");
+                return match crate::p2p::run(&args, &config) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        eprintln!("drt p2p: {e}");
+                        ExitCode::FAILURE
+                    }
+                };
+            }
+            if matches!(resolved.mode, crate::tunnel::Mode::Listen { .. }) {
+                eprintln!(
+                    "drt tunnel: the WebSocket to TCP bridge is a server-side shim; it moves to \
+                     the `relay` block and `drt tunnel --listen` goes away in a release"
+                );
+            }
             let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
             let outcome =
                 runtime.block_on(crate::tunnel::run(resolved.mode, &roots, &resolved.headers));
@@ -1899,6 +1932,14 @@ pub fn main(cli: Cli) -> ExitCode {
                 }
             }
         }
+        #[cfg(feature = "p2p")]
+        Command::P2p(ref args) => match crate::p2p::run(args, &config) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("drt p2p: {e}");
+                ExitCode::FAILURE
+            }
+        },
         #[cfg(feature = "connector-ssh")]
         Command::Ssh(ref args) => match crate::ssh::run(args) {
             // The remote shell's status is this command's, as with `ssh`.

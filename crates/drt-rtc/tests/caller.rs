@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use drt_rtc::caller::{Caller, Target};
 use drt_rtc::host::{Event, SessionState};
-use drt_rtc::{Command, Entry, Host, HostConfig, Identity, Record, Scope};
+use drt_rtc::{Command, Entry, Forward, Host, HostConfig, Identity, Record, Scope, Sink};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -49,13 +49,16 @@ async fn host(port: u16, direct: bool) -> (Host, Record) {
         service: "caller test".into(),
         default: None,
         scope: Scope::new(vec![Entry::parse(&entry).unwrap()]),
-        services: vec![("echo".into(), Entry::parse(&entry).unwrap())],
+        services: vec![("echo".into(), Sink::Dial(Entry::parse(&entry).unwrap()))],
         max_sessions: 4,
         max_streams: 8,
         idle_timeout: Duration::from_secs(300),
         connect_timeout: Duration::from_secs(5),
         stun_refresh: Duration::from_secs(25),
         direct,
+        hello_scope: false,
+        forward: Forward::None,
+        accept: Vec::new(),
     };
     let mut host = Host::start(cfg).unwrap();
     let rtc = match host.next_event().await {
@@ -173,4 +176,9 @@ fn a_target_is_a_service_name_or_host_and_port() {
     );
     assert!(Target::parse("SSH").is_err());
     assert!(Target::parse("host:0").is_err());
+    // `doc/P2P.md` §5.1: nothing asks for what the far side forwards to,
+    // and `:port` for one port of it.
+    assert_eq!(Target::parse(""), Ok(Target::Default));
+    assert_eq!(Target::parse(":8080"), Ok(Target::Port(8080)));
+    assert!(Target::parse(":0").is_err());
 }

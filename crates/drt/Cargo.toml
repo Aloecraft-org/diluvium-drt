@@ -142,7 +142,7 @@ libc = "0.2"
 # connector is its own gate so a profile is a feature list, not a fork.
 default = ["slim"]
 slim = ["connector-time", "connector-fs", "connector-crypto", "listen", "cli"]
-full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "connector-exec", "connector-socket", "connector-ws", "connector-data", "tunnel", "relay", "stun", "netcheck", "turn", "wireguard", "webrtc", "numeric", "sshd"]
+full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "connector-exec", "connector-socket", "connector-ws", "connector-data", "tunnel", "relay", "stun", "netcheck", "turn", "wireguard", "webrtc", "numeric", "sshd", "p2p"]
 # The portable build (doc/Wasm.md D2): what `drt` carries on
 # wasm32-wasip2, under wasmtime. Every connector here compiles for that
 # target with no source change and is exercised by the examples gate
@@ -249,6 +249,11 @@ listen = ["dep:httparse"]
 # WS->TCP listener half. In `full` beside `ssh` — the NAT-traversal story
 # is a server-and-CLI concern, not a notebook's.
 tunnel = ["dep:tokio", "dep:tokio-tungstenite", "dep:futures-util", "dep:tokio-rustls", "dep:webpki-roots"]
+# `drt p2p` (doc/P2P.md): one verb for peer-to-peer sessions. The caller and
+# the serving side are `webrtc`'s host and caller; the REPL default is
+# `sshd`'s server; `--relay wss://` and `--park wss://` are `tunnel`'s legs;
+# `--match` runs a deployment, so `listen`. In `full` beside them all.
+p2p = ["webrtc", "sshd", "tunnel", "listen"]
 # `drt turn`, and the `turn` block inside `drt start`: the TURN relay for
 # the peers `stun` says cannot punch (src/turn.rs). Beside `stun` in
 # `full`, on ego-transport's server, for `stun`'s reasons and the ssh

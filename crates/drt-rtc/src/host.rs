@@ -38,11 +38,16 @@
 //!   [`HOST_STACK`], [`DIRECT_UFRAG_LEN`], and everything in
 //!   [`HostConfig`].
 //! - Fan-out: [`Command`] (what the program asks), [`Event`] (what the
-//!   host reports), [`Internal`] (what a stream's tasks tell the loop), and
-//!   [`Session::on_wisp`]'s match over [`wisp::Packet`].
+//!   host reports), [`Internal`] (what a stream's tasks tell the loop),
+//!   [`Session::on_wisp`]'s match over [`wisp::Packet`], and
+//!   [`Forward`], where a stream that names no target goes
+//!   (`doc/P2P.md` §5.1), with [`Sink`] as the two places any stream can
+//!   end: a TCP dial, or a [`Service`] the process supplies.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -52,12 +57,13 @@ use str0m::net::{Protocol, Receive};
 use str0m::{
     Candidate, CandidateKind, Event as RtcEvent, IceConnectionState, IceCreds, Input, Output, Rtc,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::{mpsc, watch};
 use tokio::task::AbortHandle;
 use tokio::time::Instant;
 
+use crate::cidr::Cidr;
 use crate::identity::Identity;
 use crate::record::Record;
 use crate::scope::{self, Entry, Scope};
@@ -112,9 +118,9 @@ pub struct HostConfig {
     pub service: String,
     pub default: Option<Entry>,
     pub scope: Scope,
-    /// Named services (§10.3): each name an alias of a scope entry, reached
-    /// by a CONNECT with port 0 and checked as that entry is.
-    pub services: Vec<(String, Entry)>,
+    /// Named services (§10.3): each name a [`Sink`], reached by a CONNECT
+    /// with port 0 and the name. A TCP sink is checked as a scope entry is.
+    pub services: Vec<(String, Sink)>,
     pub max_sessions: usize,
     pub max_streams: usize,
     pub idle_timeout: Duration,
@@ -122,6 +128,193 @@ pub struct HostConfig {
     /// Direct mode: a caller holding the record needs no signaling (see
     /// the module note).
     pub direct: bool,
+    /// Whether `hello` carries `scope` and `default`. Off, it names the
+    /// services and nothing about the addresses behind them, which are
+    /// this side's policy and, for a forward into a private network, a map
+    /// of it (`doc/P2P.md` §7.2).
+    pub hello_scope: bool,
+    /// Where a stream that names no target, or only a port, goes
+    /// (`doc/P2P.md` §5.1). [`Forward::None`] is the `webrtc` block's
+    /// shape: every stream names its target.
+    pub forward: Forward,
+    /// Addresses a session's packets may come from; empty admits every
+    /// address. A session whose packets arrive from outside the ranges
+    /// ends, whatever its record said (`doc/P2P.md` §6, `--accept`).
+    pub accept: Vec<Cidr>,
+}
+
+/// Where a stream that names no target goes: the serving side's
+/// `--forward` (`doc/P2P.md` §5). Only the serving side routes, and only
+/// by this; a caller's request never causes an error by itself.
+#[derive(Clone)]
+pub enum Forward {
+    /// Nothing: a stream names its target, in `scope` or `services`. A
+    /// stream that names none is refused as malformed, as it always was.
+    None,
+    /// One target. A port the stream asks for is ignored.
+    One(Sink),
+    /// A host and a set of its ports. A stream that asks for a port gets it
+    /// if the set holds it; one that asks for none gets the one port of a
+    /// one-port set, and is otherwise refused as a closed port is.
+    Ports { host: String, ports: PortSet },
+}
+
+impl std::fmt::Debug for Forward {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Forward::None => f.write_str("None"),
+            Forward::One(sink) => f.debug_tuple("One").field(sink).finish(),
+            Forward::Ports { host, ports } => f
+                .debug_struct("Ports")
+                .field("host", host)
+                .field("ports", ports)
+                .finish(),
+        }
+    }
+}
+
+/// A set of ports: `80,8080:8090,31200`, or every port (`-A`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortSet {
+    ranges: Vec<(u16, u16)>,
+    any: bool,
+}
+
+impl PortSet {
+    /// Every port.
+    pub fn any() -> PortSet {
+        PortSet {
+            ranges: Vec::new(),
+            any: true,
+        }
+    }
+
+    /// A comma-separated list of ports and `low:high` ranges. Malformed is
+    /// an error, never a guess.
+    pub fn parse(s: &str) -> Result<PortSet, String> {
+        let mut ranges = Vec::new();
+        for item in s.split(',') {
+            let item = item.trim();
+            let port = |p: &str| {
+                p.parse::<u16>()
+                    .ok()
+                    .filter(|p| *p != 0)
+                    .ok_or_else(|| format!("'{s}': '{p}' is not a port"))
+            };
+            let range = match item.split_once(':') {
+                Some((low, high)) => {
+                    let (low, high) = (port(low)?, port(high)?);
+                    if low > high {
+                        return Err(format!("'{s}': {low}:{high} runs backwards"));
+                    }
+                    (low, high)
+                }
+                None => {
+                    let p = port(item)?;
+                    (p, p)
+                }
+            };
+            ranges.push(range);
+        }
+        Ok(PortSet { ranges, any: false })
+    }
+
+    pub fn contains(&self, port: u16) -> bool {
+        self.any
+            || self
+                .ranges
+                .iter()
+                .any(|(lo, hi)| (*lo..=*hi).contains(&port))
+    }
+
+    /// The one port, when the set holds exactly one.
+    pub fn single(&self) -> Option<u16> {
+        match self.ranges.as_slice() {
+            [(lo, hi)] if lo == hi && !self.any => Some(*lo),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for PortSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.any {
+            return f.write_str("every port");
+        }
+        let parts: Vec<String> = self
+            .ranges
+            .iter()
+            .map(|(lo, hi)| {
+                if lo == hi {
+                    lo.to_string()
+                } else {
+                    format!("{lo}:{hi}")
+                }
+            })
+            .collect();
+        f.write_str(&parts.join(","))
+    }
+}
+
+/// Where a stream the host serves ends.
+#[derive(Clone)]
+pub enum Sink {
+    /// A TCP target, resolved and checked as scope entries are (§6).
+    Dial(Entry),
+    /// The process itself: the REPL, this process's stdio, another peer.
+    Local(Arc<dyn Service>),
+}
+
+impl std::fmt::Debug for Sink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Sink::Dial(e) => f.debug_tuple("Dial").field(e).finish(),
+            Sink::Local(s) => f.debug_tuple("Local").field(&s.name()).finish(),
+        }
+    }
+}
+
+/// A byte stream either side of a [`Service`] holds an end of.
+pub trait Duplex: AsyncRead + AsyncWrite + Send + Unpin {}
+impl<T: AsyncRead + AsyncWrite + Send + Unpin> Duplex for T {}
+
+/// The future a [`Service`] answers with: the stream, or the Wisp `CLOSE`
+/// reason the caller gets instead.
+pub type Opening = Pin<Box<dyn Future<Output = Result<Pin<Box<dyn Duplex>>, u8>> + Send>>;
+
+/// Something in this process a stream can be handed to. The host runs the
+/// stream's two directions over what `open` returns, exactly as it does
+/// over a TCP connection, so a service never sees a Wisp packet.
+pub trait Service: Send + Sync {
+    /// What this is, for reports and refusals.
+    fn name(&self) -> String;
+    /// Open a stream for a `CONNECT` the host routed here: the host and
+    /// port the stream asked for, which may be empty and 0, and the
+    /// window the peer reports for it over `control` (`doc/P2P.md`
+    /// §5.2), which a terminal-shaped service reads and the rest ignore.
+    /// Runs on the host's own runtime.
+    fn open(&self, host: &str, port: u16, window: Window) -> Opening;
+}
+
+/// A stream's terminal size as the peer last reported it over `control`
+/// (`{"t":"resize","stream":N,"cols":C,"rows":R}`): columns and rows,
+/// 0 until the peer says. Read it on every keystroke; that is how a
+/// resize reaches the thing drawing the line.
+#[derive(Clone, Default, Debug)]
+pub struct Window(Arc<std::sync::atomic::AtomicU64>);
+
+impl Window {
+    pub fn get(&self) -> (u32, u32) {
+        let packed = self.0.load(std::sync::atomic::Ordering::Relaxed);
+        ((packed >> 32) as u32, packed as u32)
+    }
+
+    pub fn set(&self, cols: u32, rows: u32) {
+        self.0.store(
+            (u64::from(cols) << 32) | u64::from(rows),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
 }
 
 /// What the program asks of the host.
@@ -167,6 +360,17 @@ pub enum Event {
         /// Target to browser.
         bytes_down: u64,
     },
+}
+
+/// A cloneable way to queue [`Command`]s, from [`Host::sender`].
+#[derive(Clone)]
+pub struct Sender(mpsc::UnboundedSender<Command>);
+
+impl Sender {
+    /// Queue a command. Never blocks; a host that has stopped drops it.
+    pub fn send(&self, command: Command) {
+        let _ = self.0.send(command);
+    }
 }
 
 /// A serving host. Dropping it closes its command channel, which ends the
@@ -278,6 +482,12 @@ impl Host {
     /// Queue a command. Never blocks; a host that has stopped drops it.
     pub fn send(&self, command: Command) {
         let _ = self.commands.send(command);
+    }
+
+    /// A handle that queues commands from anywhere, while the `Host` itself
+    /// stays with whoever reads its events.
+    pub fn sender(&self) -> Sender {
+        Sender(self.commands.clone())
     }
 
     /// The next report, if one is waiting. Never blocks.
@@ -532,10 +742,18 @@ impl Loop {
         // its (host, browser) ufrag pair, a response by transaction id,
         // DTLS and SCTP by source address.
         if let Some(s) = self.sessions.iter_mut().find(|s| s.rtc.accepts(&input)) {
+            // Who may connect is checked on the packets themselves, so the
+            // rule holds against a signalling server that ignored it: a
+            // caller that signals from one address and connects from
+            // another is judged by the one it connects from.
+            if !admitted(&self.ctx.cfg.accept, source.ip()) {
+                s.end(&format!("address {} is not admitted", source.ip()));
+                return;
+            }
             if let Err(e) = s.rtc.handle_input(input) {
                 s.end(&format!("rtc: {e}"));
             }
-        } else if self.ctx.cfg.direct {
+        } else if self.ctx.cfg.direct && admitted(&self.ctx.cfg.accept, source.ip()) {
             self.direct_session(buf, input);
         }
     }
@@ -723,7 +941,7 @@ fn direct_ufrag(buf: &[u8], host_ufrag: &str) -> Option<String> {
 /// A server-reflexive line with its related address blanked, as browsers
 /// write theirs: the relation is the LAN address, and a host that chose not
 /// to publish its host candidate should not publish it here instead.
-fn srflx_line(c: &Candidate, addr: &SocketAddr) -> String {
+pub(crate) fn srflx_line(c: &Candidate, addr: &SocketAddr) -> String {
     let line = c.to_sdp_string();
     let head = line.split(" raddr ").next().unwrap_or(&line);
     let blank = if addr.is_ipv4() { "0.0.0.0" } else { "::" };
@@ -756,6 +974,8 @@ struct Session {
 struct Stream {
     host: String,
     port: u16,
+    /// What the peer says this stream's terminal measures, if anything.
+    window: Window,
     /// Present once connected. Dropping it ends the writer task.
     to_tcp: Option<mpsc::UnboundedSender<Vec<u8>>>,
     /// `DATA` that arrived before the connection did.
@@ -924,6 +1144,7 @@ impl Session {
                 self.outbox.push_back(wisp::cont(0, WISP_BUFFER));
             }
             RtcEvent::ChannelData(d) if d.id == self.wisp => self.on_wisp(ctx, &d.data),
+            RtcEvent::ChannelData(d) if d.id == self.control => self.on_control(&d.data),
             RtcEvent::ChannelClose(id) if id == self.wisp || id == self.control => {
                 self.end("a data channel closed");
             }
@@ -1029,6 +1250,28 @@ impl Session {
         });
     }
 
+    /// What the peer says on `control`: `resize` for one of its streams
+    /// (`doc/P2P.md` §5.2). Any other `t` is ignored, as §5 says.
+    fn on_control(&mut self, msg: &[u8]) {
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(msg) else {
+            return;
+        };
+        if v["t"] != "resize" {
+            return;
+        }
+        let (Some(id), Some(cols), Some(rows)) =
+            (v["stream"].as_u64(), v["cols"].as_u64(), v["rows"].as_u64())
+        else {
+            return;
+        };
+        if let Some(s) = u32::try_from(id).ok().and_then(|id| self.streams.get(&id)) {
+            s.window.set(
+                cols.min(u64::from(u16::MAX)) as u32,
+                rows.min(u64::from(u16::MAX)) as u32,
+            );
+        }
+    }
+
     fn on_wisp(&mut self, ctx: &Ctx, msg: &[u8]) {
         let now = Instant::now();
         match wisp::parse(msg) {
@@ -1071,11 +1314,16 @@ impl Session {
     }
 
     fn on_connect(&mut self, ctx: &Ctx, id: u32, kind: u8, port: u16, host: &[u8]) {
-        let host = match std::str::from_utf8(host) {
-            Ok(h) if !h.is_empty() => h.to_string(),
-            _ => return self.refuse(ctx, id, "", port, reason::INVALID),
+        let Ok(host) = std::str::from_utf8(host).map(str::to_string) else {
+            return self.refuse(ctx, id, "", port, reason::INVALID);
         };
-        if id == 0 || (port == 0 && !scope::is_service_name(&host)) {
+        // An empty host asks for whatever this side forwards to, at the
+        // port named or at none (`doc/P2P.md` §5.1); a name with port 0 is
+        // a service (§10.3). Anything else with port 0 is malformed.
+        if id == 0 || (port == 0 && !host.is_empty() && !scope::is_service_name(&host)) {
+            return self.refuse(ctx, id, &host, port, reason::INVALID);
+        }
+        if host.is_empty() && matches!(ctx.cfg.forward, Forward::None) {
             return self.refuse(ctx, id, &host, port, reason::INVALID);
         }
         if self.streams.contains_key(&id) {
@@ -1093,26 +1341,33 @@ impl Session {
         if self.streams.len() >= ctx.cfg.max_streams {
             return self.refuse(ctx, id, &host, port, reason::THROTTLED);
         }
-        // A named service (§10.3) is its entry under another name: from
-        // here on the stream is to that entry's host and port.
-        let (host, port) = match port {
-            0 => match ctx.cfg.services.iter().find(|(name, _)| *name == host) {
-                Some((_, e)) => (e.host.clone(), e.port),
-                None => return self.refuse(ctx, id, &host, port, reason::BLOCKED),
-            },
-            _ => (host, port),
-        };
-        let Some(entry) = ctx.cfg.scope.allows(&host, port).cloned() else {
-            return self.refuse(ctx, id, &host, port, reason::BLOCKED);
+        let sink = match route(&ctx.cfg, &host, port) {
+            Ok(sink) => sink,
+            Err(code) => return self.refuse(ctx, id, &host, port, code),
         };
         let internal = ctx.internal.clone();
         let gate = self.gate.subscribe();
         let (key, timeout) = (self.key, ctx.cfg.connect_timeout);
-        let target = host.clone();
+        let (asked_host, asked_port) = (host.clone(), port);
+        let window = Window::default();
+        let stream_window = window.clone();
         let connect = tokio::spawn(async move {
-            let msg = match dial(&entry, &target, port, timeout).await {
-                Ok(tcp) => {
-                    let (r, w) = tcp.into_split();
+            let opened: Result<(Reader, Writer), u8> =
+                match sink {
+                    Sink::Dial(entry) => dial(&entry, timeout).await.map(|tcp| {
+                        let (r, w) = tcp.into_split();
+                        (Box::new(r) as Reader, Box::new(w) as Writer)
+                    }),
+                    Sink::Local(service) => service
+                        .open(&asked_host, asked_port, window)
+                        .await
+                        .map(|io| {
+                            let (r, w) = tokio::io::split(io);
+                            (Box::new(r) as Reader, Box::new(w) as Writer)
+                        }),
+                };
+            let msg = match opened {
+                Ok((r, w)) => {
                     let (to_tcp, rx) = mpsc::unbounded_channel();
                     let writer = tokio::spawn(write_loop(w, rx, internal.clone(), key, id));
                     let reader = tokio::spawn(read_loop(r, gate, internal.clone(), key, id));
@@ -1136,6 +1391,7 @@ impl Session {
             Stream {
                 host,
                 port,
+                window: stream_window,
                 to_tcp: None,
                 early: Vec::new(),
                 queued: 0,
@@ -1209,19 +1465,28 @@ impl Session {
     }
 }
 
-/// `hello` (§5): the scope and the services' names (§10.3), over the data
-/// channel and nowhere else.
+/// `hello` (§5): the services' names (§10.3), and the scope when the
+/// config asks for it (`doc/P2P.md` §7.2), over the data channel and
+/// nowhere else.
 fn hello(cfg: &HostConfig) -> String {
     let entry = |e: &Entry| serde_json::json!({"scheme": e.scheme, "host": e.host, "port": e.port});
     let mut msg = serde_json::json!({
         "v": 1,
         "t": "hello",
         "service": cfg.service,
-        "scope": cfg.scope.entries.iter().map(entry).collect::<Vec<_>>(),
         "limits": {"max_streams": cfg.max_streams},
     });
-    if let Some(d) = &cfg.default {
-        msg["default"] = entry(d);
+    if cfg.hello_scope {
+        msg["scope"] = cfg
+            .scope
+            .entries
+            .iter()
+            .map(entry)
+            .collect::<Vec<_>>()
+            .into();
+        if let Some(d) = &cfg.default {
+            msg["default"] = entry(d);
+        }
     }
     if !cfg.services.is_empty() {
         msg["services"] = cfg.services.iter().map(|(name, _)| name.as_str()).collect();
@@ -1229,15 +1494,72 @@ fn hello(cfg: &HostConfig) -> String {
     msg.to_string()
 }
 
+/// Whether `ip` is inside one of `ranges`; an empty list admits everyone.
+fn admitted(ranges: &[Cidr], ip: IpAddr) -> bool {
+    ranges.is_empty() || ranges.iter().any(|r| r.contains(ip))
+}
+
+/// Where a `CONNECT` to `host:port` goes, by `doc/P2P.md` §5.1's table:
+/// a named service by its name; an empty host by what this side forwards
+/// to; a host and port by the scope, or by the forward's port set when
+/// the host is the forward's. The error is the Wisp close reason.
+fn route(cfg: &HostConfig, host: &str, port: u16) -> Result<Sink, u8> {
+    if host.is_empty() {
+        return match (&cfg.forward, port) {
+            (Forward::None, _) => Err(reason::INVALID),
+            (Forward::One(sink), _) => Ok(sink.clone()),
+            (Forward::Ports { host, ports }, 0) => match ports.single() {
+                Some(p) => Ok(Sink::Dial(tcp_entry(host, p))),
+                None => Err(reason::BLOCKED),
+            },
+            (Forward::Ports { host, ports }, p) if ports.contains(p) => {
+                Ok(Sink::Dial(tcp_entry(host, p)))
+            }
+            (Forward::Ports { .. }, _) => Err(reason::BLOCKED),
+        };
+    }
+    if port == 0 {
+        // A named service (§10.3) is its sink under another name.
+        return match cfg.services.iter().find(|(name, _)| name == host) {
+            Some((_, sink)) => Ok(sink.clone()),
+            None => Err(reason::BLOCKED),
+        };
+    }
+    if let Some(entry) = cfg.scope.allows(host, port) {
+        return Ok(Sink::Dial(entry.clone()));
+    }
+    if let Forward::Ports {
+        host: forward_host,
+        ports,
+    } = &cfg.forward
+    {
+        if forward_host.eq_ignore_ascii_case(host) && ports.contains(port) {
+            return Ok(Sink::Dial(tcp_entry(forward_host, port)));
+        }
+    }
+    Err(reason::BLOCKED)
+}
+
+/// A forward's host at one of its ports, as the entry the dial checks
+/// against. The scheme is advice to a browser and this side gives none.
+fn tcp_entry(host: &str, port: u16) -> Entry {
+    Entry {
+        scheme: "tcp".to_string(),
+        host: host.to_string(),
+        port,
+    }
+}
+
+/// The two halves of whatever a stream ends in.
+type Reader = Box<dyn AsyncRead + Send + Unpin>;
+type Writer = Box<dyn AsyncWrite + Send + Unpin>;
+
 // depth: the TCP side of a stream
 
 /// Resolve, check every address against the entry, connect to the first
 /// that answers. The error is the Wisp close reason.
-async fn dial(entry: &Entry, host: &str, port: u16, timeout: Duration) -> Result<TcpStream, u8> {
-    let name = host
-        .strip_prefix('[')
-        .and_then(|h| h.strip_suffix(']'))
-        .unwrap_or(host);
+async fn dial(entry: &Entry, timeout: Duration) -> Result<TcpStream, u8> {
+    let (name, port) = (entry.host.as_str(), entry.port);
     let addrs: Vec<SocketAddr> =
         match tokio::time::timeout(timeout, tokio::net::lookup_host((name, port))).await {
             Err(_) => return Err(reason::TIMEOUT),
@@ -1272,7 +1594,7 @@ async fn dial(entry: &Entry, host: &str, port: u16, timeout: Duration) -> Result
 }
 
 async fn write_loop(
-    mut w: tokio::net::tcp::OwnedWriteHalf,
+    mut w: Writer,
     mut rx: mpsc::UnboundedReceiver<Vec<u8>>,
     internal: mpsc::UnboundedSender<Internal>,
     key: u64,
@@ -1293,7 +1615,7 @@ async fn write_loop(
 }
 
 async fn read_loop(
-    mut r: tokio::net::tcp::OwnedReadHalf,
+    mut r: Reader,
     mut gate: watch::Receiver<bool>,
     internal: mpsc::UnboundedSender<Internal>,
     key: u64,

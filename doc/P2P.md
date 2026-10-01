@@ -1,9 +1,12 @@
 # `drt p2p`: one verb for peer-to-peer sessions
 
 **Status:** proposal, 2026-10-01, with the decisions of the first review
-written in. Built so far: the REPL default of §5 (`drt start`'s `ssh`
-listener, on `crates/drt-sshd`); nothing else here yet. It replaces
-`drt tunnel` (§9), and folds the WebRTC caller (`drt tunnel rtc:`), the
+written in (§11). Built so far (`crates/drt/src/p2p/`): the call role, the
+listen role with every `--forward` but the bare relay, the park role at a
+signalling server and at a `wss://` relay, the `p2p` block, the `drt
+tunnel` alias, and the REPL default as both the service `ssh` and the
+service `repl` (§5.2). Not yet: `--match`, `--relay` and `--fallback`
+through a DRT peer, the bare `--forward`. It replaces `drt tunnel` (§9), and folds the WebRTC caller (`drt tunnel rtc:`), the
 relay's park and claim, and a reference signalling server into one verb.
 It builds on `doc/BrowserAccess.md` (the record, Wisp, direct mode §3.4,
 named services §10), `doc/DRT-Signalling.md`, and
@@ -20,8 +23,8 @@ the path is a flag the user typed.
   **Match**, `drt p2p --match <port>`. Two carriers, on call and park:
   `--relay <peer>` and `--fallback <peer>`.
 - Configurable: `-p` (call), `--host` (default `127.0.0.1`), `--accept`,
-  `--forward`, `-A`, `-P`, `--signal`, `--pin`, `--H`, `--capacity`,
-  `--extra-root`, `--config`. Every flag is also a key of the `p2p` block
+  `--forward`, `-A`, `-P`, `--signal`, `--stun`, `--fingerprint`, `--H`,
+  `--capacity`, `--extra-root`, `--config`. Every flag is also a key of the `p2p` block
   (§8).
 - Fan-out: the role table (§2), the peer address forms (§3), the forward
   targets and how a requested port meets them (§5), the admission table
@@ -63,7 +66,7 @@ serves it.
 ### 2.1 Call
 
 ```
-ssh -o ProxyCommand="drt p2p drt://signal.example/v1/mypc --pin SHA256:…" me@mypc
+ssh -o ProxyCommand="drt p2p drt://signal.example/v1/mypc --fingerprint SHA256:…" me@mypc
 ssh -o ProxyCommand="drt p2p --config mypc.json" me@mypc
 drt p2p drt://signal.example/v1/mypc -p 8080:80 -p 5432:5432
 ```
@@ -76,10 +79,14 @@ one stream, stdin to the far side and the far side to stdout. That is the
 ProxyCommand form.
 
 **`-p <local>:<remote>` maps ports** in the shape of `ssh -L` and
-`docker -p`, and is repeatable. The caller binds `<local>` and gives each
-accepted connection its own stream, asking the far side for `<remote>`.
-`-p :<remote>` leaves the local side out, which is stdio asking for that
-port.
+`docker -p`, and is repeatable. The caller binds `<local>` on loopback and
+gives each accepted connection its own stream, asking the far side for
+`<remote>`: a port, a service name (`-p 2222:ssh`, what `drt+ssh://` says
+for stdio), or `host:port` for a peer that serves a scope by address, as
+`ssh -L port:host:hostport` does. `-p :<remote>` leaves the local side
+out, which is stdio asking for that `<remote>`; `-p <local>` alone leaves
+the remote out, which is a local port to whatever the far side forwards
+to.
 
 - **A native caller that cannot bind `<local>` fails**, naming the port
   and the reason, as any program does when its port is taken or
@@ -115,8 +122,19 @@ against a server that ignores it. The two addresses are usually the same
 NAT, but not always: a caller behind an HTTP proxy signals from one
 address and connects from another.
 
-`--pin` does not apply: a parked side takes calls from many callers, so
-there is no one fingerprint to pin.
+`--fingerprint` does not apply: a parked side takes calls from many
+callers, so there is no one fingerprint to hold it to.
+
+**Two parked peers reach each other by one calling the other.** Parking
+and calling are not exclusive: a machine parked as `a` runs
+`drt p2p drt://signal.example/v1/b` to reach the peer parked as `b`, with
+`b`'s caller token if `b` set one. The signalling server matches the call
+as it matches any other, and nothing new is needed in the profile. Both
+peers are usually behind NAT, so both need a public address from STUN
+(§2.5); a pair of NATs that defeats ICE, such as a symmetric NAT on both
+sides, gets no direct path and fails as §1 says, unless the caller asked
+for `--fallback`. A page does the same with `listen` and `offer` from
+`drt_browser_access.js`.
 
 ### 2.3 Listen
 
@@ -166,14 +184,32 @@ what the profile asks of them.
 - **`--capacity`** is the number of names held at once. A claim past it
   gets 429 with `retry-after`. Each name keeps the profile's cap of 16
   waiting calls.
+- **Admission is by token, not origin**, so every reply carries
+  `access-control-allow-origin: *`. A page opened from `file://` sends
+  `Origin: null` and preflights because of its `Authorization` header; a
+  server that answered only its own `https://` origin would lock every
+  such page out of named peers while the same page served from that
+  origin worked. The same holds for a `--listen` peer's `--signal` port.
 - **A name routes; it does not identify.** Anyone may claim a free name, so
-  reaching `mypc` proves nothing about who answered. `--pin` on the caller
-  is what proves it.
+  reaching `mypc` proves nothing about who answered. `--fingerprint` on the
+  caller is what proves it.
 - **TLS** is not built in. A page on an `https://` origin cannot call a
   plain `http://` server, so the help says to put a TLS terminator in
   front, as example 30's config does. Certificate flags can come later.
 - `--match` with `--forward`, `--relay` or `--fallback` is refused: a
   signalling server carries no session bytes (§10).
+
+### 2.5 Public addresses
+
+`--stun <host:port>`, repeatable, names the STUN servers a side asks for
+its public address, and every role that makes a WebRTC session takes it:
+call, park and listen. Without one, a side offers only its local address,
+which a peer reaches only on the same network or when that side's NAT
+admits packets it did not ask for. The `webrtc` block already has a `stun`
+list; the native caller under `drt tunnel rtc:` gathers a local address
+only, and `--stun` exists today on `drt netcheck` alone, although
+`doc/ssh-transport-matrix.md` lists it for `drt tunnel`. This proposal
+gives the caller the same list the host has.
 
 ## 3. Peer addresses
 
@@ -278,9 +314,9 @@ A caller prints `via relay` when it sees it, whatever its own flags were.
   it; `--listen` and `--park` run the same in-process. A key in the
   running user's `~/.ssh/authorized_keys` gets what `drt repl` there
   would hold, which is sshd's stance on the account's own list; a key in
-  `principals` gets that principal's grants, inside the deployment's. It is the native counterpart of the
-  page's SSH server in `drt-web`, and it means a host with no other process
-  is still useful.
+  `principals` gets that principal's grants, inside the deployment's. It
+  is the native counterpart of the page's SSH server in `drt-web`, and it
+  means a host with no other process is still useful.
 - **`-P`** takes a comma-separated list of ports and `low:high` ranges. A
   malformed list is an error, never a guess.
 - **`--forward -`** pairs with a caller's stdio for moving a file or a
@@ -298,6 +334,25 @@ Each `--forward` target becomes a scope entry, and `ssh://` becomes the
 named service `ssh` (`doc/BrowserAccess.md` §10.3), so the host's existing
 checks enforce all of this unchanged.
 
+### 5.2 The REPL as the service `repl`
+
+Beside `ssh`, the REPL default serves the named service **`repl`**: the
+PTY's bytes on the Wisp stream itself, and the terminal's size as a
+message on `control`, `{"t":"resize","stream":<id>,"cols":<c>,"rows":<r>}`,
+sent by the peer whenever its terminal changes. A page attaches with
+`drt_browser_access.js` and a terminal widget, with no SSH client and no
+key in a keystore, which is what a launcher's own terminal wants, and so
+does a native caller: `drt p2p <peer> -p :repl`.
+
+What differs from `ssh` is who is admitted. Over `ssh` a key signs in and
+gets that key's grants. Over `repl` **the session is the gate**: whoever
+may reach this peer (holds its record, passed its `--host` or `--accept`,
+or was admitted by the signalling server) gets what `drt repl` on that
+machine would hold. That is the right posture for a record handed to one
+person or a loopback launcher, and the wrong one for `--signal` on an
+address anyone can reach, so a listening peer says so when it serves the
+REPL that way.
+
 ### 5.1 How a requested port meets `--forward`
 
 Only the serving side routes, and only by what its own `--forward` says.
@@ -309,15 +364,17 @@ A caller's `-p` never causes an error by itself.
 | a port set, `-P` or `-A` | goes to that port if the set holds it, else is refused as a closed port | `-P` with exactly one port: that port. Otherwise refused as a closed port |
 | a relay, bare `--forward` | the caller names the destination; the port is part of it | refused as a closed port |
 
-A stream that asks for none is a Wisp `CONNECT` with an empty host and
-port 0: "whatever you forward to". A named service is still port 0 and
-the service's name, as today, so `drt+<service>://` needs nothing new.
-Hosts older than this refuse the empty form as malformed; every host is
-upgraded with this change, so nothing negotiates it.
-
 A refusal is the Wisp `CLOSE` a blocked stream gets today. The caller
 learns that the port is closed and nothing about what the far side does
 serve: a `-P` set is the serving side's policy, not routing information.
+
+A stream that asks for none is a Wisp `CONNECT` with an empty host and
+port 0: "whatever you forward to". A stream that asks for a port and
+names no host is the same `CONNECT` with that port: "whatever you forward
+to, at this port". A named service is still port 0 and the service's
+name, as today, so `drt+<service>://` needs nothing new. Hosts older than
+this refuse the empty form as malformed; every host is upgraded with this
+change, so nothing negotiates it.
 
 ## 6. Admission and credentials
 
@@ -326,15 +383,17 @@ serve: a `-P` set is the serving side's policy, not routing information.
 | `--host` | listen, match | the serving process | who may connect: an address binds there; `0.0.0.0` admits anyone; a CIDR, typically a WireGuard subnet, admits that range, and binds this machine's own address inside it when it holds exactly one, everywhere otherwise |
 | `--accept` | park | the signalling server, then the parked side | which callers are passed to the parked side |
 | `--H name=value` | call, park | sent to the signalling side only | HTTP headers; `auth=` is shorthand for `Authorization: Bearer` |
-| `--pin SHA256:…` | call | the caller, locally | the answerer's DTLS fingerprint must match |
+| `--fingerprint SHA256:…` | call | the caller, locally | the answerer's DTLS fingerprint must match; `--fingerp` is the same flag |
 
 - **`--H` never reaches the peer.** The record exchange is the signalling;
   the session itself carries no HTTP.
-- **`--pin` is the defence against the signalling server.** A dishonest
-  server could answer with its own record and sit in the middle; a pinned
-  caller refuses any record whose fingerprint does not match. Without a pin
-  the first connection is trust-on-first-use, as an unpinned SSH host key
-  is.
+- **`--fingerprint` is the defence against the signalling server.** A
+  dishonest server could answer with its own record and sit in the middle;
+  a caller given a fingerprint refuses any record whose fingerprint does
+  not match. Without one the first connection is trust-on-first-use, as an
+  unpinned SSH host key is. It is spelled `fingerprint` and not `pin`
+  because `pin` already means an SSH host key on `ssh.html` and `drt ssh`,
+  and the two are different keys.
 - **`--host` defaults to `127.0.0.1`**, so nothing is reachable from
   another machine until the user types an address.
 
@@ -371,10 +430,16 @@ unaffected.
 - `ssh.html`: `#call=` and `#rtc=` are unchanged, and `#call=` also takes
   a `drt+ssh://` address. It asks for the service `ssh` when the `hello`
   names one, and otherwise for no port, instead of choosing a target from
-  the `hello`'s scope, which is usually absent. A `pin` parameter checks the answerer's DTLS
-  fingerprint as `--pin` does, beside the existing SSH `hostkey` pin.
+  the `hello`'s scope, which is usually absent. A `fingerprint` parameter
+  checks the answerer's DTLS fingerprint as `--fingerprint` does, beside
+  the existing SSH `hostkey` pin.
 - `drt_browser_access.js`: `listen` is unchanged; it is already a parked
   side. `session.connect` with no arguments asks for no port (§5.1).
+  `offer`, `accept` and `direct` take `fingerprint`: a `SHA256:…` string
+  compared to the answerer's record, or `fp => Promise<boolean>` asked
+  before any session byte flows, so a stored pin is a comparison and a
+  missing one is the "trust this peer?" prompt. The digest is the record's
+  `f`, so this is glue, not protocol.
 - The examples and corpus snapshots that carry a `tunnel` block (11, 19,
   29, 30) move to `p2p`.
 
@@ -421,11 +486,13 @@ form of what it was given.
    than honoured without its restriction. `principals` narrow per key.
 2. **`drt://` is HTTPS, and HTTP for loopback.** A LAN peer without a
    certificate is reached by its `http://…` URL, the explicit form in §3.
-   `--pin` is what protects the record either way.
+   `--fingerprint` is what protects the record either way.
 3. **`drt://host:port` with no path is `POST /`.** A `--listen` peer's
    `--signal` port answers `/` and `/v1/<any name>/calls` alike.
 4. **The headers** are `DRT-Accept: <cidr>, …` and
-   `DRT-Caller-Token: <token>`, sent on the answerer's poll.
+   `DRT-Caller-Token: <token>`, sent on the answerer's poll. `--accept`
+   sets the first; the second is any `--H DRT-Caller-Token=…` the parked
+   side chooses to send, since `--H` already reaches the signalling side.
 5. **`drt ssh`** takes a peer address as its positional, the user in its
    `name@` (`drt ssh drt+ssh://me@signal.example/v1/mypc`), or `-u` / `-l`;
    `--relay` and `--fallback` as on `drt p2p`.
@@ -434,6 +501,17 @@ form of what it was given.
    file, so what claimable names, `--capacity` and admission add lives
    in the stdlib program the verb runs, and the example stays its
    readable core.
+7. **The fingerprint flag is `--fingerprint`**, not `--pin`: `pin` is the
+   SSH host key's word on `ssh.html` and `drt ssh`.
+
+## 12. Still open
+
+1. **Pairing started by the signalling server.** Two parked peers connect
+   when one calls the other (§2.2). A server that pairs peers when neither
+   asked, as a matchmaker does, would need a new notification telling a
+   parked side which name to call. A parked side would follow it only for
+   names its config allows, since otherwise the server chooses whom it
+   talks to.
 
 ## Not in this proposal
 

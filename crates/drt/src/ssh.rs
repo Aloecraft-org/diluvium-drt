@@ -256,39 +256,49 @@ async fn via_stream(_via: &str, _args: &SshArgs) -> Result<Stream, String> {
     Err("--via needs a build with `tunnel`".into())
 }
 
-#[cfg(all(feature = "tunnel", feature = "webrtc"))]
+#[cfg(feature = "p2p")]
 async fn rtc_stream(
     rest: &str,
     to: &str,
     roots: &[tokio_rustls::rustls::pki_types::CertificateDer<'static>],
     headers: &[(String, String)],
 ) -> Result<Stream, String> {
-    let source = crate::tunnel_rtc::Source::parse(rest)?;
-    let (call, stream, _closed) = crate::tunnel_rtc::open(&source, to, roots, headers).await?;
+    let peer = crate::p2p::peer::Peer::parse(rest)?;
+    let dial = crate::p2p::call::Dial {
+        stun: Vec::new(),
+        headers: headers.to_vec(),
+        fingerprint: None,
+    };
+    let connected = crate::p2p::call::connect(&peer, &dial, roots).await?;
+    let target = match &peer.service {
+        Some(s) => drt_rtc::caller::Target::Service(s.clone()),
+        None => drt_rtc::caller::Target::parse(to).map_err(|e| format!("--to: {e}"))?,
+    };
+    let (stream, _closed) = connected.call.open(&target).await?;
     Ok(Box::new(Held {
         stream,
-        _call: call,
+        _call: connected.call,
     }))
 }
 
-#[cfg(all(feature = "tunnel", not(feature = "webrtc")))]
+#[cfg(all(feature = "tunnel", not(feature = "p2p")))]
 async fn rtc_stream(
     _rest: &str,
     _to: &str,
     _roots: &[tokio_rustls::rustls::pki_types::CertificateDer<'static>],
     _headers: &[(String, String)],
 ) -> Result<Stream, String> {
-    Err("--via rtc: needs a build with `webrtc`".into())
+    Err("--via rtc: needs a build with `p2p`".into())
 }
 
 /// A WebRTC stream and the session it rides on, which ends when dropped.
-#[cfg(all(feature = "tunnel", feature = "webrtc"))]
+#[cfg(feature = "p2p")]
 struct Held {
     stream: tokio::io::DuplexStream,
     _call: drt_rtc::caller::Call,
 }
 
-#[cfg(all(feature = "tunnel", feature = "webrtc"))]
+#[cfg(feature = "p2p")]
 impl tokio::io::AsyncRead for Held {
     fn poll_read(
         mut self: std::pin::Pin<&mut Self>,
@@ -299,7 +309,7 @@ impl tokio::io::AsyncRead for Held {
     }
 }
 
-#[cfg(all(feature = "tunnel", feature = "webrtc"))]
+#[cfg(feature = "p2p")]
 impl tokio::io::AsyncWrite for Held {
     fn poll_write(
         mut self: std::pin::Pin<&mut Self>,

@@ -46,7 +46,7 @@ pub mod repl;
 /// PEM trust anchors named with `--extra-root`, shared by every verb that
 /// dials TLS from a flag. Behind either feature that has one, because both
 /// carry the TLS stack it needs.
-#[cfg(any(feature = "tunnel", feature = "netcheck"))]
+#[cfg(any(feature = "tunnel", feature = "netcheck", feature = "p2p"))]
 pub mod roots;
 pub mod run;
 pub mod runtime;
@@ -67,12 +67,11 @@ pub mod sshd;
 // `drt ssh` and the REPL's `:ssh`: an interactive shell on another host.
 #[cfg(feature = "connector-ssh")]
 pub mod ssh;
+// `drt p2p`: one verb for peer-to-peer sessions (doc/P2P.md).
+#[cfg(feature = "p2p")]
+pub mod p2p;
 #[cfg(feature = "tunnel")]
 pub mod tunnel;
-// `drt tunnel rtc:…`: the caller's side of a WebRTC session as a
-// ProxyCommand (doc/ssh-transport-matrix.md, rows 3 and 6).
-#[cfg(all(feature = "tunnel", feature = "webrtc"))]
-pub mod tunnel_rtc;
 #[cfg(feature = "turn")]
 pub mod turn;
 #[cfg(feature = "wireguard")]

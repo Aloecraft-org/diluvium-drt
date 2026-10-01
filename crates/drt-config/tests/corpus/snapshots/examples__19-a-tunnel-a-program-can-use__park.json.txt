@@ -35,6 +35,7 @@ RootConfig {
             headers: {},
         },
     ),
+    p2p: None,
     netcheck: None,
     webrtc: None,
     identity: Identity {

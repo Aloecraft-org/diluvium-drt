@@ -61,6 +61,14 @@ impl Keys {
     /// The deployment's principals, then the listener's `authorized_keys`
     /// file (`~/.ssh/authorized_keys` when it names none and that exists).
     pub fn load(config: &RootConfig, listener: &Listener) -> Result<Keys, String> {
+        Keys::from_sources(config, listener.authorized_keys.as_deref())
+    }
+
+    /// The same, with the key file named directly.
+    pub fn from_sources(
+        config: &RootConfig,
+        authorized_keys: Option<&std::path::Path>,
+    ) -> Result<Keys, String> {
         let ceiling = crate::config::ceiling(config);
         let held = CapSet::root(ceiling.clone());
         let denies: Vec<Grant> = ceiling
@@ -86,8 +94,8 @@ impl Keys {
             grants.extend(denies.iter().cloned());
             entries.push((key, grants));
         }
-        let file = match &listener.authorized_keys {
-            Some(path) => Some(path.clone()),
+        let file = match authorized_keys {
+            Some(path) => Some(path.to_path_buf()),
             None => home()
                 .map(|h| h.join(".ssh").join("authorized_keys"))
                 .filter(|p| p.exists()),
@@ -122,11 +130,11 @@ impl Keys {
         Ok(Keys { entries })
     }
 
-    fn authorized(&self) -> Authorized {
+    pub fn authorized(&self) -> Authorized {
         Authorized::from_keys(self.entries.iter().map(|(k, _)| k.clone()).collect())
     }
 
-    fn grants(&self, key: &PublicKey) -> Option<Vec<Grant>> {
+    pub fn grants(&self, key: &PublicKey) -> Option<Vec<Grant>> {
         self.entries
             .iter()
             .find(|(k, _)| k.key_data() == key.key_data())
@@ -215,24 +223,66 @@ pub fn spawn(config: &RootConfig, listener: &Listener) -> Result<SocketAddr, Str
 // depth: one session
 
 /// What goes to the client: bytes, in order, then how the session ended.
-enum Out {
+pub enum Out {
     Data(Vec<u8>),
     Exit(u32),
 }
 
 /// A REPL of its own for one shell, on a thread of its own.
-fn session(shell: Shell, grants: Vec<Grant>, config: Arc<RootConfig>) {
+pub fn session(shell: Shell, grants: Vec<Grant>, config: Arc<RootConfig>) {
     let window = shell.window.clone();
     let (reader, writer) = shell.split();
     let (out, rx) = mpsc::unbounded_channel::<Out>();
     tokio::spawn(forward(rx, writer));
+    thread(ShellInput { reader, window }, out, grants, config);
+}
+
+/// A REPL of its own on one byte stream whose other end is a terminal:
+/// `drt p2p`'s `repl` service (`doc/P2P.md` §5.2), where the stream carries
+/// the PTY's bytes and `window` is what the peer reported over `control`.
+/// Ends with the stream.
+pub fn raw_session(
+    io: std::pin::Pin<Box<dyn drt_rtc::host::Duplex>>,
+    window: drt_rtc::Window,
+    grants: Vec<Grant>,
+    config: Arc<RootConfig>,
+) {
+    let (reader, mut writer) = tokio::io::split(io);
+    let (out, mut rx) = mpsc::unbounded_channel::<Out>();
+    tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+        while let Some(next) = rx.recv().await {
+            match next {
+                Out::Data(bytes) => {
+                    if writer.write_all(&bytes).await.is_err() {
+                        return;
+                    }
+                }
+                Out::Exit(_) => {
+                    let _ = writer.shutdown().await;
+                    return;
+                }
+            }
+        }
+    });
+    thread(RawInput { reader, window }, out, grants, config);
+}
+
+/// The thread one session runs on: the runtime's `print` goes to the
+/// session, the REPL edits on its terminal, and the exit status follows.
+fn thread<I: Input + 'static>(
+    input: I,
+    out: mpsc::UnboundedSender<Out>,
+    grants: Vec<Grant>,
+    config: Arc<RootConfig>,
+) {
     std::thread::spawn(move || {
         let _runtime = crate::runtime::enter();
         let sink = out.clone();
         drt_platform::stdio::install_sink(Box::new(move |_fd, bytes| {
             let _ = sink.send(Out::Data(crlf(bytes)));
         }));
-        let status = match run(reader, window, out.clone(), grants, &config) {
+        let status = match run(input, out.clone(), grants, &config) {
             Ok(()) => 0,
             Err(e) => {
                 let _ = out.send(Out::Data(crlf(format!("drt: {e}\n").as_bytes())));
@@ -244,9 +294,8 @@ fn session(shell: Shell, grants: Vec<Grant>, config: Arc<RootConfig>) {
     });
 }
 
-fn run(
-    reader: ShellReader,
-    window: Window,
+fn run<I: Input>(
+    input: I,
     out: mpsc::UnboundedSender<Out>,
     grants: Vec<Grant>,
     config: &RootConfig,
@@ -254,7 +303,7 @@ fn run(
     let dispatcher = Dispatcher::new(crate::cli::wire_connectors(config)?);
     let mut repl = Repl::served(Arc::new(dispatcher), grants, config.root.budget)?;
     let _ = out.send(Out::Data(crlf(format!("{}\n", repl.banner()).as_bytes())));
-    let terminal = ShellTerminal::new(reader, window, out);
+    let terminal = ShellTerminal::new(input, out);
     let mut editor = crate::repl::editor(&repl, terminal);
     futures_executor::block_on(crate::repl::edit(&mut repl, &mut editor))
 }
@@ -272,6 +321,49 @@ async fn forward(mut rx: mpsc::UnboundedReceiver<Out>, writer: ShellWriter) {
                 return;
             }
         }
+    }
+}
+
+/// Where a session's keystrokes and window come from: an SSH shell, or a
+/// raw stream with the window reported beside it.
+pub trait Input: Send {
+    fn read(&mut self) -> impl std::future::Future<Output = Option<Vec<u8>>> + Send;
+    fn window(&self) -> (u32, u32);
+}
+
+struct ShellInput {
+    reader: ShellReader,
+    window: Window,
+}
+
+impl Input for ShellInput {
+    async fn read(&mut self) -> Option<Vec<u8>> {
+        self.reader.read().await
+    }
+    fn window(&self) -> (u32, u32) {
+        self.window.get()
+    }
+}
+
+struct RawInput {
+    reader: tokio::io::ReadHalf<std::pin::Pin<Box<dyn drt_rtc::host::Duplex>>>,
+    window: drt_rtc::Window,
+}
+
+impl Input for RawInput {
+    async fn read(&mut self) -> Option<Vec<u8>> {
+        use tokio::io::AsyncReadExt;
+        let mut buf = vec![0u8; 4096];
+        match self.reader.read(&mut buf).await {
+            Ok(0) | Err(_) => None,
+            Ok(n) => {
+                buf.truncate(n);
+                Some(buf)
+            }
+        }
+    }
+    fn window(&self) -> (u32, u32) {
+        self.window.get()
     }
 }
 
@@ -293,9 +385,8 @@ fn crlf(bytes: &[u8]) -> Vec<u8> {
 /// A session's shell as the terminal `ego_cli` edits a line on: the
 /// client's keystrokes decoded as the page decodes xterm.js's, the
 /// client's window as the size, and writes queued to the client.
-pub struct ShellTerminal {
-    reader: ShellReader,
-    window: Window,
+pub struct ShellTerminal<I: Input> {
+    input: I,
     out: mpsc::UnboundedSender<Out>,
     size: Size,
     decoder: ego_cli::decode::AnsiDecoder,
@@ -304,12 +395,11 @@ pub struct ShellTerminal {
     partial: Vec<u8>,
 }
 
-impl ShellTerminal {
-    fn new(reader: ShellReader, window: Window, out: mpsc::UnboundedSender<Out>) -> Self {
-        let (cols, rows) = window.get();
+impl<I: Input> ShellTerminal<I> {
+    fn new(input: I, out: mpsc::UnboundedSender<Out>) -> Self {
+        let (cols, rows) = input.window();
         ShellTerminal {
-            reader,
-            window,
+            input,
             out,
             size: Size::new(cols as u16, rows as u16),
             decoder: ego_cli::decode::AnsiDecoder::new(),
@@ -319,7 +409,7 @@ impl ShellTerminal {
     }
 }
 
-impl Terminal for ShellTerminal {
+impl<I: Input> Terminal for ShellTerminal<I> {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             raw_mode: true,
@@ -341,7 +431,7 @@ impl Terminal for ShellTerminal {
 
     async fn next_event(&mut self) -> ego_cli::Result<Event> {
         loop {
-            let (cols, rows) = self.window.get();
+            let (cols, rows) = self.input.window();
             let now = Size::new(cols as u16, rows as u16);
             if now != self.size {
                 self.size = now;
@@ -350,7 +440,7 @@ impl Terminal for ShellTerminal {
             if let Some(key) = self.pending.pop_front() {
                 return Ok(Event::Key(key));
             }
-            let Some(bytes) = self.reader.read().await else {
+            let Some(bytes) = self.input.read().await else {
                 return Ok(Event::Eof);
             };
             self.partial.extend_from_slice(&bytes);

@@ -153,7 +153,7 @@ fn host_config(c: &WebrtcConfig) -> Result<HostConfig, String> {
                 "webrtc.services.{name} '{target}' is not in webrtc.scope; a stream to it would be refused"
             ));
         }
-        services.push((name.clone(), e));
+        services.push((name.clone(), drt_rtc::Sink::Dial(e)));
     }
     if c.stun_refresh_s == 0 {
         return Err("webrtc.stun_refresh_s must be at least 1".into());
@@ -176,6 +176,11 @@ fn host_config(c: &WebrtcConfig) -> Result<HostConfig, String> {
         connect_timeout: Duration::from_secs(c.connect_timeout_s),
         stun_refresh: Duration::from_secs(c.stun_refresh_s),
         direct: c.direct,
+        hello_scope: c.hello_scope,
+        // The block's shape: a browser names its target, in scope or by
+        // service name. `drt p2p`'s serving side is where a forward lives.
+        forward: drt_rtc::Forward::None,
+        accept: Vec::new(),
     })
 }
 
