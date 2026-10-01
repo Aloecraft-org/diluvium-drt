@@ -495,3 +495,45 @@ fn the_match_server_claims_names_by_token_and_holds_a_capacity() {
     let _ = parked.kill();
     let _ = parked.wait();
 }
+
+// depth: the carriers
+
+#[test]
+fn a_relay_joins_two_sessions_and_the_caller_is_told() {
+    let port = echo();
+    let destination = Listening::start(Some(&format!("127.0.0.1:{port}")), false);
+    let relay = Listening::start(Some(""), false);
+    assert!(
+        relay
+            .lines
+            .iter()
+            .any(|x| x.contains("whatever the caller names")),
+        "{:?}",
+        relay.lines
+    );
+    // The destination's record is what the relay is told to call; the
+    // caller's own session is with the relay.
+    let (out, err) = call(
+        &destination.record,
+        &["--relay", &relay.record],
+        b"relayed\n",
+    );
+    assert_eq!(out, "relayed\n", "{err}");
+    assert!(err.contains("via relay"), "{err}");
+    // --fallback: direct first, so a reachable destination never touches
+    // the relay.
+    let (out, err) = call(
+        &destination.record,
+        &["--fallback", &relay.record],
+        b"direct\n",
+    );
+    assert_eq!(out, "direct\n", "{err}");
+    assert!(!err.contains("via relay"), "{err}");
+    // A peer that is not a relay refuses to be used as one.
+    let (out, err) = call(
+        &destination.record,
+        &["--relay", &destination.record],
+        b"x\n",
+    );
+    assert!(out.is_empty() && err.contains("not a relay"), "{err}");
+}

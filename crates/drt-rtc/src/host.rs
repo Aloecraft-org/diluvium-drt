@@ -157,6 +157,22 @@ pub enum Forward {
     /// if the set holds it; one that asks for none gets the one port of a
     /// one-port set, and is otherwise refused as a closed port is.
     Ports { host: String, ports: PortSet },
+    /// A relay (`doc/P2P.md` §4.1): the caller names the destination on
+    /// `control`, this side calls it through the [`Relay`] and mirrors the
+    /// two sessions' Wisp packets onto each other, reading none. `hello`
+    /// says `forwarding`. Streams opened before the destination answers
+    /// wait for it; a stream opened with no destination named is refused.
+    Relay(Arc<dyn Relay>),
+}
+
+/// How a relaying host reaches the destination a caller names: whoever
+/// embeds the host knows how a peer address is read and signalled, and the
+/// host knows only that the result is a [`crate::caller::Call`].
+pub trait Relay: Send + Sync {
+    fn call(
+        &self,
+        to: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<crate::caller::Call, String>> + Send>>;
 }
 
 impl std::fmt::Debug for Forward {
@@ -169,6 +185,7 @@ impl std::fmt::Debug for Forward {
                 .field("host", host)
                 .field("ports", ports)
                 .finish(),
+            Forward::Relay(_) => f.write_str("Relay"),
         }
     }
 }
@@ -576,6 +593,27 @@ enum Internal {
         stream: u32,
         code: u8,
     },
+    /// A relay's call to its destination is up: where to send the caller's
+    /// packets, and what the destination said of itself.
+    RelayUp {
+        key: u64,
+        to: mpsc::UnboundedSender<Vec<u8>>,
+        hello: String,
+    },
+    /// The destination refused, or could not be reached.
+    RelayFailed {
+        key: u64,
+        why: String,
+    },
+    /// A packet from the destination, for the caller as it is.
+    RelayPacket {
+        key: u64,
+        packet: Vec<u8>,
+    },
+    /// The destination's session ended.
+    RelayDone {
+        key: u64,
+    },
 }
 
 /// What every session needs from the loop.
@@ -808,7 +846,11 @@ impl Loop {
             | Internal::Failed { key, .. }
             | Internal::TcpData { key, .. }
             | Internal::Written { key, .. }
-            | Internal::TcpDone { key, .. } => *key,
+            | Internal::TcpDone { key, .. }
+            | Internal::RelayUp { key, .. }
+            | Internal::RelayFailed { key, .. }
+            | Internal::RelayPacket { key, .. }
+            | Internal::RelayDone { key } => *key,
         };
         match self.sessions.iter_mut().find(|s| s.key == key) {
             Some(s) => s.on_internal(&self.ctx, i),
@@ -969,6 +1011,19 @@ struct Session {
     streams: HashMap<u32, Stream>,
     /// Set when the session should end; `Loop::reap` does the ending.
     dead: Option<String>,
+    /// A relaying session's other half (`Forward::Relay`).
+    relay: RelayState,
+}
+
+/// Where a relaying session's destination stands.
+enum RelayState {
+    /// Not a relay, or no destination named yet; packets meanwhile are
+    /// refused, since no `CONNECT` can be answered without one.
+    None,
+    /// Calling; the caller's packets wait here, oldest first.
+    Calling(Vec<Vec<u8>>),
+    /// Up: the caller's packets go here as they are.
+    Up(mpsc::UnboundedSender<Vec<u8>>),
 }
 
 struct Stream {
@@ -1066,6 +1121,7 @@ impl Session {
             gate,
             streams: HashMap::new(),
             dead: None,
+            relay: RelayState::None,
         })
     }
 
@@ -1144,7 +1200,7 @@ impl Session {
                 self.outbox.push_back(wisp::cont(0, WISP_BUFFER));
             }
             RtcEvent::ChannelData(d) if d.id == self.wisp => self.on_wisp(ctx, &d.data),
-            RtcEvent::ChannelData(d) if d.id == self.control => self.on_control(&d.data),
+            RtcEvent::ChannelData(d) if d.id == self.control => self.on_control(ctx, &d.data),
             RtcEvent::ChannelClose(id) if id == self.wisp || id == self.control => {
                 self.end("a data channel closed");
             }
@@ -1251,11 +1307,15 @@ impl Session {
     }
 
     /// What the peer says on `control`: `resize` for one of its streams
-    /// (`doc/P2P.md` §5.2). Any other `t` is ignored, as §5 says.
-    fn on_control(&mut self, msg: &[u8]) {
+    /// (`doc/P2P.md` §5.2), `call` for the destination of a relay (§4.1).
+    /// Any other `t` is ignored, as §5 says.
+    fn on_control(&mut self, ctx: &Ctx, msg: &[u8]) {
         let Ok(v) = serde_json::from_slice::<serde_json::Value>(msg) else {
             return;
         };
+        if v["t"] == "call" {
+            return self.on_call(ctx, v["to"].as_str().unwrap_or(""));
+        }
         if v["t"] != "resize" {
             return;
         }
@@ -1272,7 +1332,79 @@ impl Session {
         }
     }
 
+    /// `{"t":"call","to":…}`: call the destination and join the sessions
+    /// (`doc/P2P.md` §4.1). Once per session; a second is ignored.
+    fn on_call(&mut self, ctx: &Ctx, to: &str) {
+        let Forward::Relay(relay) = &ctx.cfg.forward else {
+            return;
+        };
+        if !matches!(self.relay, RelayState::None) || to.is_empty() {
+            return;
+        }
+        self.relay = RelayState::Calling(Vec::new());
+        let (relay, internal, key, to) = (
+            relay.clone(),
+            ctx.internal.clone(),
+            self.key,
+            to.to_string(),
+        );
+        tokio::spawn(async move {
+            let call = match relay.call(&to).await {
+                Ok(call) => call,
+                Err(why) => {
+                    let _ = internal.send(Internal::RelayFailed { key, why });
+                    return;
+                }
+            };
+            let raw = match call.raw().await {
+                Ok(raw) => raw,
+                Err(why) => {
+                    let _ = internal.send(Internal::RelayFailed { key, why });
+                    return;
+                }
+            };
+            let hello = call.hello().to_string();
+            let crate::caller::Raw {
+                mut incoming,
+                outgoing,
+            } = raw;
+            let _ = internal.send(Internal::RelayUp {
+                key,
+                to: outgoing,
+                hello,
+            });
+            // The destination's packets, to the caller as they are; the
+            // call is held here for as long as they flow.
+            while let Some(packet) = incoming.recv().await {
+                if internal
+                    .send(Internal::RelayPacket { key, packet })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            drop(call);
+            let _ = internal.send(Internal::RelayDone { key });
+        });
+    }
+
     fn on_wisp(&mut self, ctx: &Ctx, msg: &[u8]) {
+        if matches!(ctx.cfg.forward, Forward::Relay(_)) {
+            match &mut self.relay {
+                RelayState::Up(to) => {
+                    let _ = to.send(msg.to_vec());
+                }
+                RelayState::Calling(waiting) => waiting.push(msg.to_vec()),
+                // No destination named: a CONNECT is refused as a closed
+                // port is, and nothing else means anything yet.
+                RelayState::None => {
+                    if let Some(Packet::Connect { stream, .. }) = wisp::parse(msg) {
+                        self.refuse(ctx, stream, "", 0, reason::BLOCKED);
+                    }
+                }
+            }
+            return;
+        }
         let now = Instant::now();
         match wisp::parse(msg) {
             Some(Packet::Connect {
@@ -1446,6 +1578,28 @@ impl Session {
                 s.last_activity = now;
                 self.outbox.push_back(wisp::data(stream, &bytes));
             }
+            Internal::RelayUp { to, hello, .. } => {
+                let waiting = match std::mem::replace(&mut self.relay, RelayState::Up(to.clone())) {
+                    RelayState::Calling(waiting) => waiting,
+                    _ => Vec::new(),
+                };
+                for pkt in waiting {
+                    let _ = to.send(pkt);
+                }
+                let told = serde_json::json!({"t": "called", "hello": hello}).to_string();
+                if let Some(mut ch) = self.rtc.channel(self.control) {
+                    let _ = ch.write(false, told.as_bytes());
+                }
+            }
+            Internal::RelayFailed { why, .. } => {
+                let told = serde_json::json!({"t": "failed", "why": why}).to_string();
+                if let Some(mut ch) = self.rtc.channel(self.control) {
+                    let _ = ch.write(false, told.as_bytes());
+                }
+                self.end(&format!("the destination could not be reached: {why}"));
+            }
+            Internal::RelayPacket { packet, .. } => self.outbox.push_back(packet),
+            Internal::RelayDone { .. } => self.end("the destination's session ended"),
             Internal::Written { stream, .. } => {
                 let Some(s) = self.streams.get_mut(&stream) else {
                     return;
@@ -1491,6 +1645,9 @@ fn hello(cfg: &HostConfig) -> String {
     if !cfg.services.is_empty() {
         msg["services"] = cfg.services.iter().map(|(name, _)| name.as_str()).collect();
     }
+    if matches!(cfg.forward, Forward::Relay(_)) {
+        msg["forwarding"] = true.into();
+    }
     msg.to_string()
 }
 
@@ -1506,7 +1663,7 @@ fn admitted(ranges: &[Cidr], ip: IpAddr) -> bool {
 fn route(cfg: &HostConfig, host: &str, port: u16) -> Result<Sink, u8> {
     if host.is_empty() {
         return match (&cfg.forward, port) {
-            (Forward::None, _) => Err(reason::INVALID),
+            (Forward::None, _) | (Forward::Relay(_), _) => Err(reason::INVALID),
             (Forward::One(sink), _) => Ok(sink.clone()),
             (Forward::Ports { host, ports }, 0) => match ports.single() {
                 Some(p) => Ok(Sink::Dial(tcp_entry(host, p))),

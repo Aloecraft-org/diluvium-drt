@@ -1,12 +1,11 @@
 # `drt p2p`: one verb for peer-to-peer sessions
 
-**Status:** proposal, 2026-10-01, with the decisions of the first review
-written in (§11). Built so far (`crates/drt/src/p2p/`): the call role, the
-listen role with every `--forward` but the bare relay, the park role at a
-signalling server and at a `wss://` relay, the `p2p` block, the `drt
-tunnel` alias, and the REPL default as both the service `ssh` and the
-service `repl` (§5.2). Not yet: `--match`, `--relay` and `--fallback`
-through a DRT peer, the bare `--forward`. It replaces `drt tunnel` (§9), and folds the WebRTC caller (`drt tunnel rtc:`), the
+**Status:** built, 2026-10-01, with the decisions of the first review
+written in (§11): `crates/drt/src/p2p/` is the verb, `stdlib:p2p-match`
+the server, and `crates/drt/tests/p2p.rs` drives every role on loopback.
+Not built: the relay's "answer for me" service (§4.3), TLS flags for
+`--match`, and the signalling server enforcing `DRT-Accept` itself (the
+parked side enforces it). It replaces `drt tunnel` (§9), and folds the WebRTC caller (`drt tunnel rtc:`), the
 relay's park and claim, and a reference signalling server into one verb.
 It builds on `doc/BrowserAccess.md` (the record, Wisp, direct mode §3.4,
 named services §10), `doc/DRT-Signalling.md`, and
@@ -254,8 +253,15 @@ drt p2p --relay drt://relay.example:5001 drt://signal.example/v1/mypc
 
 1. Call the relay as any peer is called.
 2. Once the control channel is up, send the destination, the positional,
-   inside the session.
-3. The relay calls the destination itself and joins the two sessions.
+   inside the session: `{"t":"call","to":"<peer address>"}` on `control`.
+3. The relay calls the destination itself and joins the two sessions:
+   every Wisp packet from the caller goes to the destination as it is,
+   and every packet from the destination to the caller, so the relay reads
+   nothing and credit stays between the two ends. It answers
+   `{"t":"called","hello":<the destination's hello>}` on `control`, or
+   `{"t":"failed","why":…}` and ends the session. A stream opened before
+   the destination answers waits; one opened before a destination is
+   named is refused as a closed port is.
 
 The destination never appears in a URL, and the relay holds no label and
 no state for it in advance. A relay is any `--listen` or `--park` peer
@@ -362,7 +368,7 @@ A caller's `-p` never causes an error by itself.
 |---|---|---|
 | one target, a named service the caller asked for by `drt+<service>://`, the REPL, `-`, or a `drt://` peer | goes to that target; the port is ignored | goes to that target |
 | a port set, `-P` or `-A` | goes to that port if the set holds it, else is refused as a closed port | `-P` with exactly one port: that port. Otherwise refused as a closed port |
-| a relay, bare `--forward` | the caller names the destination; the port is part of it | refused as a closed port |
+| a relay, bare `--forward` | mirrored to the destination as it was asked, so the destination's row applies | mirrored likewise |
 
 A refusal is the Wisp `CLOSE` a blocked stream gets today. The caller
 learns that the port is closed and nothing about what the far side does

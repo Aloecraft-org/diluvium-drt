@@ -107,23 +107,32 @@ pub async fn connect(
 /// The role: connect, then stdio and the mapped ports until the session
 /// ends. Returns when stdio ends; with ports alone, never.
 pub async fn run(role: &CallRole, roots: &[CertificateDer<'static>]) -> Result<(), String> {
-    if role
-        .relay
-        .as_ref()
-        .or(role.fallback.as_ref())
-        .is_some_and(|p| !matches!(p.how, How::Ws(_)))
-    {
-        return Err(
-            "--relay and --fallback through a DRT peer are not built yet; a wss:// relay is".into(),
-        );
-    }
     if let Some(Peer {
         how: How::Ws(url), ..
     }) = &role.relay
     {
         return over_ws(url, &role.maps, &role.dial.headers, roots).await;
     }
-    let connected = connect(&role.peer, &role.dial, roots).await?;
+    if let Some(Peer {
+        how: How::Ws(_), ..
+    }) = &role.fallback
+    {
+        return Err("--fallback takes a DRT peer; a wss:// relay is a carrier for --relay".into());
+    }
+    let connected = match (&role.relay, &role.fallback) {
+        (Some(relay), _) => through(relay, role, roots).await?,
+        (None, Some(fallback)) => match connect(&role.peer, &role.dial, roots).await {
+            Ok(c) => c,
+            Err(why) => {
+                eprintln!(
+                    "drt p2p: no direct path ({why}); through {}",
+                    fallback.shown()
+                );
+                through(fallback, role, roots).await?
+            }
+        },
+        (None, None) => connect(&role.peer, &role.dial, roots).await?,
+    };
     let interactive = std::io::IsTerminal::is_terminal(&std::io::stdin());
     if connected.forwarding {
         eprintln!("drt p2p: via relay");
@@ -217,6 +226,52 @@ pub async fn run(role: &CallRole, roots: &[CertificateDer<'static>]) -> Result<(
         }
     }
     Ok(())
+}
+
+/// `--relay <peer>` (§4.1): call the relay as any peer, name the destination
+/// on `control`, and wait for the relay to say it is joined. The session
+/// then carries the destination's streams; the relay's `hello` is what the
+/// caller sees, and it says `forwarding`.
+async fn through(
+    relay: &Peer,
+    role: &CallRole,
+    roots: &[CertificateDer<'static>],
+) -> Result<Connected, String> {
+    // The relay is reached with this side's --H and --stun; --fingerprint
+    // is the destination's and nobody on this path can check it, which is
+    // why §1 says a relayed session is one the user asked for.
+    let dial = Dial {
+        fingerprint: None,
+        ..role.dial.clone()
+    };
+    let connected = connect(relay, &dial, roots).await?;
+    if !connected.forwarding {
+        return Err(format!(
+            "{} is not a relay: its hello does not say forwarding (a peer with a bare --forward is)",
+            relay.shown()
+        ));
+    }
+    connected
+        .call
+        .control(&serde_json::json!({"t": "call", "to": role.destination}).to_string())?;
+    let told = tokio::time::timeout(http::TIMEOUT, connected.call.next_control())
+        .await
+        .map_err(|_| format!("{} did not reach the destination in time", relay.shown()))?
+        .ok_or_else(|| format!("{}: the session ended", relay.shown()))?;
+    let told: serde_json::Value = serde_json::from_str(&told).unwrap_or_default();
+    match told["t"].as_str() {
+        Some("called") => Ok(connected),
+        Some("failed") => Err(format!(
+            "{} could not reach {}: {}",
+            relay.shown(),
+            role.peer.shown(),
+            told["why"].as_str().unwrap_or("no reason given")
+        )),
+        _ => Err(format!(
+            "{} answered something unexpected on control: {told}",
+            relay.shown()
+        )),
+    }
 }
 
 /// `--relay wss://…`: the WebSocket relay as a carrier, bytes only. The

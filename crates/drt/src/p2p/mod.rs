@@ -151,6 +151,8 @@ pub struct ServeSettings {
 #[derive(Debug)]
 pub struct CallRole {
     pub peer: Peer,
+    /// The peer as typed: what a relay is told to call (§4.1).
+    pub destination: String,
     pub maps: Vec<PortMap>,
     pub dial: Dial,
     pub relay: Option<Peer>,
@@ -355,6 +357,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
                 "a park or a listen",
                 authorized_keys.as_ref().map(|(_, s)| *s),
             )?;
+            let destination = peer.clone();
             let peer = Peer::parse(&peer)?;
             let maps = ports
                 .map(|(list, _)| {
@@ -381,6 +384,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
             }
             Role::Call(CallRole {
                 peer,
+                destination,
                 maps,
                 dial: Dial {
                     stun,
@@ -412,6 +416,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
                 .unwrap_or_default();
             Role::Call(CallRole {
                 peer: relay.clone(),
+                destination: String::new(),
                 maps,
                 dial: Dial {
                     stun,

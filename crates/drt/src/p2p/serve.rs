@@ -308,7 +308,15 @@ pub(crate) fn sinks(
             (Forward::One(Sink::Local(service)), Vec::new(), None)
         }
         ForwardSpec::Relay => {
-            return Err("a bare --forward (a relay) is not built yet; name a target".into())
+            let relay: Arc<dyn drt_rtc::Relay> = Arc::new(PeerRelay {
+                dial: Dial {
+                    stun: settings.stun.clone(),
+                    headers: settings.headers.clone(),
+                    fingerprint: None,
+                },
+                roots: roots.to_vec(),
+            });
+            (Forward::Relay(relay), Vec::new(), None)
         }
     })
 }
@@ -503,6 +511,36 @@ impl Service for StdioService {
             eprintln!("drt p2p: a session has this process's stdio");
             let io = tokio::io::join(tokio::io::stdin(), tokio::io::stdout());
             Ok(Box::pin(Ending { io, done }) as _)
+        })
+    }
+}
+
+// depth: a relay's call to the destination a caller named
+
+/// `Forward::Relay`'s way out: the destination as a peer address of §3,
+/// called as this process calls anyone. The caller's `--H` do not travel;
+/// the relay's own `--H`, if any, do.
+struct PeerRelay {
+    dial: Dial,
+    roots: Vec<CertificateDer<'static>>,
+}
+
+impl drt_rtc::Relay for PeerRelay {
+    fn call(
+        &self,
+        to: &str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<drt_rtc::caller::Call, String>> + Send>,
+    > {
+        let (to, dial, roots) = (to.to_string(), self.dial.clone(), self.roots.clone());
+        Box::pin(async move {
+            let peer = Peer::parse(&to)?;
+            if matches!(peer.how, super::peer::How::Ws(_)) {
+                return Err("a relay calls DRT peers, not WebSocket relays".into());
+            }
+            eprintln!("drt p2p: calling {} for a caller", peer.shown());
+            let connected = call::connect(&peer, &dial, &roots).await?;
+            Ok(connected.call)
         })
     }
 }

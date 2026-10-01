@@ -36,7 +36,7 @@ pub mod wisp;
 
 pub use cidr::Cidr;
 pub use host::{
-    Command, Event, Forward, Host, HostConfig, PortSet, Sender, Service, SessionState, Sink,
+    Command, Event, Forward, Host, HostConfig, PortSet, Relay, Sender, Service, SessionState, Sink,
     StreamState, Window,
 };
 pub use identity::Identity;

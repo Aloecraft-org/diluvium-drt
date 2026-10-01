@@ -20,7 +20,10 @@
 //!
 //! - Entry points: [`Caller::new`] (and [`Caller::direct`] for direct mode,
 //!   §3.4), [`Caller::gather`], [`Caller::record`], [`Caller::connect`],
-//!   [`Call::open`], [`Call::hello`].
+//!   [`Call::open`], [`Call::hello`], [`Call::control`] and
+//!   [`Call::next_control`] (the `control` channel after `hello`), and
+//!   [`Call::raw`], the Wisp channel as packets, for a relay that mirrors
+//!   another session onto this one (`doc/P2P.md` §4.1).
 //! - Configurable: [`PIPE`], [`CONNECT_TIMEOUT`], [`GATHER_TIMEOUT`].
 //! - Fan-out: [`Target`], what a stream is opened to; [`Order`], what a
 //!   [`Call`] asks of the task that owns the connection; the match over
@@ -300,6 +303,7 @@ impl Caller {
         }
         let (orders, order_rx) = mpsc::unbounded_channel();
         let (ready_tx, ready) = oneshot::channel();
+        let (control_out, control_in) = mpsc::unbounded_channel();
         let driver = Driver {
             rtc,
             socket,
@@ -314,10 +318,16 @@ impl Caller {
             next_id: 1,
             outbox: VecDeque::new(),
             ended: None,
+            control_out,
+            raw: None,
         };
         tokio::spawn(driver.run(order_rx, orders.downgrade()));
         match tokio::time::timeout(timeout, ready).await {
-            Ok(Ok(Ok(hello))) => Ok(Call { orders, hello }),
+            Ok(Ok(Ok(hello))) => Ok(Call {
+                orders,
+                hello,
+                control: tokio::sync::Mutex::new(control_in),
+            }),
             Ok(Ok(Err(why))) => Err(why),
             Ok(Err(_)) => Err("rtc: the connection ended before it was ready".into()),
             Err(_) => Err(format!(
@@ -332,12 +342,47 @@ impl Caller {
 pub struct Call {
     orders: mpsc::UnboundedSender<Order>,
     hello: String,
+    /// `control` messages after `hello`, oldest first.
+    control: tokio::sync::Mutex<mpsc::UnboundedReceiver<String>>,
+}
+
+/// The Wisp channel as packets, from [`Call::raw`]: what arrives, and a
+/// way to send. Once taken, the [`Call`] opens no streams of its own.
+pub struct Raw {
+    pub incoming: mpsc::UnboundedReceiver<Vec<u8>>,
+    pub outgoing: mpsc::UnboundedSender<Vec<u8>>,
 }
 
 impl Call {
     /// The answerer's `hello` (§5), as it sent it.
     pub fn hello(&self) -> &str {
         &self.hello
+    }
+
+    /// Send one message on `control`: one JSON object, as §5 has them.
+    pub fn control(&self, text: &str) -> Result<(), String> {
+        self.orders
+            .send(Order::Control(text.to_string()))
+            .map_err(|_| "rtc: the session has ended".to_string())
+    }
+
+    /// The next `control` message after `hello`, or `None` once the
+    /// session has ended.
+    pub async fn next_control(&self) -> Option<String> {
+        self.control.lock().await.recv().await
+    }
+
+    /// The Wisp channel as packets. A relay (`doc/P2P.md` §4.1) takes it to
+    /// mirror a caller's packets onto this session and this session's back,
+    /// reading none of them; credit then belongs to the two ends.
+    pub async fn raw(&self) -> Result<Raw, String> {
+        let (reply, answer) = oneshot::channel();
+        self.orders
+            .send(Order::Raw { reply })
+            .map_err(|_| "rtc: the session has ended".to_string())?;
+        answer
+            .await
+            .map_err(|_| "rtc: the session has ended".to_string())
     }
 
     /// Open a stream to `target` and hand back this side's end of it,
@@ -372,6 +417,12 @@ enum Order {
     Data { stream: u32, bytes: Vec<u8> },
     /// The holder closed its end.
     Eof { stream: u32 },
+    /// One message for `control`.
+    Control(String),
+    /// Hand the Wisp channel over as packets.
+    Raw { reply: oneshot::Sender<Raw> },
+    /// A packet to send as is, from [`Raw::outgoing`].
+    Packet(Vec<u8>),
 }
 
 // depth: the task that owns the connection
@@ -402,6 +453,10 @@ struct Driver {
     /// Packets str0m refused for want of buffer space, oldest first.
     outbox: VecDeque<Vec<u8>>,
     ended: Option<String>,
+    /// `control` messages after `hello`, to whoever holds the `Call`.
+    control_out: mpsc::UnboundedSender<String>,
+    /// Set once [`Call::raw`] took the channel: packets go here as they are.
+    raw: Option<mpsc::UnboundedSender<Vec<u8>>>,
 }
 
 impl Driver {
@@ -480,11 +535,19 @@ impl Driver {
             RtcEvent::ChannelOpen(id, _) if id == self.control => self.open[0] = true,
             RtcEvent::ChannelOpen(id, _) if id == self.wisp => self.open[1] = true,
             RtcEvent::ChannelData(d) if d.id == self.control => {
+                let text = String::from_utf8_lossy(&d.data).into_owned();
                 if self.hello.is_none() {
-                    self.hello = Some(String::from_utf8_lossy(&d.data).into_owned());
+                    self.hello = Some(text);
+                } else {
+                    let _ = self.control_out.send(text);
                 }
             }
-            RtcEvent::ChannelData(d) if d.id == self.wisp => self.on_wisp(&d.data),
+            RtcEvent::ChannelData(d) if d.id == self.wisp => match &self.raw {
+                Some(raw) => {
+                    let _ = raw.send(d.data.clone());
+                }
+                None => self.on_wisp(&d.data),
+            },
             RtcEvent::ChannelClose(_) => self.ended = Some("rtc: a data channel closed".into()),
             RtcEvent::IceConnectionStateChange(IceConnectionState::Disconnected) => {
                 self.ended = Some("rtc: ice disconnected".into())
@@ -557,6 +620,27 @@ impl Driver {
                     self.send(wisp::close(stream, reason::VOLUNTARY));
                 }
             }
+            Order::Control(text) => {
+                if let Some(mut ch) = self.rtc.channel(self.control) {
+                    let _ = ch.write(false, text.as_bytes());
+                }
+            }
+            Order::Raw { reply } => {
+                let (incoming_tx, incoming) = mpsc::unbounded_channel();
+                let (outgoing, mut outgoing_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+                self.raw = Some(incoming_tx);
+                if let Some(own) = own.upgrade() {
+                    tokio::spawn(async move {
+                        while let Some(pkt) = outgoing_rx.recv().await {
+                            if own.send(Order::Packet(pkt)).is_err() {
+                                break;
+                            }
+                        }
+                    });
+                }
+                let _ = reply.send(Raw { incoming, outgoing });
+            }
+            Order::Packet(pkt) => self.send(pkt),
         }
     }
 

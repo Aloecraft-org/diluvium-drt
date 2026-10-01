@@ -59,10 +59,7 @@ pub fn run(role: &MatchRole, config: &RootConfig) -> Result<(), String> {
         "capacity".to_string(),
         ArgValue::Int(i64::try_from(role.capacity).unwrap_or(i64::MAX)),
     )]);
-    config
-        .connectors
-        .entry("time".to_string())
-        .or_default();
+    config.connectors.entry("time".to_string()).or_default();
     config.listeners = vec![Listener {
         scheme: "http".into(),
         address: address.to_string(),
