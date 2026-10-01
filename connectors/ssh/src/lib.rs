@@ -35,6 +35,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+pub mod console;
 pub mod interactive;
 
 use drt_caps::{Scope, ScopeType};

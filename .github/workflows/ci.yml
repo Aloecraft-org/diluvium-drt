@@ -477,13 +477,14 @@ jobs:
     # build -- which is the one not to link Rust's msvcrt-based
     # windows-gnu against.
     #
-    # Two crates, because this is a gate and not the suite. `drt-platform`
+    # Three crates, because this is a gate and not the suite. `drt-platform`
     # is where `process::Tree` lives, a Job Object here and a process group
     # on unix. `drt-connector-exec` is the connector built on it, and its
     # `tests/portable.rs` is the contract both platforms answer --
     # `tests/run.rs` is `#![cfg(unix)]` and compiles to nothing here, which
-    # is exactly why a Windows run of the suite had to exist. Neither crate
-    # pulls in the C core, which is why this job needs no C compiler at
+    # is exactly why a Windows run of the suite had to exist.
+    # `drt-connector-ssh` carries `drt ssh`'s session and its console half.
+    # None of the three pulls in the C core, which is why this job needs no C compiler at
     # all; widening it to a crate that embeds diluvium means bringing a
     # mingw-w64 for the target and pointing `CC` at it, the way the musl
     # legs in release.yml point `CC` at musl-gcc.
@@ -526,6 +527,13 @@ jobs:
           fi
       - name: Test (drt-platform, drt-connector-exec)
         run: cargo test -p drt-platform -p drt-connector-exec
+      # `drt ssh`'s session, on Windows: connect, trust, sign-in and the
+      # shell against an in-process SSH server (tests/interactive.rs), and
+      # the console's UTF-16 decoding. The console modes themselves need a
+      # console, which a runner does not give a test. No C core here
+      # either; ring's C builds with the runner's gcc.
+      - name: Test (drt-connector-ssh)
+        run: cargo test -p drt-connector-ssh
 
   fidelity:
     # The benchmark's *deterministic* fields, checked against the committed

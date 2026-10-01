@@ -118,6 +118,9 @@ is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
     session's, so nothing typed into the remote shell reaches the
     prompt afterwards. `drt_web.tar.gz` now carries
     `ssh-command.js` and the client module.
+  - On Windows too, on the console of Windows 10 1809 or later: VT
+    input and output, the console's size, and the agent on OpenSSH's
+    named pipe, then Pageant.
   The native session is russh directly rather than ego-transport's
   client, so RSA servers and keys, the agent and passwords work, and
   the host key is decided before authentication. Tested against

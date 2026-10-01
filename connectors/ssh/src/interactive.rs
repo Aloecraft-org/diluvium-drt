@@ -20,12 +20,15 @@
 //!
 //! - Entry points: [`connect`] (key exchange, trust, sign-in, over any
 //!   byte stream); [`shell`] (a pty and a shell, over a [`Terminal`]);
-//!   [`on_this_terminal`] (both, on this process's tty); [`Login`],
+//!   [`on_this_terminal`] (both, on this process's terminal, Unix or
+//!   Windows: [`crate::console`]); [`Login`],
 //!   [`Trust`], [`Credentials`], [`Prompt`], [`TtyPrompt`].
 //! - Configurable: [`TERM_DEFAULT`], [`IDENTITIES`], [`PASSWORD_TRIES`],
 //!   [`RESIZE_POLL`], [`KEEPALIVE`].
 //! - Fan-out: [`Trust`] (pinned, or `known_hosts` with or without asking);
-//!   [`Credentials`] (one key, or discovery: agent, files, password); the
+//!   [`Credentials`] (one key, or discovery: agent, files, password);
+//!   `with_agent`, one per platform (`SSH_AUTH_SOCK`; OpenSSH's pipe,
+//!   then Pageant); the
 //!   channel messages [`shell`] acts on (data, stderr, exit status, eof,
 //!   close, a refused request); [`Escape`], `~.` and `~~`.
 
@@ -34,6 +37,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::console;
 use russh::client::{self, Handle};
 use russh::keys::{HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate};
 use russh::ChannelMsg;
@@ -421,13 +425,47 @@ async fn rsa_hash(handle: &Handle<Checker>, rsa: bool) -> Option<HashAlg> {
         .flatten()
 }
 
+/// The agent the way `ssh` finds it: `SSH_AUTH_SOCK` on Unix; on Windows
+/// OpenSSH's agent service on its named pipe, then Pageant.
 #[cfg(unix)]
 async fn with_agent(handle: &mut Handle<Checker>, user: &str) -> bool {
     use russh::keys::agent::client::AgentClient;
+    match AgentClient::connect_env().await {
+        Ok(agent) => agent_signs(handle, user, agent).await,
+        Err(_) => false,
+    }
+}
+
+#[cfg(windows)]
+async fn with_agent(handle: &mut Handle<Checker>, user: &str) -> bool {
+    use russh::keys::agent::client::AgentClient;
+    if let Ok(agent) = AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent").await {
+        if agent_signs(handle, user, agent).await {
+            return true;
+        }
+    }
+    match AgentClient::connect_pageant().await {
+        Ok(agent) => agent_signs(handle, user, agent).await,
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+async fn with_agent(_handle: &mut Handle<Checker>, _user: &str) -> bool {
+    false
+}
+
+/// Each identity the agent holds, until the server accepts one.
+#[cfg(any(unix, windows))]
+async fn agent_signs<S>(
+    handle: &mut Handle<Checker>,
+    user: &str,
+    mut agent: russh::keys::agent::client::AgentClient<S>,
+) -> bool
+where
+    S: russh::keys::agent::client::AgentStream + Send + Unpin + 'static,
+{
     use russh::keys::agent::AgentIdentity;
-    let Ok(mut agent) = AgentClient::connect_env().await else {
-        return false;
-    };
     let Ok(ids) = agent.request_identities().await else {
         return false;
     };
@@ -445,11 +483,6 @@ async fn with_agent(handle: &mut Handle<Checker>, user: &str) -> bool {
             }
         }
     }
-    false
-}
-
-#[cfg(not(unix))]
-async fn with_agent(_handle: &mut Handle<Checker>, _user: &str) -> bool {
     false
 }
 
@@ -600,7 +633,7 @@ impl Prompt for TtyPrompt {
     fn secret(&self, question: &str) -> Option<String> {
         eprint!("{question}");
         let _ = std::io::stderr().flush();
-        let line = without_echo(|| {
+        let line = console::without_echo(|| {
             let mut line = String::new();
             match std::io::stdin().read_line(&mut line) {
                 Ok(0) | Err(_) => None,
@@ -616,33 +649,9 @@ impl Prompt for TtyPrompt {
     }
 }
 
-#[cfg(unix)]
-fn without_echo<T>(f: impl FnOnce() -> T) -> T {
-    // SAFETY: tcgetattr/tcsetattr on fd 0 with a termios this function
-    // owns; the saved settings are restored on every path out.
-    unsafe {
-        let mut saved: libc::termios = std::mem::zeroed();
-        if libc::tcgetattr(0, &mut saved) != 0 {
-            return f();
-        }
-        let mut quiet = saved;
-        quiet.c_lflag &= !libc::ECHO;
-        quiet.c_lflag |= libc::ECHONL;
-        libc::tcsetattr(0, libc::TCSANOW, &quiet);
-        let out = f();
-        libc::tcsetattr(0, libc::TCSANOW, &saved);
-        out
-    }
-}
-
-#[cfg(not(unix))]
-fn without_echo<T>(f: impl FnOnce() -> T) -> T {
-    f()
-}
-
 /// [`connect`] and [`shell`] on this process's terminal: prompts first,
-/// then raw mode for the session, restored on every way out.
-#[cfg(unix)]
+/// then raw mode for the session, restored on every way out
+/// ([`crate::console`], one per platform).
 pub async fn on_this_terminal<S>(stream: S, login: Login) -> Result<Option<u32>, String>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -655,24 +664,19 @@ where
     }
     let conn = connect(stream, login, Arc::new(TtyPrompt)).await?;
 
+    let raw = console::Raw::enter()?;
     let (tx, input) = mpsc::unbounded_channel();
     let stop = Arc::new(AtomicBool::new(false));
     let reader = {
         let stop = stop.clone();
-        std::thread::spawn(move || read_stdin(tx, &stop))
+        std::thread::spawn(move || console::read_stdin(tx, &stop))
     };
-    let raw = Raw::enter()?;
     let term = Terminal {
         input,
         output: Box::new(std::io::stdout()),
-        size: Box::new(|| {
-            // A terminal reporting no size (a pty opened without one) is
-            // declining to answer, not one cell wide.
-            match crossterm::terminal::size() {
-                Ok((c, r)) if c > 0 && r > 0 => (u32::from(c), u32::from(r)),
-                _ => (80, 24),
-            }
-        }),
+        // A terminal that gives no size is declining to answer, not one
+        // cell wide.
+        size: Box::new(|| console::size().unwrap_or((80, 24))),
         term: std::env::var("TERM")
             .ok()
             .filter(|t| !t.is_empty())
@@ -683,68 +687,6 @@ where
     let _ = reader.join();
     drop(raw);
     result
-}
-
-#[cfg(not(unix))]
-pub async fn on_this_terminal<S>(_stream: S, _login: Login) -> Result<Option<u32>, String>
-where
-    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    Err("an interactive ssh session needs a Unix terminal in this build".into())
-}
-
-/// Raw mode for as long as this lives.
-#[cfg(unix)]
-struct Raw;
-
-#[cfg(unix)]
-impl Raw {
-    fn enter() -> Result<Raw, String> {
-        crossterm::terminal::enable_raw_mode().map_err(|e| format!("raw mode: {e}"))?;
-        Ok(Raw)
-    }
-}
-
-#[cfg(unix)]
-impl Drop for Raw {
-    fn drop(&mut self) {
-        let _ = crossterm::terminal::disable_raw_mode();
-    }
-}
-
-/// stdin to `tx` until `stop`. Polled with a timeout rather than blocked
-/// in `read`, so the thread ends with the session: a reader left blocked
-/// would take the first key typed at the REPL prompt afterwards.
-#[cfg(unix)]
-fn read_stdin(tx: mpsc::UnboundedSender<Vec<u8>>, stop: &std::sync::atomic::AtomicBool) {
-    use std::sync::atomic::Ordering;
-    let mut buf = [0u8; 4096];
-    while !stop.load(Ordering::Relaxed) {
-        let mut fd = libc::pollfd {
-            fd: 0,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: one pollfd on the stack, for its length.
-        let ready = unsafe { libc::poll(&mut fd, 1, 100) };
-        if ready < 0 {
-            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            break;
-        }
-        if ready == 0 {
-            continue;
-        }
-        // SAFETY: reading into a buffer this function owns, at most its length.
-        let n = unsafe { libc::read(0, buf.as_mut_ptr().cast(), buf.len()) };
-        if n <= 0 {
-            break;
-        }
-        if tx.send(buf[..n as usize].to_vec()).is_err() {
-            break;
-        }
-    }
 }
 
 #[cfg(test)]

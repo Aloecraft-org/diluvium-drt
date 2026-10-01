@@ -1462,7 +1462,6 @@ name = "drt-connector-ssh"
 version = "0.8.0"
 dependencies = [
  "async-trait",
- "crossterm",
  "drt-caps",
  "drt-connector",
  "drt-hostcall",
@@ -1476,6 +1475,7 @@ dependencies = [
  "ssh-key",
  "tempfile",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -19,14 +19,18 @@ drt-connector = { workspace = true }
 # fork, so this adds no second copy. `rsa` and an agent because a person's
 # servers and keys are not all Ed25519.
 russh = { version = "0.63.2", default-features = false, features = ["ring", "rsa"] }
-# Raw mode and the window size for a session on this process's terminal.
-# The version ego_cli already brings in.
-crossterm = { version = "0.29", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
-# poll(2) on stdin, so the reader thread ends with the session; termios to
-# read a password without echo.
+# The terminal for an interactive session (src/console.rs): termios for
+# raw mode and a password without echo, TIOCGWINSZ for the size, poll(2)
+# so the stdin reader ends with the session.
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# The same on the Windows console: modes (VT input and output), the
+# window's size, and a reader that waits with a timeout. The version and
+# features the tree already builds for Windows.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
