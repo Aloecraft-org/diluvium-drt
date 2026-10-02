@@ -34,6 +34,7 @@ RootConfig {
             match_port: None,
             host: None,
             accept: [],
+            pair: None,
             forward: Some(
                 "127.0.0.1:18491",
             ),

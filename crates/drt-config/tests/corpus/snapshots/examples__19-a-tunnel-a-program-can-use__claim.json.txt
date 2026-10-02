@@ -36,6 +36,7 @@ RootConfig {
             match_port: None,
             host: None,
             accept: [],
+            pair: None,
             forward: None,
             all_ports: false,
             forward_ports: None,
