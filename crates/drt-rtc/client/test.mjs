@@ -403,7 +403,12 @@ test('a named CONNECT is port 0 and the name, and decodes back', async () => {
   for (const bad of ['', '-x', 'SSH', 'a b', 'x'.repeat(33), 'ssh.local']) assert.ok(!isServiceName(bad), bad);
 });
 
-async function answeringSession(services) {
+/**
+ * A page answering a caller. The caller serves (sends hello and credit)
+ * unless `caller: 'silent'`, in which case the session settles after
+ * `settleMs` with nothing from it.
+ */
+async function answeringSession(services, { caller = 'serving', settleMs = 20 } = {}) {
   const { answer } = await import('./drt_browser_access.js');
   const channels = [];
   const fp = vectors.records[0].decoded.f_hex;
@@ -428,15 +433,20 @@ async function answeringSession(services) {
     }
     close() {}
   }
-  const a = await answer(vectors.records[0].rtc, { RTCPeerConnection: PC, services, label: 'page' });
+  const a = await answer(vectors.records[0].rtc, { RTCPeerConnection: PC, services, label: 'page', settleMs });
   const [control, wisp] = channels;
   control.sentText = [];
   control.send = (t) => control.sentText.push(JSON.parse(t));
   control.onopen();
   wisp.onopen();
-  const session = await a.session;
   const peer = (packet) => wisp.onmessage({ data: packet.buffer });
-  return { a, session, control, wisp, peer, pc: session.pc };
+  const say = (m) => control.onmessage({ data: JSON.stringify(m) });
+  if (caller === 'serving') {
+    say({ v: 1, t: 'hello', service: 'caller', scope: [], services: ['back'], limits: { max_streams: 64 } });
+    peer(encodeWisp(WISP.CONTINUE, 0, { buffer: 16 }));
+  }
+  const session = await a.session;
+  return { a, session, control, wisp, peer, say, pc: session.pc };
 }
 
 test('a page answers: the caller\'s record as an offer, its own record back, then hello and credit', async () => {
@@ -475,10 +485,47 @@ test('what a page does not serve is refused by the rule that names it', async ()
 });
 
 test('the answerer opens even ids to what the caller serves', async () => {
-  const { session, peer } = await answeringSession({});
+  const { session } = await answeringSession({});
+  assert.deepEqual(session.hello.services, ['back']);
+  assert.deepEqual([session.connect('back').id, session.connect('back').id], [2, 4]);
+});
+
+test('an answered session is ready once the caller\'s hello and credit are in, and connect works at once', async () => {
+  const { answer } = await import('./drt_browser_access.js');
+  const channels = [];
+  const fp = vectors.records[0].decoded.f_hex;
+  class PC extends EventTarget {
+    constructor() { super(); this.iceGatheringState = 'complete'; }
+    createDataChannel() { const c = new FakeChannel(); channels.push(c); return c; }
+    async setRemoteDescription() {}
+    async createAnswer() {
+      return { type: 'answer', sdp: `a=ice-ufrag:pageUfrag\r\na=ice-pwd:pagePassword0123456789ab\r\na=fingerprint:sha-256 ${fp}\r\na=mid:0\r\n` };
+    }
+    async setLocalDescription(d) { this.localDescription = d; }
+    close() {}
+  }
+  const a = await answer(vectors.records[0].rtc, { RTCPeerConnection: PC, settleMs: 200 });
+  const [control, wisp] = channels;
+  control.send = () => {};
+  control.onopen();
+  wisp.onopen();
+  let settled = false;
+  a.session.then(() => (settled = true));
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(settled, false, 'channels open is not yet a session');
+  // hello alone is not enough: a serving caller sends credit too.
+  control.onmessage({ data: JSON.stringify({ v: 1, t: 'hello', service: 'c', scope: [], services: ['x'], limits: { max_streams: 64 } }) });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(settled, false, 'hello without credit keeps waiting');
+  wisp.onmessage({ data: encodeWisp(WISP.CONTINUE, 0, { buffer: 8 }).buffer });
+  const session = await a.session;
+  assert.equal(session.connect('x').id, 2);
+});
+
+test('a caller that serves nothing settles the answered session after the grace, with no hello', async () => {
+  const { session } = await answeringSession({}, { caller: 'silent', settleMs: 20 });
+  assert.equal(session.hello, null);
   assert.throws(() => session.connect('dom'), /serves nothing/);
-  peer(encodeWisp(WISP.CONTINUE, 0, { buffer: 16 }));
-  assert.deepEqual([session.connect('dom').id, session.connect('dom').id], [2, 4]);
 });
 
 // depth: listen, against a fake signalling server (doc/DRT-Signalling.md)
@@ -573,9 +620,10 @@ test('listen answers each waiting call, posts the page\'s record, and carries th
   const { listen } = await import('./drt_browser_access.js');
   const server = fakeServer([vectors.records[0].rtc, vectors.records[1].rtc]);
   const sessions = [];
+  // The fake caller serves nothing: each session settles after `settleMs`.
   const l = listen('https://signal.example/v1/page/', {
     token: 'tok', events: false, pollMs: 20, fetch: server.fetch, RTCPeerConnection: answeringPC(),
-    services: { ssh: () => {} }, onSession: (s, call) => sessions.push(call.id),
+    services: { ssh: () => {} }, onSession: (s, call) => sessions.push(call.id), settleMs: 10,
   });
   await until('two sessions', () => sessions.length === 2);
   const answers = server.seen.filter((r) => r.method === 'POST');

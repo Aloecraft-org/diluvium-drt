@@ -146,6 +146,12 @@ export function offer(options?: OfferOptions): Promise<Pending>;
 export interface AnswerOptions extends OfferOptions, AcceptOptions {
   /** The `service` label this side's hello carries. */
   label?: string;
+  /**
+   * Once the channels are open, how long to wait for the caller's `hello`
+   * and credit before the session is read as one whose caller serves
+   * nothing (`session.hello` stays null). Default ANSWER_SETTLE_MS.
+   */
+  settleMs?: number;
   /** A certificate the page keeps, so its fingerprint holds across sessions. */
   certificates?: RTCCertificate[];
 }
@@ -154,6 +160,11 @@ export interface Answering {
   record: BrowserAccessRecord;
   recordText: string;
   pc: RTCPeerConnection;
+  /**
+   * The session, once both channels are open and the caller's `hello` and
+   * credit have arrived (so `connect` works at once), or `settleMs` after
+   * the channels opened with neither.
+   */
   session: Promise<Session>;
   close(): void;
 }

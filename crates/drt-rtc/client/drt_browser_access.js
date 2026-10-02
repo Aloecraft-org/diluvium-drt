@@ -53,7 +53,9 @@
 // - Configurable: GATHER_CAP_MS, how long `offer` waits for ICE gathering
 //   before it publishes what it has (§3.1); ACCEPT_TIMEOUT_MS, how long
 //   `accept` and `direct` wait for the channels, `hello` and the first
-//   CONTINUE;
+//   CONTINUE, and `answer` for the channels; ANSWER_SETTLE_MS, how long
+//   an answered session then waits for a caller's `hello` and credit
+//   before it is read as a caller that serves nothing (§10.4);
 //   SEND_HIGH_WATER, the data channel buffer past which a stream's writer
 //   waits; SERVE_BUFFER and SERVE_MAX_STREAMS, what a page that serves
 //   grants each stream and how many it holds open; LISTEN_POLL_MS, how
@@ -70,6 +72,8 @@
 
 export const GATHER_CAP_MS = 2000;
 export const ACCEPT_TIMEOUT_MS = 15000;
+/** How long an answered session waits for the caller's hello and credit once the channels are open (§10.4). */
+export const ANSWER_SETTLE_MS = 1500;
 export const SEND_HIGH_WATER = 1 << 20;
 /** Packets of DATA a page that serves lets each stream queue (§10.2, as §6). */
 export const SERVE_BUFFER = 128;
@@ -441,8 +445,12 @@ export async function answer(callerRecord, options = {}) {
   const wisp = pc.createDataChannel('wisp', { negotiated: true, id: 1 });
   wisp.binaryType = 'arraybuffer';
   const session = new Session(pc, control, wisp, { role: 'answerer', ...options });
-  const ready = session.readyAnswering(options.timeoutMs ?? ACCEPT_TIMEOUT_MS);
-  ready.catch(() => {}); // the caller of answer() holds it through `session`
+  const ready = session.readyAnswering(options.timeoutMs ?? ACCEPT_TIMEOUT_MS, options.settleMs ?? ANSWER_SETTLE_MS);
+  // Whoever answered holds `session` and may never look at it again -- a
+  // `listen` that closed an answer the server no longer wanted -- so a
+  // rejection here is theirs to observe, not an unhandled one.
+  const sessionReady = ready.then(() => session);
+  sessionReady.catch(() => {});
   control.onmessage = (e) => session.onControl(e.data);
   wisp.onmessage = (e) => session.onWispPacket(e.data);
   control.onopen = wisp.onopen = () => session.onChannelOpen();
@@ -455,7 +463,7 @@ export async function answer(callerRecord, options = {}) {
       record,
       recordText: JSON.stringify(record),
       pc,
-      session: ready.then(() => session),
+      session: sessionReady,
       close: () => session.close(),
     };
   } catch (e) {
@@ -808,22 +816,41 @@ class Session {
     });
   }
 
-  /** For a page that answers: ready once both channels are open (§10.4). */
-  readyAnswering(timeoutMs) {
+  /**
+   * For a page that answers (§10.4): ready once both channels are open
+   * and the caller's `hello` and credit have arrived, so `connect` works
+   * from the first tick of `onSession`; or, `settleMs` after the channels
+   * opened with neither, since a caller that serves nothing sends neither
+   * and `hello` stays null. A `hello` without credit keeps waiting: a side
+   * that serves sends both (§10.2).
+   */
+  readyAnswering(timeoutMs, settleMs) {
     return new Promise((resolve, reject) => {
+      let settle = null;
+      const done = () => {
+        clearTimeout(timer);
+        clearTimeout(settle);
+        this.onReady = null;
+        resolve();
+      };
       const timer = setTimeout(() => {
+        clearTimeout(settle);
         reject(new Error(`no session within ${timeoutMs} ms (ice ${this.pc.iceConnectionState}, `
-          + `channels ${this.channelsOpen}/2)`));
+          + `channels ${this.channelsOpen}/2, hello ${this.hello ? 'yes' : 'no'}, `
+          + `credit ${this.initialCredit ?? 'none'})`));
       }, timeoutMs);
       this.onReady = () => {
-        if (this.channelsOpen === 2) {
-          clearTimeout(timer);
-          this.onReady = null;
-          resolve();
+        if (this.channelsOpen !== 2) return;
+        if (this.hello && this.initialCredit !== null) return done();
+        if (settle === null) {
+          settle = setTimeout(() => {
+            if (!this.hello && this.initialCredit === null) done();
+          }, settleMs);
         }
       };
       this.onEnded = (why) => {
         clearTimeout(timer);
+        clearTimeout(settle);
         reject(new Error(why));
       };
     });

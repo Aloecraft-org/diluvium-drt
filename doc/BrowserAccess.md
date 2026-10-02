@@ -695,7 +695,13 @@ host's. Given a caller's record, the page:
 
 The caller then does exactly what it does with a host: builds the answer
 from the page's record (§3.2) and waits for `hello` and credit. The page
-is the answerer, so it serves (§10.2) and opens even ids.
+is the answerer, so it serves (§10.2) and opens even ids. Its session is
+ready once both channels are open and the caller's `hello` and credit
+have arrived, so a page that was called in order to use what the caller
+serves (a DRT host that called it, `doc/DRT-Signalling.md` §6.2) can
+`connect` in the first tick; a caller that serves nothing sends neither,
+and the session is ready `ANSWER_SETTLE_MS` after the channels opened
+with `hello` null. In the library, `answer` and `listen` take `settleMs`.
 
 A page's record changes per session: a browser gathers new candidates
 for every connection. Its certificate need not. A page that keeps one

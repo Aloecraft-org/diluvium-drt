@@ -183,7 +183,10 @@ releases:
           `POST /v1/<name>/pair {"name": other}`. Decided with Discofetch
           (`doc/Ask-Discofetch-Reply-2.md`). `doc/BrowserAccess.md` §5
           says a page's boundary is what it was opened for, not
-          `hello.scope`.
+          `hello.scope`. In the browser library, a session `answer` or
+          `listen` hands out is ready once the caller's `hello` and credit
+          are in, so a page a host called can `connect` at once; a caller
+          that serves nothing settles it after `ANSWER_SETTLE_MS`.
         - **Half-close on the wire.** The Wisp profile gains `END` (0x05):
           the sender will write no more and still reads, TCP's half-close.
           A host says `half_close` in `hello`; a caller says it with a
