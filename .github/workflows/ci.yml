@@ -572,34 +572,14 @@ jobs:
           install: mingw-w64-x86_64-gcc
       # `cargo test` builds the binary the tests spawn, so `slim,p2p` is
       # the whole p2p verb and nothing it does not need (no sql, no mail).
-      #
-      # `CC` is a wrapper rather than gcc itself: diluvium-sys's build
-      # script canonicalizes its source path, which on Windows is the
-      # `\\?\C:\…` verbatim form, and mingw's gcc cannot open that
-      # ("cc1.exe: fatal error: \\onelua.c: No such file"). The wrapper
-      # strips the prefix off every argument and hands the rest to gcc.
-      # The right fix is upstream, in that build script, one line; this
-      # keeps the row honest until it lands.
+      # diluvium 0.17.2's build script hands this gcc a plain path; before
+      # it, the verbatim `\\?\C:\…` form needed a wrapper here.
       - name: Test (drt p2p, on Windows)
         run: |
           set -eu
-          gcc_real="$RUNNER_TEMP/msys64/mingw64/bin/gcc.exe"
-          "$gcc_real" --version | head -1
-          cat > "$RUNNER_TEMP/cc.sh" <<'EOF2'
-          #!/bin/bash
-          args=()
-          for a in "$@"; do args+=("${a#\\\\\?\\}"); done
-          exec "$GCC_REAL" "${args[@]}"
-          EOF2
-          printf '@"C:\\Program Files\\Git\\bin\\bash.exe" "%%RUNNER_TEMP%%\\cc.sh" %%*\r\n' > "$RUNNER_TEMP/cc.cmd"
-          export GCC_REAL="$gcc_real"
-          export CC="$RUNNER_TEMP/cc.cmd"
+          export CC="$RUNNER_TEMP/msys64/mingw64/bin/gcc.exe"
           export AR="$RUNNER_TEMP/msys64/mingw64/bin/ar.exe"
-          # The wrapper, proven on the shape that failed before anything
-          # slow runs: a verbatim path in, a compiled object out.
-          printf 'int drt_probe(void){return 1;}\n' > "$RUNNER_TEMP/probe.c"
-          "$CC" -c "\\\\?\\$(cygpath -w "$RUNNER_TEMP")\\probe.c" -o "$RUNNER_TEMP/probe.o"
-          test -s "$RUNNER_TEMP/probe.o"
+          "$CC" --version | head -1
           cargo test -p drt --no-default-features --features "slim,p2p" --lib p2p --test p2p
 
   fidelity:

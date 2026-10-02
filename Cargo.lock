@@ -1171,7 +1171,7 @@ dependencies = [
 [[package]]
 name = "diluvium"
 version = "0.1.0"
-source = "git+https://github.com/Aloecraft-org/diluvium?tag=v0.17.1#d8497b0dd917548c3e2bfa88ed539a6f527ba369"
+source = "git+https://github.com/Aloecraft-org/diluvium?tag=v0.17.2#97bb9f9d28974e3b4124a2a015e5b06da54a0c98"
 dependencies = [
  "diluvium-sys",
  "rmp-serde",
@@ -1181,7 +1181,7 @@ dependencies = [
 [[package]]
 name = "diluvium-sys"
 version = "0.1.0"
-source = "git+https://github.com/Aloecraft-org/diluvium?tag=v0.17.1#d8497b0dd917548c3e2bfa88ed539a6f527ba369"
+source = "git+https://github.com/Aloecraft-org/diluvium?tag=v0.17.2#97bb9f9d28974e3b4124a2a015e5b06da54a0c98"
 
 [[package]]
 name = "dimpl"

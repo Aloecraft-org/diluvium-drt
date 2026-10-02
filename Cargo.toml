@@ -78,7 +78,7 @@ clap = { version = "4", features = ["derive"] }
 # The language, from its own repo — diluvium/diluvium-sys stay there,
 # versioned with the header (SPEC.md §2). The -sys build compiles the
 # amalgamated C core from the checkout, so a C toolchain is required.
-diluvium = { git = "https://github.com/Aloecraft-org/diluvium", tag = "v0.17.1" }
+diluvium = { git = "https://github.com/Aloecraft-org/diluvium", tag = "v0.17.2" }
 
 # The transport layer: one Transport trait over TCP/WebSocket/WebRTC/SSH,
 # schemes gated per platform as typed refusals (SPEC.md §9; `ssh` is

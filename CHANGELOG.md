@@ -102,6 +102,13 @@ is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
     every default-configured host. The `webrtc` block shows its scope
     by default again, as before; `drt p2p` sends `scope` empty and
     names services only; `default` is absent when hidden.
+  - **Half-close on the wire.** The Wisp profile gains `END` (0x05):
+    the sender will write no more and still reads, TCP's half-close.
+    A host says `half_close` in `hello`; a caller says it with a
+    `features` message on `control`; each side sends `END` only to a
+    peer that said so, and an older peer sees `CLOSE` as before. So
+    `printf x | drt p2p <peer>` gets its answer, with no grace wait,
+    and a closed `writable` in the browser library is a half-close.
   - **The control endpoint (SPEC.md §13a).** `drt ps [ssh://host:port]`
     reaches a running deployment over its ssh listener: the instance
     table, `--status`, `--caps <id>`, `--pause <id>` (hibernate a parked
@@ -126,7 +133,9 @@ is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
     stream with `input`, `resize` and `close`, the shape `drt p2p`'s
     named service `repl` has natively, so a launcher attaches a
     terminal to a root one way for both. `tests/p2p.rs` now runs on
-    Windows in CI, with the C core built by MSYS2's mingw-w64.
+    Windows in CI, with the C core built by MSYS2's mingw-w64, on
+    diluvium 0.17.2, whose build script hands that compiler a plain
+    path.
   - **For a launcher:** `hello` carries `caps`, the capability names a
     program or REPL behind the host may hold; `drt p2p --listen` inside
     a project writes its record to `.drt_root/live/p2p-<port>.record.json`;
