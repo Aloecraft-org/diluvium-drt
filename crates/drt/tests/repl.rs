@@ -128,7 +128,10 @@ fn unsafe_is_the_stdlib_seal_and_not_the_sandbox() {
         vec![r#""nil""#, r#""nil""#],
         "{out}"
     );
-    assert!(err.starts_with("drt repl — ^D to leave"), "{err}");
+    assert!(
+        err.starts_with("drt repl — :help lists the colon commands, ^D leaves"),
+        "{err}"
+    );
 
     // Unsealed: there, and the banner says so rather than looking the
     // same as a sealed one, which would be a trap.

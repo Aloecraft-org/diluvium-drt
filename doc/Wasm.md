@@ -203,7 +203,7 @@ fs/read note.txt:  ok hello from the workspace
 fs/read escape:    error '../../etc/passwd' resolves outside the granted scope; a program names files within what the host granted, and nothing beyond it
 sql/query:         denied 'sql/query' is outside this instance's grants
 $ printf 'x = 21\nprint(x * 2)\nprint(host.time() > 0)\n' | wasmtime run -W exceptions=y --dir . drt.wasm repl
-drt repl — ^D to leave
+drt repl — :help lists the colon commands, ^D leaves
 dv> dv> 42
 dv> true
 dv>
