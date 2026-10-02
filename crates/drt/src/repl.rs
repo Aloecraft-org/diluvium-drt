@@ -469,7 +469,7 @@ fn control_meta(repl: &Repl, trimmed: &str) -> bool {
         return true;
     }
     match handle.ask(ask.clone()) {
-        Ok(answer) => {
+        Ok((answer, _delivered)) => {
             let text = control::render(&ask, &answer);
             let _ = write!(stdio::stdout(), "{text}");
         }

@@ -57,7 +57,7 @@ use russh::keys::{Algorithm, HashAlg, PrivateKey};
 use russh::server::{Auth, ChannelOpenHandle, Config, Handler, Msg, Session};
 use russh::{Channel, ChannelId};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 /// How many chunks may queue from the client before the page is made to
 /// catch up. The transport below has the same number for the same reason.
@@ -224,6 +224,11 @@ pub struct Shell {
     /// The subsystem the client asked for instead of a shell (`drt`, the
     /// control endpoint of SPEC.md §13a); `None` for a shell.
     pub subsystem: Option<String>,
+    /// `true` once the client has closed the channel, or the connection
+    /// is gone (the sender dropped): what a one-request client does after
+    /// it has read its answer, so a server about to exit can know the
+    /// answer arrived.
+    pub closed: watch::Receiver<bool>,
     from_client: mpsc::Receiver<Vec<u8>>,
     handle: russh::server::Handle,
     channel: ChannelId,
@@ -328,6 +333,7 @@ where
         authorized,
         shells,
         to_page: None,
+        closed: None,
         signed_in: None,
         window: Window::new(),
     };
@@ -349,6 +355,8 @@ struct Handshake {
     shells: mpsc::Sender<Shell>,
     /// Set once a shell starts: where the client's keystrokes go.
     to_page: Option<mpsc::Sender<Vec<u8>>>,
+    /// Set once a shell starts: flipped when the client closes its channel.
+    closed: Option<watch::Sender<bool>>,
     /// Who signed in: set by the verified public-key step, and nothing
     /// else, so a shell is never handed out under a key that was only
     /// offered.
@@ -474,6 +482,19 @@ impl Handler for Handshake {
         Ok(())
     }
 
+    /// The client closed the channel: it has what it was going to read.
+    async fn channel_close(
+        &mut self,
+        _channel: ChannelId,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.to_page = None;
+        if let Some(closed) = &self.closed {
+            let _ = closed.send(true);
+        }
+        Ok(())
+    }
+
     /// No `exec_request`: the trait's default fails the request, and a
     /// page has no command to run outside the shell it serves. `drt
     /// exec`'s posture is the native runtime's, and it does not follow the
@@ -503,11 +524,13 @@ impl Handshake {
             return Ok(());
         };
         let (to_page, from_client) = mpsc::channel(DEPTH);
+        let (closed_tx, closed) = watch::channel(false);
         let shell = Shell {
             window: self.window.clone(),
             key,
             user,
             subsystem,
+            closed,
             from_client,
             handle: session.handle(),
             channel,
@@ -519,6 +542,7 @@ impl Handshake {
             return Ok(());
         }
         self.to_page = Some(to_page);
+        self.closed = Some(closed_tx);
         session.channel_success(channel)?;
         Ok(())
     }

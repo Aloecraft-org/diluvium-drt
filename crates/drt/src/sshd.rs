@@ -231,10 +231,15 @@ pub fn spawn(config: &RootConfig, listener: &Listener) -> Result<SocketAddr, Str
 /// the orders for a key holding the ceiling.
 fn control_session(shell: Shell, grants: Vec<Grant>) {
     use crate::control::{self, Ask};
+    let mut closed = shell.closed.clone();
     let (mut reader, writer) = shell.split();
     let may_order = control::may_order(&grants);
     tokio::spawn(async move {
         let mut buf = Vec::new();
+        // A `stop`'s answer, held until the client has it: the loop waits
+        // on this before it ends (`control::drain`), and the client closes
+        // its channel once it has read a whole frame.
+        let mut stopping: Option<control::Delivered> = None;
         'session: while let Some(bytes) = reader.read().await {
             buf.extend_from_slice(&bytes);
             loop {
@@ -254,10 +259,21 @@ fn control_session(shell: Shell, grants: Vec<Grant>) {
                     )),
                     Ok(ask) => match control::handle() {
                         None => control::err("no deployment is running in this process".into()),
-                        Some(h) => tokio::task::spawn_blocking(move || h.ask(ask))
-                            .await
-                            .unwrap_or_else(|e| Err(e.to_string()))
-                            .unwrap_or_else(control::err),
+                        Some(h) => {
+                            let is_stop = ask == Ask::Stop;
+                            match tokio::task::spawn_blocking(move || h.ask(ask))
+                                .await
+                                .unwrap_or_else(|e| Err(e.to_string()))
+                            {
+                                Ok((answer, delivered)) => {
+                                    if is_stop {
+                                        stopping = Some(delivered);
+                                    }
+                                    answer
+                                }
+                                Err(why) => control::err(why),
+                            }
+                        }
                     },
                 };
                 if writer.write(control::frame(&answer)).await.is_err() {
@@ -266,6 +282,17 @@ fn control_session(shell: Shell, grants: Vec<Grant>) {
             }
         }
         writer.close(0).await;
+        if let Some(delivered) = stopping {
+            let _ = tokio::time::timeout(control::STOP_GRACE, async {
+                while !*closed.borrow() {
+                    if closed.changed().await.is_err() {
+                        break;
+                    }
+                }
+            })
+            .await;
+            drop(delivered);
+        }
     });
 }
 

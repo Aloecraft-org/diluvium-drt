@@ -21,8 +21,8 @@
 //!   [`drain`], what the loop calls each pass; [`parse`], a line to an
 //!   [`Ask`]; [`render`], an answer as text; [`frame`] and [`unframe`],
 //!   the subsystem's wire; `drt ps`: [`PsArgs`], [`run`].
-//! - Configurable: [`REPLY_WAIT`], [`SUBSYSTEM`], [`ENDPOINT_FILE`],
-//!   [`MAX_FRAME`].
+//! - Configurable: [`REPLY_WAIT`], [`STOP_GRACE`], [`SUBSYSTEM`],
+//!   [`ENDPOINT_FILE`], [`MAX_FRAME`].
 //! - Fan-out: [`Ask`], one variant per verb §13a names; [`answer`], the
 //!   match on it.
 
@@ -36,6 +36,11 @@ use crate::start::Deployment;
 
 /// How long an asker waits for the loop's next pass.
 pub const REPLY_WAIT: Duration = Duration::from_secs(10);
+/// How long the loop, told to stop, waits for the asker to say the
+/// answer was delivered before it ends anyway. The process exiting is
+/// what would otherwise lose a `stopping` already handed to the runtime
+/// and not yet on the wire.
+pub const STOP_GRACE: Duration = Duration::from_secs(2);
 /// The SSH subsystem name a client requests.
 pub const SUBSYSTEM: &str = "drt";
 /// Under `.drt_root/live`: where `drt start` writes its endpoint, so a
@@ -121,11 +126,19 @@ pub fn parse(words: &[&str]) -> Result<Ask, String> {
     }
 }
 
-/// A question on its way to the loop, with where the answer goes.
+/// A question on its way to the loop, with where the answer goes, and
+/// the asker's [`Delivered`] end: the loop reads a `stop` as done only
+/// when it is dropped, or [`STOP_GRACE`] has passed.
 pub struct Request {
     pub ask: Ask,
     reply: mpsc::SyncSender<rmpv::Value>,
+    delivered: mpsc::Receiver<()>,
 }
+
+/// Held by the asker until its answer has reached whoever asked; dropped,
+/// it tells the loop so. Every answer comes with one, and only `stop`
+/// waits on it.
+pub struct Delivered(#[allow(dead_code)] mpsc::Sender<()>);
 
 /// The asker's end.
 #[derive(Clone)]
@@ -154,15 +167,22 @@ pub fn handle() -> Option<Control> {
 
 impl Control {
     /// Ask, and wait for the loop's next pass. Blocking: a tokio task
-    /// wraps it in `spawn_blocking`.
-    pub fn ask(&self, ask: Ask) -> Result<rmpv::Value, String> {
+    /// wraps it in `spawn_blocking`. The [`Delivered`] is dropped once the
+    /// answer has been handed on, which a `stop` waits for.
+    pub fn ask(&self, ask: Ask) -> Result<(rmpv::Value, Delivered), String> {
         let (reply, answer) = mpsc::sync_channel(1);
+        let (done, delivered) = mpsc::channel();
         self.tx
-            .send(Request { ask, reply })
+            .send(Request {
+                ask,
+                reply,
+                delivered,
+            })
             .map_err(|_| "the deployment has ended".to_string())?;
-        answer
+        let answer = answer
             .recv_timeout(REPLY_WAIT)
-            .map_err(|_| "the deployment did not answer in time".to_string())
+            .map_err(|_| "the deployment did not answer in time".to_string())?;
+        Ok((answer, Delivered(done)))
     }
 }
 
@@ -171,10 +191,14 @@ impl Control {
 pub fn drain(inbox: &Inbox, sw: &mut Deployment, root: InstanceId) -> bool {
     let mut stop = false;
     while let Ok(req) = inbox.0.try_recv() {
+        let _ = req.reply.send(answer(sw, root, &req.ask));
         if req.ask == Ask::Stop {
             stop = true;
+            // The asker drops its `Delivered` once `stopping` has reached
+            // the client; the loop ending first would take the answer
+            // with it. Bounded: an asker that never says is not a veto.
+            let _ = req.delivered.recv_timeout(STOP_GRACE);
         }
-        let _ = req.reply.send(answer(sw, root, &req.ask));
     }
     stop
 }
