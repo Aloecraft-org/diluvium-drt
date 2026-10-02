@@ -62,6 +62,81 @@ local function split(target)
   return path, params
 end
 
+-- depth: addresses, for DRT-Accept
+
+-- An IPv4 or IPv6 address as a list of 8-bit numbers, or nil.
+local function address_bytes(text)
+  local a, b, c, d = text:match('^(%d+)%.(%d+)%.(%d+)%.(%d+)$')
+  if a then
+    local out = {}
+    for _, v in ipairs({a, b, c, d}) do
+      v = tonumber(v); if v > 255 then return nil end
+      out[#out + 1] = v
+    end
+    return out
+  end
+  if not text:find(':') then return nil end
+  -- IPv6: expand `::`, each group two bytes.
+  local head, tail = text:match('^(.-)::(.*)$')
+  local groups = {}
+  local function take(part, into)
+    if part == '' then return true end
+    for g in part:gmatch('[^:]+') do
+      if not g:match('^%x%x?%x?%x?$') then return false end
+      into[#into + 1] = tonumber(g, 16)
+    end
+    return true
+  end
+  if head then
+    local h, t = {}, {}
+    if not take(head, h) or not take(tail, t) then return nil end
+    if #h + #t > 7 then return nil end
+    for _, g in ipairs(h) do groups[#groups + 1] = g end
+    for _ = 1, 8 - #h - #t do groups[#groups + 1] = 0 end
+    for _, g in ipairs(t) do groups[#groups + 1] = g end
+  else
+    if not take(text, groups) or #groups ~= 8 then return nil end
+  end
+  local out = {}
+  for _, g in ipairs(groups) do out[#out + 1] = g // 256; out[#out + 1] = g % 256 end
+  return out
+end
+
+-- The address half of a listener's `peer` (`ip:port`, `[ip]:port`).
+local function address_of(peer)
+  if not peer then return nil end
+  local v6 = peer:match('^%[(.-)%]:%d+$')
+  if v6 then return v6 end
+  local v4 = peer:match('^([%d%.]+):%d+$')
+  return v4 or peer
+end
+
+-- Whether `ip` is inside one of the ranges in a DRT-Accept value,
+-- `cidr, cidr`; a bare address is a /32 or /128. Unreadable ranges admit
+-- nothing, so a typo refuses rather than opens.
+local function accepted(ranges, ip)
+  local addr = address_bytes(ip)
+  if not addr then return false end
+  for range in ranges:gmatch('[^,%s]+') do
+    local net, bits = range:match('^(.-)/(%d+)$')
+    if not net then net, bits = range, #addr * 8 end
+    local base = address_bytes(net)
+    bits = tonumber(bits)
+    if base and #base == #addr and bits <= #addr * 8 then
+      local ok, left = true, bits
+      for i = 1, #addr do
+        if left <= 0 then break end
+        local keep = left >= 8 and 8 or left
+        local shift = 2 ^ (8 - keep)
+        if addr[i] // shift ~= base[i] // shift then ok = false; break end
+        left = left - 8
+      end
+      if ok then return true end
+    end
+  end
+  return false
+end
+
 local function token_of(m, params)
   local bearer = m.headers and m.headers.authorization
     and m.headers.authorization:match('^Bearer%s+(%S+)$')
@@ -137,6 +212,12 @@ local function call(m, name, token, now)
   if not r or not present(r, now) then return fail(m.conn, 503, 'no answerer is present') end
   if r.caller and token ~= r.caller then
     return fail(m.conn, token and 403 or 401, token and 'this token may not call' or 'this name takes a caller token')
+  end
+  -- The answerer's DRT-Accept (§6.1): a caller outside it is refused here,
+  -- by the address the listener saw, as the parked side refuses its
+  -- packets; a server that cannot see addresses leaves that to the peer.
+  if r.accept and m.peer and not accepted(r.accept, address_of(m.peer)) then
+    return fail(m.conn, 403, 'this address may not call')
   end
   if not checked(m) then return end
   if waiting(r) >= WAITING_CAP then return fail(m.conn, 429, 'too many calls waiting', {['retry-after'] = '5'}) end

@@ -171,8 +171,10 @@ Three optional parts a server may offer; `drt p2p --match` does, and
   the name's caller token. Without one, any caller may call the name.
 - **`DRT-Accept: <cidr>, …`**, sent likewise, is the range of caller
   addresses the answerer admits; a server that knows the caller's address
-  answers 403 outside it, and the answerer checks the connection's own
-  address as well.
+  answers 403 outside it (`drt p2p --match` does, by the address its
+  listener saw), and the answerer checks the connection's own address as
+  well. A bare address is a `/32` or `/128`; an unreadable range admits
+  nothing.
 
 ## 7. What a server sees
 

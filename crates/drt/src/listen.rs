@@ -319,6 +319,7 @@ fn parse_request(
     buf: &[u8],
     rt: &ListenerRt,
     mint: &mut dyn FnMut() -> u32,
+    peer: Option<SocketAddr>,
 ) -> Result<Parsed, (u16, &'static str)> {
     // Parsed from scratch each pass — httparse borrows from the buffer,
     // so headers cannot outlive the read that may reallocate it.
@@ -419,6 +420,12 @@ fn parse_request(
         ("path".into(), rmpv::Value::from(path)),
         ("body".into(), rmpv::Value::Binary(body.to_vec())),
     ];
+    // Who connected, as `ip:port`, when the socket can say: a program
+    // admitting by address (a signalling server's `DRT-Accept`) or logging
+    // who called reads it here. Absent behind a proxy's own connection.
+    if let Some(peer) = peer {
+        map.push(("peer".into(), rmpv::Value::from(peer.to_string())));
+    }
     if !rt.hdr_allow.is_empty() {
         map.push((
             "headers".into(),
@@ -1040,8 +1047,9 @@ pub mod threaded {
         let mut buf = Vec::with_capacity(2048);
         let mut chunk = [0u8; 2048];
         let mut mint = || tokens.fetch_add(1, Ordering::Relaxed);
+        let peer = stream.peer_addr().ok();
         loop {
-            let headers_done = match parse_request(&buf, rt, &mut mint)? {
+            let headers_done = match parse_request(&buf, rt, &mut mint, peer)? {
                 Parsed::Complete { token, message } => return Ok((token, message)),
                 Parsed::Incomplete { headers_done } => headers_done,
             };
@@ -1226,7 +1234,8 @@ pub mod polled {
                                 Err(e) if e.kind() == ErrorKind::WouldBlock => break,
                                 Err(_) => return false,
                             }
-                            match parse_request(buf, rt, &mut mint) {
+                            let peer = conn.stream.peer_addr().ok();
+                            match parse_request(buf, rt, &mut mint, peer) {
                                 Ok(Parsed::Complete { token, message }) => {
                                     ready.push_back(Ingress {
                                         listener: conn.listener,

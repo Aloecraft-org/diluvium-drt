@@ -3,9 +3,8 @@
 **Status:** built, 2026-10-01, with the decisions of the first review
 written in (§11): `crates/drt/src/p2p/` is the verb, `stdlib:p2p-match`
 the server, and `crates/drt/tests/p2p.rs` drives every role on loopback.
-Not built: the relay's "answer for me" service (§4.3), TLS flags for
-`--match`, and the signalling server enforcing `DRT-Accept` itself (the
-parked side enforces it). It replaces `drt tunnel` (§9), and folds the WebRTC caller (`drt tunnel rtc:`), the
+Not built: the relay's "answer for me" service (§4.3) and TLS flags for
+`--match`. It replaces `drt tunnel` (§9), and folds the WebRTC caller (`drt tunnel rtc:`), the
 relay's park and claim, and a reference signalling server into one verb.
 It builds on `doc/BrowserAccess.md` (the record, Wisp, direct mode §3.4,
 named services §10), `doc/DRT-Signalling.md`, and
@@ -440,8 +439,11 @@ unaffected.
 - `hello` gains `forwarding` (§4.4), and `caps`: the capability names a
   program or REPL behind the host may hold, from the config's ceiling,
   grants only. A host that forwards to a TCP target or another peer sends
-  none. It is what a launcher shows as a root's permissions; it is not
-  what a session was granted, which the session itself decides (§5.2).
+  none. It is what a launcher shows as a root's permissions before a
+  session; what a session was granted, which the session itself decides
+  (§5.2), arrives as `{"t":"granted","stream":N,"caps":[…]}` on `control`
+  once the service knows. The browser library settles `stream.granted`
+  with it.
 - `hello` shows the scope's entries and `default` only when the serving
   side's config asks it to. `drt p2p` does not by default: it names the
   services and nothing about the addresses and ports behind them, which

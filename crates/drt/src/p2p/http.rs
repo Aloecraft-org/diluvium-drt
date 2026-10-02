@@ -64,12 +64,22 @@ impl Response {
         String::from_utf8_lossy(&self.body).into_owned()
     }
 
-    /// What a status outside 2xx means, in the profile's words.
+    /// What a status outside 2xx means: the server's own words when its
+    /// body is the profile's `{"error": …}`, since one status covers
+    /// several refusals (a 403 is a wrong token or an address outside
+    /// DRT-Accept), else the profile's.
     pub fn refusal(&self, url: &str) -> Option<String> {
         if (200..300).contains(&self.status) {
             return None;
         }
         let shown = crate::tunnel::shown(url);
+        let said = serde_json::from_slice::<serde_json::Value>(&self.body)
+            .ok()
+            .and_then(|v| v["error"].as_str().map(str::to_string))
+            .filter(|e| !e.is_empty() && e.len() <= 200 && !e.contains('\n'));
+        if let Some(said) = said {
+            return Some(format!("{shown} answered {}: {said}", self.status));
+        }
         Some(match REFUSALS.iter().find(|(s, _)| *s == self.status) {
             Some((_, meaning)) => format!("{shown} answered {}: {meaning}", self.status),
             None => format!("{shown} answered {}", self.status),
