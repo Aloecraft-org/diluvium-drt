@@ -21,6 +21,12 @@ Usage:
   script/changelog.py render md             whole changelog, as Markdown
   script/changelog.py render md --tag TAG   one release's section only
                                             (what a release body wants)
+  script/changelog.py render md --newest    the newest entry, released or
+                                            not (what a dev build is of)
+  ... --part overview|sections              the head of an entry (heading,
+                                            facts, summary, install), or
+                                            the rest; a release page shows
+                                            the overview before it folds
   script/changelog.py render json           machine-readable form
   script/changelog.py mirror-tags           tags the mirror should carry,
                                             newest first
@@ -345,7 +351,11 @@ def bullets(items):
     return out
 
 
-def render_release(r, pinning=False):
+def render_release(r, pinning=False, part="all"):
+    """One entry as Markdown. `part` is `overview` for what a reader sees
+    before a release page folds the body (the heading, the facts, the
+    summary and the install command), `sections` for everything after,
+    `all` for both."""
     out = [heading(r), ""]
     meta = []
     if r.get("tag"):
@@ -372,6 +382,10 @@ def render_release(r, pinning=False):
     # release's notes to decide whether to take it wants the command near
     # the summary, not past every section.
     out += install_block(r, pinning)
+    if part == "overview":
+        return "\n".join(out).rstrip("\n") + "\n"
+    if part == "sections":
+        out = []
     for key, title in (("connectors", "Connectors"),
                        ("features", "Core features")):
         if not r.get(key):
@@ -389,11 +403,14 @@ def render_release(r, pinning=False):
     return "\n".join(out).rstrip("\n") + "\n"
 
 
-def render_md(doc, tag=None):
+def render_md(doc, tag=None, newest=False, part="all"):
+    if newest:
+        r = doc["releases"][0]
+        return render_release(r, self_pinning(doc, r.get("tag")), part)
     if tag:
         for r in doc["releases"]:
             if r["tag"] == tag:
-                return render_release(r, self_pinning(doc, tag))
+                return render_release(r, self_pinning(doc, tag), part)
         sys.exit("changelog.py: no release with tag %r" % tag)
     head = (
         "# Changelog\n\n"
@@ -538,6 +555,9 @@ def main():
                                         "consistency", "release-check"])
     ap.add_argument("format", nargs="?", choices=["md", "json"])
     ap.add_argument("--tag")
+    ap.add_argument("--newest", action="store_true")
+    ap.add_argument("--part", choices=["all", "overview", "sections"],
+                    default="all")
     ap.add_argument("--publish", action="store_true")
     ap.add_argument("-h", "--help", action="store_true")
     args = ap.parse_args()
@@ -561,7 +581,7 @@ def main():
         if args.format == "json":
             sys.stdout.write(render_json(doc))
         else:
-            sys.stdout.write(render_md(doc, args.tag))
+            sys.stdout.write(render_md(doc, args.tag, args.newest, args.part))
     elif args.command == "mirror-tags":
         for r in doc["releases"]:
             if r.get("mirror"):

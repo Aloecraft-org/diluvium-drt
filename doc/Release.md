@@ -572,7 +572,13 @@ first second of life.
   web build (`drt_web.tar.gz`), the browser access client
   (`drt_browser_access.js` and `.d.ts`), the SSH page (`ssh.html`), no
   changelog entry, always a prerelease, and the ten newest dev releases
-  kept. `script/dev-tag.sh` prints the next free tag; the number is
+  kept. Its body is the newest entry's overview (the tree it was cut
+  from) and the commits since the dev build before it, with the whole
+  list and the whole entry in a `NOTES.md` asset; the mirror does not
+  carry dev builds, so that asset is where the full notes are. A
+  release's body is its entry with the overview first and a link to the
+  full notes on the mirror and in `NOTES.md` before the sections, since
+  a release page folds a long body. `script/dev-tag.sh` prints the next free tag; the number is
   allocated from the tags that exist and never reused, so `dev.5` names
   one build forever.
 - **Every merge to `main`**, `.github/workflows/dev-build.yml` → a dev

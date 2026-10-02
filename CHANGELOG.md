@@ -16,15 +16,19 @@ carries in the release. See `doc/Release.md`.
 
 `v0.8.0` &middot; dv ABI 2 &middot; diluvium `97bb9f9d2897` (v0.17.2)
 
-**A browser reaches a DRT host directly, and the core is diluvium
-0.17.1.** The `webrtc` block lets a stock browser open a data
-channel to this process and carry TCP streams to the targets the
-block names, with the WebRTC stack in the binary and the signaling
-left to the program, which now holds a socket to the Discofetch API
-through the new `ws` connector. Underneath it the embedded core moves from
-0.15.1 to 0.17.1: dv ABI 2, the numeric tier on in `full` and `web`,
-and `buildinfo` reading the core's features off the core. The plan
-is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
+**A browser reaches a DRT host directly, two machines reach each
+other with nothing in between, and the core is diluvium 0.17.2.**
+The `webrtc` block lets a stock browser open a data channel to this
+process and carry TCP streams to the targets the block names, with
+the WebRTC stack in the binary and the signaling left to the
+program. `drt p2p` makes the same session between two `drt`s, or a
+`drt` and a page, through a signalling server that passes one
+record each way and never sees the session; `drt ssh` and `drt ps`
+ride it. Underneath it the embedded core moves from 0.15.1 to
+0.17.2: dv ABI 2, the numeric tier on in `full` and `web`, and
+`buildinfo` reading the core's features off the core. The plan is
+`doc/Plan-0.8.0.md`; the wires are `doc/BrowserAccess.md`,
+`doc/P2P.md` and `doc/DRT-Signalling.md`.
 
 ### Connectors
 
