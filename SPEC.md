@@ -298,7 +298,7 @@ under one directory — and never a daemon.)
 | `stop` | graceful: stop accepting, hibernate everything parked into the snapshot store, exit. This *is* the durable-agents story, so it earns v1. |
 | `ps` / `caps <id>` / `status` | introspection against a running deployment (§6). |
 | `repl` / `attach` | the REPL instance, local or wired into a live deployment (§9). |
-| `pause` / `resume` | **named, not built in v1.** See the caveat below. |
+| `pause` / `resume` | built 2026-10-02 as `drt ps --pause <id>` / `--resume <id>`, with exactly the meaning the caveat below allows. |
 
 **The `pause` caveat, because it is a doctrine trap.** `pause <instance>`
 must not mean "suspend that agent": §8 is emphatic that hibernation is

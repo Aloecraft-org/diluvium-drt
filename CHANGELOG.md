@@ -23,8 +23,9 @@ process and carry TCP streams to the targets the block names, with
 the WebRTC stack in the binary and the signaling left to the
 program. `drt p2p` makes the same session between two `drt`s, or a
 `drt` and a page, through a signalling server that passes one
-record each way and never sees the session; `drt ssh` and `drt ps`
-ride it. Underneath it the embedded core moves from 0.15.1 to
+record each way and never sees the session; `drt ssh` rides it, and
+`drt ps` reaches a running deployment over its new `ssh` listener.
+Underneath it the embedded core moves from 0.15.1 to
 0.17.2: dv ABI 2, the numeric tier on in `full` and `web`, and
 `buildinfo` reading the core's features off the core. The plan is
 `doc/Plan-0.8.0.md`; the wires are `doc/BrowserAccess.md`,
@@ -146,7 +147,9 @@ ride it. Underneath it the embedded core moves from 0.15.1 to
     `.drt_root/live/control` is found unasked. The same questions are
     `:ps`, `:status`, `:caps`, `:pause`, `:resume` and `:stop` in a REPL
     the deployment serves. Any admitted key may ask; the orders need a
-    key holding `host:*`. The wire is the `drt` SSH subsystem carrying
+    key holding `host:*`. It signs in as `drt ssh` does (`-l`, `-i`,
+    `--hostkey`, `--known-hosts`, `--strict`); `--json` is the answer
+    for a program. The wire is the `drt` SSH subsystem carrying
     framed msgpack.
   - **`granted` on `control`.** Once a service knows what a stream
     holds (for the REPL behind a key, after sign-in) the host sends
@@ -250,17 +253,13 @@ ride it. Underneath it the embedded core moves from 0.15.1 to
   - One REPL per session, on its own thread. `print` reaches the
     session that typed it, and `:ssh` is refused there, since it
     would take the server's terminal.
-  - Not yet: the subsystem channel for programs, and attaching to a
-    running deployment's instances.
+  - Not yet: a REPL attached to a running instance's state. The
+    `drt` subsystem is the control endpoint's, below.
   The server is the page's, moved to its own crate, `drt-sshd`, so
   the page and native DRT share one SSH posture. Tested with stock
   OpenSSH `ssh` and with `drt ssh`: a session, `print`, state between
   lines, a principal's grants, an unknown key, and an overreaching
   principal.
-- **Ctrl+Backspace deletes a word in `drt repl` on a native terminal.**
-  Terminals send BS for it, and crossterm reported BS as Ctrl+H, which
-  nothing binds, so the word stayed while Ctrl+arrows moved by words.
-  The REPL now reads it as the page always has.
 - **`drt ssh`, and `:ssh` in the REPL**: an interactive SSH client on
   this terminal. The REPL hands its terminal to the session and gets
   it back, with the instance and its state as they were.
@@ -270,10 +269,13 @@ ride it. Underneath it the embedded core moves from 0.15.1 to
     in with the agent, `~/.ssh`'s keys (asking for a passphrase),
     then a password. The remote shell's exit status is the command's,
     a resize reaches the remote end, and `~.` disconnects.
-  - `--via` reaches the host the ways `drt tunnel` does: a relay claim
-    (`wss://…/s/<label>?k=…`), or `rtc:` and a record, a file holding
-    one, or a signalling URL. `--hostkey` pins a key in place of
-    known_hosts.
+  - `--via` reaches the host the ways `drt p2p` does: a relay claim
+    (`wss://…/s/<label>?k=…`), a record, a file holding one, or a
+    signalling URL. `--hostkey` pins a key in place of known_hosts;
+    `-i FILE` (repeatable) replaces `~/.ssh`'s keys, `--known-hosts`
+    the file, `--strict` refuses a host not already there, `--to`
+    names the service or address at the far end, and `--extra-root`
+    trusts a PEM for the signalling side.
   - `:ssh <the same arguments>` in the native REPL is the same
     session.
   - `:ssh` alone is the config's new `host:ssh/shell`: the ssh
@@ -529,18 +531,62 @@ ride it. Underneath it the embedded core moves from 0.15.1 to
 
 ### Changed
 
-- **diluvium 0.15.1 -> 0.17.1, dv ABI 1 -> 2.** The pin names the
-  tag, `v0.17.1`, rather than following diluvium's default branch,
-  where ABI 3 lands when 0.18.0 ships.
+- **diluvium 0.15.1 -> 0.17.2, dv ABI 1 -> 2.** The pin names the
+  tag, `v0.17.2`, rather than following diluvium's default branch,
+  where ABI 3 lands when 0.18.0 ships. 0.17.2 is 0.17.1's runtime
+  with a build-script fix for `diluvium-sys` under a native Windows
+  GCC, which drt's Windows CI row found.
 - **`buildinfo`'s `features` is read off the core** (`dv_features()`)
   instead of stated per profile, and says what the core says:
   `regex,json,msgpack,snapshot`, plus `numeric` where it is on, in
   the core's own order. A custom build reports its core's list rather
   than an empty one. `diluvium_version` is still stated, because
-  0.17.1 has no `dv_version()`.
+  0.17.2 has no `dv_version()`.
+- **A serving peer keeps an identity file.** A listening or parked
+  `drt p2p` writes `~/.drt/p2p/identity.json` (`p2p.identity_file`
+  to put it elsewhere) and a `webrtc` block writes its
+  `identity_file`, relative to the config file: the ICE credentials
+  and DTLS certificate, created `0600` when missing, so the record
+  and fingerprint survive a restart. A file that exists and does not
+  parse is refused, never replaced.
+- **What a release carries, and what its page says.** Beside the
+  binaries: `ssh.html`, `drt_browser_access.js` and `.d.ts`,
+  `drt-browser-<version>.tgz` (the npm form of `drt_web.tar.gz`,
+  which now also holds the SSH client modules and the config schema)
+  and `NOTES.md`, the whole entry as a file the mirror can vouch for.
+  A release body opens with the entry's overview and links the full
+  notes; a dev build's body is the newest entry's overview and the
+  commits since the dev build before it. Dev builds carry the web
+  build, the client and the page; they still skip wasip2 and Windows.
+- **`connectors/ssh` is built from the russh fork** (0.63.2 plus one
+  wasm-only commit, `Cargo.toml`'s `[patch.crates-io]`), so one
+  russh serves the native connector, `drt ssh` and the page. Nothing
+  changes off wasm.
+- `drt tunnel --park`'s stderr line is `parked at <base>` and no
+  longer names what it delivers to; `doc/Relay.md` follows.
+
+### Deprecated
+
+- **`drt tunnel` is `drt p2p` now, and goes away in a release.** A
+  call (`drt tunnel wss://…`, `--local`) or a park (`--park … --to`)
+  prints the `drt p2p` form of what it was given on stderr and runs
+  as that. `drt tunnel --listen`, the WebSocket to TCP bridge, is not
+  a peer: it still runs, warns, and moves to the `relay` block.
+- **The `tunnel` config block is read as `p2p` for one release**,
+  each key warned about with its replacement: `claim` is `relay` (or
+  `peer`, without the `rtc:`), `bind` is `ports` (the port only, on
+  127.0.0.1), `to` is `forward`, `park` stays `park`. A
+  `tunnel.listen` key is refused by `drt p2p`. Examples 11, 14 and 19
+  are spelled with the verb and the block.
+- **`--header 'Name: value'` on the tunnel verbs is `--H name=value`
+  on `drt p2p`**, with `auth=<token>` for a bearer token.
 
 ### Fixed
 
+- **Ctrl+Backspace deletes a word in `drt repl` on a native terminal.**
+  Terminals send BS for it, and crossterm reported BS as Ctrl+H, which
+  nothing binds, so the word stayed while Ctrl+arrows moved by words.
+  The REPL now reads it as the page always has.
 - **Browser access readers skip the candidate lines §2.1 says they
   skip** (issue #38). `Record::decode` and the client library's
   `parseRecord` kept every `candidate:` line, so a TCP or relay line
@@ -556,7 +602,7 @@ ride it. Underneath it the embedded core moves from 0.15.1 to
   stated zero is a real bound; in `dv.h` 0 means no limit, so passing
   it on would turn the tightest bound into none. It is withheld
   instead, which leaves the core at its default -- also no limit --
-  and 0.17.1 enforces neither bound yet, so nothing behaves
+  and 0.17.2 enforces neither bound yet, so nothing behaves
   differently today. Needs a "no limit" sentinel upstream.
 - **The `webrtc` block has only been proven on one machine.**
   Chromium connects to it, several sessions at once, through
@@ -585,12 +631,66 @@ ride it. Underneath it the embedded core moves from 0.15.1 to
 deployment that holds them.** A snapshot taken under dv ABI 1 does
 not restore under ABI 2; that is the ABI bump doing its job.
 
-Two things a program can see change, both from diluvium 0.16.0:
+**Two things a program can see change**, both from diluvium 0.16.0:
 `tostring` of a table, function or coroutine prints `table: #N`, an
 identity, where it printed an address; and `pairs` over keys that
 are tables, functions, userdata or coroutines visits them in
 creation order. A program that scraped the hex out of `tostring` was
 scraping an address; `string.format("%p")` still gives one.
+
+**`drt tunnel` is `drt p2p`.** Every old command still runs this
+release and prints its new spelling on stderr; move units and
+`~/.ssh/config` lines before the next one.
+
+| 0.7.0 | 0.8.0 |
+|---|---|
+| `drt tunnel wss://…/s/<label>?k=…` | `drt p2p --relay wss://…/s/<label>?k=…` |
+| `drt tunnel wss://… --local 127.0.0.1:2222` | `drt p2p --relay wss://… -p 2222` (127.0.0.1 only) |
+| `drt tunnel --park wss://…/park/x?k=… --to 127.0.0.1:22` | `drt p2p --park wss://…/park/x?k=… --forward ssh://127.0.0.1:22` |
+| `--header 'Authorization: Bearer T'` | `--H auth=T` |
+| `drt tunnel --listen 0.0.0.0:8443 --to …` | unchanged, warns; the `relay` block's in a release |
+
+In a config, `tunnel` becomes `p2p`: `claim` is `relay`, `bind` is
+`ports`, `to` is `forward`, `park` is unchanged; a `tunnel` block is
+still read with one warning per key, and `tunnel.listen` is refused
+by `drt p2p`.
+
+**`drt buildinfo` says more.** `features` is
+`regex,json,msgpack,snapshot`, plus `numeric` in `full` and `web`,
+where it was `regex`; `verbs` gains `p2p` and `ssh`; `connectors`
+gains `ws` in `full`. A package whose `requires.features` named
+`regex` is still admitted. Anything that compares `buildinfo` output
+needs the new lines.
+
+**`drt ps` works now**, against a deployment with an `ssh` listener:
+add `{"scheme": "ssh", "address": "127.0.0.1:2222"}` to `listeners`,
+set `identity.host_key_path`, and put the asking key in `principals`
+or `~/.ssh/authorized_keys`; `--pause`, `--resume` and `--stop` need
+a key holding `host:*`.
+
+**`host:ssh/shell` is a new capability**, granted by name; a grant
+of `host:ssh/exec` does not include it.
+
+**A serving `drt p2p` or a `webrtc` block writes an identity file**
+(`~/.drt/p2p/identity.json`, or `webrtc.identity_file`, relative to
+the config). Keep it: a new one is a new record and a new
+fingerprint, and every peer or page holding the old record stops
+reaching the host.
+
+**Embedding the web build:** `drt_web_bg.wasm` grows from 3.4 MB to
+5.5 MB for the in-page SSH server, and `drt_web.tar.gz` carries more
+files; the same set is the npm package `drt-browser`. `drt-term.js`'s
+`attach` is unchanged unless it is passed `ssh`.
+
+**Scripts that list release assets:** `NOTES.md`, `ssh.html`,
+`drt_browser_access.js` and `.d.ts`, and `drt-browser-<version>.tgz`
+are new, and dev builds now carry the web pieces too.
+
+**From a `v0.8.0-dev.*` build:** `hello.scope` is an array on every
+`hello` again (dev.17 omitted it), `drt tunnel rtc:<peer> --to X` is
+`drt p2p <peer> -p :X`, and the browser library's `answer` and
+`listen` sessions resolve only once the caller's `hello` and credit
+are in.
 
 
 ## [0.7.0] - 2026-09-21

@@ -258,7 +258,7 @@ reader_source!(wg_source, "wg_in");
 /// Filtered through [`lookup`], so the list cannot advertise what does not
 /// resolve.
 pub fn names() -> Vec<&'static str> {
-    [PREFLIGHT, NETCHECK, RELAY, STUN, TURN, WG, BROWSER_ACCESS]
+    [PREFLIGHT, NETCHECK, RELAY, STUN, TURN, WG, BROWSER_ACCESS, P2P_MATCH]
         .into_iter()
         .filter(|n| lookup(n).is_some())
         .collect()

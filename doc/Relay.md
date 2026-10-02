@@ -187,7 +187,7 @@ proxy and access log between the two ends records. The header is the
 credential when it is present: a `?k=` beside it must agree, two that
 disagree are refused as one bad key is, and a scheme the relay does not
 read is a bad key rather than an absent one. `drt p2p --H
-'Authorization: Bearer …'` sends it, and `headers` in the `tunnel` block
+'Authorization: Bearer …'` sends it, and `headers` in the `p2p` block
 is the same thing from a file.
 
 - **403** at the handshake: bad key, or unknown label — deliberately
