@@ -88,7 +88,11 @@ export interface Pending {
 
 export interface Session {
   /** The peer's hello; null when the peer serves nothing (§10.2). */
-  readonly hello: Hello;
+  /**
+   * The peer's hello. Null only on an answered session whose caller serves
+   * nothing (§10.4): it sent neither hello nor credit, and `connect` throws.
+   */
+  readonly hello: Hello | null;
   readonly pc: RTCPeerConnection;
   /** 'caller' opens odd stream ids, 'answerer' even ones (§10.2). */
   readonly role: 'caller' | 'answerer';
@@ -178,9 +182,40 @@ export interface IncomingCall {
   /** Seconds until the server stops holding it. */
   expires_in: number;
 }
+/** A `pair` entry in the poll (doc/DRT-Signalling.md §6.2): whom to call. */
+export interface PairEntry {
+  id: string;
+  /** The name to call. */
+  name: string;
+  /** The server to call it at; absent, the one this side is parked at. */
+  server?: string;
+  /** The caller token that name requires; absent when it requires none. */
+  token?: string;
+  /** Seconds until the server stops expecting the call. */
+  expires_in: number;
+}
+export type PairOutcome = 'connected' | 'refused' | 'unreachable' | 'declined';
+/** What became of a `pair` entry, as reported to the server. */
+export interface PairReport {
+  entry: PairEntry;
+  outcome: PairOutcome;
+  why: string;
+  /** The session, for `connected`; this side serves on it. */
+  session: Session | null;
+}
 export interface ListenOptions extends AnswerOptions {
   /** The name's answerer token: a bearer header on requests, `?k=` on the event stream. */
   token?: string;
+  /**
+   * Consent to be paired (§6.2): `*` for any name at the server this side
+   * is parked at, or `drt://<server>/v1/<glob>`; see `parsePairRule`.
+   * Absent, every `pair` entry is declined and the server told so.
+   */
+  pair?: string;
+  /** How long a call this side was told to make may take to connect; PAIR_CONNECT_MS. */
+  pairConnectMs?: number;
+  /** Every `pair` entry's outcome, once reported. */
+  onPair?(report: PairReport): void;
   /** Poll interval while no call notification stream is held; LISTEN_POLL_MS. */
   pollMs?: number;
   /** false polls only, never opening the call notification stream. */
@@ -189,8 +224,8 @@ export interface ListenOptions extends AnswerOptions {
   accept?(call: IncomingCall): boolean | Promise<boolean>;
   /** A call answered and connected. */
   onSession?(session: Session, call: IncomingCall): void;
-  /** A failure that did not stop listening; `call` is null for a poll's own. */
-  onError?(error: unknown, call: IncomingCall | null): void;
+  /** A failure that did not stop listening; `call` is null for a poll's own, a PairEntry for a pair follow's. */
+  onError?(error: unknown, call: IncomingCall | PairEntry | null): void;
   fetch?: typeof fetch;
   EventSource?: typeof EventSource;
 }
@@ -210,6 +245,10 @@ export interface Listening {
  * `base` is `…/v1/<name>` (doc/DRT-Signalling.md).
  */
 export function listen(base: string, options?: ListenOptions): Listening;
+/** The consent rule `listen`'s `pair` option is read as; throws a TypeError on anything else. */
+export function parsePairRule(text: string): { server: string | null; glob: string };
+/** Whether `rule` lets a side parked at `here` call `name` at `server`. */
+export function pairAllows(rule: { server: string | null; glob: string }, here: string, server: string, name: string): boolean;
 /** The caller's record as the offer a page that answers applies (§10.4). */
 export function offerSdp(callerRecord: BrowserAccessRecord | string | object, mid?: string): string;
 /** Whether `name` can name a service (§10.3). */
@@ -282,8 +321,9 @@ export const PWD_LEN: [number, number];
 export const DIRECT_UFRAG_LEN: 32;
 export const SERVE_BUFFER: number;
 export const LISTEN_POLL_MS: number;
+export const PAIR_CONNECT_MS: number;
 export const SERVE_MAX_STREAMS: number;
 export const MESSAGE_MAX: 16384;
 export const DATA_MAX: 16379;
-export const WISP: { readonly CONNECT: 1; readonly DATA: 2; readonly CONTINUE: 3; readonly CLOSE: 4 };
+export const WISP: { readonly CONNECT: 1; readonly DATA: 2; readonly CONTINUE: 3; readonly CLOSE: 4; readonly END: 5 };
 export const CLOSE_REASON: Readonly<Record<number, string>>;

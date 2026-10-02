@@ -41,8 +41,10 @@ pub const BACKOFF_MAX: Duration = Duration::from_secs(60);
 /// The admission range travels on the poll (`doc/P2P.md` §11).
 pub const ACCEPT_HEADER: &str = "DRT-Accept";
 /// How long a paired call may take to connect before it is reported as
-/// unreachable.
-pub const PAIR_CONNECT: Duration = Duration::from_secs(30);
+/// unreachable. Inside the 25 seconds `drt p2p --match` holds a `pair`
+/// entry for, so the report is taken rather than answered 404 as one
+/// after `expires_in` is (`doc/DRT-Signalling.md` §6.2).
+pub const PAIR_CONNECT: Duration = Duration::from_secs(20);
 
 /// Whom the server may tell this side to call (`--pair`).
 #[derive(Debug, Clone, PartialEq, Eq)]

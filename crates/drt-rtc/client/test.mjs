@@ -561,32 +561,112 @@ function answeringPC() {
   };
 }
 
-/** One name's calls, served the way §2 says, and every request it saw. */
-function fakeServer(calls) {
+/**
+ * A peer connection for a page that both answers and, told to, calls: as
+ * `answeringPC`, plus the offer side of `fakeSession`'s, whose far end
+ * serves (hello naming `back`, and credit) the moment the answer lands.
+ */
+function pairingPC(channelsOut = []) {
+  const fp = vectors.records[0].decoded.f_hex;
+  return class extends EventTarget {
+    constructor() {
+      super();
+      this.iceGatheringState = 'complete';
+      this.connectionState = 'new';
+      this.channels = [];
+      channelsOut.push(this.channels);
+    }
+    createDataChannel() {
+      const c = new FakeChannel();
+      this.channels.push(c);
+      return c;
+    }
+    async createOffer() {
+      this.offering = true;
+      return { type: 'offer', sdp: '' };
+    }
+    async createAnswer() {
+      return { type: 'answer', sdp: `a=ice-ufrag:pageUfrag\r\na=ice-pwd:pagePassword0123456789ab\r\na=fingerprint:sha-256 ${fp}\r\na=mid:0\r\n` };
+    }
+    async setLocalDescription(d) {
+      this.localDescription = this.offering
+        ? { sdp: `a=ice-ufrag:abcd\r\na=ice-pwd:0123456789012345678901\r\na=fingerprint:sha-256 ${fp}\r\na=mid:0\r\n` }
+        : d;
+      if (this.offering) return;
+      const [control, wisp] = this.channels;
+      control.send = () => {};
+      queueMicrotask(() => {
+        control.onopen();
+        wisp.onopen();
+      });
+    }
+    async setRemoteDescription() {
+      if (!this.offering) return;
+      const [control, wisp] = this.channels;
+      control.send = () => {};
+      control.onopen();
+      wisp.onopen();
+      control.onmessage({ data: JSON.stringify({ v: 1, t: 'hello', service: 'asker', scope: [], services: ['back'], limits: { max_streams: 64 } }) });
+      wisp.onmessage({ data: encodeWisp(WISP.CONTINUE, 0, { buffer: 4 }).buffer });
+    }
+    close() {
+      this.connectionState = 'closed';
+    }
+  };
+}
+
+/**
+ * One name's calls and pair entries, served the way §2 and §6.2 say, and
+ * every request it saw. The page's name is `page`; the caller's request
+ * for any other name is answered with records[1] as the asker's record,
+ * or with `callStatus` and its reason.
+ */
+function fakeServer(calls, { callStatus = 200, callError = '' } = {}) {
   const seen = [];
   let cursor = 0;
   const waiting = new Map();
+  const pairs = new Map();
+  const results = [];
   const add = (record) => {
     cursor += 1;
     waiting.set(`c${cursor}`, { id: `c${cursor}`, record, expires_in: 25, n: cursor });
   };
+  const addPair = ({ name, token, server }) => {
+    cursor += 1;
+    const e = { id: `p${cursor}`, name, expires_in: 25, n: cursor };
+    if (token !== undefined) e.token = token;
+    if (server !== undefined) e.server = server;
+    pairs.set(e.id, e);
+  };
   for (const r of calls) add(r);
-  const reply = (status, body) => ({ ok: status < 300, status, json: async () => body });
+  const reply = (status, body, text = '') => ({ ok: status < 300, status, json: async () => body, text: async () => text });
   const fetch = async (url, init = {}) => {
     const u = new URL(url);
     const method = init.method ?? 'GET';
     seen.push({ method, path: u.pathname, query: u.search, auth: init.headers?.authorization, body: init.body });
+    const parts = u.pathname.split('/');
+    const name = parts[2];
+    if (name !== 'page' && method === 'POST' && u.pathname.endsWith('/calls')) {
+      if (callStatus !== 200) return reply(callStatus, { error: callError });
+      return reply(200, null, vectors.records[1].rtc);
+    }
     if (method === 'GET' && u.pathname.endsWith('/calls')) {
       const since = Number(u.searchParams.get('since') ?? 0);
       const out = [...waiting.values()].filter((c) => c.n > since).map(({ n, ...c }) => c);
-      return reply(200, { cursor: String(cursor), calls: out });
+      const pair = [...pairs.values()].filter((p) => p.n > since).map(({ n, ...p }) => p);
+      return reply(200, { cursor: String(cursor), calls: out, pair });
     }
-    const id = u.pathname.split('/')[4];
+    if (method === 'POST' && parts[3] === 'pair' && parts[5] === 'result') {
+      if (!pairs.has(parts[4])) return reply(404, { error: 'no such pairing' });
+      results.push({ id: parts[4], ...JSON.parse(init.body) });
+      return reply(204, null);
+    }
+    const id = parts[4];
     if (!waiting.has(id)) return reply(404, { error: 'no such call' });
     waiting.delete(id);
     return reply(method === 'POST' || method === 'DELETE' ? 204 : 404, null);
   };
-  return { fetch, seen, add };
+  return { fetch, seen, add, addPair, results };
 }
 
 /** An EventSource the test opens, notifies and breaks by hand. */
@@ -703,4 +783,145 @@ test('listen closes an answer the server no longer wanted, and keeps listening',
   assert.equal(errors[0][0], 'c1');
   assert.match(errors[0][1], /answered 404/);
   l.close();
+});
+
+// depth: a page as the told side (doc/DRT-Signalling.md §6.2)
+
+test('the pair rule is any name here or a pattern at a named server, as the Rust twin reads it', async () => {
+  const { parsePairRule, pairAllows } = await import('./drt_browser_access.js');
+  const here = 'http://127.0.0.1:9000';
+  const any = parsePairRule('*');
+  assert.deepEqual(any, { server: null, glob: '*' });
+  assert.ok(pairAllows(any, here, here, 'room-7'));
+  assert.ok(pairAllows(any, here, 'http://127.0.0.1:9000/', 'x'));
+  assert.ok(pairAllows(any, here, 'HTTP://127.0.0.1:9000', 'x'));
+  assert.ok(!pairAllows(any, here, 'https://elsewhere.example', 'room-7'));
+  const at = parsePairRule('drt://127.0.0.1:9000/v1/room-*');
+  assert.deepEqual(at, { server: 'http://127.0.0.1:9000', glob: 'room-*' });
+  assert.ok(pairAllows(at, here, here, 'room-7'));
+  assert.ok(!pairAllows(at, here, here, 'lobby'));
+  assert.ok(!pairAllows(at, here, 'http://127.0.0.1:9001', 'room-7'));
+  // A name without a server is not a rule: the risk is the server.
+  assert.throws(() => parsePairRule('room-*'), /drt:\/\/<server>\/v1\/<glob>/);
+  assert.throws(() => parsePairRule('drt://127.0.0.1:9000'), TypeError);
+  // The glob: `*` and nothing else.
+  const g = (glob, name) => pairAllows({ server: here, glob }, here, here, name);
+  assert.ok(g('*', 'anything'));
+  assert.ok(g('room-*', 'room-7') && !g('room-*', 'lobby-room-7'));
+  assert.ok(g('*-7', 'room-7') && g('r*m*7', 'room-7'));
+  assert.ok(g('exact', 'exact') && !g('exact', 'exactly'));
+  assert.ok(!g('a.b', 'aXb'));
+});
+
+/** A listening page with a fake server and the pairing peer connection; resolves once `n` pair reports are in. */
+async function pagedListen(server, options, n = 1) {
+  const { listen } = await import('./drt_browser_access.js');
+  const reports = [];
+  const errors = [];
+  const l = listen('https://signal.example/v1/page', {
+    token: 'page-token', events: false, pollMs: 1000, fetch: server.fetch, RTCPeerConnection: pairingPC(),
+    services: { ssh: () => {} }, label: 'page', pairConnectMs: 500,
+    onPair: (r) => reports.push(r), onError: (e, who) => errors.push([who?.id, String(e?.message ?? e)]),
+    ...options,
+  });
+  await until(`${n} pair report(s)`, () => reports.length >= n);
+  return { l, reports, errors };
+}
+
+test('without consent a pair entry is declined, and the server is told', async () => {
+  const server = fakeServer([]);
+  server.addPair({ name: 'host', token: 'host-caller' });
+  const { l, reports } = await pagedListen(server, {});
+  assert.deepEqual(reports.map((r) => [r.outcome, r.why, r.session]), [['declined', 'no pair', null]]);
+  assert.deepEqual(server.results, [{ id: 'p1', outcome: 'declined', why: 'no pair' }]);
+  assert.equal(server.seen.filter((r) => r.method === 'POST' && r.path.endsWith('/calls')).length, 0, 'no call was made');
+  l.close();
+});
+
+test('a pair entry outside the rule is declined by name and server', async () => {
+  const server = fakeServer([]);
+  server.addPair({ name: 'host', server: 'https://elsewhere.example' });
+  const { l, reports } = await pagedListen(server, { pair: '*' });
+  assert.equal(reports[0].outcome, 'declined');
+  assert.equal(reports[0].why, 'host at https://elsewhere.example is outside pair');
+  l.close();
+});
+
+test('told to call, the page calls with the entry\'s token, serves on the session, and reports connected', async () => {
+  const server = fakeServer([]);
+  server.addPair({ name: 'host', token: 'host-caller' });
+  const { l, reports, errors } = await pagedListen(server, { pair: '*' });
+  assert.deepEqual(errors, []);
+  const [r] = reports;
+  assert.equal(r.outcome, 'connected');
+  assert.equal(r.why, '');
+  assert.equal(r.entry.id, 'p1');
+  assert.deepEqual(r.session.hello.services, ['back'], 'the asker\'s hello');
+  assert.equal(r.session.role, 'caller');
+  assert.equal(r.session.connect('back').id, 1, 'the told side is the caller: odd ids');
+  const call = server.seen.find((x) => x.method === 'POST' && x.path === '/v1/host/calls');
+  assert.equal(call.auth, 'Bearer host-caller');
+  assert.equal(JSON.parse(call.body).u, 'abcd', 'the page\'s own record is the request');
+  assert.deepEqual(server.results, [{ id: 'p1', outcome: 'connected', why: '' }]);
+  const result = server.seen.find((x) => x.path === '/v1/page/pair/p1/result');
+  assert.equal(result.auth, 'Bearer page-token', 'the result is signed with the answerer token');
+  l.close();
+});
+
+test('an entry without a token makes the call with no authorization at all', async () => {
+  const server = fakeServer([]);
+  server.addPair({ name: 'open-host' });
+  const { l, reports } = await pagedListen(server, { pair: '*' });
+  assert.equal(reports[0].outcome, 'connected');
+  const call = server.seen.find((x) => x.method === 'POST' && x.path === '/v1/open-host/calls');
+  assert.equal(call.auth, undefined);
+  l.close();
+});
+
+test('410 on the call is refused, anything else is unreachable with the server\'s reason', async () => {
+  const refused = fakeServer([], { callStatus: 410, callError: 'the call was withdrawn or refused' });
+  refused.addPair({ name: 'host' });
+  let { l, reports } = await pagedListen(refused, { pair: '*' });
+  assert.deepEqual([reports[0].outcome, reports[0].why], ['refused', '410 the call was withdrawn or refused']);
+  l.close();
+  const absent = fakeServer([], { callStatus: 503, callError: 'no answerer is present' });
+  absent.addPair({ name: 'host' });
+  ({ l, reports } = await pagedListen(absent, { pair: '*' }));
+  assert.deepEqual([reports[0].outcome, reports[0].why], ['unreachable', '503 no answerer is present']);
+  assert.deepEqual(absent.results[0], { id: 'p1', outcome: 'unreachable', why: '503 no answerer is present' });
+  l.close();
+});
+
+test('a pair notification on the stream wakes a poll, and a follow does not hold up the calls beside it', async () => {
+  const { listen } = await import('./drt_browser_access.js');
+  const server = fakeServer([]);
+  const { ES, made } = fakeEvents();
+  // A call to answer and an entry to follow arrive in one poll.
+  server.addPair({ name: 'host', token: 't' });
+  server.add(vectors.records[0].rtc);
+  const sessions = [];
+  const reports = [];
+  const l = listen('https://signal.example/v1/page', {
+    token: 'page-token', pollMs: 100000, fetch: server.fetch, EventSource: ES, RTCPeerConnection: pairingPC(),
+    pair: '*', pairConnectMs: 500, settleMs: 10, onSession: (s, call) => sessions.push(call.id), onPair: (r) => reports.push(r),
+  });
+  await until('the stream', () => made.length === 1);
+  const polls = () => server.seen.filter((r) => r.method === 'GET' && r.path.endsWith('/calls')).length;
+  const before = polls();
+  made[0].fire('open');
+  await until('the poll the open caused', () => polls() === before + 1);
+  await until('the call answered', () => sessions.length === 1);
+  await until('the follow reported', () => reports.length === 1);
+  assert.equal(reports[0].outcome, 'connected');
+  const n = polls();
+  made[0].fire('pair');
+  await until('a poll from the pair event', () => polls() === n + 1);
+  l.close();
+});
+
+test('a bad pair rule fails listen() itself, before any poll', async () => {
+  const { listen } = await import('./drt_browser_access.js');
+  const server = fakeServer([]);
+  assert.throws(() => listen('https://signal.example/v1/page', { fetch: server.fetch, pair: 'room-*' }), TypeError);
+  assert.equal(server.seen.length, 0);
 });

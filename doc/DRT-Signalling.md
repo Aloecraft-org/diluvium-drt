@@ -217,7 +217,18 @@ is the told side and `drt p2p --match` a server that offers it
   token and admission range (§6.1) apply as always. The told side is
   parked and serving, and it keeps serving on the session its call
   opens; the browser-access profile is symmetric, so the wire allows
-  that (`doc/BrowserAccess.md` §10).
+  that (`doc/BrowserAccess.md` §10). A page is a told side as a DRT
+  host is: `listen(base, {pair})` in the browser library follows a
+  `pair` entry under the same consent value, calls with the entry's
+  token, serves what it was given on the session, and reports.
+- **What a told side reads and sends.** `pair` is read on every poll,
+  since a stream's catch-up after a reconnect is `event: call` whatever
+  arrived; a server without pairing sends no `pair` key, which is an
+  empty one. The result is signed with the told side's own answerer
+  token, as its polls are. It arrives inside `expires_in`: a call that
+  has not connected by then is reported `unreachable` first, since a
+  result after the hold is 404. `drt p2p --park` and the library both
+  give a call 20 seconds against the 25 the reference server holds.
 - **The outcome** is reported in one request,
   `POST /v1/<name>/pair/<id>/result`, with the answerer token:
 
@@ -252,7 +263,7 @@ that wants to read less can be handed less: direct mode
 |---|---|---|
 | `drt p2p drt://…/v1/<name>` | caller | stdio or mapped ports over the session (`doc/P2P.md`); `drt p2p --park` is the answerer, `drt p2p --match` a server |
 | `ssh.html#call=…` | caller | the SSH page |
-| `drt_browser_access.js` | caller, answerer | `offer`/`accept` to call; `listen(base, {token, services})` to answer every call for a name, holding the call notification stream and polling without it |
+| `drt_browser_access.js` | caller, answerer, told side | `offer`/`accept` to call; `listen(base, {token, services})` to answer every call for a name, holding the call notification stream and polling without it, and with `pair` to call whom the server says (§6.2) |
 | a DRT host (`webrtc` block) | answerer | a stdlib program, as `stdlib:browser-access` is for Discofetch's socket |
 | a signalling server | server | any HTTP server; `examples/30` is the reference, in dlua |
 | `examples/29-browser-access` | server and answerer | §3 only: a host answering every call with its own record as it arrives |

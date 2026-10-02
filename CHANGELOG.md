@@ -111,7 +111,15 @@ is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
     --pair *` consents to any name at its own server, or
     `--pair drt://<server>/v1/<glob>`; without it a request is
     declined and the server told. `drt p2p --match` offers the ask:
-    `POST /v1/<name>/pair {"name": other}`. Decided with Discofetch
+    `POST /v1/<name>/pair {"name": other}`. A page is a told side
+    too: `listen(base, {pair})` in the browser library follows a
+    `pair` entry under the same consent value, calls with the
+    entry's token, serves on the session and reports, with every
+    outcome handed to `onPair`; proven in Chromium against `--match`
+    and a parked `drt p2p`. A `webrtc` block's program, which does
+    its own signalling, calls with `{command = "call", peer, rtc}`.
+    A told side gives a call 20 seconds, inside the 25 the entry is
+    held for. Decided with Discofetch
     (`doc/Ask-Discofetch-Reply-2.md`). `doc/BrowserAccess.md` §5
     says a page's boundary is what it was opened for, not
     `hello.scope`. In the browser library, a session `answer` or

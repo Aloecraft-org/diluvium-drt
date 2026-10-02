@@ -37,6 +37,9 @@ cargo build -p drt-rtc --example browser_check
 if [ -n "$DRT" ]; then
     cargo build -p drt --features full
     (cd crates/drt-rtc/browser-check && SESSIONS=2 node check.mjs --drt)
+    # A page as the told side of pairing (doc/DRT-Signalling.md §6.2),
+    # against `drt p2p --match` and a parked `drt p2p`.
+    (cd crates/drt-rtc/browser-check && node pairing.mjs)
 fi
 
 if [ -n "$OUT" ]; then

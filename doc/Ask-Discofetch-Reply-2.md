@@ -106,6 +106,21 @@ at one match server, one asks for a call from a peer with `--pair *` and
 gets it, then from a peer without `--pair` and sees `declined`. The ask
 request is one form of asking; a room decides for itself and needs none.
 
+*Later the same day.* The told side was `drt p2p --park` only when the
+above was written. A page is one now: `listen(base, {pair})` in the
+browser library follows a `pair` entry under the same consent value,
+calls with the entry's token, serves on the session and reports;
+`crates/drt-rtc/browser-check/pairing.mjs` proves it in Chromium against
+`drt p2p --match` and a parked `drt p2p`, and a page without `pair`
+declines there too. A page that was called in order to use what the
+caller serves can `connect` at once (`doc/BrowserAccess.md` §10.4). For
+a `drt start` deployment with a `webrtc` block, whose program does its
+own signalling, `{command = "call", peer, rtc}` makes the host the
+calling side; whether to follow a room's instruction is that program's.
+The told side's connect budget is 20 seconds on both sides, inside the
+25 the entry is held for, so a timeout is reported rather than answered
+404.
+
 ## 2. `hello.scope` optional — `landed`, with a correction
 
 ### Which of the three — `landed`

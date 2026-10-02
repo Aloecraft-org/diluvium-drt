@@ -6,7 +6,9 @@
 // and takes the host's; how the two cross -- the Discofetch API's socket
 // and presence (§7.1), or a server of doc/DRT-Signalling.md -- is the
 // page's business. The one exception is `listen`, the answerer's half of
-// that profile, which is the only part of this module that makes requests.
+// that profile, which is the only part of this module that makes requests:
+// its own polls, and the caller's request when the server tells it to call
+// another name (§6.2 there, pairing).
 //
 //   const pending = await offer();              // gathers, then resolves
 //   send(pending.record);                       // to the API, as the page does
@@ -43,7 +45,10 @@
 //   session}, for a page that answers (§10.4); `listen(base, options)` ->
 //   Listening {cursor, streaming, poll(), close()}, which answers every
 //   call a signalling server holds for one name (doc/DRT-Signalling.md
-//   §4, §5); Session.connect(host, port)
+//   §4, §5) and follows a `pair` entry under `options.pair` (§6.2);
+//   `parsePairRule(text)` and `pairAllows(rule, here, server, name)`, the
+//   consent rule, the twin of PairRule in crates/drt/src/p2p/park.rs;
+//   Session.connect(host, port)
 //   or Session.connect(service) -> Stream {id, readable, writable, close(),
 //   closed}; `options.services`, name -> (stream, session), for what a page
 //   serves (§10.3). And the pure pieces, for a client that drives its own
@@ -59,7 +64,9 @@
 //   SEND_HIGH_WATER, the data channel buffer past which a stream's writer
 //   waits; SERVE_BUFFER and SERVE_MAX_STREAMS, what a page that serves
 //   grants each stream and how many it holds open; LISTEN_POLL_MS, how
-//   often `listen` polls while it holds no call notification stream. The
+//   often `listen` polls while it holds no call notification stream;
+//   PAIR_CONNECT_MS, how long a call `listen` was told to make may take to
+//   connect before it is reported unreachable. The
 //   wire's own limits -- RECORD_MAX_BYTES, MAX_CANDIDATES, the
 //   ICE lengths, DIRECT_UFRAG_LEN, MESSAGE_MAX -- are constants of v1, not
 //   knobs: changing one is a `v` bump.
@@ -68,7 +75,10 @@
 //   break, named as crates/drt-rtc/src/record.rs names them; CLOSE_REASON,
 //   the reasons a stream can end with (§6); `listen`'s handling of one
 //   call: refused by `accept` -> DELETE, a record `answer` cannot take ->
-//   DELETE, otherwise answered -> `onSession`.
+//   DELETE, otherwise answered -> `onSession`; and of one `pair` entry,
+//   reported as one of four outcomes: `declined` (outside `options.pair`),
+//   `refused` (the name answered 410), `unreachable` (anything else short
+//   of a session), `connected`.
 
 export const GATHER_CAP_MS = 2000;
 export const ACCEPT_TIMEOUT_MS = 15000;
@@ -85,6 +95,13 @@ export const SERVE_MAX_STREAMS = 64;
  * the page present, and short enough that a caller waits little.
  */
 export const LISTEN_POLL_MS = 3000;
+/**
+ * How long a call `listen` was told to make (§6.2) may take to connect,
+ * offer to session, before it is reported `unreachable`. Inside the 25
+ * seconds the entry is held for by `drt p2p --match`, so the report is
+ * taken rather than answered 404.
+ */
+export const PAIR_CONNECT_MS = 20000;
 
 export const RECORD_VERSION = 1;
 export const RECORD_MAX_BYTES = 512;
@@ -473,6 +490,60 @@ export async function answer(callerRecord, options = {}) {
 }
 
 /**
+ * The consent `listen` gives a signalling server to pair it (§6.2), as
+ * `drt p2p --park --pair` gives it: `*` for any name at the server this
+ * side is parked at, or `drt://<server>/v1/<glob>` for names matching
+ * `glob` (`*` is the only special character) at a named server. Anything
+ * else is refused: the risk is not which name but which server a side is
+ * sent to, so a bare name pattern is not a rule.
+ */
+export function parsePairRule(text) {
+  const s = String(text ?? '').trim();
+  if (s === '*') return { server: null, glob: '*' };
+  let peer = null;
+  try {
+    peer = canonicalPeer(s);
+  } catch {}
+  if (!peer || peer.kind !== 'signal' || !peer.name) {
+    throw new TypeError(`'${s}': * for any name at the server this side is parked at, or drt://<server>/v1/<glob> for a name pattern at a named server`);
+  }
+  return { server: serverOf(peer.canonical), glob: peer.name };
+}
+
+/** Whether a rule from `parsePairRule` lets a side parked at `here` call `name` at `server`. */
+export function pairAllows(rule, here, server, name) {
+  if (rule.server === null) return sameServer(here, server);
+  return sameServer(rule.server, server) && globMatches(rule.glob, name);
+}
+
+/** The server half of a signalling base: `https://s.example/v1/mypc` is at `https://s.example`. */
+function serverOf(base) {
+  const at = base.lastIndexOf('/v1/');
+  return at < 0 ? base : base.slice(0, at);
+}
+
+/** Equal but for a trailing slash and ASCII case, as the Rust twin compares. */
+function sameServer(a, b) {
+  const fold = (s) => s.replace(/\/+$/, '').replace(/[A-Z]/g, (c) => c.toLowerCase());
+  return fold(a) === fold(b);
+}
+
+/** `*` matches any run of characters; nothing else is special. */
+function globMatches(glob, name) {
+  const parts = glob.split('*');
+  if (!name.startsWith(parts[0])) return false;
+  let rest = name.slice(parts[0].length);
+  if (parts.length === 1) return rest === '';
+  for (let i = 1; i < parts.length; i++) {
+    if (i === parts.length - 1) return rest.endsWith(parts[i]);
+    const at = rest.indexOf(parts[i]);
+    if (at < 0) return false;
+    rest = rest.slice(at + parts[i].length);
+  }
+  return true;
+}
+
+/**
  * Answer every call a signalling server holds for one name
  * (doc/DRT-Signalling.md): `base` is the name's URL, `…/v1/<name>`, and
  * `options.token` its answerer token.
@@ -491,6 +562,17 @@ export async function answer(callerRecord, options = {}) {
  * Failures that do not stop listening -- a poll the server refused, an
  * answer that came too late -- go to `options.onError(error, call)`.
  *
+ * A `pair` entry in the poll (§6.2: the server telling this side to call
+ * another name) is followed only under `options.pair`, the consent rule of
+ * `parsePairRule`; without it, or outside it, the entry is declined and
+ * the server told so. Followed, the page makes the caller's request with
+ * the token the entry gives, serves `options.services` on the session as
+ * a caller that serves does (§10.2), and reports the outcome to the
+ * server. `options.onPair({entry, outcome, why, session})` sees every
+ * outcome; `session` is set for `connected`. Each follow runs beside the
+ * polls, not inside them, as a call may take `pairConnectMs`
+ * (PAIR_CONNECT_MS) to connect.
+ *
  * Every other option is `answer`'s. `fetch` and `EventSource` may be
  * given for a runtime without global ones; `events: false` polls only.
  */
@@ -503,6 +585,9 @@ export function listen(base, options = {}) {
   const headers = token ? { authorization: `Bearer ${token}` } : {};
   const onError = options.onError ?? (() => {});
   const pollMs = options.pollMs ?? LISTEN_POLL_MS;
+  // Parsed here so a bad value fails the call to listen(), not a poll.
+  const pairRule = options.pair === undefined || options.pair === null ? null : parsePairRule(options.pair);
+  const here = serverOf(root);
   const state = { cursor: '0', stopped: false, events: null, streaming: false, timer: null };
   let chain = Promise.resolve();
 
@@ -545,6 +630,73 @@ export function listen(base, options = {}) {
     );
   };
 
+  // depth: one pair entry (§6.2), on its own, beside the polls
+  const followPair = async (entry) => {
+    const { id, name } = entry;
+    const server = typeof entry.server === 'string' ? entry.server : here;
+    let outcome = 'unreachable';
+    let why = '';
+    let session = null;
+    try {
+      if (!pairRule) {
+        outcome = 'declined';
+        why = 'no pair';
+      } else if (!pairAllows(pairRule, here, server, name)) {
+        outcome = 'declined';
+        why = `${name} at ${server} is outside pair`;
+      } else {
+        // The caller's request (§3), with the caller token the entry gives
+        // and nothing of this side's own; a told side pins no fingerprint
+        // (doc/P2P.md §2.2), and `certificates` is `answer`'s.
+        const pending = await offer({
+          RTCPeerConnection: options.RTCPeerConnection,
+          iceServers: options.iceServers,
+          gatherTimeoutMs: options.gatherTimeoutMs,
+          services: options.services,
+          label: options.label,
+        });
+        const init = { method: 'POST', headers: { 'content-type': 'text/plain;charset=utf-8' }, body: pending.recordText };
+        if (typeof entry.token === 'string') init.headers.authorization = `Bearer ${entry.token}`;
+        let res;
+        try {
+          res = await fetchFn(`${server.replace(/\/+$/, '')}/v1/${encodeURIComponent(name)}/calls`, init);
+        } catch (e) {
+          pending.close();
+          throw e;
+        }
+        if (!res.ok) {
+          pending.close();
+          let said = '';
+          try {
+            said = (await res.json())?.error ?? '';
+          } catch {}
+          outcome = res.status === 410 ? 'refused' : 'unreachable';
+          why = said ? `${res.status} ${said}` : `answered ${res.status}`;
+        } else {
+          const answer = await res.text();
+          try {
+            session = await pending.accept(answer, { timeoutMs: options.pairConnectMs ?? PAIR_CONNECT_MS });
+            outcome = 'connected';
+          } catch (e) {
+            why = String(e?.message ?? e);
+          }
+        }
+      }
+    } catch (e) {
+      why = String(e?.message ?? e);
+    }
+    try {
+      await request('POST', `/pair/${encodeURIComponent(id)}/result`, JSON.stringify({ outcome, why }));
+    } catch (e) {
+      onError(e, entry);
+    }
+    try {
+      options.onPair?.({ entry, outcome, why, session });
+    } catch (e) {
+      onError(e, entry);
+    }
+  };
+
   const pollOnce = async () => {
     if (state.stopped) return;
     let got;
@@ -555,6 +707,13 @@ export function listen(base, options = {}) {
       return onError(e, null);
     }
     if (typeof got?.cursor === 'string') state.cursor = got.cursor;
+    // A `pair` entry is followed beside the polls: a follow may take
+    // PAIR_CONNECT_MS, and the server counts this side present only while
+    // it polls (§4.2). Absent from a server without pairing.
+    for (const entry of Array.isArray(got?.pair) ? got.pair : []) {
+      if (state.stopped) return;
+      if (typeof entry?.id === 'string' && typeof entry?.name === 'string') followPair(entry);
+    }
     for (const call of Array.isArray(got?.calls) ? got.calls : []) {
       if (state.stopped) return;
       await take(call);
@@ -579,6 +738,7 @@ export function listen(base, options = {}) {
       poll();
     });
     events.addEventListener('call', () => poll());
+    events.addEventListener('pair', () => poll());
     events.addEventListener('error', () => {
       state.streaming = false;
       if (!state.timer && !state.stopped) tick();

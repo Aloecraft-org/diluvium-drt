@@ -480,8 +480,11 @@ unaffected.
   the `hello`'s scope, which is usually absent. A `fingerprint` parameter
   checks the answerer's DTLS fingerprint as `--fingerprint` does, beside
   the existing SSH `hostkey` pin.
-- `drt_browser_access.js`: `listen` is unchanged; it is already a parked
-  side. `session.connect` with no arguments asks for no port (§5.1).
+- `drt_browser_access.js`: `listen` is a parked side, and with `pair` a
+  told one (`doc/DRT-Signalling.md` §6.2): the same consent value as
+  `--pair`, read by `parsePairRule`, the caller's request made with the
+  entry's token, the session served, the outcome reported and handed to
+  `onPair`. `session.connect` with no arguments asks for no port (§5.1).
   `offer`, `accept` and `direct` take `fingerprint`: a `SHA256:…` string
   compared to the answerer's record, or `fp => Promise<boolean>` asked
   before any session byte flows, so a stored pin is a comparison and a
@@ -496,7 +499,11 @@ The `p2p` block replaces `tunnel`, with every flag a key under the block's
 name, and a flag and a key that disagree refused as the conflict it is, as
 `tunnel` does today. `tunnel` is read as an alias for one release, with a
 warning naming the key that replaces each of its own. `--pair` (§2.2) is
-the key `pair` under the block, and under a `webrtc` block that parks.
+the key `pair` under the block. A `webrtc` block has no such key: it does
+not park, its program does all its signalling, so whether to follow an
+instruction to call is the program's, and `{command = "call", peer, rtc}`
+on the block's `reply_queue` is how it does so (`doc/BrowserAccess.md`
+§8).
 
 ## 9. From `drt tunnel`
 
@@ -566,7 +573,10 @@ form of what it was given.
    connected, with the ICE, DTLS and SCTP roles flipped), the parked
    side follows a `pair` entry under its `--pair`, and `--match` offers
    the ask (`POST /v1/<name>/pair`). Not a separate call-and-serve role:
-   the park is one, when told.
+   the park is one, when told. A page is one too: `listen` with `pair`
+   in the browser library (§7.3), proven in Chromium against `--match`
+   and a parked `drt p2p` (`crates/drt-rtc/browser-check/pairing.mjs`).
+   A `webrtc` block's program calls with `{command = "call"}` (§8).
 
 ## Not in this proposal
 

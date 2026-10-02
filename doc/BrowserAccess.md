@@ -562,7 +562,14 @@ GET  /v1/rooms/{room}/presence   Authorization: Bearer <session_token>
 - **Commands on `reply_queue`**: `{command = "open", peer, rtc}` makes a
   session from a browser's record; `{command = "close", peer}` ends one.
   A refused `open` is reported as `webrtc_session` `closed` with the
-  reason.
+  reason. `{command = "call", peer, rtc}` makes a session by calling: the
+  program, told by its own signalling to call another peer
+  (`doc/DRT-Signalling.md` §6.2), makes the caller's request with the
+  record it holds from `webrtc_record` and hands the answerer's reply here;
+  the host is the calling side of that session and serves on it as on any
+  other, reported the same way. Whether to follow such an instruction is the
+  program's to decide, as every other part of its signalling is; `peer` is
+  a name of its choosing for the session.
 - **`crates/drt/src/stdlib/browser_access.dlua`** does §7.1's signaling;
   `crates/drt/tests/signal.rs` shows a working config for it. M0's
   `crates/drt-rtc/browser-check/host.json` and its `host.dlua` still do
@@ -597,7 +604,9 @@ const served = await a.session;
 
 // The same for every call a server of doc/DRT-Signalling.md holds for
 // one name: the event stream, polling by cursor, and an answer each.
-const l = listen('https://signal.example/v1/page', { token, services: { ssh } });
+// With `pair`, the server may also tell this page whom to call (§6.2
+// there); the page calls, serves `ssh` on that session too, and reports.
+const l = listen('https://signal.example/v1/page', { token, services: { ssh }, pair: '*' });
 ```
 
 - **Signaling is the page's**, with one exception. The module makes and

@@ -20,8 +20,9 @@
 //!   [`WebrtcBridge::report`].
 //! - Configurable: [`HELD_MAX`], [`MAX_PEER`]; everything else is the block's
 //!   (`drt_config::WebrtcConfig`).
-//! - Fan-out: [`command_from`] (the two commands), [`report_value`] (the
-//!   three reports).
+//! - Fan-out: [`command_from`] (the three commands: `open` answers a
+//!   browser's record, `call` calls an answerer's, `close` ends a session),
+//!   [`report_value`] (the three reports).
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -192,7 +193,18 @@ fn text<'a>(v: &'a rmpv::Value, key: &str) -> Option<&'a str> {
         .and_then(|(_, v)| v.as_str())
 }
 
-/// `{command = "open", peer, rtc}` or `{command = "close", peer}`.
+/// `{command = "open", peer, rtc}`, `{command = "call", peer, rtc}` or
+/// `{command = "close", peer}`.
+///
+/// `call` is for a deployment its own signalling told to call another
+/// peer (`doc/DRT-Signalling.md` §6.2): the program makes the caller's
+/// request with the host's record, which it already holds from
+/// `webrtc_record`, and hands the answerer's record here. The host is then
+/// the calling side of that session and serves on it as on any other, and
+/// reports it as `webrtc_session` and `webrtc_stream` exactly as for
+/// `open`. Consent and the request are the program's, as all its
+/// signalling is; `peer` is a name the program chooses for the session,
+/// bounded like any other.
 pub fn command_from(v: &rmpv::Value) -> Result<Command, String> {
     let peer = || {
         let peer = text(v, "peer").ok_or_else(|| "a command needs `peer`, a string".to_string())?;
@@ -210,8 +222,14 @@ pub fn command_from(v: &rmpv::Value) -> Result<Command, String> {
                 .ok_or("`open` needs `rtc`, the browser's presence record")?
                 .to_string(),
         }),
+        Some("call") => Ok(Command::Call {
+            peer: peer()?,
+            rtc: text(v, "rtc")
+                .ok_or("`call` needs `rtc`, the answerer's record")?
+                .to_string(),
+        }),
         Some("close") => Ok(Command::Close { peer: peer()? }),
-        Some(other) => Err(format!("unknown command '{other}' (open, close)")),
+        Some(other) => Err(format!("unknown command '{other}' (open, call, close)")),
         None => Err("a command needs `command`, a string".into()),
     }
 }
@@ -321,6 +339,22 @@ mod tests {
         assert_eq!(
             command_from(&map(&[("command", "close"), ("peer", "b1")])),
             Ok(Command::Close { peer: "b1".into() })
+        );
+        assert_eq!(
+            command_from(&map(&[
+                ("command", "call"),
+                ("peer", "pair-1"),
+                ("rtc", "{}")
+            ])),
+            Ok(Command::Call {
+                peer: "pair-1".into(),
+                rtc: "{}".into()
+            })
+        );
+        assert!(
+            command_from(&map(&[("command", "call"), ("peer", "pair-1")]))
+                .unwrap_err()
+                .contains("the answerer's record")
         );
         assert!(command_from(&map(&[("command", "open"), ("peer", "b1")]))
             .unwrap_err()

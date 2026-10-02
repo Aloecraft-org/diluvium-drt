@@ -1274,7 +1274,10 @@ pub struct WebrtcConfig {
     /// Reports: `webrtc_record`, `webrtc_session`, `webrtc_stream`.
     #[serde(default = "default_webrtc_queue")]
     pub queue: String,
-    /// Commands: `{command = "open", peer, rtc}`, `{command = "close", peer}`.
+    /// Commands: `{command = "open", peer, rtc}` answers a browser's record;
+    /// `{command = "call", peer, rtc}` calls an answerer's, for a deployment
+    /// its signalling told to call (`doc/DRT-Signalling.md` §6.2);
+    /// `{command = "close", peer}`.
     #[serde(default = "default_webrtc_reply_queue")]
     pub reply_queue: String,
 }

@@ -1050,7 +1050,7 @@
           "default": "webrtc"
         },
         "reply_queue": {
-          "description": "Commands: `{command = \"open\", peer, rtc}`, `{command = \"close\", peer}`.",
+          "description": "Commands: `{command = \"open\", peer, rtc}` answers a browser's record;\n`{command = \"call\", peer, rtc}` calls an answerer's, for a deployment\nits signalling told to call (`doc/DRT-Signalling.md` §6.2);\n`{command = \"close\", peer}`.",
           "type": "string",
           "default": "webrtc_cmd"
         },
