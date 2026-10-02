@@ -225,10 +225,13 @@ is the told side and `drt p2p --match` a server that offers it
   since a stream's catch-up after a reconnect is `event: call` whatever
   arrived; a server without pairing sends no `pair` key, which is an
   empty one. The result is signed with the told side's own answerer
-  token, as its polls are. It arrives inside `expires_in`: a call that
-  has not connected by then is reported `unreachable` first, since a
-  result after the hold is 404. `drt p2p --park` and the library both
-  give a call 20 seconds against the 25 the reference server holds.
+  token, as its polls are. It arrives inside `expires_in`: a told side
+  takes the entry's `expires_in`, less a margin for the report to
+  travel, as the budget for the whole follow, the caller's request
+  included, since the server holds that request until the name answers
+  (§3), and reports `unreachable` when it runs out, as a result after the
+  hold is 404. `drt p2p --park` and the library both do, with 20 seconds
+  as the ceiling for an entry that names no hold.
 - **The outcome** is reported in one request,
   `POST /v1/<name>/pair/<id>/result`, with the answerer token:
 

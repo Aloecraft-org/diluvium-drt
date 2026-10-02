@@ -187,8 +187,9 @@ releases:
           outcome handed to `onPair`; proven in Chromium against `--match`
           and a parked `drt p2p`. A `webrtc` block's program, which does
           its own signalling, calls with `{command = "call", peer, rtc}`.
-          A told side gives a call 20 seconds, inside the 25 the entry is
-          held for. Decided with Discofetch
+          A told side bounds the whole follow by the entry's `expires_in`,
+          so a call that never connects is reported before the hold ends.
+          Decided with Discofetch
           (`doc/Ask-Discofetch-Reply-2.md`). `doc/BrowserAccess.md` §5
           says a page's boundary is what it was opened for, not
           `hello.scope`. In the browser library, a session `answer` or

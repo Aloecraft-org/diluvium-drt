@@ -117,9 +117,10 @@ caller serves can `connect` at once (`doc/BrowserAccess.md` §10.4). For
 a `drt start` deployment with a `webrtc` block, whose program does its
 own signalling, `{command = "call", peer, rtc}` makes the host the
 calling side; whether to follow a room's instruction is that program's.
-The told side's connect budget is 20 seconds on both sides, inside the
-25 the entry is held for, so a timeout is reported rather than answered
-404.
+Both told sides bound the whole follow, the caller's request included,
+by the entry's `expires_in` less a margin, so a call that never connects
+is reported `unreachable` before the hold ends rather than answered 404
+after it.
 
 ## 2. `hello.scope` optional — `landed`, with a correction
 

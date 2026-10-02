@@ -15,7 +15,7 @@
 //! - Entry points: [`run`], the role carried out; [`follow_pair`], one
 //!   `pair` entry carried out.
 //! - Configurable: [`POLL`], [`BACKOFF_MAX`], [`ACCEPT_HEADER`],
-//!   [`PAIR_CONNECT`].
+//!   [`PAIR_CONNECT`], [`PAIR_MARGIN`].
 //! - Fan-out: the match on [`How`] in `run`; what the WebSocket park can
 //!   carry, in [`ws_sink`]; the two forms of [`PairRule`]; the four
 //!   [`Outcome`]s.
@@ -40,11 +40,14 @@ pub const POLL: Duration = Duration::from_secs(5);
 pub const BACKOFF_MAX: Duration = Duration::from_secs(60);
 /// The admission range travels on the poll (`doc/P2P.md` §11).
 pub const ACCEPT_HEADER: &str = "DRT-Accept";
-/// How long a paired call may take to connect before it is reported as
-/// unreachable. Inside the 25 seconds `drt p2p --match` holds a `pair`
-/// entry for, so the report is taken rather than answered 404 as one
-/// after `expires_in` is (`doc/DRT-Signalling.md` §6.2).
+/// The ceiling on following a `pair` entry, from the entry to a session,
+/// the caller's request included, for an entry that names no hold; an
+/// entry's `expires_in` less [`PAIR_MARGIN`] bounds it below that. Past
+/// it the call is reported unreachable, before the server stops taking
+/// the report (`doc/DRT-Signalling.md` §6.2).
 pub const PAIR_CONNECT: Duration = Duration::from_secs(20);
+/// Kept back from an entry's `expires_in`, for the report to travel.
+pub const PAIR_MARGIN: Duration = Duration::from_secs(3);
 
 /// Whom the server may tell this side to call (`--pair`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -348,6 +351,15 @@ pub async fn follow_pair(
     let here = server_of(&park.signalling.canonical()).to_string();
     let server = entry["server"].as_str().unwrap_or(&here).to_string();
     let result_url = park.signalling.url(&format!("/pair/{id}/result"));
+    // The whole follow, the caller's request included, inside the entry's
+    // hold: the server holds that request until the name answers (§3),
+    // which may be the whole hold, and a result after it is 404.
+    let budget = entry["expires_in"]
+        .as_u64()
+        .map(|s| Duration::from_secs(s).saturating_sub(PAIR_MARGIN))
+        .map_or(PAIR_CONNECT, |held| held.min(PAIR_CONNECT))
+        .max(Duration::from_secs(1));
+    let deadline = tokio::time::Instant::now() + budget;
     let report = |outcome: Outcome, why: String| {
         let (headers, roots, result_url) =
             (park.headers.clone(), roots.to_vec(), result_url.clone());
@@ -393,9 +405,17 @@ pub async fn follow_pair(
         headers.push(("Authorization".to_string(), format!("Bearer {token}")));
     }
     let mine = serving.record.borrow().clone();
-    let answer = match http::request("POST", &calls_url, &headers, Some(&mine), roots).await {
-        Ok(r) if r.status == 200 => r.text(),
-        Ok(r) => {
+    let request = http::request("POST", &calls_url, &headers, Some(&mine), roots);
+    let answer = match tokio::time::timeout_at(deadline, request).await {
+        Err(_) => {
+            return report(
+                Outcome::Unreachable,
+                format!("no answer within {}s", budget.as_secs()),
+            )
+            .await
+        }
+        Ok(Ok(r)) if r.status == 200 => r.text(),
+        Ok(Ok(r)) => {
             let why = r
                 .refusal(&calls_url)
                 .unwrap_or_else(|| format!("answered {}", r.status));
@@ -406,7 +426,7 @@ pub async fn follow_pair(
             };
             return report(outcome, why).await;
         }
-        Err(e) => return report(Outcome::Unreachable, e).await,
+        Ok(Err(e)) => return report(Outcome::Unreachable, e).await,
     };
     let peer = format!("pair:{name}");
     let mut events = serving.events.subscribe();
@@ -414,7 +434,7 @@ pub async fn follow_pair(
         peer: peer.clone(),
         rtc: answer,
     });
-    let fate = tokio::time::timeout(PAIR_CONNECT, async {
+    let fate = tokio::time::timeout_at(deadline, async {
         loop {
             match events.recv().await {
                 Ok(Event::Session {
@@ -438,7 +458,7 @@ pub async fn follow_pair(
             serving.sender.send(Command::Close { peer });
             report(
                 Outcome::Unreachable,
-                format!("no session within {}s", PAIR_CONNECT.as_secs()),
+                format!("no session within {}s", budget.as_secs()),
             )
             .await
         }

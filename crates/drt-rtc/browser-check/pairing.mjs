@@ -23,7 +23,7 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -31,13 +31,19 @@ import path from 'node:path';
 const { chromium } = await import(process.env.PLAYWRIGHT ? path.join(process.env.PLAYWRIGHT, 'index.mjs') : 'playwright');
 const here = path.dirname(fileURLToPath(import.meta.url));
 const drt = path.resolve(here, '../../../target/debug/drt');
-const WAIT_MS = 20000;
+// Past the library's PAIR_CONNECT_MS, so a follow that fails is reported
+// as its outcome and not as a missing report.
+const WAIT_MS = 30000;
 const HOST_TOKEN = 'host-token';
 const HOST_CALLER = 'host-caller';
 const PAGE_TOKEN = 'page-token';
 const DEAF_TOKEN = 'deaf-token';
 const children = [];
-const cleanup = () => children.forEach((c) => c.kill());
+const homes = [];
+const cleanup = () => {
+  children.forEach((c) => c.kill());
+  homes.forEach((h) => rmSync(h, { recursive: true, force: true }));
+};
 process.on('exit', cleanup);
 let failed = 0;
 
@@ -56,6 +62,7 @@ async function check(name, fn) {
 // ~/.drt/p2p, and two must not race for one file.
 function run(args, tag) {
   const home = mkdtempSync(path.join(os.tmpdir(), `drt-pairing-${tag}-`));
+  homes.push(home);
   const child = spawn(drt, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, HOME: home } });
   children.push(child);
   const lines = [];
@@ -159,8 +166,9 @@ await check('the told page calls with the host\'s caller token, connects, and re
     await w.write(new TextEncoder().encode('ping over pairing'));
     const reader = s.readable.getReader();
     let got = '';
+    const giveUp = new Promise((_, reject) => setTimeout(() => reject(new Error(`echoed only ${JSON.stringify(got)}`)), waitMs));
     while (got.length < 'ping over pairing'.length) {
-      const { value, done } = await reader.read();
+      const { value, done } = await Promise.race([reader.read(), giveUp]);
       if (done) break;
       got += new TextDecoder().decode(value);
     }

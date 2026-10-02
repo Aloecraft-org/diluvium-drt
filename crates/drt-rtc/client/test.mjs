@@ -566,7 +566,7 @@ function answeringPC() {
  * `answeringPC`, plus the offer side of `fakeSession`'s, whose far end
  * serves (hello naming `back`, and credit) the moment the answer lands.
  */
-function pairingPC(channelsOut = []) {
+function pairingPC(made = [], { connects = true } = {}) {
   const fp = vectors.records[0].decoded.f_hex;
   return class extends EventTarget {
     constructor() {
@@ -574,7 +574,7 @@ function pairingPC(channelsOut = []) {
       this.iceGatheringState = 'complete';
       this.connectionState = 'new';
       this.channels = [];
-      channelsOut.push(this.channels);
+      made.push(this);
     }
     createDataChannel() {
       const c = new FakeChannel();
@@ -601,9 +601,8 @@ function pairingPC(channelsOut = []) {
       });
     }
     async setRemoteDescription() {
-      if (!this.offering) return;
+      if (!this.offering || !connects) return;
       const [control, wisp] = this.channels;
-      control.send = () => {};
       control.onopen();
       wisp.onopen();
       control.onmessage({ data: JSON.stringify({ v: 1, t: 'hello', service: 'asker', scope: [], services: ['back'], limits: { max_streams: 64 } }) });
@@ -621,19 +620,23 @@ function pairingPC(channelsOut = []) {
  * for any other name is answered with records[1] as the asker's record,
  * or with `callStatus` and its reason.
  */
-function fakeServer(calls, { callStatus = 200, callError = '' } = {}) {
+function fakeServer(calls, { callStatus = 200, callError = '', holdCalls = false } = {}) {
   const seen = [];
   let cursor = 0;
   const waiting = new Map();
   const pairs = new Map();
   const results = [];
+  // With `holdCalls`, the caller's request is held until release(), as a
+  // server holds it for the name to answer (§3).
+  let release = () => {};
+  const held = new Promise((r) => (release = r));
   const add = (record) => {
     cursor += 1;
     waiting.set(`c${cursor}`, { id: `c${cursor}`, record, expires_in: 25, n: cursor });
   };
-  const addPair = ({ name, token, server }) => {
+  const addPair = ({ name, token, server, expires_in = 25 }) => {
     cursor += 1;
-    const e = { id: `p${cursor}`, name, expires_in: 25, n: cursor };
+    const e = { id: `p${cursor}`, name, expires_in, n: cursor };
     if (token !== undefined) e.token = token;
     if (server !== undefined) e.server = server;
     pairs.set(e.id, e);
@@ -647,6 +650,7 @@ function fakeServer(calls, { callStatus = 200, callError = '' } = {}) {
     const parts = u.pathname.split('/');
     const name = parts[2];
     if (name !== 'page' && method === 'POST' && u.pathname.endsWith('/calls')) {
+      if (holdCalls) await held;
       if (callStatus !== 200) return reply(callStatus, { error: callError });
       return reply(200, null, vectors.records[1].rtc);
     }
@@ -666,7 +670,7 @@ function fakeServer(calls, { callStatus = 200, callError = '' } = {}) {
     waiting.delete(id);
     return reply(method === 'POST' || method === 'DELETE' ? 204 : 404, null);
   };
-  return { fetch, seen, add, addPair, results };
+  return { fetch, seen, add, addPair, results, release: () => release() };
 }
 
 /** An EventSource the test opens, notifies and breaks by hand. */
@@ -688,8 +692,8 @@ function fakeEvents() {
   return { ES, made };
 }
 
-const until = async (what, cond) => {
-  for (let i = 0; i < 200; i++) {
+const until = async (what, cond, tries = 200) => {
+  for (let i = 0; i < tries; i++) {
     if (cond()) return;
     await new Promise((r) => setTimeout(r, 5));
   }
@@ -818,15 +822,23 @@ async function pagedListen(server, options, n = 1) {
   const { listen } = await import('./drt_browser_access.js');
   const reports = [];
   const errors = [];
+  const made = [];
   const l = listen('https://signal.example/v1/page', {
-    token: 'page-token', events: false, pollMs: 1000, fetch: server.fetch, RTCPeerConnection: pairingPC(),
+    token: 'page-token', events: false, pollMs: 1000, fetch: server.fetch, RTCPeerConnection: pairingPC(made),
     services: { ssh: () => {} }, label: 'page', pairConnectMs: 500,
     onPair: (r) => reports.push(r), onError: (e, who) => errors.push([who?.id, String(e?.message ?? e)]),
     ...options,
   });
   await until(`${n} pair report(s)`, () => reports.length >= n);
-  return { l, reports, errors };
+  return { l, reports, errors, made };
 }
+
+/** The hellos a page sent on its control channels, oldest first. */
+const hellosSent = (made) => made
+  .flatMap((pc) => pc.channels[0]?.sent ?? [])
+  .filter((t) => typeof t === 'string')
+  .map((t) => JSON.parse(t))
+  .filter((m) => m.t === 'hello');
 
 test('without consent a pair entry is declined, and the server is told', async () => {
   const server = fakeServer([]);
@@ -850,7 +862,7 @@ test('a pair entry outside the rule is declined by name and server', async () =>
 test('told to call, the page calls with the entry\'s token, serves on the session, and reports connected', async () => {
   const server = fakeServer([]);
   server.addPair({ name: 'host', token: 'host-caller' });
-  const { l, reports, errors } = await pagedListen(server, { pair: '*' });
+  const { l, reports, errors, made } = await pagedListen(server, { pair: '*' });
   assert.deepEqual(errors, []);
   const [r] = reports;
   assert.equal(r.outcome, 'connected');
@@ -859,6 +871,10 @@ test('told to call, the page calls with the entry\'s token, serves on the sessio
   assert.deepEqual(r.session.hello.services, ['back'], 'the asker\'s hello');
   assert.equal(r.session.role, 'caller');
   assert.equal(r.session.connect('back').id, 1, 'the told side is the caller: odd ids');
+  // The page serves on the session it was told to open: its hello names
+  // its services, and a CONNECT to one of them reaches the handler.
+  const [hello] = hellosSent(made);
+  assert.deepEqual([hello.service, hello.services], ['page', ['ssh']]);
   const call = server.seen.find((x) => x.method === 'POST' && x.path === '/v1/host/calls');
   assert.equal(call.auth, 'Bearer host-caller');
   assert.equal(JSON.parse(call.body).u, 'abcd', 'the page\'s own record is the request');
@@ -892,9 +908,69 @@ test('410 on the call is refused, anything else is unreachable with the server\'
   l.close();
 });
 
+test('a call that never connects is reported unreachable inside the budget, and leaves no connection behind', async () => {
+  const server = fakeServer([]);
+  server.addPair({ name: 'host', token: 't' });
+  const made = [];
+  const { listen } = await import('./drt_browser_access.js');
+  const reports = [];
+  const l = listen('https://signal.example/v1/page', {
+    token: 'page-token', events: false, pollMs: 100000, fetch: server.fetch,
+    RTCPeerConnection: pairingPC(made, { connects: false }), pair: '*', pairConnectMs: 150,
+    onPair: (r) => reports.push(r),
+  });
+  await until('the report', () => reports.length === 1);
+  assert.equal(reports[0].outcome, 'unreachable');
+  assert.match(reports[0].why, /no session within/);
+  assert.deepEqual(server.results, [{ id: 'p1', outcome: 'unreachable', why: reports[0].why }]);
+  assert.equal(made.length, 1);
+  assert.equal(made[0].connectionState, 'closed', 'the peer connection was closed');
+  l.close();
+});
+
+test('an entry\'s hold bounds the follow below pairConnectMs', async () => {
+  const { PAIR_MARGIN_MS } = await import('./drt_browser_access.js');
+  const server = fakeServer([]);
+  // One second over the margin: the follow has one second, not the ceiling.
+  server.addPair({ name: 'host', expires_in: (PAIR_MARGIN_MS + 1000) / 1000 });
+  const made = [];
+  const { listen } = await import('./drt_browser_access.js');
+  const reports = [];
+  const t0 = Date.now();
+  const l = listen('https://signal.example/v1/page', {
+    token: 'page-token', events: false, pollMs: 100000, fetch: server.fetch,
+    RTCPeerConnection: pairingPC(made, { connects: false }), pair: '*', pairConnectMs: 60000,
+    onPair: (r) => reports.push(r),
+  });
+  await until('the report', () => reports.length === 1, 400);
+  assert.equal(reports[0].outcome, 'unreachable');
+  assert.ok(Date.now() - t0 < 3000, 'reported inside the hold, not at the ceiling');
+  l.close();
+});
+
+test('a follow in flight when listen closes makes no session', async () => {
+  const server = fakeServer([], { holdCalls: true });
+  server.addPair({ name: 'host', token: 't' });
+  const made = [];
+  const { listen } = await import('./drt_browser_access.js');
+  const reports = [];
+  const l = listen('https://signal.example/v1/page', {
+    token: 'page-token', events: false, pollMs: 100000, fetch: server.fetch,
+    RTCPeerConnection: pairingPC(made), pair: '*', pairConnectMs: 500, onPair: (r) => reports.push(r),
+  });
+  await until('the held call', () => server.seen.some((x) => x.method === 'POST' && x.path === '/v1/host/calls'));
+  l.close();
+  server.release();
+  await until('the report', () => reports.length === 1);
+  assert.equal(reports[0].outcome, 'unreachable');
+  assert.equal(reports[0].why, 'listening stopped');
+  assert.equal(reports[0].session, null);
+  assert.equal(made[0].connectionState, 'closed');
+});
+
 test('a pair notification on the stream wakes a poll, and a follow does not hold up the calls beside it', async () => {
   const { listen } = await import('./drt_browser_access.js');
-  const server = fakeServer([]);
+  const server = fakeServer([], { holdCalls: true });
   const { ES, made } = fakeEvents();
   // A call to answer and an entry to follow arrive in one poll.
   server.addPair({ name: 'host', token: 't' });
@@ -910,7 +986,11 @@ test('a pair notification on the stream wakes a poll, and a follow does not hold
   const before = polls();
   made[0].fire('open');
   await until('the poll the open caused', () => polls() === before + 1);
+  // The caller's request is held by the server; the call beside it is
+  // answered meanwhile, which a follow inside the poll could not allow.
   await until('the call answered', () => sessions.length === 1);
+  assert.equal(reports.length, 0, 'the follow is still waiting on its held request');
+  server.release();
   await until('the follow reported', () => reports.length === 1);
   assert.equal(reports[0].outcome, 'connected');
   const n = polls();

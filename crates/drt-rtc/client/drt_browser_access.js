@@ -65,8 +65,8 @@
 //   waits; SERVE_BUFFER and SERVE_MAX_STREAMS, what a page that serves
 //   grants each stream and how many it holds open; LISTEN_POLL_MS, how
 //   often `listen` polls while it holds no call notification stream;
-//   PAIR_CONNECT_MS, how long a call `listen` was told to make may take to
-//   connect before it is reported unreachable. The
+//   PAIR_CONNECT_MS and PAIR_MARGIN_MS, the ceiling on a call `listen` was
+//   told to make and what an entry's hold keeps back for the report. The
 //   wire's own limits -- RECORD_MAX_BYTES, MAX_CANDIDATES, the
 //   ICE lengths, DIRECT_UFRAG_LEN, MESSAGE_MAX -- are constants of v1, not
 //   knobs: changing one is a `v` bump.
@@ -96,12 +96,14 @@ export const SERVE_MAX_STREAMS = 64;
  */
 export const LISTEN_POLL_MS = 3000;
 /**
- * How long a call `listen` was told to make (§6.2) may take to connect,
- * offer to session, before it is reported `unreachable`. Inside the 25
- * seconds the entry is held for by `drt p2p --match`, so the report is
- * taken rather than answered 404.
+ * The ceiling on a call `listen` was told to make (§6.2), from the entry
+ * to a session, the caller's request included, when the entry names no
+ * hold; an entry's `expires_in` less PAIR_MARGIN_MS bounds it below that.
+ * Past it the call is reported `unreachable`.
  */
 export const PAIR_CONNECT_MS = 20000;
+/** Kept back from an entry's `expires_in`, for the report to travel before the hold ends. */
+export const PAIR_MARGIN_MS = 3000;
 
 export const RECORD_VERSION = 1;
 export const RECORD_MAX_BYTES = 512;
@@ -570,8 +572,9 @@ function globMatches(glob, name) {
  * a caller that serves does (§10.2), and reports the outcome to the
  * server. `options.onPair({entry, outcome, why, session})` sees every
  * outcome; `session` is set for `connected`. Each follow runs beside the
- * polls, not inside them, as a call may take `pairConnectMs`
- * (PAIR_CONNECT_MS) to connect.
+ * polls, not inside them, and is bounded whole by the entry's
+ * `expires_in` less PAIR_MARGIN_MS, or `pairConnectMs` (PAIR_CONNECT_MS)
+ * when that is less.
  *
  * Every other option is `answer`'s. `fetch` and `EventSource` may be
  * given for a runtime without global ones; `events: false` polls only.
@@ -634,9 +637,16 @@ export function listen(base, options = {}) {
   const followPair = async (entry) => {
     const { id, name } = entry;
     const server = typeof entry.server === 'string' ? entry.server : here;
+    // The whole follow, the caller's request included, inside the entry's
+    // hold: a result after it is 404, so `unreachable` is reported first.
+    const held = typeof entry.expires_in === 'number' ? entry.expires_in * 1000 - PAIR_MARGIN_MS : Infinity;
+    const budget = Math.max(1000, Math.min(options.pairConnectMs ?? PAIR_CONNECT_MS, held));
+    const deadline = Date.now() + budget;
+    const left = () => Math.max(1, deadline - Date.now());
     let outcome = 'unreachable';
     let why = '';
     let session = null;
+    let pending = null;
     try {
       if (!pairRule) {
         outcome = 'declined';
@@ -648,24 +658,27 @@ export function listen(base, options = {}) {
         // The caller's request (§3), with the caller token the entry gives
         // and nothing of this side's own; a told side pins no fingerprint
         // (doc/P2P.md §2.2), and `certificates` is `answer`'s.
-        const pending = await offer({
+        pending = await offer({
           RTCPeerConnection: options.RTCPeerConnection,
           iceServers: options.iceServers,
           gatherTimeoutMs: options.gatherTimeoutMs,
           services: options.services,
           label: options.label,
         });
+        if (state.stopped) throw new Error('listening stopped');
         const init = { method: 'POST', headers: { 'content-type': 'text/plain;charset=utf-8' }, body: pending.recordText };
         if (typeof entry.token === 'string') init.headers.authorization = `Bearer ${entry.token}`;
+        // The server holds this request until the name answers (§3), which
+        // may be the whole hold: the deadline cuts it short.
+        if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) init.signal = AbortSignal.timeout(left());
         let res;
         try {
           res = await fetchFn(`${server.replace(/\/+$/, '')}/v1/${encodeURIComponent(name)}/calls`, init);
         } catch (e) {
-          pending.close();
-          throw e;
+          const timedOut = e?.name === 'TimeoutError' || e?.name === 'AbortError';
+          throw new Error(timedOut ? `no answer within ${Math.round(budget / 1000)}s` : String(e?.message ?? e));
         }
         if (!res.ok) {
-          pending.close();
           let said = '';
           try {
             said = (await res.json())?.error ?? '';
@@ -674,17 +687,17 @@ export function listen(base, options = {}) {
           why = said ? `${res.status} ${said}` : `answered ${res.status}`;
         } else {
           const answer = await res.text();
-          try {
-            session = await pending.accept(answer, { timeoutMs: options.pairConnectMs ?? PAIR_CONNECT_MS });
-            outcome = 'connected';
-          } catch (e) {
-            why = String(e?.message ?? e);
-          }
+          if (state.stopped) throw new Error('listening stopped');
+          session = await pending.accept(answer, { timeoutMs: left() });
+          outcome = 'connected';
         }
       }
     } catch (e) {
       why = String(e?.message ?? e);
     }
+    // Anything short of a session leaves no connection behind; `accept`
+    // closes on its own failures, and closing twice is nothing.
+    if (outcome !== 'connected') pending?.close();
     try {
       await request('POST', `/pair/${encodeURIComponent(id)}/result`, JSON.stringify({ outcome, why }));
     } catch (e) {

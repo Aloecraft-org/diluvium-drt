@@ -87,7 +87,6 @@ export interface Pending {
 }
 
 export interface Session {
-  /** The peer's hello; null when the peer serves nothing (§10.2). */
   /**
    * The peer's hello. Null only on an answered session whose caller serves
    * nothing (§10.4): it sent neither hello nor credit, and `connect` throws.
@@ -212,7 +211,7 @@ export interface ListenOptions extends AnswerOptions {
    * Absent, every `pair` entry is declined and the server told so.
    */
   pair?: string;
-  /** How long a call this side was told to make may take to connect; PAIR_CONNECT_MS. */
+  /** The ceiling on a call this side was told to make, entry to session; the entry's `expires_in` bounds it below. PAIR_CONNECT_MS. */
   pairConnectMs?: number;
   /** Every `pair` entry's outcome, once reported. */
   onPair?(report: PairReport): void;
@@ -322,6 +321,7 @@ export const DIRECT_UFRAG_LEN: 32;
 export const SERVE_BUFFER: number;
 export const LISTEN_POLL_MS: number;
 export const PAIR_CONNECT_MS: number;
+export const PAIR_MARGIN_MS: number;
 export const SERVE_MAX_STREAMS: number;
 export const MESSAGE_MAX: 16384;
 export const DATA_MAX: 16379;
