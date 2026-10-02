@@ -36,6 +36,11 @@ on:
         type: boolean
         required: false
         default: false
+      full:
+        description: 'Build every target. A dev build is the Linux leg alone otherwise; a release always builds every target.'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -55,6 +60,11 @@ jobs:
       # The suffix decides (doc/ALIGNMENT.md §7): `v*-dev.*` builds one
       # platform, needs no changelog entry, and is always a prerelease.
       dev: ${{ steps.check.outputs.dev }}
+      # Which legs run: every one for a release, or for a dev build
+      # dispatched with `full`; the Linux leg alone for any other dev
+      # build. The three cross-target jobs, the matrix, the publish
+      # condition and the BUILDINFO check all read this one answer.
+      all_legs: ${{ steps.check.outputs.all_legs }}
       # Derived, since a tag push carries none and a dispatch may name a
       # commit (doc/ALIGNMENT.md §5); BUILDINFO records what was found.
       branch: ${{ steps.check.outputs.branch }}
@@ -75,6 +85,7 @@ jobs:
           IN_REF: ${{ inputs.ref }}
           IN_TAG: ${{ inputs.tag }}
           IN_PUBLISH: ${{ inputs.publish }}
+          IN_FULL: ${{ inputs.full }}
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -eu
@@ -117,6 +128,14 @@ jobs:
             v*-dev.*) DEV=true ;;
             *)        DEV=false ;;
           esac
+          # A release builds every target whatever the input says; a dev
+          # build does only when asked, since the fast path is the point
+          # of one (doc/ALIGNMENT.md §7).
+          if [ "$DEV" = true ] && [ "${IN_FULL:-false}" != true ]; then
+            ALL_LEGS=false
+          else
+            ALL_LEGS=true
+          fi
           # The branch, recorded as found rather than guessed: a dispatch
           # that names a branch is authoritative; a blank dispatch ran on
           # the selected branch; a tag push, or a dispatch naming a commit,
@@ -139,6 +158,7 @@ jobs:
           echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "dev=$DEV" >> "$GITHUB_OUTPUT"
+          echo "all_legs=$ALL_LEGS" >> "$GITHUB_OUTPUT"
           echo "branch=${BRANCH:-(detached)}" >> "$GITHUB_OUTPUT"
       # The build matrix, declared here so a dev build can be the Linux leg
       # alone: `strategy.matrix` cannot read a job output, but it can be a
@@ -146,7 +166,7 @@ jobs:
       # used to hold, comments included.
       - id: matrix
         env:
-          DEV: ${{ steps.check.outputs.dev }}
+          ALL_LEGS: ${{ steps.check.outputs.all_legs }}
         run: |
           python3 - <<'EOF' >> "$GITHUB_OUTPUT"
           import json, os
@@ -205,8 +225,9 @@ jobs:
           # below -- `full` and `slim`, the same two every leg here
           # ships -- and then run on a real Windows runner by
           # `smoke-windows`, which is the smoke step these legs do inline.
-          # A dev build is the x86_64 leg alone.
-          include = [linux] if os.environ["DEV"] == "true" else [linux, arm64] + darwin
+          # A dev build is the x86_64 leg alone, unless dispatched with
+          # `full`.
+          include = [linux, arm64] + darwin if os.environ["ALL_LEGS"] == "true" else [linux]
           print("matrix=" + json.dumps({"include": include}))
           EOF
       # The changelog is a release gate, not a formality: CHANGELOG.yaml is
@@ -336,7 +357,7 @@ jobs:
     # this matrix's smoke step exists to prevent (doc/Release.md).
     name: Build (wasip2)
     needs: [preflight, test]
-    if: needs.preflight.outputs.dev != 'true'
+    if: needs.preflight.outputs.all_legs == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -651,7 +672,7 @@ jobs:
     # then run for real in `smoke-windows`, on a Windows runner.
     name: Build (windows_x86_64)
     needs: [preflight, test]
-    if: needs.preflight.outputs.dev != 'true'
+    if: needs.preflight.outputs.all_legs == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -713,7 +734,7 @@ jobs:
     # wintun.dll as well.
     name: Smoke (windows_x86_64)
     needs: [preflight, build-windows]
-    if: needs.preflight.outputs.dev != 'true'
+    if: needs.preflight.outputs.all_legs == 'true'
     runs-on: windows-latest
     timeout-minutes: 30
     defaults:
@@ -775,12 +796,13 @@ jobs:
   publish:
     name: Publish release
     needs: [preflight, test, build, build-wasip2, build-web, build-client, build-ssh-page, build-windows, smoke-windows]
-    # A dev build skips the three cross-target legs (wasip2 and the two
-    # Windows jobs), and a job whose `needs` were skipped is skipped itself
-    # unless it says otherwise. So this says otherwise, and checks by hand
-    # what the default would have: nothing was cancelled, the suite, the
-    # Linux leg, the web leg, the client and the SSH page passed, and
-    # either this is a dev build or every other leg passed too.
+    # A dev build not dispatched with `full` skips the three cross-target
+    # legs (wasip2 and the two Windows jobs), and a job whose `needs` were
+    # skipped is skipped itself unless it says otherwise. So this says
+    # otherwise, and checks by hand what the default would have: nothing
+    # was cancelled, the suite, the Linux leg, the web leg, the client and
+    # the SSH page passed, and either those legs were skipped or every one
+    # of them passed too.
     if: >-
       !cancelled()
       && needs.preflight.outputs.publish == 'true'
@@ -789,7 +811,7 @@ jobs:
       && needs.build-web.result == 'success'
       && needs.build-client.result == 'success'
       && needs.build-ssh-page.result == 'success'
-      && (needs.preflight.outputs.dev == 'true'
+      && (needs.preflight.outputs.all_legs != 'true'
           || (needs.build-wasip2.result == 'success'
               && needs.build-windows.result == 'success'
               && needs.smoke-windows.result == 'success'))
@@ -816,6 +838,7 @@ jobs:
           SHA: ${{ needs.preflight.outputs.sha }}
           BRANCH: ${{ needs.preflight.outputs.branch }}
           DEV: ${{ needs.preflight.outputs.dev }}
+          ALL_LEGS: ${{ needs.preflight.outputs.all_legs }}
           MIRROR: https://software.aloecraft.org/releases/diluvium-drt
           # A release page folds a long body, so what matters is above
           # the fold: the overview, then where the whole of it is.
@@ -848,7 +871,12 @@ jobs:
             {
               echo "# DRT $TAG, a dev build"
               echo
-              echo "Commit \`$SHA\` on \`$BRANCH\`: the suite, the Linux build, the web build (\`drt_web.tar.gz\`), the browser access client (\`drt_browser_access.js\`) and the SSH page (\`ssh.html\`). Not a release: \`BUILDINFO.txt\` says what is inside, the ten newest dev builds are kept, and the newest changelog entry below describes the tree this is cut from, not this build."
+              if [ "$ALL_LEGS" = true ]; then
+                legs="every target a release builds"
+              else
+                legs="the Linux build"
+              fi
+              echo "Commit \`$SHA\` on \`$BRANCH\`: the suite, $legs, the web build (\`drt_web.tar.gz\`), the browser access client (\`drt_browser_access.js\`) and the SSH page (\`ssh.html\`). Not a release: \`BUILDINFO.txt\` says what is inside, the ten newest dev builds are kept, and the newest changelog entry below describes the tree this is cut from, not this build."
               echo
               echo "## $since ($n commit(s))"
               echo
@@ -1018,10 +1046,13 @@ jobs:
           } > BUILDINFO.txt
           # What the artifacts carry against what the entry says they carry
           # (doc/Release.md: the connector set is why a version number is
-          # honest). A dev build is held to the newest entry.
+          # honest). A dev build is held to the newest entry, and only a
+          # dev build that skipped legs may carry `unknown` lines.
           pip install --quiet pyyaml
           if [ "${{ needs.preflight.outputs.dev }}" = true ]; then
-            ../script/changelog.py buildinfo-check --newest --allow-unknown --file BUILDINFO.txt
+            allow=""
+            [ "${{ needs.preflight.outputs.all_legs }}" = true ] || allow="--allow-unknown"
+            ../script/changelog.py buildinfo-check --newest $allow --file BUILDINFO.txt
           else
             ../script/changelog.py buildinfo-check --tag '${{ needs.preflight.outputs.tag }}' --file BUILDINFO.txt
           fi

@@ -25,6 +25,12 @@ on:
     # busy minute is a run that waits for a runner.
     - cron: '17 6 * * *'
   workflow_dispatch:
+    inputs:
+      full:
+        description: 'Build every target, not the Linux leg alone, and cut even if HEAD already has a dev build.'
+        type: boolean
+        required: false
+        default: false
 
 # The dispatch below starts `release.yml`, and the tag allocation pushes,
 # so this needs more than the default read.
@@ -55,6 +61,8 @@ jobs:
 
       - name: The next dev tag, if HEAD moved
         id: tag
+        env:
+          IN_FULL: ${{ inputs.full }}
         run: |
           set -u
           # Three outcomes, kept apart on purpose. `--if-changed` exits 3
@@ -63,8 +71,16 @@ jobs:
           # day should end green having built nothing. Any other non-zero
           # is a real failure and must not be read as "nothing to do",
           # which is what a bare `|| true` here would have done.
+          # A `full` dispatch is asked for on purpose, usually for a
+          # commit that already has a Linux-only dev build, so it is
+          # cut whether or not HEAD moved: the number is never reused,
+          # and the build is a different set of artifacts.
           set +e
-          TAG=$(script/dev-tag.sh --if-changed)
+          if [ "${IN_FULL:-false}" = true ]; then
+            TAG=$(script/dev-tag.sh)
+          else
+            TAG=$(script/dev-tag.sh --if-changed)
+          fi
           rc=$?
           set -e
           case "$rc" in
@@ -107,11 +123,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          IN_FULL: ${{ inputs.full }}
         run: |
           set -eu
           gh workflow run release.yml \
             --ref "${{ github.event.repository.default_branch }}" \
             -f ref="${{ github.sha }}" \
             -f tag="${{ steps.tag.outputs.tag }}" \
-            -f publish=true
+            -f publish=true \
+            -f full="${IN_FULL:-false}"
           echo "dispatched release.yml for ${{ steps.tag.outputs.tag }} at ${{ github.sha }}"

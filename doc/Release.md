@@ -595,7 +595,13 @@ first second of life.
   to get a commit into someone's hands. The same workflow runs at 06:17
   UTC as a backstop, in case a push run failed or was never queued, and
   takes a `workflow_dispatch` so it can be rehearsed. It decides,
-  allocates a number, and dispatches; it never builds.
+  allocates a number, and dispatches; it never builds. Dispatched with
+  `full` on, it cuts a dev build of every target a release builds
+  (arm64, both macOS, wasip2, Windows and its smoke), whether or not
+  HEAD moved; `release.yml` takes the same input, so a dev tag
+  dispatched by hand can ask for every leg too. That is how a branch's
+  cross-target legs are exercised before a candidate is cut, since the
+  rehearsal runs them without publishing anything.
 
   `script/dev-tag.sh --if-changed` is the skip: exit 3 means HEAD is the
   commit the newest dev tag already points at, so a quiet day ends green
