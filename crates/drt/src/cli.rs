@@ -302,8 +302,12 @@ pub enum Command {
         #[command(subcommand)]
         action: KeyAction,
     },
-    /// The introspection surface: instances, caps, budgets, usage, health.
-    Ps,
+    /// Ask a running deployment over its ssh listener (SPEC.md §13a):
+    /// the instance table, or --status, --caps, --pause, --resume, --stop.
+    /// Inside a project, the endpoint `drt start` wrote is found with
+    /// nothing said; the same questions are :ps and friends in a REPL the
+    /// deployment serves.
+    Ps(crate::control::PsArgs),
     /// What this binary is and what it carries: version, the dv ABI it
     /// speaks, its feature profile, and the connectors compiled into it.
     ///
@@ -2037,15 +2041,14 @@ pub fn main(cli: Cli) -> ExitCode {
             ExitCode::SUCCESS
         }
         Command::Key { ref action } => key_verb(&cli, action),
-        Command::Ps => {
-            // Unlike the REPL, `ps` has nothing it can do standalone: its
-            // whole subject is a deployment already running in another
-            // process, which is the control endpoint's to reach.
-            eprintln!(
-                "drt ps: not built yet — it reaches a running deployment over the \
-                 control endpoint, which lands with sshd (SPEC.md §13a)"
-            );
-            ExitCode::FAILURE
-        }
+        Command::Ps(ref args) => match crate::control::run(args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                if !e.is_empty() {
+                    eprintln!("drt ps: {e}");
+                }
+                ExitCode::FAILURE
+            }
+        },
     }
 }

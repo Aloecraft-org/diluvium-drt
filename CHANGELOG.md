@@ -97,6 +97,30 @@ is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
   - **`drt ssh`** takes a peer address in place of a host
     (`drt ssh me@drt+ssh://signal.example/v1/mypc`, a record, a
     file), `-u` beside `-l`, and `--relay`/`--fallback`.
+  - **`hello.scope` is always an array.** dev.17 omitted it unless the
+    new `hello_scope` was on, and a v1 client that indexes it threw on
+    every default-configured host. The `webrtc` block shows its scope
+    by default again, as before; `drt p2p` sends `scope` empty and
+    names services only; `default` is absent when hidden.
+  - **The control endpoint (SPEC.md §13a).** `drt ps [ssh://host:port]`
+    reaches a running deployment over its ssh listener: the instance
+    table, `--status`, `--caps <id>`, `--pause <id>` (hibernate a parked
+    instance), `--resume <id>`, `--stop` (hibernate what is parked and
+    end). Inside a project the endpoint `drt start` wrote under
+    `.drt_root/live/control` is found unasked. The same questions are
+    `:ps`, `:status`, `:caps`, `:pause`, `:resume` and `:stop` in a REPL
+    the deployment serves. Any admitted key may ask; the orders need a
+    key holding `host:*`. The wire is the `drt` SSH subsystem carrying
+    framed msgpack.
+  - **`granted` on `control`.** Once a service knows what a stream
+    holds (for the REPL behind a key, after sign-in) the host sends
+    `{"t":"granted","stream":N,"caps":[…]}`; the browser library
+    settles `stream.granted`. `hello.caps` is the ceiling; this is the
+    session's own.
+  - **A request's `peer`.** The `http` listener hands a program the
+    client's `ip:port`, and `drt p2p --match` refuses a caller outside
+    the answerer's `DRT-Accept` by it (403), before the parked side
+    hears of the call. A caller shows the server's own refusal text.
   - **The REPL as bytes, in a page:** `DrtTerm.repl(cols, rows, sink,
     closed)` in the browser module is the in-page root's REPL as a byte
     stream with `input`, `resize` and `close`, the shape `drt p2p`'s

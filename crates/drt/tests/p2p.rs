@@ -497,6 +497,55 @@ fn the_match_server_claims_names_by_token_and_holds_a_capacity() {
     let _ = parked.wait();
 }
 
+/// The answerer's `--accept` travels as DRT-Accept, and the match server
+/// refuses a caller outside it by the address its listener saw, before
+/// the parked side ever hears of the call.
+#[test]
+fn the_match_server_refuses_a_caller_outside_the_answerers_accept_range() {
+    let server = Match::start(2);
+    let port = echo();
+    let name = format!("{}/v1/fenced", server.base);
+    let mut parked = drt()
+        .arg("p2p")
+        .arg("--park")
+        .arg(&name)
+        .arg("--H")
+        .arg("auth=answerer-token")
+        .arg("--accept")
+        .arg("10.0.0.0/8")
+        .arg("--forward")
+        .arg(format!("127.0.0.1:{port}"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut err = BufReader::new(parked.stderr.take().unwrap());
+    loop {
+        let mut line = String::new();
+        assert!(
+            err.read_line(&mut line).unwrap() > 0,
+            "the parked peer ended"
+        );
+        if line.contains("present at ") {
+            break;
+        }
+    }
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        while err.read_line(&mut line).unwrap_or(0) > 0 {
+            line.clear();
+        }
+    });
+    let (out, errs) = call(&name, &[], b"x\n");
+    assert!(
+        out.is_empty() && errs.contains("403") && errs.contains("address"),
+        "{errs}"
+    );
+    let _ = parked.kill();
+    let _ = parked.wait();
+}
+
 // depth: the carriers
 
 #[test]

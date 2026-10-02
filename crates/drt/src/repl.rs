@@ -63,6 +63,10 @@ pub struct Repl {
     /// Served to someone else's terminal (SSH): `print` comes back with the
     /// answers, and nothing reaches for this process's own terminal.
     served: bool,
+    /// Whether `:pause`, `:resume` and `:stop` are this terminal's to
+    /// give: the process's own REPL, or a served one whose key holds the
+    /// ceiling (`crate::control`).
+    may_order: bool,
 }
 
 impl Repl {
@@ -130,7 +134,13 @@ impl Repl {
             names_stale: true,
             unsafe_stdlib,
             served: false,
+            may_order: true,
         })
+    }
+
+    /// Whether the control endpoint's orders may be given from here.
+    pub fn allow_orders(&mut self, may: bool) {
+        self.may_order = may;
     }
 
     /// A sealed REPL for a terminal that is not this process's: an SSH
@@ -389,6 +399,9 @@ const SESSION_WAIT_MS: u32 = i32::MAX as u32;
 
 fn meta(repl: &mut Repl, line: &str) -> Result<bool, String> {
     let trimmed = line.trim_start();
+    if control_meta(repl, trimmed) {
+        return Ok(true);
+    }
     let Some(rest) = trimmed.strip_prefix(":ssh") else {
         return Ok(false);
     };
@@ -415,6 +428,56 @@ fn meta(repl: &mut Repl, line: &str) -> Result<bool, String> {
     }
     ssh_to(rest);
     Ok(true)
+}
+
+/// `:ps`, `:status`, `:caps <id>`, `:pause <id>`, `:resume <id>`,
+/// `:stop`: the control endpoint (SPEC.md §13a), from inside a REPL in a
+/// `drt start` process. Elsewhere they say where a deployment would be.
+fn control_meta(repl: &Repl, trimmed: &str) -> bool {
+    use crate::control;
+    let Some(rest) = trimmed.strip_prefix(':') else {
+        return false;
+    };
+    let words: Vec<&str> = rest.split_whitespace().collect();
+    if !matches!(
+        words.first().copied(),
+        Some("ps" | "status" | "caps" | "pause" | "resume" | "stop")
+    ) {
+        return false;
+    }
+    let ask = match control::parse(&words) {
+        Ok(ask) => ask,
+        Err(e) => {
+            let _ = writeln!(stdio::stderr(), ":{}: {e}", words[0]);
+            return true;
+        }
+    };
+    let Some(handle) = control::handle() else {
+        let _ = writeln!(
+            stdio::stderr(),
+            ":{}: no deployment is running in this process; these reach a `drt start`, from              a REPL it serves or with `drt ps ssh://host:port`",
+            ask.verb()
+        );
+        return true;
+    };
+    if ask.is_order() && !repl.may_order {
+        let _ = writeln!(
+            stdio::stderr(),
+            ":{}: needs a key holding host:*, the deployment's ceiling",
+            ask.verb()
+        );
+        return true;
+    }
+    match handle.ask(ask.clone()) {
+        Ok(answer) => {
+            let text = control::render(&ask, &answer);
+            let _ = write!(stdio::stdout(), "{text}");
+        }
+        Err(e) => {
+            let _ = writeln!(stdio::stderr(), ":{}: {e}", ask.verb());
+        }
+    }
+    true
 }
 
 #[cfg(feature = "connector-ssh")]

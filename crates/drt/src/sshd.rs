@@ -209,15 +209,64 @@ pub fn spawn(config: &RootConfig, listener: &Listener) -> Result<SocketAddr, Str
             let (keys, config) = (keys.clone(), config.clone());
             tokio::spawn(async move {
                 while let Some(shell) = opened.recv().await {
-                    match keys.grants(&shell.key) {
-                        Some(grants) => session(shell, grants, config.clone()),
-                        None => shell.close(1).await,
+                    match (keys.grants(&shell.key), shell.subsystem.as_deref()) {
+                        (None, _) => shell.close(1).await,
+                        (Some(grants), None) => session(shell, grants, config.clone()),
+                        (Some(grants), Some(crate::control::SUBSYSTEM)) => {
+                            control_session(shell, grants)
+                        }
+                        (Some(_), Some(_)) => shell.close(1).await,
                     }
                 }
             });
         }
     });
     Ok(addr)
+}
+
+// depth: the control endpoint, as the `drt` subsystem (SPEC.md §13a)
+
+/// Framed msgpack both ways (`crate::control::frame`): each request one
+/// `Ask`, each answer the loop's. Introspection for any admitted key;
+/// the orders for a key holding the ceiling.
+fn control_session(shell: Shell, grants: Vec<Grant>) {
+    use crate::control::{self, Ask};
+    let (mut reader, writer) = shell.split();
+    let may_order = control::may_order(&grants);
+    tokio::spawn(async move {
+        let mut buf = Vec::new();
+        'session: while let Some(bytes) = reader.read().await {
+            buf.extend_from_slice(&bytes);
+            loop {
+                let request = match control::unframe(&mut buf) {
+                    Ok(Some(v)) => v,
+                    Ok(None) => break,
+                    Err(why) => {
+                        let _ = writer.write(control::frame(&control::err(why))).await;
+                        break 'session;
+                    }
+                };
+                let answer = match Ask::from_value(&request) {
+                    Err(why) => control::err(why),
+                    Ok(ask) if ask.is_order() && !may_order => control::err(format!(
+                        "{} needs a key holding host:*, the deployment's ceiling",
+                        ask.verb()
+                    )),
+                    Ok(ask) => match control::handle() {
+                        None => control::err("no deployment is running in this process".into()),
+                        Some(h) => tokio::task::spawn_blocking(move || h.ask(ask))
+                            .await
+                            .unwrap_or_else(|e| Err(e.to_string()))
+                            .unwrap_or_else(control::err),
+                    },
+                };
+                if writer.write(control::frame(&answer)).await.is_err() {
+                    break 'session;
+                }
+            }
+        }
+        writer.close(0).await;
+    });
 }
 
 // depth: one session
@@ -302,7 +351,9 @@ fn run<I: Input>(
     config: &RootConfig,
 ) -> Result<(), String> {
     let dispatcher = Dispatcher::new(crate::cli::wire_connectors(config)?);
+    let may_order = crate::control::may_order(&grants);
     let mut repl = Repl::served(Arc::new(dispatcher), grants, config.root.budget)?;
+    repl.allow_orders(may_order);
     let _ = out.send(Out::Data(crlf(format!("{}\n", repl.banner()).as_bytes())));
     let terminal = ShellTerminal::new(input, out);
     let mut editor = crate::repl::editor(&repl, terminal);

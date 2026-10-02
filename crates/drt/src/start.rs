@@ -482,12 +482,18 @@ pub fn prepare(config: &RootConfig, dispatcher: Dispatcher) -> Result<DeployDriv
 }
 
 #[cfg(feature = "sshd")]
-fn ssh_listener(config: &RootConfig, listener: &drt_config::Listener) -> Result<(), String> {
-    crate::sshd::spawn(config, listener).map(|_| ())
+fn ssh_listener(
+    config: &RootConfig,
+    listener: &drt_config::Listener,
+) -> Result<std::net::SocketAddr, String> {
+    crate::sshd::spawn(config, listener)
 }
 
 #[cfg(all(feature = "listen", not(feature = "sshd")))]
-fn ssh_listener(_config: &RootConfig, listener: &drt_config::Listener) -> Result<(), String> {
+fn ssh_listener(
+    _config: &RootConfig,
+    listener: &drt_config::Listener,
+) -> Result<std::net::SocketAddr, String> {
     Err(format!(
         "the listener on {} is `ssh`, and this build does not carry `sshd` (it is \
          in `full`)",
@@ -517,14 +523,40 @@ pub fn start(config: &RootConfig, dispatcher: Dispatcher) -> Result<(), String> 
             .iter()
             .cloned()
             .partition(|l| l.scheme == "ssh");
+        let mut endpoint = None;
         for listener in &ssh {
-            ssh_listener(config, listener)?;
+            let addr = ssh_listener(config, listener)?;
+            endpoint.get_or_insert(addr);
         }
+        // The control endpoint, where a `drt ps` in this project finds it
+        // with nothing said (SPEC.md §13a): the first ssh listener, as an
+        // address this machine can reach.
+        let endpoint_file = endpoint.and_then(|addr| {
+            let path = crate::control::endpoint_path()?;
+            let reach = if addr.ip().is_unspecified() {
+                std::net::SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), addr.port())
+            } else {
+                addr
+            };
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            std::fs::write(&path, format!("ssh://{reach}\n")).ok()?;
+            eprintln!(
+                "drt start: control endpoint ssh://{reach}, written to {}",
+                path.display()
+            );
+            Some(path)
+        });
         let bound = crate::listen::bind(&http)?;
         for (listener, addr) in http.iter().zip(bound.addrs()) {
             eprintln!("drt start: {} listening on {addr}", listener.scheme);
         }
-        serve(config, dispatcher, bound)
+        let outcome = serve(config, dispatcher, bound);
+        if let Some(path) = endpoint_file {
+            let _ = std::fs::remove_file(path);
+        }
+        outcome
     }
     #[cfg(not(feature = "listen"))]
     {
@@ -570,6 +602,10 @@ pub fn serve_with_observer<B: Acceptor>(
     let _runtime = crate::runtime::enter();
     let mut driver = DeployDriver::new(config, dispatcher)?;
     let root = driver.root();
+    // The control endpoint's end (SPEC.md §13a): questions from a REPL
+    // served over SSH or from `drt ps`, answered once per pass below.
+    let (control, control_inbox) = crate::control::channel();
+    crate::control::install(control);
 
     // The relay, if the config names one, on its own runtime beside this
     // loop. Its events and questions reach the root over the queue bridge
@@ -756,7 +792,11 @@ pub fn serve_with_observer<B: Acceptor>(
             netcheck.report(&mut |queue, msg| sw.push(root, queue, &runtime_sender(), msg).is_ok());
         }
         observe(sw, root);
-        if alive == 0 {
+        let stopping = crate::control::drain(&control_inbox, sw, root);
+        if stopping {
+            eprintln!("drt start: stop asked over the control endpoint; ending");
+        }
+        if alive == 0 || stopping {
             // The program chose to exit; ports serving a drained swarm
             // would answer 503 forever, and a supervisor should see the
             // exit instead. Anything still waiting for a queue is waiting

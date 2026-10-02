@@ -221,6 +221,9 @@ pub struct Shell {
     /// The user name the client gave. Informational: who may do what is
     /// the key's, never the name's.
     pub user: String,
+    /// The subsystem the client asked for instead of a shell (`drt`, the
+    /// control endpoint of SPEC.md §13a); `None` for a shell.
+    pub subsystem: Option<String>,
     from_client: mpsc::Receiver<Vec<u8>>,
     handle: russh::server::Handle,
     channel: ChannelId,
@@ -444,27 +447,30 @@ impl Handler for Handshake {
         channel: ChannelId,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        let Some((user, key)) = self.signed_in.clone() else {
-            session.channel_failure(channel)?;
-            return Ok(());
-        };
-        let (to_page, from_client) = mpsc::channel(DEPTH);
-        let shell = Shell {
-            window: self.window.clone(),
-            key,
-            user,
-            from_client,
-            handle: session.handle(),
-            channel,
-        };
-        if self.shells.send(shell).await.is_err() {
-            // Nobody is taking shells. Refusing is the honest answer; the
-            // alternative is a terminal that never echoes.
-            session.channel_failure(channel)?;
-            return Ok(());
-        }
-        self.to_page = Some(to_page);
-        session.channel_success(channel)?;
+        self.open(channel, None, session).await
+    }
+
+    /// A subsystem: the same two ends, with the name the client asked
+    /// for, so the listener decides what answers it (`drt` is the
+    /// control endpoint). An unknown name is the listener's to refuse.
+    async fn subsystem_request(
+        &mut self,
+        channel: ChannelId,
+        name: &str,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.open(channel, Some(name.to_string()), session).await
+    }
+
+    /// The client has nothing more to send: the far end of `data` goes
+    /// away, so whoever reads the shell or subsystem sees its end. A
+    /// one-request subsystem client ends here; a shell ends with ^D.
+    async fn channel_eof(
+        &mut self,
+        _channel: ChannelId,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.to_page = None;
         Ok(())
     }
 
@@ -481,6 +487,39 @@ impl Handler for Handshake {
         if let Some(to_page) = &self.to_page {
             let _ = to_page.send(data.to_vec()).await;
         }
+        Ok(())
+    }
+}
+
+impl Handshake {
+    async fn open(
+        &mut self,
+        channel: ChannelId,
+        subsystem: Option<String>,
+        session: &mut Session,
+    ) -> Result<(), russh::Error> {
+        let Some((user, key)) = self.signed_in.clone() else {
+            session.channel_failure(channel)?;
+            return Ok(());
+        };
+        let (to_page, from_client) = mpsc::channel(DEPTH);
+        let shell = Shell {
+            window: self.window.clone(),
+            key,
+            user,
+            subsystem,
+            from_client,
+            handle: session.handle(),
+            channel,
+        };
+        if self.shells.send(shell).await.is_err() {
+            // Nobody is taking shells. Refusing is the honest answer; the
+            // alternative is a terminal that never echoes.
+            session.channel_failure(channel)?;
+            return Ok(());
+        }
+        self.to_page = Some(to_page);
+        session.channel_success(channel)?;
         Ok(())
     }
 }

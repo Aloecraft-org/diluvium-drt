@@ -244,11 +244,11 @@ impl Term {
                 say(Fd::Stdout, &cli::buildinfo(json));
                 Session::exited(0)
             }
-            Command::Ps => {
+            Command::Ps(_) => {
                 say(
                     Fd::Stderr,
-                    "drt ps: not built yet — it reaches a running deployment over the \
-                     control endpoint, which lands with sshd (SPEC.md §13a)\n",
+                    "drt ps: reaches a running deployment over its ssh listener (SPEC.md \
+                     §13a), and a page has no socket to reach one with\n",
                 );
                 Session::exited(1)
             }

@@ -612,6 +612,53 @@ pub async fn shell(conn: Connected, mut term: Terminal) -> Result<Option<u32>, S
 /// stderr, a line from stdin, echo off for secrets.
 pub struct TtyPrompt;
 
+/// One request to a subsystem, and its answer: open a session channel,
+/// ask for `name`, send `request`, end this side, and collect what comes
+/// back until `complete` says the answer is whole or the server closes.
+/// What `drt ps` does with the `drt` subsystem (SPEC.md §13a).
+pub async fn subsystem(
+    conn: Connected,
+    name: &str,
+    request: &[u8],
+    complete: &dyn Fn(&[u8]) -> bool,
+) -> Result<Vec<u8>, String> {
+    let mut channel = conn
+        .handle
+        .channel_open_session()
+        .await
+        .map_err(|e| format!("opening a session: {e}"))?;
+    channel
+        .request_subsystem(true, name)
+        .await
+        .map_err(|e| format!("asking for the {name} subsystem: {e}"))?;
+    channel
+        .data(request)
+        .await
+        .map_err(|e| format!("sending the request: {e}"))?;
+    let _ = channel.eof().await;
+    let mut out = Vec::new();
+    while let Some(msg) = channel.wait().await {
+        match msg {
+            ChannelMsg::Data { data } => {
+                out.extend_from_slice(&data);
+                if complete(&out) {
+                    let _ = channel.close().await;
+                    break;
+                }
+            }
+            ChannelMsg::Failure => {
+                return Err(format!("the server has no {name} subsystem for this key"))
+            }
+            ChannelMsg::Eof | ChannelMsg::Close => break,
+            _ => {}
+        }
+    }
+    if out.is_empty() {
+        return Err(format!("the {name} subsystem answered nothing"));
+    }
+    Ok(out)
+}
+
 impl Prompt for TtyPrompt {
     fn confirm(&self, question: &str) -> bool {
         loop {

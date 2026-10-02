@@ -267,6 +267,18 @@ There is deliberately **no `--detach`**.
 the config's `listeners` name. A config with none is a complete, legitimate
 deployment that binds nothing — a headless swarm driving its root program.
 
+**Built, 2026-10-02:** `drt ps [ssh://host:port]` and its `--status`,
+`--caps <id>`, `--pause <id>`, `--resume <id>`, `--stop`, over the ssh
+listener's `drt` subsystem (framed msgpack: a 4-byte big-endian length,
+then one map, `{"ask": verb, "id": n}` and `{"ok": …}` back); the same
+questions as `:ps` and friends in a REPL the deployment serves; and the
+endpoint under `.drt_root/live/control`, written by `drt start` and found
+by a `drt ps` run in the project. Any admitted key may ask; the three
+orders need a key holding `host:*`. `pause` is the caveat below, exactly;
+`stop` hibernates what is parked and ends the loop, with the snapshot
+store's half still ahead. Not yet: a REPL attached to a running instance's
+state, which is §9's attach in full.
+
 **The client commands reach a running deployment over a transport endpoint** —
 the §9 sshd subsystem channel carrying framed msgpack, which is the same
 mechanism serving REPL attach and remote access. One mechanism, three uses. A

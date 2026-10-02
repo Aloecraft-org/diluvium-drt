@@ -528,6 +528,63 @@ fn keygen(dir: &Path, name: &str) -> bool {
 }
 
 impl Served {
+    /// The host key's fingerprint, as `ssh-keygen -lf` shows it.
+    fn fingerprint(&self) -> String {
+        String::from_utf8(
+            Command::new("ssh-keygen")
+                .arg("-lf")
+                .arg(self.dir.path().join("host.pub"))
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .to_string()
+    }
+
+    /// What `drt start` writes inside a project (SPEC.md §13a), laid down
+    /// by hand here: this deployment runs from a config, not a project, so
+    /// the file is the test's to write and `drt ps`'s to find.
+    fn write_endpoint(&self) {
+        let live = self.dir.path().join(".drt_root/live");
+        std::fs::create_dir_all(&live).unwrap();
+        std::fs::write(
+            live.join("control"),
+            format!("ssh://127.0.0.1:{}\n", self.port),
+        )
+        .unwrap();
+    }
+
+    /// `drt ps` against this deployment, signed in with `key`, run in
+    /// its directory.
+    fn ps(&self, key: &str, endpoint: Option<&str>, extra: &[&str]) -> (i32, String, String) {
+        let d = self.dir.path();
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_drt"));
+        cmd.arg("ps");
+        if let Some(e) = endpoint {
+            cmd.arg(e);
+        }
+        cmd.args(extra)
+            .arg("-i")
+            .arg(d.join(key))
+            .arg("--hostkey")
+            .arg(self.fingerprint())
+            .arg("-l")
+            .arg("me")
+            .current_dir(d)
+            .env_remove("SSH_AUTH_SOCK")
+            .stdin(Stdio::null());
+        let out = cmd.output().unwrap();
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
     /// None when this machine has no `ssh` or `ssh-keygen`; the test says
     /// it was skipped.
     fn start(extra: serde_json::Value) -> Option<Result<Served, String>> {
@@ -816,4 +873,99 @@ fn drt_ssh_reaches_the_repl_drt_p2p_serves_by_its_record() {
     assert_eq!(t.status(), 0, "the served REPL's ^D is drt ssh's exit 0");
     let _ = listening.kill();
     let _ = listening.wait();
+}
+
+/// The control endpoint (SPEC.md §13a): `drt ps` reaches the deployment
+/// over its ssh listener, with the endpoint found under .drt_root/live
+/// when none is given; the orders need the ceiling, which an
+/// authorized_keys key holds; `--stop` ends the deployment.
+#[test]
+fn drt_ps_reaches_the_deployment_over_its_ssh_listener() {
+    let Some(served) = Served::start(serde_json::json!({
+        "listener": { "authorized_keys": "@DIR@/client.pub" }
+    })) else {
+        return;
+    };
+    let mut served = served.expect("drt start with an ssh listener");
+    let endpoint = format!("ssh://127.0.0.1:{}", served.port);
+    let (code, out, err) = served.ps("client", Some(&endpoint), &[]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("root") && out.contains("resident"), "{out}");
+    // The endpoint file under .drt_root/live, found with nothing said.
+    served.write_endpoint();
+    let (code, out, err) = served.ps("client", None, &["--status"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.starts_with("root 1:") && out.contains("resident"),
+        "{out}"
+    );
+    let (code, out, err) = served.ps("client", None, &["--caps", "1", "--json"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("\"ok\":true") && out.contains("caps"), "{out}");
+    // The root is not paused: that is stop's job, and the refusal says so.
+    let (code, out, _) = served.ps("client", None, &["--pause", "1"]);
+    assert_ne!(code, 0);
+    assert!(out.contains("not paused") || out.contains("stop"), "{out}");
+    // Two asks at once is one too many.
+    let (code, _, err) = served.ps("client", None, &["--status", "--stop"]);
+    assert!(code != 0 && err.contains("one of"), "{err}");
+    // stop: the deployment ends, and takes its endpoint file with it.
+    let (code, out, err) = served.ps("client", None, &["--stop"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.starts_with("stopping"), "{out}");
+    let status = served.child.wait().unwrap();
+    assert!(status.success(), "{status}");
+}
+
+/// A key that is not the ceiling may look but not order.
+#[test]
+fn a_principal_without_the_ceiling_may_ask_but_not_order() {
+    let Some(served) = Served::start(serde_json::json!({
+        "listener": { "authorized_keys": "@DIR@/none" },
+        "principals": [{ "key": "@CLIENT_PUB@", "caps": [{ "capability": "host:time/*" }] }]
+    })) else {
+        return;
+    };
+    let served = served.expect("drt start with a principal");
+    served.write_endpoint();
+    let (code, out, _) = served.ps("client", None, &[]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("root"), "{out}");
+    let (code, out, _) = served.ps("client", None, &["--stop"]);
+    assert_ne!(code, 0);
+    assert!(out.contains("host:*"), "{out}");
+}
+
+/// The same questions from inside a served REPL.
+#[test]
+fn the_served_repl_answers_ps_and_status() {
+    let Some(served) = Served::start(serde_json::json!({
+        "listener": { "authorized_keys": "@DIR@/client.pub" }
+    })) else {
+        return;
+    };
+    let served = served.expect("drt start with an ssh listener");
+    let mut t = served.ssh("client");
+    t.expect("dv> ");
+    t.send(":status\r");
+    t.expect("instance(s)");
+    t.send(":ps\r");
+    t.expect("resident");
+    t.send(":caps 99\r");
+    t.expect("no such instance");
+    t.send("\x04");
+    assert_eq!(t.status(), 0);
+}
+
+/// Outside any deployment, `drt ps` says where one would be.
+#[test]
+fn drt_ps_outside_a_project_says_what_it_needs() {
+    let out = Command::new(env!("CARGO_BIN_EXE_drt"))
+        .arg("ps")
+        .current_dir(std::env::temp_dir())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("ssh://host:port"), "{err}");
 }
