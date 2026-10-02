@@ -171,7 +171,9 @@ releases:
           reports a terminal's size on `control`; `offer().accept`,
           `accept` and `direct` take `fingerprint`, a `SHA256:…` to compare
           or a function asked before anything flows. `ssh.html#call=` takes
-          `drt://` and `drt+ssh://` addresses and a `fingerprint`.
+          `drt://` and `drt+ssh://` addresses and a `fingerprint`, and on
+          every link the page opens a host's service `ssh` first, then `to`
+          or its scope when the host shows one, else what it forwards to.
         - The `p2p` config block, every flag a key; `tunnel` is read as an
           alias for one release with a warning per key. `doc/P2P.md` is the
           design, `doc/ssh-transport-matrix.md` every row in its terms.
