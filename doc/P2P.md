@@ -355,6 +355,12 @@ checks enforce all of this unchanged.
 
 ### 5.2 The REPL as the service `repl`
 
+The same shape in a page: `DrtTerm.repl(cols, rows, sink, closed)` in
+the browser module is the in-page root's REPL as a byte stream with
+`input`, `resize` and `close`, so a launcher attaches a terminal to a root
+one way whether the root is the page's own module or a `drt` reached over
+WebRTC (`doc/Browser.md`).
+
 Beside `ssh`, the REPL default serves the named service **`repl`**: the
 PTY's bytes on the Wisp stream itself, and the terminal's size as a
 message on `control`, `{"t":"resize","stream":<id>,"cols":<c>,"rows":<r>}`,
@@ -436,14 +442,15 @@ unaffected.
   grants only. A host that forwards to a TCP target or another peer sends
   none. It is what a launcher shows as a root's permissions; it is not
   what a session was granted, which the session itself decides (§5.2).
-- `hello` carries `scope` and `default` only when the serving side's
-  config asks it to. By default it carries the names of named services
-  and nothing about the addresses and ports behind them, which are the
-  serving side's policy (§5.1) and, for a forward into a private network,
-  a map of that network for anyone admitted. A deployment that wants
-  callers to see its scope, for diagnostics on its own machines, turns it
-  on. The fields stay in v1 as optional, so this is not a `v` bump; a v1
-  client already has to cope with a host whose scope is one entry.
+- `hello` shows the scope's entries and `default` only when the serving
+  side's config asks it to. `drt p2p` does not by default: it names the
+  services and nothing about the addresses and ports behind them, which
+  are the serving side's policy (§5.1) and, for a forward into a private
+  network, a map of that network for anyone admitted. The `webrtc` block
+  shows them by default, as every v1 client was written against; a
+  deployment that wants them hidden turns `hello_scope` off. `scope` is
+  always sent, empty when hidden, so a v1 client that indexes it still
+  parses; `default` is simply absent. Not a `v` bump.
 - A control-channel message carries a relay's destination (§4.1).
 
 ### 7.3 Elsewhere

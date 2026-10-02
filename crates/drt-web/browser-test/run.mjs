@@ -1067,6 +1067,36 @@ if (PAGE_CHECKS) {
   }
 }
 
+// The REPL as bytes: `DrtTerm.repl` driven as a launcher drives a root's
+// attach stream (doc/P2P.md §5.2). Line editing is inside, so the echo of
+// what was typed and the prompt both come back as bytes, and ^D ends it
+// with the status the native REPL exits with.
+if (PAGE_CHECKS) {
+  const name = 'repl-as-bytes';
+  const lines = ['x = 6 * 7', 'x'];
+  try {
+    const r = await withTimeout(
+      page.evaluate((l) => window.drtBrowserTest.replBytes(l), lines),
+      TIMEOUT * 1000,
+    );
+    const wrong = [];
+    if (r.prompts !== lines.length) wrong.push(`saw ${r.prompts} prompt(s) for ${lines.length} line(s)`);
+    if (!r.out.includes('dv> x = 6 * 7')) wrong.push('the typed line was not echoed by the editor inside');
+    if (!/\r\n42\r\n/.test(r.out)) wrong.push(`42 did not come back: ${JSON.stringify(r.out.slice(-200))}`);
+    if (!r.closed) wrong.push('^D did not end the session');
+    else if (r.status !== 0) wrong.push(`ended with status ${r.status}`);
+    if (r.again !== true) wrong.push(`a second session after the first: ${r.again}`);
+    if (wrong.length === 0) {
+      console.log(`ok       ${name.padEnd(24)} DrtTerm.repl: keystrokes in, prompt, echo and 42 out, ^D ends it`);
+      nOk += 1;
+    } else {
+      fail(name, wrong.join('; '));
+    }
+  } catch (e) {
+    fail(name, e === TIMED_OUT ? `timed out after ${TIMEOUT}s` : `the page threw: ${e.message}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------

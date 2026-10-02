@@ -135,11 +135,56 @@ impl DrtTerm {
         self.inner.fs().cwd().display().to_string()
     }
 
+    /// The REPL as a byte stream (doc/P2P.md §5.2): what `drt p2p`'s
+    /// named service `repl` is natively, for this in-page root. Keystrokes
+    /// go in through `input`, everything the REPL writes comes out through
+    /// `sink(bytes)` as a `Uint8Array`, line editing happens inside, and
+    /// `closed(status)` is called once when it ends. `cols` and `rows` are
+    /// the far terminal's size; `resize` follows it. One at a time in a
+    /// page: while it runs, the runtime's output is the stream's and this
+    /// terminal's sink sees nothing; throws if one is already running.
+    pub fn repl(
+        &self,
+        cols: u16,
+        rows: u16,
+        sink: js_sys::Function,
+        closed: js_sys::Function,
+    ) -> Result<DrtRepl, JsValue> {
+        crate::raw::Raw::start(&self.inner, cols, rows, sink, closed)
+            .map(|inner| DrtRepl { inner })
+            .map_err(|e| JsValue::from_str(&e))
+    }
+
     /// Run one command line: `["drt", "run", "app.dlua"]`.
     pub fn exec(&self, argv: Vec<String>) -> DrtSession {
         DrtSession {
             inner: self.inner.exec(&argv),
         }
+    }
+}
+
+/// A REPL running as a byte stream; see `DrtTerm.repl`.
+#[wasm_bindgen]
+pub struct DrtRepl {
+    inner: crate::raw::Raw,
+}
+
+#[wasm_bindgen]
+impl DrtRepl {
+    /// Keystrokes from the far terminal, as it sent them.
+    pub fn input(&self, bytes: &[u8]) {
+        self.inner.input(bytes);
+    }
+
+    /// The far terminal's new size.
+    pub fn resize(&self, cols: u16, rows: u16) {
+        self.inner.resize(cols, rows);
+    }
+
+    /// The far side went away: the REPL reads end of input and ends, and
+    /// `closed` is called.
+    pub fn close(&self) {
+        self.inner.close();
     }
 }
 

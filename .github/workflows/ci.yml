@@ -507,12 +507,20 @@ jobs:
     # `tests/run.rs` is `#![cfg(unix)]` and compiles to nothing here, which
     # is exactly why a Windows run of the suite had to exist.
     # `drt-connector-ssh` carries `drt ssh`'s session and its console half.
-    # None of the three pulls in the C core, which is why this job needs no C compiler at
-    # all; widening it to a crate that embeds diluvium means bringing a
-    # mingw-w64 for the target and pointing `CC` at it, the way the musl
-    # legs in release.yml point `CC` at musl-gcc.
+    # None of the three pulls in the C core.
+    #
+    # The fourth step does: `drt` itself with `p2p`, which embeds diluvium,
+    # so this is where the C compiler question is answered. MSYS2's MINGW64
+    # environment is the msvcrt-based mingw-w64, the one Rust's windows-gnu
+    # links against (the runner's own `C:\mingw64` is a UCRT build, which is
+    # the one not to use), and `CC` points cc-rs at it the way the musl legs
+    # in release.yml point `CC` at musl-gcc. That makes this the one place
+    # the p2p verb's code runs on Windows: release.yml cross-builds it on
+    # Linux and smokes the binary, but `tests/p2p.rs` -- a listener, a
+    # caller, a relay, the match server, all as processes on loopback --
+    # had never executed on this platform.
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 75
     defaults:
       run:
         shell: bash
@@ -557,6 +565,20 @@ jobs:
       # either; ring's C builds with the runner's gcc.
       - name: Test (drt-connector-ssh)
         run: cargo test -p drt-connector-ssh
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: mingw-w64-x86_64-gcc
+      # `cargo test` builds the binary the tests spawn, so `slim,p2p` is
+      # the whole p2p verb and nothing it does not need (no sql, no mail).
+      - name: Test (drt p2p, on Windows)
+        run: |
+          set -eu
+          export CC="$RUNNER_TEMP/msys64/mingw64/bin/gcc.exe"
+          export CXX="$RUNNER_TEMP/msys64/mingw64/bin/g++.exe"
+          "$CC" --version | head -1
+          cargo test -p drt --no-default-features --features "slim,p2p" --lib p2p --test p2p
 
   fidelity:
     # The benchmark's *deterministic* fields, checked against the committed

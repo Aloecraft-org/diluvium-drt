@@ -97,6 +97,12 @@ is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
   - **`drt ssh`** takes a peer address in place of a host
     (`drt ssh me@drt+ssh://signal.example/v1/mypc`, a record, a
     file), `-u` beside `-l`, and `--relay`/`--fallback`.
+  - **The REPL as bytes, in a page:** `DrtTerm.repl(cols, rows, sink,
+    closed)` in the browser module is the in-page root's REPL as a byte
+    stream with `input`, `resize` and `close`, the shape `drt p2p`'s
+    named service `repl` has natively, so a launcher attaches a
+    terminal to a root one way for both. `tests/p2p.rs` now runs on
+    Windows in CI, with the C core built by MSYS2's mingw-w64.
   - **For a launcher:** `hello` carries `caps`, the capability names a
     program or REPL behind the host may hold; `drt p2p --listen` inside
     a project writes its record to `.drt_root/live/p2p-<port>.record.json`;

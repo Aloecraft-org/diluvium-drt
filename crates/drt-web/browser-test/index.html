@@ -68,6 +68,46 @@
     }),
     buildInfo: (json) => buildInfo(json),
     abiVersion: () => abiVersion(),
+    // The REPL as bytes (doc/P2P.md §5.2): a DrtTerm's `repl`, driven the
+    // way a launcher drives a root's attach stream -- keystrokes in,
+    // bytes out, a resize, then ^D. Answers what came out, in order, and
+    // the status `closed` was called with.
+    async replBytes(lines) {
+      const term = new DrtTerm(() => {});
+      const decoder = new TextDecoder();
+      let out = '';
+      let status = null;
+      const repl = term.repl(80, 24, (bytes) => { out += decoder.decode(bytes, { stream: true }); }, (s) => { status = s; });
+      const until = async (pred) => {
+        const deadline = Date.now() + 10000;
+        while (!pred() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+        return pred();
+      };
+      const encoder = new TextEncoder();
+      const prompts = [];
+      for (const line of lines) {
+        if (!(await until(() => /dv> $/.test(out)))) break;
+        prompts.push(out.length);
+        repl.input(encoder.encode(`${line}\r`));
+        await until(() => out.length > prompts[prompts.length - 1] && /(dv> |>> )$/.test(out));
+      }
+      repl.resize(100, 30);
+      repl.input(encoder.encode('\x04'));
+      const closed = await until(() => status !== null);
+      // A second session may start once the first ended: the one-at-a-time
+      // rule is about the runtime's output, not a lock that outlives it.
+      let again = null;
+      if (closed) {
+        try {
+          const r2 = term.repl(80, 24, () => {}, () => {});
+          again = true;
+          r2.close();
+        } catch (e) {
+          again = String(e);
+        }
+      }
+      return { out, status, closed, again, prompts: prompts.length };
+    },
     // The swarm table, driven the way the Lab's Instances panel drives
     // it: root a program, step until it settles, and read the roster and
     // its capability answers back. What this proves is that the exports

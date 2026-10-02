@@ -147,6 +147,28 @@ decides only *when* a line is wanted and with which prompt. `shell.js` behind it
 `meta.json` commands: `;`, single and double quotes, `$?`, `echo`, and
 `drt` -- the real one. Anything else is `command not found`, status 127.
 
+### The REPL as bytes: `DrtTerm.repl`
+
+For a host that holds a byte stream rather than an xterm object -- a
+launcher attaching a terminal to a root, which may be this module or a
+`drt` reached over WebRTC -- the REPL is also a stream, the same shape
+as `drt p2p`'s named service `repl` (doc/P2P.md §5.2): keystrokes in,
+bytes out, the size reported beside them, line editing inside.
+
+```js
+const term = new DrtTerm(() => {});
+const repl = term.repl(cols, rows, (bytes) => terminal.write(bytes), (status) => done(status));
+terminal.onData((keys) => repl.input(new TextEncoder().encode(keys)));
+terminal.onResize(({ cols, rows }) => repl.resize(cols, rows));
+// repl.close() when the far side goes away; ^D ends it from inside.
+```
+
+The editor is the same `ego_cli` session as `DrtEditor`'s, over a
+terminal whose keys arrive as bytes decoded as the native service decodes
+them, so the two REPL shapes cannot differ in what a key does. One at a
+time in a page: while it runs the runtime's output is the stream's, and
+the `DrtTerm`'s own sink gets it back when the session ends.
+
 ### `drt ssh` and `:ssh` in a page
 
 With `ssh`, the page's shell answers `drt ssh` and the REPL answers `:ssh`

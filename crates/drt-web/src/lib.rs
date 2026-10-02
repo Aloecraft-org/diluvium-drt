@@ -41,6 +41,7 @@ pub mod term;
 pub mod bindings;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod editor;
+pub mod raw;
 /// The SSH server, `drt-sshd`, under the name this crate has always used.
 pub use drt_sshd as ssh;
 pub mod swarm;

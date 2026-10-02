@@ -11,7 +11,7 @@
 //!   subprocess; [`Room`] is `examples/30-signaling-room`, the signalling
 //!   server a parked peer answers at; [`echo`] is its target.
 
-#![cfg(all(feature = "p2p", unix))]
+#![cfg(feature = "p2p")]
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
