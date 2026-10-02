@@ -491,14 +491,12 @@ jobs:
     # the one the C core leaves open: diluvium-sys drives a GCC-style
     # compiler and refuses MSVC by name, because `cl.exe` accepts none of
     # the flags it passes. Installed as the HOST toolchain rather than
-    # added as a target to the runner's MSVC one, which is what makes the
-    # C toolchain question go away here: rustup's `rust-mingw` component
-    # is in the minimal profile and carries its own
-    # `x86_64-w64-mingw32-gcc`, `ld` and mingw libraries, so the link
-    # needs nothing installed and nothing on PATH. The runner image does
-    # ship a mingw-w64 of its own at `C:\mingw64\bin`, and it is a UCRT
-    # build -- which is the one not to link Rust's msvcrt-based
-    # windows-gnu against.
+    # added as a target to the runner's MSVC one. rustc links a windows-gnu
+    # binary through whatever `x86_64-w64-mingw32-gcc` is on PATH, and on
+    # this runner that is the image's own mingw-w64 at `C:\mingw64\bin`,
+    # a UCRT build; it falls back to its bundled `rust-mingw` linker only
+    # when none is found. The first three steps link that way, with no C
+    # of their own that cares which CRT. The fourth does care, below.
     #
     # Three crates, because this is a gate and not the suite. `drt-platform`
     # is where `process::Tree` lives, a Job Object here and a process group
@@ -514,11 +512,15 @@ jobs:
     # environment is the msvcrt-based mingw-w64, the one Rust's windows-gnu
     # links against (the runner's own `C:\mingw64` is a UCRT build, which is
     # the one not to use), and `CC` points cc-rs at it the way the musl legs
-    # in release.yml point `CC` at musl-gcc. That makes this the one place
-    # the p2p verb's code runs on Windows: release.yml cross-builds it on
-    # Linux and smokes the binary, but `tests/p2p.rs` -- a listener, a
-    # caller, a relay, the match server, all as processes on loopback --
-    # had never executed on this platform.
+    # in release.yml point `CC` at musl-gcc. The same gcc is the linker for
+    # that step: an object its headers compiled, linked by the UCRT
+    # toolchain against its libraries, fails on `__imp__setjmp`, the one
+    # symbol the two mingw-w64 builds spell differently, and that is what
+    # mixing them looks like. One toolchain compiles and links. That makes
+    # this the one place the p2p verb's code runs on Windows: release.yml
+    # cross-builds it on Linux and smokes the binary, but `tests/p2p.rs`
+    # -- a listener, a caller, a relay, the match server, all as processes
+    # on loopback -- had never executed on this platform.
     runs-on: windows-latest
     timeout-minutes: 75
     defaults:
@@ -579,6 +581,7 @@ jobs:
           set -eu
           export CC="$RUNNER_TEMP/msys64/mingw64/bin/gcc.exe"
           export AR="$RUNNER_TEMP/msys64/mingw64/bin/ar.exe"
+          export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="$CC"
           "$CC" --version | head -1
           cargo test -p drt --no-default-features --features "slim,p2p" --lib p2p --test p2p
 
