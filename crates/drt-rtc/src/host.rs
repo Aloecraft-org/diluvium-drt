@@ -128,10 +128,11 @@ pub struct HostConfig {
     /// Direct mode: a caller holding the record needs no signaling (see
     /// the module note).
     pub direct: bool,
-    /// Whether `hello` carries `scope` and `default`. Off, it names the
-    /// services and nothing about the addresses behind them, which are
-    /// this side's policy and, for a forward into a private network, a map
-    /// of it (`doc/P2P.md` §7.2).
+    /// Whether `hello` shows the scope's entries and `default`. Off, it
+    /// sends `scope` empty and names the services and nothing about the
+    /// addresses behind them, which are this side's policy and, for a
+    /// forward into a private network, a map of it (`doc/P2P.md` §7.2).
+    /// `scope` itself is always there: a v1 client reads it as an array.
     pub hello_scope: bool,
     /// Where a stream that names no target, or only a port, goes
     /// (`doc/P2P.md` §5.1). [`Forward::None`] is the `webrtc` block's
@@ -1635,14 +1636,19 @@ fn hello(cfg: &HostConfig) -> String {
         "service": cfg.service,
         "limits": {"max_streams": cfg.max_streams},
     });
-    if cfg.hello_scope {
-        msg["scope"] = cfg
-            .scope
+    // `scope` is always an array: a v1 client indexes it without looking.
+    // What it holds is this side's choice.
+    msg["scope"] = if cfg.hello_scope {
+        cfg.scope
             .entries
             .iter()
             .map(entry)
             .collect::<Vec<_>>()
-            .into();
+            .into()
+    } else {
+        serde_json::Value::Array(Vec::new())
+    };
+    if cfg.hello_scope {
         if let Some(d) = &cfg.default {
             msg["default"] = entry(d);
         }

@@ -66,7 +66,7 @@ RootConfig {
             idle_stream_timeout_s: 300,
             connect_timeout_s: 10,
             direct: false,
-            hello_scope: false,
+            hello_scope: true,
             queue: "webrtc",
             reply_queue: "webrtc_cmd",
         },

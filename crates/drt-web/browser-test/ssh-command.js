@@ -257,7 +257,7 @@ function pick(hello, to) {
     return [to.slice(0, at).replace(/^\[|\]$/g, ''), Number(to.slice(at + 1))];
   }
   // No scope named: a stream to whatever the host forwards to (doc/P2P.md §5.1).
-  if (!hello.scope) return null;
+  if (!hello.scope || hello.scope.length === 0) return null;
   const entry = hello.scope.find((e) => e.scheme === 'ssh') ?? hello.default;
   if (!entry) throw new Error('the host serves no ssh:// target; name one with --to host:port');
   return [entry.host, entry.port];

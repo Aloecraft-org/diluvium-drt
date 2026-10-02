@@ -20,6 +20,7 @@ export interface Hello {
   t: 'hello';
   service?: string;
   default?: ScopeEntry;
+  /** What the peer lets a caller name by address; empty when it names services only (doc/P2P.md §7.2). */
   scope: ScopeEntry[];
   /** Named services the peer serves (§10.3). */
   services?: string[];

@@ -268,7 +268,7 @@ function pick(hello, to) {
     const at = to.lastIndexOf(':');
     return { host: to.slice(0, at).replace(/^\[|\]$/g, ''), port: Number(to.slice(at + 1)) };
   }
-  if (!hello.scope) return null;
+  if (!hello.scope || hello.scope.length === 0) return null;
   const entry = hello.scope.find((e) => e.scheme === 'ssh') ?? hello.default;
   if (!entry) throw new Error('The host serves no ssh:// target. Name one with to=host:port.');
   return entry;

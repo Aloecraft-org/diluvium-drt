@@ -302,10 +302,12 @@ The host sends one message after the channel opens:
   operator's network layout, and it never reaches Discofetch.
 - `default` is omitted when the host names none; `service` is the block's
   label.
-- **`scope` and `default` are optional** (`doc/P2P.md` §7.2). A host sends
-  them only when its block's `hello_scope` is on; by default `hello` names
-  the services and nothing about the addresses behind them. A reader that
-  finds no `scope` asks for a named service, or for no target at all (§6).
+- **`scope` may be empty and `default` absent** (`doc/P2P.md` §7.2). A
+  host shows its entries when its block's `hello_scope` is on, which the
+  `webrtc` block's is by default; `drt p2p` hides them, sending `scope` as
+  `[]` and naming the services only. `scope` is always an array, as every
+  v1 client reads it. A reader that finds it empty asks for a named
+  service, or for no target at all (§6).
 - **`forwarding`**: `true` when the host is a relay (`doc/P2P.md` §4.4),
   which calls a destination the caller names and joins the two sessions.
 - **`caps`**: capability names a program or REPL behind the host may hold

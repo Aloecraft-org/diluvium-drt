@@ -1006,9 +1006,9 @@
           "default": false
         },
         "hello_scope": {
-          "description": "Whether `hello` carries `scope` and `default`. Off by default: the\nscope is this side's policy and, for a forward into a private\nnetwork, a map of it for anyone admitted (`doc/P2P.md` §7.2). A\ndeployment that wants callers to see it, for diagnostics on its own\nmachines, turns it on. `hello` names the services either way.",
+          "description": "Whether `hello` shows the scope's entries and `default`. On by\ndefault for this block, as every v1 client was written against:\na browser names its target by address, and the entries are what it\nmay name. Off, `hello` sends `scope` empty and names the services\nonly, which is `drt p2p`'s posture: the addresses behind a forward\nare this side's policy and, for a forward into a private network,\na map of it for anyone admitted (`doc/P2P.md` §7.2).",
           "type": "boolean",
-          "default": false
+          "default": true
         },
         "identity_file": {
           "description": "The host's ICE credentials and DTLS certificate, kept so its record\nsurvives a restart. Created `0600` when missing; a file that exists\nand does not parse is refused, never replaced.",

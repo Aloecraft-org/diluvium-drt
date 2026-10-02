@@ -1257,12 +1257,14 @@ pub struct WebrtcConfig {
     /// its scope. Signaled sessions work beside it either way.
     #[serde(default)]
     pub direct: bool,
-    /// Whether `hello` carries `scope` and `default`. Off by default: the
-    /// scope is this side's policy and, for a forward into a private
-    /// network, a map of it for anyone admitted (`doc/P2P.md` §7.2). A
-    /// deployment that wants callers to see it, for diagnostics on its own
-    /// machines, turns it on. `hello` names the services either way.
-    #[serde(default)]
+    /// Whether `hello` shows the scope's entries and `default`. On by
+    /// default for this block, as every v1 client was written against:
+    /// a browser names its target by address, and the entries are what it
+    /// may name. Off, `hello` sends `scope` empty and names the services
+    /// only, which is `drt p2p`'s posture: the addresses behind a forward
+    /// are this side's policy and, for a forward into a private network,
+    /// a map of it for anyone admitted (`doc/P2P.md` §7.2).
+    #[serde(default = "default_true")]
     pub hello_scope: bool,
     /// Reports: `webrtc_record`, `webrtc_session`, `webrtc_stream`.
     #[serde(default = "default_webrtc_queue")]

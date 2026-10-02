@@ -191,7 +191,8 @@ async fn one_forward_takes_every_stream_whatever_port_it_asks_for() {
     // §7.2: the addresses behind a forward are policy, not routing
     // information, so hello says nothing about them.
     let hello = hello_of(&client);
-    assert!(hello.get("scope").is_none(), "{hello}");
+    assert_eq!(hello["scope"], serde_json::json!([]), "{hello}");
+    assert!(hello.get("default").is_none(), "{hello}");
     assert!(hello.get("services").is_none(), "{hello}");
 
     client.send(wisp::connect(1, wisp::STREAM_TCP, 0, ""));
