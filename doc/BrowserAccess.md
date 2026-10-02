@@ -322,6 +322,16 @@ The host sends one message after the channel opens:
   that is a terminal (`doc/P2P.md` §5.2). `{"t":"call","to":"<peer>"}`
   names a relay's destination (§4.1); the relay answers
   `{"t":"called","hello":…}` or `{"t":"failed","why":…}`.
+- **`scope` is not a page's boundary.** The host enforces host and port;
+  a page that fences its own navigation on `scope` is trusting a hint,
+  and the hint may be empty. A page's boundary is what its session was
+  opened for: a page opened for the service `ssh` routes to that stream
+  and nothing else, and one opened for the empty target routes to that
+  and nothing else. It does not attempt a destination it was not opened
+  for; if it does, the host's `CLOSE 0x48` is what holds the line, and
+  the page shows the refusal. When `scope` is present it is the list the
+  operator chose to show, fit for a picker, not a rule the page relies
+  on.
 
 ## 6. `wisp`: the host's Wisp v1 profile
 

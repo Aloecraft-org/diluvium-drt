@@ -123,6 +123,12 @@ address and connects from another.
 `--fingerprint` does not apply: a parked side takes calls from many
 callers, so there is no one fingerprint to hold it to.
 
+`--pair <allow>` lets the server pair this side with another parked peer
+(`doc/DRT-Signalling.md` §6.2): `*` for any name at the server it is
+parked at, or `drt://<server>/v1/<glob>` for a name pattern at a named
+server. Without it, a `pair` entry in the poll is declined and the server
+is told so. Decided; not built (§12).
+
 **Two parked peers reach each other by one calling the other.** Parking
 and calling are not exclusive: a machine parked as `a` runs
 `drt p2p drt://signal.example/v1/b` to reach the peer parked as `b`, with
@@ -433,8 +439,11 @@ unaffected.
 - **An admission range**, sent by the answerer when it claims, which the
   server applies to callers' source addresses and answers 403 outside.
 - **A caller token**, sent by the answerer when it claims.
-
-### 7.2 `doc/BrowserAccess.md`
+- **Pairing** (§6.2 there): a `pair` array beside `calls` in the poll
+  result and an `event: pair` on the stream, telling a parked side which
+  name to call, at which server, with what caller token; a consent value
+  on the parked side; and `POST /v1/<name>/pair/<id>/result` with the
+  outcome.
 
 - `hello` gains `forwarding` (§4.4), and `caps`: the capability names a
   program or REPL behind the host may hold, from the config's ceiling,
@@ -484,7 +493,8 @@ unaffected.
 The `p2p` block replaces `tunnel`, with every flag a key under the block's
 name, and a flag and a key that disagree refused as the conflict it is, as
 `tunnel` does today. `tunnel` is read as an alias for one release, with a
-warning naming the key that replaces each of its own.
+warning naming the key that replaces each of its own. `--pair` (§2.2) is
+the key `pair` under the block, and under a `webrtc` block that parks.
 
 ## 9. From `drt tunnel`
 
@@ -542,14 +552,19 @@ form of what it was given.
 7. **The fingerprint flag is `--fingerprint`**, not `--pin`: `pin` is the
    SSH host key's word on `ssh.html` and `drt ssh`.
 
-## 12. Still open
+## 12. Decided, open in code
 
-1. **Pairing started by the signalling server.** Two parked peers connect
-   when one calls the other (§2.2). A server that pairs peers when neither
-   asked, as a matchmaker does, would need a new notification telling a
-   parked side which name to call. A parked side would follow it only for
-   names its config allows, since otherwise the server chooses whom it
-   talks to.
+1. **Pairing started by the signalling server.** Decided 2026-10-02
+   (`doc/Ask-Discofetch-Reply-2.md`), shapes in `doc/DRT-Signalling.md`
+   §6.2: a `pair` array in the poll result and `event: pair` on the
+   stream tell a parked side which name to call; consent is `--pair`
+   (§2.2), off by default; the told side calls and keeps serving; it
+   posts the outcome back. What is not built: the parked side reading
+   `pair` and the consent value, which is small, and a call-and-serve
+   mode in `drt p2p`, a call role that keeps the park's `--forward` open
+   on the session it originates, which is where the cost is. The wire
+   already allows it (`doc/BrowserAccess.md` §10); the verb's call role
+   today only consumes.
 
 ## Not in this proposal
 

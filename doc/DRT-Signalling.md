@@ -56,6 +56,7 @@ and begin `/v1/<name>/`.
 | `POST /v1/<name>/calls/<id>/answer` | answerer | Body: the answerer's record. 204; the held call gets it. |
 | `DELETE /v1/<name>/calls/<id>` | either | Withdraw a call, or refuse one. The held call gets 410. |
 | `GET /v1/<name>/events` | answerer | The call notification stream (§5): `text/event-stream`. |
+| `POST /v1/<name>/pair/<id>/result` | answerer | The outcome of a pairing the server asked for (§6.2). 204. |
 
 - **Bodies are sent as `text/plain;charset=utf-8`.** A browser then sends a
   simple request, with no CORS preflight; a server accepts
@@ -175,6 +176,58 @@ Three optional parts a server may offer; `drt p2p --match` does, and
   listener saw), and the answerer checks the connection's own address as
   well. A bare address is a `/32` or `/128`; an unreadable range admits
   nothing.
+
+## 6.2 Pairing
+
+Two parked peers connect when one calls the other (§3). A server that
+pairs peers when neither asked, as a room or a matchmaker does, tells one
+of them to call. Optional, like §6.1; a server that offers it documents
+so. Decided in `doc/Ask-Discofetch-Reply-2.md`; `doc/P2P.md` §12 holds
+what is still open in code.
+
+- **The notification** is a sibling of `calls` in the poll result (§4.1),
+  under the same cursor:
+
+  ```json
+  {"cursor": "18", "calls": [],
+   "pair": [{"id": "p3", "name": "room-7", "server": "https://api.example",
+             "token": "<caller token>", "expires_in": 20}]}
+  ```
+
+  `name` is who to call, `server` the base to call it at, usually the one
+  the answerer is parked at, `token` the caller token that name requires
+  (absent when it requires none), and `expires_in` seconds until the
+  server stops expecting the call. The call notification stream (§5)
+  gains `event: pair`, carrying the cursor and nothing else, exactly as
+  `event: call` does. A polling-only server needs only the array. An
+  answerer that does not know `pair` ignores the key. Not a new call
+  kind: `calls` carries callers' records, and this has a different
+  lifecycle.
+- **Consent.** An answerer follows a `pair` entry only when its
+  configuration allows the name. One value: `*`, any name at the server
+  it is parked at; or `drt://<server>/v1/<glob>`, a name pattern at a
+  named server. A name pattern without a server is not a value, since
+  the risk is not which name but which server the peer is sent to. Off
+  by default. The flag and the key are `doc/P2P.md` §2.2 and §8.
+- **Who calls.** The server picks one side and tells it. The other side
+  needs nothing: it sees an ordinary call in its poll, and its caller
+  token and admission range (§6.1) apply as always. The told side is
+  parked and serving, and it keeps serving on the session its call
+  opens; the browser-access profile is symmetric, so the wire allows
+  that (`doc/BrowserAccess.md` §10).
+- **The outcome** is reported in one request,
+  `POST /v1/<name>/pair/<id>/result`, with the answerer token:
+
+  ```json
+  {"outcome": "connected", "why": ""}
+  ```
+
+  `outcome` is one of `connected`, `refused` (the called name answered
+  the call with a refusal), `unreachable` (the call failed before an
+  answer; `why` carries the status, as `503 no answerer is present`), or
+  `declined` (the consent rule said no, so the server sees it rather
+  than infers it from silence). A result after `expires_in` is 404, as
+  an answer after the hold is.
 
 ## 7. What a server sees
 
