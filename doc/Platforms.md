@@ -49,13 +49,10 @@ binary mode once at startup, and the examples gate passes byte for byte
 on a Windows runner -- which is the gate that proves the artifact before
 it is uploaded (`smoke-windows`). So Windows gets a native `drt` that
 spawns, serves and reads files, and wasmtime is not needed there. The
-unprefixed Windows binary is the `windows` profile: `full` minus `exec`,
-cross-built with mingw-w64 alone and gated on the runner by every
-example whose `needs_build` lists the profile -- every `full` example
-but the three that are `full`'s alone (`00-install-methods` snapshots
-`full`'s own `buildinfo`; `16-exec` is the connector Windows lacks;
-`22-wireguard-interface` creates a kernel interface, which on Windows is
-`wintun.dll`'s job). `full` used to stay off Windows for one reason: `exec` was unix-only by
+unprefixed Windows binary is `full`, cross-built with mingw-w64 alone and
+gated on the runner by the examples, `16-exec` excepted (below). Until
+v0.7.0 it was a separate `windows` profile, `full` minus `exec`, and
+`full` stayed off Windows for one reason: `exec` was unix-only by
 `compile_error!`, because it needed a process group to sweep a child's
 whole tree at the deadline. That group is now
 `drt_platform::process::Tree`, which is a process group on unix and a Job
@@ -79,7 +76,7 @@ unix's vocabulary (`sh -c`, `cat`, `yes`, `ls`), and `meta.json`'s
 
 **WireGuard is a privilege question, not a platform one.** `drt wg` and
 the `wireguard` block build and run wherever `full` does, and the
-`windows` profile carries them to `x86_64-pc-windows-gnu`, where the
+Windows build carries them to `x86_64-pc-windows-gnu`, where the
 examples gate drives the userspace half on a Windows runner before the
 binary ships --
 what they need is not a platform feature but permission to create a
