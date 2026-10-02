@@ -454,6 +454,10 @@ unaffected.
   always sent, empty when hidden, so a v1 client that indexes it still
   parses; `default` is simply absent. Not a `v` bump.
 - A control-channel message carries a relay's destination (§4.1).
+- Half-close: the Wisp profile's `END` packet and the `half_close`
+  announcements (`doc/BrowserAccess.md` §6). A caller whose stdin ends
+  sends `END` and waits for what the far side still has to say; the
+  two-second grace remains only for a peer without it.
 
 ### 7.3 Elsewhere
 

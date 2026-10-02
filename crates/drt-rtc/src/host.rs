@@ -1061,6 +1061,9 @@ struct Session {
     dead: Option<String>,
     /// A relaying session's other half (`Forward::Relay`).
     relay: RelayState,
+    /// The peer said it understands `END` (`{"t":"features","half_close":true}`
+    /// on `control`): a target's end of stream is sent as `END`, not `CLOSE`.
+    peer_half_close: bool,
 }
 
 /// Where a relaying session's destination stands.
@@ -1090,6 +1093,10 @@ struct Stream {
     last_activity: Instant,
     /// The connect task, then the reader and the writer.
     tasks: Vec<AbortHandle>,
+    /// The peer sent `END`: nothing more is written to the target.
+    ended_in: bool,
+    /// The target's read side ended and `END` went to the peer.
+    ended_out: bool,
 }
 
 impl Drop for Stream {
@@ -1170,6 +1177,7 @@ impl Session {
             streams: HashMap::new(),
             dead: None,
             relay: RelayState::None,
+            peer_half_close: false,
         })
     }
 
@@ -1364,6 +1372,10 @@ impl Session {
         if v["t"] == "call" {
             return self.on_call(ctx, v["to"].as_str().unwrap_or(""));
         }
+        if v["t"] == "features" {
+            self.peer_half_close = v["half_close"] == true;
+            return;
+        }
         if v["t"] != "resize" {
             return;
         }
@@ -1476,7 +1488,9 @@ impl Session {
                     Some(tx) => {
                         let _ = tx.send(payload.to_vec());
                     }
-                    None => s.early.push(payload.to_vec()),
+                    // Not yet connected: held. After the peer's END: dropped.
+                    None if !s.ended_in => s.early.push(payload.to_vec()),
+                    None => {}
                 }
             }
             Some(Packet::Close {
@@ -1486,6 +1500,20 @@ impl Session {
                 // The browser ended it: nothing to tell it back, and the
                 // audit records the reason it gave.
                 self.close_stream(ctx, stream, code, false);
+            }
+            Some(Packet::End { stream }) => {
+                // The peer will write no more: the target's write side is
+                // shut (dropping the sender ends the writer, which shuts
+                // down), and its reads go on. Both halves ended closes it.
+                let Some(s) = self.streams.get_mut(&stream) else {
+                    return;
+                };
+                s.ended_in = true;
+                s.to_tcp = None;
+                s.last_activity = now;
+                if s.ended_out {
+                    self.close_stream(ctx, stream, reason::VOLUNTARY, true);
+                }
             }
             // CONTINUE is the server's to send; a short message, another
             // malformed packet, or an unknown type is ignored (§6).
@@ -1584,6 +1612,8 @@ impl Session {
                 bytes_down: 0,
                 last_activity: Instant::now(),
                 tasks: vec![connect.abort_handle()],
+                ended_in: false,
+                ended_out: false,
             },
         );
     }
@@ -1605,7 +1635,12 @@ impl Session {
                 for early in s.early.drain(..) {
                     let _ = to_tcp.send(early);
                 }
-                s.to_tcp = Some(to_tcp);
+                // An END that arrived while the dial was in flight: the
+                // early bytes go out, then the sender drops and the writer
+                // shuts the write half as it would have had END come later.
+                if !s.ended_in {
+                    s.to_tcp = Some(to_tcp);
+                }
                 s.tasks.extend(tasks);
                 s.last_activity = now;
                 ctx.report(Event::Stream {
@@ -1618,6 +1653,31 @@ impl Session {
                     bytes_up: 0,
                     bytes_down: 0,
                 });
+            }
+            Internal::TcpDone {
+                stream,
+                code: reason::VOLUNTARY,
+                ..
+            } if self.peer_half_close
+                && self.streams.get(&stream).is_some_and(|s| !s.ended_out) =>
+            {
+                // The target's end of stream, to a peer that understands
+                // half-close: `END`, and the peer may still write. The
+                // stream closes when both halves have ended, now if the
+                // peer's `END` came first, else when the peer ends or
+                // closes its side.
+                let both = match self.streams.get_mut(&stream) {
+                    Some(s) => {
+                        s.ended_out = true;
+                        s.last_activity = now;
+                        s.ended_in
+                    }
+                    None => false,
+                };
+                self.outbox.push_back(wisp::end(stream));
+                if both {
+                    self.close_stream(ctx, stream, reason::VOLUNTARY, true);
+                }
             }
             Internal::Failed { stream, code, .. } | Internal::TcpDone { stream, code, .. } => {
                 self.close_stream(ctx, stream, code, true);
@@ -1719,6 +1779,9 @@ fn hello(cfg: &HostConfig) -> String {
     if !cfg.caps.is_empty() {
         msg["caps"] = cfg.caps.iter().map(String::as_str).collect();
     }
+    // This host understands `END` (§6): a peer that does too says so on
+    // `control`, and the two halves of a stream can end separately.
+    msg["half_close"] = true.into();
     msg.to_string()
 }
 

@@ -135,6 +135,8 @@ test('every wisp vector encodes and decodes', () => {
   assert.equal(hex(encodeWisp(WISP.CONTINUE, 1, { buffer: 64 })), byName('CONTINUE stream 1'));
   assert.equal(hex(encodeWisp(WISP.CLOSE, 1, { reason: 0x02 })), byName('CLOSE stream 1'));
   assert.equal(hex(encodeWisp(WISP.CLOSE, 2, { reason: 0x48 })), byName('CLOSE stream 2'));
+  assert.equal(hex(encodeWisp(WISP.END, 1)), byName('END stream 1'));
+  assert.equal(decodeWisp(Buffer.from(byName('END stream 1'), 'hex')).type, WISP.END);
   for (const w of vectors.wisp) {
     const p = decodeWisp(Buffer.from(w.hex, 'hex'));
     assert.equal(hex(encodeWisp(p.type, p.stream, {
@@ -242,10 +244,12 @@ test('resize reports a stream\'s terminal size on control', async () => {
   const s = session.connect('repl');
   session.resize(s, 120, 40);
   session.resize(s.id, 80, 24);
-  assert.deepEqual(control.sent.map((m) => JSON.parse(m)), [
+  // The features message went first, when the channels opened (§6).
+  assert.deepEqual(control.sent.map((m) => JSON.parse(m)).filter((m) => m.t === 'resize'), [
     { t: 'resize', stream: s.id, cols: 120, rows: 40 },
     { t: 'resize', stream: s.id, cols: 80, rows: 24 },
   ]);
+  assert.deepEqual(JSON.parse(control.sent[0]), { t: 'features', half_close: true });
 });
 
 test('a fingerprint is checked before the answer is applied: a pin compares, a function asks', async () => {
@@ -271,6 +275,27 @@ test('granted on control settles the stream\'s caps; a stream that ends first re
   b.close();
   await assert.rejects(b.granted, /ended before/);
   assert.equal(b.caps, null);
+});
+
+test('closing the writable half-closes when the peer has END, and the answer still arrives', async () => {
+  const { session, wisp, host } = await fakeSession();
+  // The fake host's hello says nothing of half_close: closing the writable closes.
+  const a = session.connect('127.0.0.1', 8123);
+  await a.writable.close();
+  assert.equal(wisp.sent.filter((p) => p.stream === a.id).pop().type, WISP.CLOSE);
+  // Told, the same close is END, the stream reads on, and the peer's END ends it.
+  session.peerHalfClose = true;
+  const b = session.connect('127.0.0.1', 8123);
+  await b.writable.close();
+  assert.equal(wisp.sent.filter((p) => p.stream === b.id).pop().type, WISP.END);
+  assert.equal(b.done, false);
+  host(encodeWisp(WISP.DATA, b.id, { data: new TextEncoder().encode('late answer') }));
+  host(encodeWisp(WISP.END, b.id));
+  const reader = b.readable.getReader();
+  assert.equal(new TextDecoder().decode((await reader.read()).value), 'late answer');
+  assert.equal((await reader.read()).done, true);
+  await b.closed;
+  assert.equal(wisp.sent.filter((p) => p.stream === b.id).pop().type, WISP.CLOSE);
 });
 
 test('data arrives on readable, and a clean CLOSE ends it', async () => {

@@ -142,6 +142,30 @@ async fn a_direct_mode_caller_reaches_a_named_service_with_no_signaling() {
     round_trip(stream).await;
 }
 
+/// Half-close from the holder's side: shutting down the write half sends
+/// END to a host that understands it, and the echo's answer still comes
+/// back, then end of file.
+#[tokio::test]
+async fn shutting_down_the_write_half_still_reads_the_answer() {
+    let port = echo_server().await;
+    let (_host, record) = host(port, true).await;
+    let caller = Caller::direct("127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
+    let call = caller.connect(&record, LIMIT).await.unwrap();
+    assert!(call.half_close());
+    let (mut stream, closed) = call.open(&Target::parse("echo").unwrap()).await.unwrap();
+    stream.write_all(b"question").await.unwrap();
+    stream.shutdown().await.unwrap();
+    let mut answer = Vec::new();
+    tokio::time::timeout(LIMIT, stream.read_to_end(&mut answer))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(answer, b"question");
+    assert_eq!(closed.await.unwrap(), drt_rtc::wisp::reason::VOLUNTARY);
+}
+
 #[tokio::test]
 async fn a_name_the_answerer_does_not_serve_ends_the_stream_with_0x48() {
     let port = echo_server().await;

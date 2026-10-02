@@ -222,6 +222,7 @@ fn packets() -> Vec<Value> {
             "CLOSE stream 2, blocked by scope (0x48)",
             wisp::close(2, reason::BLOCKED),
         ),
+        ("END stream 1: the sender writes no more", wisp::end(1)),
     ];
     cases
         .into_iter()

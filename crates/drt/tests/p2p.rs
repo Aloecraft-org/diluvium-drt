@@ -34,6 +34,28 @@ fn drt() -> Command {
 }
 
 /// Echoes every connection until it closes.
+/// `call`, with stdin closed the moment it is written: what a pipe does.
+/// The answer arrives because the two sides half-close (doc/P2P.md §7.2).
+fn call_at_once(peer: &str, args: &[&str], input: &[u8]) -> (String, String) {
+    let mut child = drt()
+        .arg("p2p")
+        .arg(peer)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(input).unwrap();
+    drop(stdin);
+    let out = child.wait_with_output().unwrap();
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
 fn echo() -> u16 {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = l.local_addr().unwrap().port();
@@ -153,6 +175,21 @@ fn call(peer: &str, args: &[&str], input: &[u8]) -> (String, String) {
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
     )
+}
+
+#[test]
+fn a_pipe_that_closes_at_once_still_gets_its_answer() {
+    let port = echo();
+    let l = Listening::start(Some(&format!("127.0.0.1:{port}")), false);
+    let started = Instant::now();
+    let (out, err) = call_at_once(&l.record, &[], b"piped\n");
+    assert_eq!(out, "piped\n", "{err}");
+    // Not the old two-second grace: the far side's END ended it.
+    assert!(
+        started.elapsed() < Duration::from_secs(8),
+        "{:?}",
+        started.elapsed()
+    );
 }
 
 #[test]

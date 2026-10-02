@@ -320,6 +320,7 @@ impl Caller {
             ended: None,
             control_out,
             raw: None,
+            peer_half_close: false,
         };
         tokio::spawn(driver.run(order_rx, orders.downgrade()));
         match tokio::time::timeout(timeout, ready).await {
@@ -357,6 +358,16 @@ impl Call {
     /// The answerer's `hello` (§5), as it sent it.
     pub fn hello(&self) -> &str {
         &self.hello
+    }
+
+    /// Whether the answerer understands half-close (`END`): a holder that
+    /// shuts down its write side then still reads what the far side has
+    /// to say, as with TCP. Without it, closing the write side closes the
+    /// stream.
+    pub fn half_close(&self) -> bool {
+        serde_json::from_str::<serde_json::Value>(&self.hello)
+            .map(|h| h["half_close"] == true)
+            .unwrap_or(false)
     }
 
     /// Send one message on `control`: one JSON object, as §5 has them.
@@ -432,10 +443,13 @@ struct Stream {
     remaining: u32,
     /// DATA waiting for credit, oldest first.
     queued: VecDeque<Vec<u8>>,
-    /// To the task writing into this side's end of the pipe.
-    to_holder: mpsc::UnboundedSender<Vec<u8>>,
+    /// To the task writing into this side's end of the pipe; `None` once
+    /// the answerer sent `END`, which ends the holder's reads.
+    to_holder: Option<mpsc::UnboundedSender<Vec<u8>>>,
     /// Why it closed, once it has: the CLOSE byte.
     closed: Option<oneshot::Sender<u8>>,
+    /// The holder closed its write side and `END` went to the answerer.
+    ended_out: bool,
 }
 
 struct Driver {
@@ -457,6 +471,9 @@ struct Driver {
     control_out: mpsc::UnboundedSender<String>,
     /// Set once [`Call::raw`] took the channel: packets go here as they are.
     raw: Option<mpsc::UnboundedSender<Vec<u8>>>,
+    /// The answerer's `hello` said `half_close`: a holder's end of writes
+    /// is `END`, and the answerer's `END` ends the holder's reads.
+    peer_half_close: bool,
 }
 
 impl Driver {
@@ -537,7 +554,16 @@ impl Driver {
             RtcEvent::ChannelData(d) if d.id == self.control => {
                 let text = String::from_utf8_lossy(&d.data).into_owned();
                 if self.hello.is_none() {
+                    self.peer_half_close = serde_json::from_str::<serde_json::Value>(&text)
+                        .map(|h| h["half_close"] == true)
+                        .unwrap_or(false);
                     self.hello = Some(text);
+                    // Say what this side understands, so the answerer
+                    // sends END rather than CLOSE for a target's end of
+                    // stream (`doc/BrowserAccess.md` §6).
+                    if let Some(mut ch) = self.rtc.channel(self.control) {
+                        let _ = ch.write(false, br#"{"t":"features","half_close":true}"#);
+                    }
                 } else {
                     let _ = self.control_out.send(text);
                 }
@@ -581,8 +607,26 @@ impl Driver {
                 self.pump(stream);
             }
             Some(Packet::Data { stream, payload }) => {
-                if let Some(s) = self.streams.get(&stream) {
-                    let _ = s.to_holder.send(payload.to_vec());
+                if let Some(Some(to_holder)) = self.streams.get(&stream).map(|s| &s.to_holder) {
+                    let _ = to_holder.send(payload.to_vec());
+                }
+            }
+            Some(Packet::End { stream }) => {
+                // The answerer will write no more: the holder reads end of
+                // file (dropping the sender ends the writer, which shuts
+                // its end down) and may still write. Both halves ended
+                // closes the stream.
+                let Some(s) = self.streams.get_mut(&stream) else {
+                    return;
+                };
+                s.to_holder = None;
+                if s.ended_out {
+                    if let Some(mut s) = self.streams.remove(&stream) {
+                        if let Some(c) = s.closed.take() {
+                            let _ = c.send(reason::VOLUNTARY);
+                        }
+                    }
+                    self.send(wisp::close(stream, reason::VOLUNTARY));
                 }
             }
             Some(Packet::Close {
@@ -616,7 +660,23 @@ impl Driver {
                 self.pump(stream);
             }
             Order::Eof { stream } => {
-                if self.streams.remove(&stream).is_some() {
+                // The holder closed its write side. To an answerer that
+                // understands it, END, and its answer still arrives; to
+                // one that does not, the stream closes here.
+                let half = self.peer_half_close
+                    && self
+                        .streams
+                        .get(&stream)
+                        .is_some_and(|s| s.to_holder.is_some() && !s.ended_out);
+                if half {
+                    if let Some(s) = self.streams.get_mut(&stream) {
+                        s.ended_out = true;
+                    }
+                    self.send(wisp::end(stream));
+                } else if let Some(mut s) = self.streams.remove(&stream) {
+                    if let Some(c) = s.closed.take() {
+                        let _ = c.send(reason::VOLUNTARY);
+                    }
                     self.send(wisp::close(stream, reason::VOLUNTARY));
                 }
             }
@@ -694,8 +754,9 @@ impl Driver {
             Stream {
                 remaining: credit,
                 queued: VecDeque::new(),
-                to_holder: tx,
+                to_holder: Some(tx),
                 closed: Some(closed_tx),
+                ended_out: false,
             },
         );
         self.send(target.connect_packet(id));

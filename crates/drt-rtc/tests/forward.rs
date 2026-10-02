@@ -252,6 +252,59 @@ async fn a_one_port_set_is_what_a_stream_naming_no_port_gets() {
     assert_eq!(client.read_stream(1, 12).await.0, b"the one port");
 }
 
+/// Half-close (§6): the peer ends its writes with END, the echo target
+/// sees end of file, answers what it had, and the host returns END rather
+/// than CLOSE, since the peer said it understands it; both halves ended,
+/// the host closes the stream.
+#[tokio::test]
+async fn a_peer_that_understands_end_gets_the_targets_end_as_end() {
+    let port = echo_server().await;
+    let entry = Entry::parse(&format!("http://127.0.0.1:{port}")).unwrap();
+    let (mut host, record) = host(Forward::One(Sink::Dial(entry)), vec![], vec![]).await;
+    let mut client = connected(&mut host, &record, "p1").await;
+    assert!(
+        serde_json::from_str::<serde_json::Value>(client.hello.as_deref().unwrap()).unwrap()
+            ["half_close"]
+            == true
+    );
+    client
+        .rtc
+        .channel(client.control)
+        .unwrap()
+        .write(false, br#"{"t":"features","half_close":true}"#)
+        .unwrap();
+    client.send(wisp::connect(1, wisp::STREAM_TCP, 0, ""));
+    client.send(wisp::data(1, b"last words"));
+    client.send(wisp::end(1));
+    let (got, close) = client.read_stream(1, 10).await;
+    assert_eq!(got, b"last words");
+    assert_eq!(close, None, "the stream is still open after the answer");
+    client
+        .until("END, then CLOSE 0x02", |c| {
+            c.inbox.iter().filter_map(|p| wisp::parse(p)).any(|p| {
+                matches!(
+                    p,
+                    wisp::Packet::Close {
+                        stream: 1,
+                        reason: 0x02
+                    }
+                )
+            })
+        })
+        .await;
+    let kinds: Vec<u8> = client
+        .inbox
+        .iter()
+        .filter_map(|p| wisp::parse(p))
+        .filter_map(|p| match p {
+            wisp::Packet::End { stream: 1 } => Some(wisp::END),
+            wisp::Packet::Close { stream: 1, .. } => Some(wisp::CLOSE),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(kinds, [wisp::END, wisp::CLOSE], "{kinds:?}");
+}
+
 #[tokio::test]
 async fn a_service_says_what_a_stream_was_granted_on_control() {
     let echo: Arc<dyn Service> = Arc::new(Echo);

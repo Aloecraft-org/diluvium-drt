@@ -22,7 +22,8 @@ use super::http;
 use super::peer::{fingerprint_text, How, Peer, PortMap};
 use super::CallRole;
 
-/// How long, after stdin ends, the far side may still answer.
+/// How long, after stdin ends, the far side may still answer, when it
+/// does not understand half-close (an older peer).
 pub const EOF_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// What every call is made with.
@@ -183,9 +184,13 @@ pub async fn run(role: &CallRole, roots: &[CertificateDer<'static>]) -> Result<(
             role.peer.shown()
         );
     }
+    let half_close = call.half_close();
     let (mut from_peer, mut to_peer) = tokio::io::split(stream);
     let up = async {
         let _ = tokio::io::copy(&mut tokio::io::stdin(), &mut to_peer).await;
+        // Stdin ended: say so on the stream. To a peer with half-close
+        // that is END, and its answer still arrives below.
+        let _ = to_peer.shutdown().await;
     };
     let down = async {
         let mut out = tokio::io::stdout();
@@ -193,12 +198,20 @@ pub async fn run(role: &CallRole, roots: &[CertificateDer<'static>]) -> Result<(
         let _ = out.flush().await;
         n
     };
-    // The far side ending ends the session. Stdin ending does too, after a
-    // grace for what the far side still has to say: Wisp has no half-close,
-    // so `printf x | drt p2p <peer>` would otherwise lose its answer.
+    // The far side ending ends the session. Stdin ending does too: with a
+    // peer that understands half-close, once the far side has said the
+    // rest; with one that does not, after a grace for it, since there is
+    // no other way to keep `printf x | drt p2p <peer>` from losing its
+    // answer.
     let mut down = std::pin::pin!(down);
     let received = tokio::select! {
-        _ = up => tokio::time::timeout(EOF_GRACE, &mut down).await.ok(),
+        _ = up => {
+            if half_close {
+                Some((&mut down).await)
+            } else {
+                tokio::time::timeout(EOF_GRACE, &mut down).await.ok()
+            }
+        }
         n = &mut down => Some(n),
     };
     // A stream refused before a byte came back says why, in the words the

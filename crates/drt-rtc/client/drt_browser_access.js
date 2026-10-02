@@ -97,7 +97,7 @@ export const MESSAGE_MAX = 16384;
 export const DATA_MAX = MESSAGE_MAX - 5;
 
 /** Wisp v1 packet types (§6). */
-export const WISP = Object.freeze({ CONNECT: 0x01, DATA: 0x02, CONTINUE: 0x03, CLOSE: 0x04 });
+export const WISP = Object.freeze({ CONNECT: 0x01, DATA: 0x02, CONTINUE: 0x03, CLOSE: 0x04, END: 0x05 });
 
 /** Why a stream ended (§6's table), by the byte the host sends. */
 export const CLOSE_REASON = Object.freeze({
@@ -300,6 +300,8 @@ export function encodeWisp(type, stream, body = {}) {
     new DataView(payload.buffer).setUint32(0, body.buffer, true);
   } else if (type === WISP.CLOSE) {
     payload = Uint8Array.of(body.reason);
+  } else if (type === WISP.END) {
+    payload = new Uint8Array(0);
   } else {
     throw new TypeError(`unknown wisp packet type ${type}`);
   }
@@ -755,6 +757,8 @@ class Session {
     this.wisp = wisp;
     /** The peer's `hello` (§5): service, default, scope, services, limits. */
     this.hello = null;
+    /** The peer understands END (§6): from its hello, or its features message. */
+    this.peerHalfClose = false;
     this.streams = new Map();
     /** §10.2: the caller opens odd ids, the answerer even ones. */
     this.role = options.role ?? 'caller';
@@ -827,7 +831,14 @@ class Session {
 
   onChannelOpen() {
     this.channelsOpen++;
-    if (this.channelsOpen === 2) this.announce();
+    if (this.channelsOpen === 2) {
+      this.announce();
+      // What this side understands (§6), whichever role it has: a peer
+      // that does too sends END for a target's end of stream.
+      try {
+        this.control.send(JSON.stringify({ t: 'features', half_close: true }));
+      } catch {}
+    }
     this.onReady?.();
   }
 
@@ -843,6 +854,7 @@ class Session {
       this.control.send(JSON.stringify({
         v: RECORD_VERSION, t: 'hello', service: this.label, scope: [],
         services: [...this.services.keys()], limits: { max_streams: SERVE_MAX_STREAMS },
+        half_close: true,
       }));
       this.send(encodeWisp(WISP.CONTINUE, 0, { buffer: SERVE_BUFFER }));
     } catch {}
@@ -859,7 +871,10 @@ class Session {
     // (doc/P2P.md §7.2); any other `t` is ignored.
     if (m && m.t === 'hello' && !this.hello) {
       this.hello = m;
+      if (m.half_close === true) this.peerHalfClose = true;
       this.onReady?.();
+    } else if (m && m.t === 'features') {
+      if (m.half_close === true) this.peerHalfClose = true;
     } else if (m && m.t === 'granted' && Array.isArray(m.caps)) {
       this.streams.get(m.stream)?.onGranted(m.caps);
     }
@@ -882,6 +897,7 @@ class Session {
     if (p.type === WISP.DATA) s.receive(p.payload);
     else if (p.type === WISP.CONTINUE && p.buffer !== undefined) s.credit(p.buffer);
     else if (p.type === WISP.CLOSE) s.finish(new StreamClosed(p.reason ?? 0x01), false);
+    else if (p.type === WISP.END) s.onEnd();
     // Unknown types are ignored (§6).
   }
 
@@ -1037,12 +1053,45 @@ class Stream {
       });
     this.writable = new WritableStream({
       write: (chunk) => this.write(chunk),
-      close: () => this.close(),
+      // Closing the writable is a half-close when the peer understands
+      // one (§6): what it still has to say arrives on `readable`.
+      close: () => this.end(),
       abort: () => this.close(),
     });
+    this.endedOut = false;
+    this.endedIn = false;
+  }
+
+  /**
+   * This side will write no more. To a peer that understands END the
+   * stream stays open for reading until it ends its side; to one that
+   * does not, this is `close()`.
+   */
+  end() {
+    if (this.done || this.endedOut) return;
+    if (!this.session.peerHalfClose) return this.close();
+    this.endedOut = true;
+    try {
+      this.session.send(encodeWisp(WISP.END, this.id));
+    } catch {}
+    if (this.endedIn) this.close();
+  }
+
+  /** The peer will write no more: `readable` ends; writes still go. */
+  onEnd() {
+    if (this.done || this.endedIn) return;
+    this.endedIn = true;
+    if (this.served) this.pending?.();
+    else {
+      try {
+        this.reader.close();
+      } catch {}
+    }
+    if (this.endedOut) this.close();
   }
 
   async write(chunk) {
+    if (this.endedOut) throw new Error('the stream was ended from this side');
     const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
     for (let at = 0; at < bytes.length; at += DATA_MAX) {
       // Wisp's credit (§6): one packet per unit, topped up by CONTINUE.
@@ -1065,6 +1114,12 @@ class Stream {
   pull() {
     if (this.inbox.length === 0) {
       if (this.done) return;
+      if (this.endedIn) {
+        try {
+          this.reader.close();
+        } catch {}
+        return;
+      }
       return new Promise((r) => (this.pending = () => {
         this.pending = null;
         r(this.pull());

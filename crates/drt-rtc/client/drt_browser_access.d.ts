@@ -29,6 +29,8 @@ export interface Hello {
   /** True when the peer is a relay that calls a destination the caller names (doc/P2P.md §4.1). */
   forwarding?: boolean;
   limits: { max_streams: number };
+  /** The peer understands END (§6): a closed writable is a half-close, not a close. */
+  half_close?: boolean;
   [key: string]: unknown;
 }
 
@@ -113,6 +115,8 @@ export interface Stream {
   readonly caps: string[] | null;
   /** Resolves with `caps` when the far side says; rejects if the stream ends first. */
   readonly granted: Promise<string[]>;
+  /** This side will write no more (END, §6): reads go on until the peer ends; `close()` where the peer lacks END. */
+  end(): void;
   /** Bytes from the target. Ends when the target closes cleanly. */
   readonly readable: ReadableStream<Uint8Array>;
   /** Bytes to the target, split at 16379 per packet and paced by Wisp credit. */

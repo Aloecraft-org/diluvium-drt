@@ -373,6 +373,18 @@ host does, and where it departs:
 - **`CLOSE`** (`0x04`) from the browser closes the stream and its socket.
   The host sends `0x02` when the target closes cleanly and `0x03` when it
   fails. A `CLOSE` for a stream that is not open is ignored.
+- **`END`** (`0x05`, this profile's one extension): no payload; the
+  sender will write no more on the stream and still reads it, TCP's
+  half-close, so `printf x | drt p2p <peer>` gets its answer. A peer that
+  does not know the type ignores it (below), so each side sends `END`
+  only to a peer that said it understands: the host says `half_close:
+  true` in `hello`, and a caller says `{"t":"features","half_close":true}`
+  on `control` once the channels are open. From the browser, `END` shuts
+  the target's write side and reads go on; from the host, `END` is the
+  target's end of stream to a peer that announced it (else `CLOSE 0x02`
+  as before). Both halves ended, the host sends `CLOSE 0x02`. In the
+  library, closing a stream's `writable` is the half-close; `close()` is
+  the whole.
 - **Unknown packet types are ignored**, and so is a packet shorter than
   its 5-byte header.
 
