@@ -14,7 +14,7 @@ carries in the release. See `doc/Release.md`.
 
 ## [0.8.0] - unreleased
 
-`v0.8.0` &middot; dv ABI 2 &middot; diluvium `d8497b0dd917` (v0.17.1)
+`v0.8.0` &middot; dv ABI 2 &middot; diluvium `97bb9f9d2897` (v0.17.2)
 
 **A browser reaches a DRT host directly, and the core is diluvium
 0.17.1.** The `webrtc` block lets a stock browser open a data

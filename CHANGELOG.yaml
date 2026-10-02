@@ -87,8 +87,8 @@ releases:
     stable: true
     mirror: false
     dv_abi: 2
-    diluvium: d8497b0dd917548c3e2bfa88ed539a6f527ba369
-    diluvium_version: "0.17.1"
+    diluvium: 97bb9f9d28974e3b4124a2a015e5b06da54a0c98
+    diluvium_version: "0.17.2"
     connectors:
       full: [time, fs, crypto, sql, ssh, rest, ssmtp, exec, data, socket, ws, listen]
       slim: [time, fs, crypto, listen]

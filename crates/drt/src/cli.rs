@@ -103,7 +103,7 @@ const PROFILE_FULL: &[&str] = &[
 /// finds nothing, which is the right failure: the alternative was printing
 /// `14` for a build that is not build 14.
 ///
-/// Hard-coded, because the core still does not say: 0.17.1 answers
+/// Hard-coded, because the core still does not say: 0.17.2 answers
 /// `dv_features()` -- which is why `features` is now read off the core --
 /// but has no `dv_version()`, and its `dv_build()` returns a constant that
 /// upstream lists as a known issue. So this is written down once, here, and
@@ -111,7 +111,7 @@ const PROFILE_FULL: &[&str] = &[
 /// what stops it going stale when the pin moves: the changelog records the
 /// pin, the pin is checked against `Cargo.lock` by `script/changelog.py
 /// check`, and this is checked against the changelog.
-const DILUVIUM_VERSION: &str = "0.17.1";
+const DILUVIUM_VERSION: &str = "0.17.2";
 
 /// What `drt wg` does. All three are diagnostics or key handling, and the
 /// serving that used to sit beside them is `drt start` now.

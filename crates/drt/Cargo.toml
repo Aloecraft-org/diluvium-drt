@@ -253,7 +253,7 @@ tunnel = ["dep:tokio", "dep:tokio-tungstenite", "dep:futures-util", "dep:tokio-r
 # the serving side are `webrtc`'s host and caller; the REPL default is
 # `sshd`'s server; `--relay wss://` and `--park wss://` are `tunnel`'s legs;
 # `--match` runs a deployment, so `listen`. In `full` beside them all.
-p2p = ["webrtc", "sshd", "tunnel", "listen"]
+p2p = ["webrtc", "sshd", "tunnel", "listen", "dep:base64"]
 # `drt turn`, and the `turn` block inside `drt start`: the TURN relay for
 # the peers `stun` says cannot punch (src/turn.rs). Beside `stun` in
 # `full`, on ego-transport's server, for `stun`'s reasons and the ssh

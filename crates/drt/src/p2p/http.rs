@@ -413,6 +413,8 @@ mod tests {
         let r = request("GET", &chunked, &[], None, &[]).await.unwrap();
         assert_eq!(r.text(), "abcde");
 
+        // A body `{"error":…}` is the server's own reason and is what is
+        // shown; without one, the status is read off `REFUSALS`.
         let to_close =
             server(b"HTTP/1.1 503 Service Unavailable\r\n\r\n{\"error\":\"nobody\"}").await;
         let r = request("GET", &to_close, &[], None, &[]).await.unwrap();
@@ -420,11 +422,14 @@ mod tests {
         assert!(r
             .refusal(&to_close)
             .unwrap()
-            .contains("no answerer is present"));
+            .ends_with("answered 503: nobody"));
         assert!(r
             .refusal(&to_close)
             .unwrap()
             .starts_with("http://127.0.0.1:"));
+        let bare = server(b"HTTP/1.1 503 Service Unavailable\r\n\r\n").await;
+        let r = request("GET", &bare, &[], None, &[]).await.unwrap();
+        assert!(r.refusal(&bare).unwrap().contains("no answerer is present"));
     }
 
     #[tokio::test]
