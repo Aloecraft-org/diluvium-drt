@@ -237,7 +237,10 @@ async fn park_ws(
                 announce = false;
                 let service = service.clone();
                 tokio::spawn(async move {
-                    match service.open("", 0, Window::default()).await {
+                    match service
+                        .open("", 0, Window::default(), drt_rtc::Report::none())
+                        .await
+                    {
                         Ok(mut io) => {
                             use tokio::io::AsyncWriteExt;
                             if io.write_all(&first).await.is_ok() {

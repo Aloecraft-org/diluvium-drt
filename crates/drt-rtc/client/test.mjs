@@ -261,6 +261,18 @@ test('a fingerprint is checked before the answer is applied: a pin compares, a f
   await assert.rejects(fakeSession({ fingerprint: () => false }), /not trusted/);
 });
 
+test('granted on control settles the stream\'s caps; a stream that ends first rejects it', async () => {
+  const { session, control } = await fakeSession();
+  const a = session.connect('repl');
+  const b = session.connect('ssh');
+  control.onmessage({ data: JSON.stringify({ t: 'granted', stream: a.id, caps: ['host:time/*'] }) });
+  assert.deepEqual(await a.granted, ['host:time/*']);
+  assert.deepEqual(a.caps, ['host:time/*']);
+  b.close();
+  await assert.rejects(b.granted, /ended before/);
+  assert.equal(b.caps, null);
+});
+
 test('data arrives on readable, and a clean CLOSE ends it', async () => {
   const { session, host } = await fakeSession();
   const s = session.connect('127.0.0.1', 8123);

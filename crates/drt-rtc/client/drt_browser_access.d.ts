@@ -109,6 +109,10 @@ export interface Session {
 
 export interface Stream {
   readonly id: number;
+  /** What the far side granted this stream, once it said (doc/P2P.md §7.2); null until then. */
+  readonly caps: string[] | null;
+  /** Resolves with `caps` when the far side says; rejects if the stream ends first. */
+  readonly granted: Promise<string[]>;
   /** Bytes from the target. Ends when the target closes cleanly. */
   readonly readable: ReadableStream<Uint8Array>;
   /** Bytes to the target, split at 16379 per packet and paced by Wisp credit. */

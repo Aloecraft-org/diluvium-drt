@@ -15,7 +15,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use drt_rtc::host::{Event, Opening, SessionState, Window};
+use drt_rtc::host::{Event, Opening, Report, SessionState, Window};
 use drt_rtc::wisp::{self, reason};
 use drt_rtc::{
     Cidr, Command, Entry, Forward, Host, HostConfig, Identity, PortSet, Record, Scope, Service,
@@ -60,7 +60,10 @@ impl Service for Echo {
     fn name(&self) -> String {
         "echo".into()
     }
-    fn open(&self, host: &str, port: u16, _window: Window) -> Opening {
+    fn open(&self, host: &str, port: u16, _window: Window, report: Report) -> Opening {
+        // What this stream holds, as a REPL behind a key would say once
+        // the key signed in.
+        report.granted(&["host:echo/*".to_string()]);
         let tag = format!("[{host}:{port}]");
         Box::pin(async move {
             let (mine, theirs) = tokio::io::duplex(65536);
@@ -247,6 +250,26 @@ async fn a_one_port_set_is_what_a_stream_naming_no_port_gets() {
     client.send(wisp::connect(1, wisp::STREAM_TCP, 0, ""));
     client.send(wisp::data(1, b"the one port"));
     assert_eq!(client.read_stream(1, 12).await.0, b"the one port");
+}
+
+#[tokio::test]
+async fn a_service_says_what_a_stream_was_granted_on_control() {
+    let echo: Arc<dyn Service> = Arc::new(Echo);
+    let (mut host, record) = host(
+        Forward::None,
+        vec![("echo".to_string(), Sink::Local(echo))],
+        vec![],
+    )
+    .await;
+    let mut client = connected(&mut host, &record, "p1").await;
+    client.send(wisp::connect(1, wisp::STREAM_TCP, 0, "echo"));
+    client
+        .until("granted on control", |c| !c.control_msgs.is_empty())
+        .await;
+    let told: serde_json::Value = serde_json::from_str(&client.control_msgs[0]).unwrap();
+    assert_eq!(told["t"], "granted");
+    assert_eq!(told["stream"], 1);
+    assert_eq!(told["caps"], serde_json::json!(["host:echo/*"]));
 }
 
 #[tokio::test]

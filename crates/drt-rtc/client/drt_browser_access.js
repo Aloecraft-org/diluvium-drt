@@ -855,10 +855,13 @@ class Session {
     } catch {
       return;
     }
-    // §5: `hello` is v1's only message; any other `t` is ignored.
+    // §5: `hello` first; `granted` for one of this side's streams
+    // (doc/P2P.md §7.2); any other `t` is ignored.
     if (m && m.t === 'hello' && !this.hello) {
       this.hello = m;
       this.onReady?.();
+    } else if (m && m.t === 'granted' && Array.isArray(m.caps)) {
+      this.streams.get(m.stream)?.onGranted(m.caps);
     }
   }
 
@@ -1007,6 +1010,14 @@ class Stream {
     this.closed = new Promise((res, rej) => ((resolve = res), (reject = rej)));
     this.closed.catch(() => {}); // a caller that never looks is not an unhandled rejection
     this.settle = { resolve, reject };
+    // What the far side granted this stream (doc/P2P.md §7.2): the service
+    // says once it knows, which for a REPL behind a key is after sign-in.
+    // Resolves with the capability names; rejects if the stream ends first.
+    this.caps = null;
+    let grantOk, grantNo;
+    this.granted = new Promise((res, rej) => ((grantOk = res), (grantNo = rej)));
+    this.granted.catch(() => {});
+    this.settleGranted = { resolve: grantOk, reject: grantNo };
     // A stream this side serves grants the opener credit (§10.2, as §6):
     // SERVE_BUFFER packets, topped up with CONTINUE as the reader drains
     // them. What it reads is pulled one packet at a time so the count is
@@ -1088,7 +1099,14 @@ class Stream {
     this.finish(null, true);
   }
 
+  onGranted(caps) {
+    if (this.caps !== null) return;
+    this.caps = caps;
+    this.settleGranted.resolve(caps);
+  }
+
   finish(error, local) {
+    if (this.caps === null) this.settleGranted.reject(new Error('the stream ended before anything was granted'));
     if (this.done) return;
     this.done = true;
     this.pending?.();

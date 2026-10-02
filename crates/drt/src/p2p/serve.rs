@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use drt_config::RootConfig;
-use drt_rtc::host::{Event, Opening, Service, SessionState, StreamState, Window};
+use drt_rtc::host::{Event, Opening, Report, Service, SessionState, StreamState, Window};
 use drt_rtc::{Cidr, Forward, Host, HostConfig, Identity, Scope, Sender, Sink};
 use drt_sshd::HostKey;
 use tokio::sync::{oneshot, watch};
@@ -444,7 +444,7 @@ impl Service for ReplOverSsh {
     fn name(&self) -> String {
         "ssh".into()
     }
-    fn open(&self, _host: &str, _port: u16, _window: Window) -> Opening {
+    fn open(&self, _host: &str, _port: u16, _window: Window, report: Report) -> Opening {
         let repl = self.0.clone();
         Box::pin(async move {
             let key =
@@ -458,7 +458,11 @@ impl Service for ReplOverSsh {
             tokio::spawn(async move {
                 while let Some(shell) = opened.recv().await {
                     match repl.keys.grants(&shell.key) {
-                        Some(grants) => crate::sshd::session(shell, grants, repl.config.clone()),
+                        Some(grants) => {
+                            // Known only now: the key decided it.
+                            report.granted(&crate::webrtc::cap_names(&grants));
+                            crate::sshd::session(shell, grants, repl.config.clone())
+                        }
                         None => shell.close(1).await,
                     }
                 }
@@ -477,11 +481,12 @@ impl Service for ReplRaw {
     fn name(&self) -> String {
         "repl".into()
     }
-    fn open(&self, _host: &str, _port: u16, window: Window) -> Opening {
+    fn open(&self, _host: &str, _port: u16, window: Window, report: Report) -> Opening {
         let repl = self.0.clone();
         Box::pin(async move {
             let (mine, theirs) = tokio::io::duplex(PIPE);
             let grants = crate::config::ceiling(&repl.config);
+            report.granted(&crate::webrtc::cap_names(&grants));
             crate::sshd::raw_session(Box::pin(mine), window, grants, repl.config.clone());
             Ok(Box::pin(theirs) as _)
         })
@@ -545,7 +550,7 @@ impl Service for StdioService {
     fn name(&self) -> String {
         "stdio".into()
     }
-    fn open(&self, _host: &str, _port: u16, _window: Window) -> Opening {
+    fn open(&self, _host: &str, _port: u16, _window: Window, _report: Report) -> Opening {
         let taken = self.busy.swap(true, Ordering::SeqCst);
         let done = self.done.lock().ok().and_then(|mut d| d.take());
         Box::pin(async move {
@@ -606,7 +611,7 @@ impl Service for PeerService {
     fn name(&self) -> String {
         format!("the peer {}", self.0.peer.shown())
     }
-    fn open(&self, host: &str, port: u16, _window: Window) -> Opening {
+    fn open(&self, host: &str, port: u16, _window: Window, _report: Report) -> Opening {
         let target = match (host, port) {
             ("", 0) => match &self.0.peer.service {
                 Some(s) => drt_rtc::caller::Target::Service(s.clone()),

@@ -312,7 +312,11 @@ The host sends one message after the channel opens:
   which calls a destination the caller names and joins the two sessions.
 - **`caps`**: capability names a program or REPL behind the host may hold
   (`doc/P2P.md` §7.2), such as `host:time/*`. Omitted when there are none.
-  Descriptive: what a session gets is the host's decision at open time.
+  Descriptive: what a session gets is the host's decision at open time,
+  and the host says so with **`granted`**:
+  `{"t":"granted","stream":N,"caps":[…]}` on `control`, once the service
+  behind stream N knows, which for the REPL behind a key is after the key
+  signed in. A stream a service never reports on gets no message.
 - **The caller's messages.** `{"t":"resize","stream":N,"cols":C,"rows":R}`
   reports the terminal size of one of the caller's streams, for a service
   that is a terminal (`doc/P2P.md` §5.2). `{"t":"call","to":"<peer>"}`

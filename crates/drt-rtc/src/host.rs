@@ -312,11 +312,46 @@ pub trait Service: Send + Sync {
     /// What this is, for reports and refusals.
     fn name(&self) -> String;
     /// Open a stream for a `CONNECT` the host routed here: the host and
-    /// port the stream asked for, which may be empty and 0, and the
-    /// window the peer reports for it over `control` (`doc/P2P.md`
-    /// §5.2), which a terminal-shaped service reads and the rest ignore.
-    /// Runs on the host's own runtime.
-    fn open(&self, host: &str, port: u16, window: Window) -> Opening;
+    /// port the stream asked for, which may be empty and 0, the window
+    /// the peer reports for it over `control` (`doc/P2P.md` §5.2), which
+    /// a terminal-shaped service reads and the rest ignore, and a
+    /// [`Report`] for what the stream was granted. Runs on the host's own
+    /// runtime.
+    fn open(&self, host: &str, port: u16, window: Window, report: Report) -> Opening;
+}
+
+/// A service's way of saying what one stream holds (`doc/P2P.md` §7.2):
+/// `granted(caps)` sends `{"t":"granted","stream":N,"caps":[…]}` on
+/// `control`, once the service knows, which for a REPL behind a key is
+/// after the key signed in. `hello.caps` is the ceiling; this is the
+/// session's own.
+#[derive(Clone)]
+pub struct Report {
+    internal: mpsc::UnboundedSender<Internal>,
+    key: u64,
+    stream: u32,
+}
+
+impl Report {
+    /// A report nobody reads, for a service opened outside a session: a
+    /// relay's parked leg (`drt p2p --park wss://`), where there is no
+    /// `control` to tell.
+    pub fn none() -> Report {
+        let (internal, _) = mpsc::unbounded_channel();
+        Report {
+            internal,
+            key: 0,
+            stream: 0,
+        }
+    }
+
+    pub fn granted(&self, caps: &[String]) {
+        let _ = self.internal.send(Internal::Granted {
+            key: self.key,
+            stream: self.stream,
+            caps: caps.to_vec(),
+        });
+    }
 }
 
 /// A stream's terminal size as the peer last reported it over `control`
@@ -620,6 +655,12 @@ enum Internal {
     RelayDone {
         key: u64,
     },
+    /// A service says what one of its streams holds, for `control`.
+    Granted {
+        key: u64,
+        stream: u32,
+        caps: Vec<String>,
+    },
 }
 
 /// What every session needs from the loop.
@@ -856,7 +897,8 @@ impl Loop {
             | Internal::RelayUp { key, .. }
             | Internal::RelayFailed { key, .. }
             | Internal::RelayPacket { key, .. }
-            | Internal::RelayDone { key } => *key,
+            | Internal::RelayDone { key }
+            | Internal::Granted { key, .. } => *key,
         };
         match self.sessions.iter_mut().find(|s| s.key == key) {
             Some(s) => s.on_internal(&self.ctx, i),
@@ -1489,21 +1531,25 @@ impl Session {
         let (asked_host, asked_port) = (host.clone(), port);
         let window = Window::default();
         let stream_window = window.clone();
+        let report = Report {
+            internal: internal.clone(),
+            key,
+            stream: id,
+        };
         let connect = tokio::spawn(async move {
-            let opened: Result<(Reader, Writer), u8> =
-                match sink {
-                    Sink::Dial(entry) => dial(&entry, timeout).await.map(|tcp| {
-                        let (r, w) = tcp.into_split();
+            let opened: Result<(Reader, Writer), u8> = match sink {
+                Sink::Dial(entry) => dial(&entry, timeout).await.map(|tcp| {
+                    let (r, w) = tcp.into_split();
+                    (Box::new(r) as Reader, Box::new(w) as Writer)
+                }),
+                Sink::Local(service) => service
+                    .open(&asked_host, asked_port, window, report)
+                    .await
+                    .map(|io| {
+                        let (r, w) = tokio::io::split(io);
                         (Box::new(r) as Reader, Box::new(w) as Writer)
                     }),
-                    Sink::Local(service) => service
-                        .open(&asked_host, asked_port, window)
-                        .await
-                        .map(|io| {
-                            let (r, w) = tokio::io::split(io);
-                            (Box::new(r) as Reader, Box::new(w) as Writer)
-                        }),
-                };
+            };
             let msg = match opened {
                 Ok((r, w)) => {
                     let (to_tcp, rx) = mpsc::unbounded_channel();
@@ -1606,6 +1652,17 @@ impl Session {
             }
             Internal::RelayPacket { packet, .. } => self.outbox.push_back(packet),
             Internal::RelayDone { .. } => self.end("the destination's session ended"),
+            Internal::Granted { stream, caps, .. } => {
+                // Only for a stream still open: a service that answers
+                // after the peer closed has nothing to tell it.
+                if self.streams.contains_key(&stream) {
+                    let told = serde_json::json!({"t": "granted", "stream": stream, "caps": caps})
+                        .to_string();
+                    if let Some(mut ch) = self.rtc.channel(self.control) {
+                        let _ = ch.write(false, told.as_bytes());
+                    }
+                }
+            }
             Internal::Written { stream, .. } => {
                 let Some(s) = self.streams.get_mut(&stream) else {
                     return;

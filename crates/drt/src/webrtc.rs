@@ -221,7 +221,13 @@ pub fn command_from(v: &rmpv::Value) -> Result<Command, String> {
 /// The capability names a root holds, for `hello`: the config's ceiling,
 /// grants only, as the `caps` entries of a profile spell them.
 pub fn caps_of(config: &RootConfig) -> Vec<String> {
-    crate::config::ceiling(config)
+    cap_names(&crate::config::ceiling(config))
+}
+
+/// The grants of a set, by name: what `granted` on `control` says a
+/// session holds (`doc/P2P.md` §7.2).
+pub fn cap_names(grants: &[drt_caps::Grant]) -> Vec<String> {
+    grants
         .iter()
         .filter(|g| g.effect == drt_caps::Effect::Grant)
         .map(|g| g.capability.clone())

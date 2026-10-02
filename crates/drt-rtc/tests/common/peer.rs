@@ -40,6 +40,8 @@ pub struct Client {
     pub open: [bool; 2],
     pub connected: bool,
     pub hello: Option<String>,
+    /// `control` messages after `hello`, oldest first.
+    pub control_msgs: Vec<String>,
     pub inbox: Vec<Vec<u8>>,
 }
 
@@ -105,6 +107,7 @@ impl Client {
             open: [false; 2],
             connected: false,
             hello: None,
+            control_msgs: Vec::new(),
             inbox: Vec::new(),
         };
         (client, record.encode().unwrap())
@@ -122,7 +125,12 @@ impl Client {
                     RtcEvent::ChannelOpen(id, _) if id == self.control => self.open[0] = true,
                     RtcEvent::ChannelOpen(id, _) if id == self.wisp => self.open[1] = true,
                     RtcEvent::ChannelData(d) if d.id == self.control => {
-                        self.hello = Some(String::from_utf8(d.data).unwrap())
+                        let text = String::from_utf8(d.data).unwrap();
+                        if self.hello.is_none() {
+                            self.hello = Some(text);
+                        } else {
+                            self.control_msgs.push(text);
+                        }
                     }
                     RtcEvent::ChannelData(d) if d.id == self.wisp => self.inbox.push(d.data),
                     _ => {}
