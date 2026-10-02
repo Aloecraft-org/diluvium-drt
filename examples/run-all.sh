@@ -465,7 +465,7 @@ drt_features=$("$drt_abs" buildinfo 2>/dev/null | sed -n 's/^features: //p')
 if [ "$drt_profile" != full ] && [ "$drt_profile" != unknown ]; then
     printf '\n%s: this is a %s build, so examples needing the full connector\n' "$SELF" "$drt_profile"
     printf '%s  set are skipped.  For the whole set:\n\n' "${SELF//?/ }"
-    printf '    cargo build --release --all-features\n'
+    printf '    cargo build --release --features full -p drt\n'
     printf '    DRT=../target/release/drt ./%s\n' "$SELF"
 fi
 

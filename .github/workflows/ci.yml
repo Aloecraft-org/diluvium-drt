@@ -142,6 +142,10 @@ jobs:
       - name: Config schema is current
         run: script/config-schema.sh --check
       - name: Test (default features)
+        # sshd was installed above, so an ssh test that skips is a broken
+        # runner, not a pass: crates/drt/tests/ssh_cli.rs panics instead.
+        env:
+          DRT_TEST_REQUIRE_SSH: "1"
         run: cargo test --workspace
       # The profile that actually covers the code: `cargo test --workspace`
       # builds `drt` with its DEFAULT feature (slim), so relay, tunnel, ssh
@@ -160,6 +164,8 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y gdb
           sudo sysctl -w kernel.core_pattern=/tmp/core.%e.%p
       - name: Test (all features)
+        env:
+          DRT_TEST_REQUIRE_SSH: "1"
         run: |
           ulimit -c unlimited
           cargo test --workspace --all-features

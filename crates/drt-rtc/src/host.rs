@@ -1513,6 +1513,14 @@ impl Session {
                 s.bytes_up += payload.len() as u64;
                 s.last_activity = now;
                 s.queued += 1;
+                // The credit this side granted is a promise the peer must
+                // keep: past it the stream is closed 0x49 rather than the
+                // queue allowed to grow, whether the bytes wait on the
+                // dial or on a target slower than the peer.
+                if s.queued > WISP_BUFFER {
+                    self.close_stream(ctx, stream, reason::THROTTLED, true);
+                    return;
+                }
                 match &s.to_tcp {
                     Some(tx) => {
                         let _ = tx.send(payload.to_vec());

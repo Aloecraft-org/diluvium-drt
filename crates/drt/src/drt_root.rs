@@ -166,6 +166,27 @@ pub fn discover(cwd: &Path, flag: Option<&Path>) -> Option<Root> {
     drt_platform::fs::is_dir(root.meta()).then_some(root)
 }
 
+/// `--root <path>` that names no root is the mistake the flag exists to
+/// catch, so it is refused by name rather than read as "no root here".
+pub fn check_named(flag: Option<&Path>) -> Result<(), String> {
+    match flag {
+        Some(named)
+            if !drt_platform::fs::is_dir(
+                Root {
+                    dir: named.to_path_buf(),
+                }
+                .meta(),
+            ) =>
+        {
+            Err(format!(
+                "--root {}: not a drt root (no .drt_root/ there); `dollup init` makes one",
+                named.display()
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// What the nesting check found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Nesting {

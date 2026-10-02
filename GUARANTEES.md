@@ -68,7 +68,7 @@ because it was chosen.
 
 ## `sshd` is a deliberate front-door exposure
 
-Running `drt serve` with a transport listener publishes a network surface on
+Running `drt start` with a transport listener publishes a network surface on
 purpose. It is pubkey-only, modern-suite-only (ed25519, curve25519,
 chacha20-poly1305, strict kex), built on russh rather than hand-rolled — but a
 listening socket is a listening socket. An SSH principal is an attenuated node

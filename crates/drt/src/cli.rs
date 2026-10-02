@@ -192,7 +192,8 @@ pub struct Cli {
     /// and run the no-root path without saying so.
     #[arg(long, global = true, value_name = "PATH")]
     pub root: Option<PathBuf>,
-    /// Accept a **first** consent acceptance without asking.
+    /// Answer yes to a consent prompt instead of asking (a first run's, a
+    /// new deployment's).
     ///
     /// Deliberately not enough for a ceiling that has widened. A `-y` that
     /// also accepted a widening would mean every unit file and CI job carried
@@ -337,32 +338,13 @@ pub enum Command {
         #[command(subcommand)]
         action: WgAction,
     },
-    /// SSH over WSS, as a dumb pipe. With a URL: bridge this process's
-    /// stdio to it — the OpenSSH ProxyCommand contract, so
-    /// `ssh -o ProxyCommand="drt tunnel wss://gate/fp" user@fp` (and rsync,
-    /// sftp, -L/-R through it) works like normal SSH over the WebSocket
-    /// carrier. With a URL and --local: serve a local port instead, one
-    /// fresh leg per accepted connection, which is how a program reaches
-    /// a parked device. With --listen/--to: accept WebSocket connections
-    /// and bridge each to a TCP target, in front of any sshd. With
-    /// --park/--to: the device side of the relay. With `rtc:` in place of
-    /// the URL: the same stdio over a WebRTC session, no relay -- the
-    /// answerer's record (a file, or the JSON itself, for a host in direct
-    /// mode) or an http(s):// endpoint to POST this caller's record to --
-    /// and --to naming the service or host:port to reach, `ssh` if omitted.
-    ///
-    /// Every flag is also a key of the `tunnel` block in --config, under
-    /// the block's name (the URL is `claim`, --local is `bind`), so the
-    /// credential in a park or claim URL can live in a 0600 file. Flags
-    /// win per key; a flag naming a different mode than the file is
-    /// refused as the conflict it is.
     /// An interactive shell on another host, on this terminal.
     ///
     /// `drt ssh [user@]host[:port]` over TCP, trusting OpenSSH's
     /// ~/.ssh/known_hosts (asking about a host it has not seen) and signing
     /// in with the agent, ~/.ssh's keys, then a password. `--via` reaches
-    /// the host through a relay claim or `rtc:` instead, as `drt tunnel`
-    /// would. `~.` at the start of a line disconnects. The REPL's `:ssh`
+    /// the host through a relay claim, a record or a signalling URL, as
+    /// `drt p2p` does. `~.` at the start of a line disconnects. The REPL's `:ssh`
     /// takes the same arguments.
     #[cfg(feature = "connector-ssh")]
     Ssh(crate::ssh::SshArgs),
@@ -374,6 +356,21 @@ pub enum Command {
     /// `p2p` block in --config.
     #[cfg(feature = "p2p")]
     P2p(crate::p2p::Args),
+    /// Alias of `drt p2p` for one release: a call or a park prints the
+    /// `drt p2p` form of what it was given and runs as that. SSH over WSS,
+    /// as a dumb pipe. With a URL: bridge this process's stdio to it, the
+    /// OpenSSH ProxyCommand contract, so
+    /// `ssh -o ProxyCommand="drt tunnel wss://gate/fp" user@fp` (and rsync,
+    /// sftp, -L/-R through it) works like normal SSH over the WebSocket
+    /// carrier. With a URL and --local: serve a local port instead, one
+    /// fresh leg per accepted connection. With --listen/--to: accept
+    /// WebSocket connections and bridge each to a TCP target, in front of
+    /// any sshd; this mode is not a peer and stays here until the `relay`
+    /// block takes it. With --park/--to: the device side of the relay.
+    /// With `rtc:` in place of the URL: `drt p2p <peer> -p :<to>`.
+    ///
+    /// Every flag is also a key of the `tunnel` block in --config, read as
+    /// the `p2p` block for one release with a warning per key.
     #[cfg(feature = "tunnel")]
     Tunnel {
         /// The wss:// or ws:// URL to bridge stdio to, or `rtc:` and a
@@ -955,6 +952,7 @@ pub fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
 /// depended on the features compiled in, a config that worked on `slim`
 /// would start shadowing a builtin the day it ran on `full`, which is the
 /// quiet kind of wrong.
+#[cfg(feature = "plugins")]
 const BUILTIN_FAMILIES: &[&str] = &[
     "time", "fs", "sql", "crypto", "data", "ssh", "rest", "ssmtp", "exec", "socket", "ws",
 ];
@@ -965,6 +963,7 @@ const BUILTIN_FAMILIES: &[&str] = &[
 /// a whole, and checking it inside the wiring loop would let the *other*
 /// loop's refusal answer first. An operator who wrote one mistake should
 /// be told about that mistake.
+#[cfg(feature = "plugins")]
 fn check_plugin_names(config: &RootConfig) -> Result<(), String> {
     for family in config.plugins.keys() {
         // A plugin may not shadow a builtin. A config that could would
@@ -1492,6 +1491,10 @@ fn rm_verb(cli: &Cli) -> ExitCode {
     let (inputs, _) = root.read(drt_config::resolve::Requested::Default, Vec::new());
     let project = inputs.root.as_ref().and_then(|r| r.project.as_ref());
     let name = crate::deploy::deployment_name(&root, project);
+    if !drt_platform::fs::is_dir(root.live().join(&name)) {
+        eprintln!("drt rm: nothing is deployed as '{name}' here; live/ holds no such deployment");
+        return ExitCode::FAILURE;
+    }
     match crate::deploy::remove(&root, &name) {
         Ok(()) => {
             eprintln!("removed {name} from live/");
@@ -1638,6 +1641,12 @@ pub fn main(cli: Cli) -> ExitCode {
     // core's `print` and this file's `eprintln!` on the same line ending.
     // A no-op everywhere else.
     drt_platform::stdio::bytes_as_written();
+    // `--root` naming no root is refused before any verb reads it as the
+    // no-root path.
+    if let Err(e) = crate::drt_root::check_named(cli.root.as_deref()) {
+        eprintln!("drt: {e}");
+        return ExitCode::FAILURE;
+    }
     // `start` assembles its own, before anything else here runs. A rooted
     // deployment's config is the *resolved profile's* and not `--config`'s, so
     // going through `assemble` first would wire one set of connectors to throw

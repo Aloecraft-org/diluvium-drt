@@ -31,6 +31,18 @@
 
 #![cfg(all(unix, feature = "connector-ssh"))]
 
+/// A test that cannot run says so and passes, unless DRT_TEST_REQUIRE_SSH
+/// is set, as CI sets it after installing sshd: there a skip is a broken
+/// runner, and a pass that tested nothing is the thing CI exists to catch.
+macro_rules! skipped {
+    ($($arg:tt)*) => {{
+        if std::env::var_os("DRT_TEST_REQUIRE_SSH").is_some() {
+            panic!("DRT_TEST_REQUIRE_SSH is set, and this test would have skipped: {}", format!($($arg)*));
+        }
+        eprintln!("skipped: {}", format!($($arg)*));
+    }};
+}
+
 use std::io::{Read, Write};
 use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
@@ -52,7 +64,7 @@ struct Sshd {
 impl Sshd {
     fn start() -> Option<Sshd> {
         if !Path::new("/usr/sbin/sshd").exists() {
-            eprintln!("skipped: no /usr/sbin/sshd on this machine");
+            skipped!("no /usr/sbin/sshd on this machine");
             return None;
         }
         let dir = tempfile::tempdir().unwrap();
@@ -65,7 +77,7 @@ impl Sshd {
                 .map(|s| s.success())
                 .unwrap_or(false);
             if !ok {
-                eprintln!("skipped: ssh-keygen did not run");
+                skipped!("ssh-keygen did not run");
                 return None;
             }
         }
@@ -589,14 +601,14 @@ impl Served {
     /// it was skipped.
     fn start(extra: serde_json::Value) -> Option<Result<Served, String>> {
         if Command::new("ssh").arg("-V").output().is_err() {
-            eprintln!("skipped: no ssh client on this machine");
+            skipped!("no ssh client on this machine");
             return None;
         }
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path();
         for name in ["host", "client", "stranger"] {
             if !keygen(d, name) {
-                eprintln!("skipped: ssh-keygen did not run");
+                skipped!("ssh-keygen did not run");
                 return None;
             }
         }
@@ -818,7 +830,7 @@ fn drt_ssh_reaches_the_repl_drt_p2p_serves_by_its_record() {
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path();
     if !keygen(d, "client") {
-        eprintln!("skipped: ssh-keygen did not run");
+        skipped!("ssh-keygen did not run");
         return;
     }
     let port = std::net::UdpSocket::bind("127.0.0.1:0")

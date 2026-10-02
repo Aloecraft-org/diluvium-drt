@@ -1040,10 +1040,10 @@ pub struct TunnelConfig {
 /// the file also names replaces it, and a flag naming a different role than
 /// the file is the conflict two flags would be.
 ///
-/// Two keys have no flag: `identity_file`, the ICE credentials and DTLS
+/// One key has no flag: `identity_file`, the ICE credentials and DTLS
 /// certificate a listening or parked peer keeps so its record and
-/// fingerprint survive a restart (`~/.drt/p2p/identity.json` when absent),
-/// and `authorized_keys`, which the `--authorized-keys` flag also sets.
+/// fingerprint survive a restart (`~/.drt/p2p/identity.json` when absent).
+/// `authorized_keys` is also the `--authorized-keys` flag.
 ///
 /// `tunnel` is read as an alias of this block for one release, each of its
 /// keys mapped to its replacement here with a warning naming both.

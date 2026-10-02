@@ -117,7 +117,7 @@ covers queues — same semantics as `dvs_holds`/`dvs_may_grant`, differentially
 tested against them) plus what the C layer never had: **provenance**. Every
 instance's set records who granted it, attenuated from what, back to the
 process root. One introspection surface serves it all — caps, budgets, usage,
-queue depths, residency, health — behind `drt ps` / `drt caps <id>`, a
+queue depths, residency, health — behind `drt ps` / `drt ps --caps <id>`, a
 grant-gated hostcall, and (later) Lab. SSH principals (§9) are nodes in the
 same tree.
 
@@ -295,8 +295,8 @@ under one directory — and never a daemon.)
 |---|---|
 | `run <program>` | one program to completion, foreground. No listeners, no control endpoint. |
 | `start` | the deployment. Foreground; binds what the config names. |
-| `stop` | graceful: stop accepting, hibernate everything parked into the snapshot store, exit. This *is* the durable-agents story, so it earns v1. |
-| `ps` / `caps <id>` / `status` | introspection against a running deployment (§6). |
+| `ps --stop` | graceful: hibernate what is parked and end the loop (built 2026-10-02); writing the hibernated set to the snapshot store is still ahead. This *is* the durable-agents story, so it earns v1. |
+| `ps` / `ps --caps <id>` / `ps --status` | introspection against a running deployment (§6). |
 | `repl` / `attach` | the REPL instance, local or wired into a live deployment (§9). |
 | `pause` / `resume` | built 2026-10-02 as `drt ps --pause <id>` / `--resume <id>`, with exactly the meaning the caveat below allows. |
 

@@ -291,8 +291,9 @@ The host sends one message after the channel opens:
 }
 ```
 
-- `t` names the message. `hello` is the only one in v1. A reader ignores
-  a message whose `t` it does not know.
+- `t` names the message. `hello` is the first, and the only one a v1
+  reader must know; the others below are additive. A reader ignores a
+  message whose `t` it does not know.
 - `scheme` tells the browser whether to speak TLS itself (`https`), plain
   bytes (`http`), or SSH (`ssh`). **The host enforces host and port
   only.**

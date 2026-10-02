@@ -531,3 +531,22 @@ Each of these edits code `doc/Plan-2026-09.md` §0.2 froze:
   `services: {}` with the block, and a `sed` edit left a line rustfmt
   rewraps. Both are fixed together, and CI's `test` job is now run in
   full before a push.
+
+- 2026-10-02, **after stage 3b, what 0.8.0 ships beyond this plan.** The
+  record above stops at stage 3b; the release carries more, and some of
+  §0 and §5 is overturned by it. `drt p2p` and its four roles (call,
+  listen, park, match) with `--relay` and `--fallback` as carriers, which
+  is the "WebRTC as a tunnel carrier" §5 deferred to 0.9, with
+  `doc/DRT-Signalling.md` as the server a page or a `drt` parks at, and
+  pairing (§6.2 there) on both told sides. `drt ssh` and `:ssh`, which §0.1
+  said had nothing to add; the `ssh` listener and the `drt-sshd` crate;
+  the control endpoint (`drt ps`, SPEC.md §13a). Half-close on the wire,
+  `caps` and `granted` in the hello, the streaming `http` listener, the
+  launcher pack (schema, npm package, `--show`). The pin moved to 0.17.2
+  for diluvium-sys's Windows build script; the runtime is 0.17.1's. Of
+  §3.3's milestones M3 is row 5 and M4 is `stdlib:browser-access`; M1
+  (policy hook) and M2 (presence refresh) carry to 0.8.x. §0's "stock
+  WireGuard interop in CI" did not land; it carries too. Of §6: presence
+  shapes are decided (discofetch 36ad148), the SSH page inlines the client,
+  services are named (§10.3), and session caps are `max_sessions` with
+  `DRT-Accept`; the block's name is still the placeholder.

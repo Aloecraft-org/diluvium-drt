@@ -502,7 +502,8 @@ jobs:
       - name: Package
         run: |
           set -eu
-          script/drt-web-package.sh drt_web "$DRT_RELEASE_TAG"
+          # A rehearsal (no tag) packages under a version that says so.
+          script/drt-web-package.sh drt_web "${DRT_RELEASE_TAG:-v0.0.0-rehearsal}"
           tar -czf drt_web.tar.gz drt_web
           (cd drt_web && npm pack --pack-destination ..)
           ls drt-browser-*.tgz
@@ -1015,6 +1016,15 @@ jobs:
             echo "profile.wasi.features: ${WASI_FEATURES:-unknown}"
             echo "profile.web.features: ${WEB_FEATURES:-unknown}"
           } > BUILDINFO.txt
+          # What the artifacts carry against what the entry says they carry
+          # (doc/Release.md: the connector set is why a version number is
+          # honest). A dev build is held to the newest entry.
+          pip install --quiet pyyaml
+          if [ "${{ needs.preflight.outputs.dev }}" = true ]; then
+            ../script/changelog.py buildinfo-check --newest --allow-unknown --file BUILDINFO.txt
+          else
+            ../script/changelog.py buildinfo-check --tag '${{ needs.preflight.outputs.tag }}' --file BUILDINFO.txt
+          fi
           # Every other asset, install.sh and the web buildinfo included
           # (doc/ALIGNMENT.md §6): the mirror verifies each file it carries
           # against this, and a file it cannot find here is one it cannot

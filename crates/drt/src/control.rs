@@ -611,6 +611,7 @@ pub fn split_endpoint(text: &str) -> Result<(String, u16), String> {
     Ok((host.to_string(), port))
 }
 
+#[cfg(feature = "connector-ssh")]
 fn msgpack_to_json(v: &rmpv::Value) -> String {
     fn conv(v: &rmpv::Value) -> serde_json::Value {
         match v {

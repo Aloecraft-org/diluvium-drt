@@ -21,9 +21,11 @@ the path is a flag the user typed.
   **Match**, `drt p2p --match <port>`. Two carriers, on call and park:
   `--relay <peer>` and `--fallback <peer>`.
 - Configurable: `-p` (call), `--host` (default `127.0.0.1`), `--accept`,
-  `--forward`, `-A`, `-P`, `--signal`, `--stun`, `--fingerprint`, `--H`,
-  `--capacity`, `--extra-root`, `--config`. Every flag is also a key of the `p2p` block
-  (§8).
+  `--pair`, `--forward`, `-A`, `-P`, `--signal`, `--stun`,
+  `--fingerprint` (`--fingerp`), `--H` (`auth=` for a bearer token),
+  `--authorized-keys`, `--capacity`, `--extra-root`, `--config`; `--show`
+  prints a peer's canonical form. Every flag is also a key of the `p2p`
+  block (§8).
 - Fan-out: the role table (§2), the peer address forms (§3), the forward
   targets and how a requested port meets them (§5), the admission table
   (§6), and the `drt tunnel` map (§9).
@@ -44,8 +46,9 @@ serves it.
   used without a flag. This removes the matrix's implicit fallback ("then
   row N" whenever a relay URL is configured): falling back is something an
   invocation asks for, never something a config implies.
-- **A failure says why.** It carries `drt netcheck`'s verdict for the
-  network it ran on, as the matrix already requires.
+- **A failure says why.** It names the path that failed and the reason.
+  Not yet built: carrying `drt netcheck`'s verdict for the network it ran
+  on, as the matrix asks.
 - **The promise is per side.** Each side's flags govern its own path. A
   caller with no `--relay` may reach a parked side that chose one; the
   caller's path is then direct to that relay. The relay says so in its
@@ -72,8 +75,8 @@ drt p2p drt://signal.example/v1/mypc -p 8080:80 -p 5432:5432
 The positional is a peer address (§3). The process is the caller in a
 browser access session.
 
-**By default the caller's end is stdio**, as `drt tunnel rtc:` is today:
-one stream, stdin to the far side and the far side to stdout. That is the
+**By default the caller's end is stdio**, as `drt tunnel`'s was: one
+stream, stdin to the far side and the far side to stdout. That is the
 ProxyCommand form.
 
 **`-p <local>:<remote>` maps ports** in the shape of `ssh -L` and
@@ -110,7 +113,8 @@ The parked side is the answerer of `doc/DRT-Signalling.md`: it holds the
 call notification stream (§5 there), polls by cursor, and answers each
 call. It is the native counterpart of `listen` in
 `drt_browser_access.js`. The one-liner is for quick use; a long-running
-device runs the same thing from `--config` or a `drt start` config.
+device runs the same thing as `drt --config mypc.json p2p` under a
+process supervisor; a `p2p` block is not yet served by `drt start`.
 
 `--accept <cidr>` admits only callers from that range. It is an
 instruction to the signalling server, which refuses other callers before
@@ -211,11 +215,9 @@ what the profile asks of them.
 its public address, and every role that makes a WebRTC session takes it:
 call, park and listen. Without one, a side offers only its local address,
 which a peer reaches only on the same network or when that side's NAT
-admits packets it did not ask for. The `webrtc` block already has a `stun`
-list; the native caller under `drt tunnel rtc:` gathers a local address
-only, and `--stun` exists today on `drt netcheck` alone, although
-`doc/ssh-transport-matrix.md` lists it for `drt tunnel`. This proposal
-gives the caller the same list the host has.
+admits packets it did not ask for. `--stun` is also the `stun` key of the
+`p2p` block, the same list the `webrtc` block takes, so every role
+gathers the same way.
 
 ## 3. Peer addresses
 
@@ -516,7 +518,7 @@ on the block's `reply_queue` is how it does so (`doc/BrowserAccess.md`
 | `--local <addr>` | `-p <local>:<remote>` |
 | `wss://…/s/<label>?k=…` | `--relay wss://…/s/<label>?k=…`; the label names the destination, so no positional |
 | `--park wss://… --to <target>` | `--park wss://… --forward <target>` (§4.3) |
-| `--listen <addr> --to <target>`, the WebSocket to TCP bridge | moves to the `relay` block; it is a server-side shim, not a peer |
+| `--listen <addr> --to <target>`, the WebSocket to TCP bridge | stays on `drt tunnel` for now, with a warning; its home is the `relay` block, not yet built, since it is a server-side shim and not a peer |
 | `--header` | `--H` |
 | `--extra-root` | `--extra-root` |
 

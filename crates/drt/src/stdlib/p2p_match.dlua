@@ -303,8 +303,11 @@ local function pair_result(m, r, id, now)
     return fail(m.conn, 400, 'outcome is connected, refused, unreachable or declined')
   end
   p.outcome = outcome
+  -- One log line per result: a `why` is the told side's words, so control
+  -- characters are dropped and the length bounded before it is printed.
+  local why = type(body.why) == 'string' and body.why:gsub('[%c]', ' '):sub(1, 200) or ''
   print('p2p match: ' .. p.asked_by .. ' asked for a call from ' .. m.name .. ': ' .. outcome
-    .. ((type(body.why) == 'string' and body.why ~= '') and (' (' .. body.why .. ')') or ''))
+    .. (why ~= '' and (' (' .. why .. ')') or ''))
   json(m.conn, 204, '')
 end
 

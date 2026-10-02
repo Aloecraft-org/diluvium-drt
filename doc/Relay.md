@@ -80,20 +80,21 @@ with backoff, so a relay restart or a lost uplink heals itself.
 
 **From a file, which is how a device should run it.** The `?k=` is a
 credential, and on a command line it is in `ps`, in shell history, and in
-every "run this" someone pastes. The same verb reads a `tunnel` block --
-one key per flag, under the block's names -- so a unit runs
-`drt --config park.json tunnel` and the key lives in a 0600 file:
+every "run this" someone pastes. The same verb reads a `p2p` block --
+one key per flag, under the flag's name -- so a unit runs
+`drt --config park.json p2p` and the key lives in a 0600 file:
 
 ```json
-{ "tunnel": { "park": "wss://rendezvous.example/park/xps?k=…", "to": "127.0.0.1:22" } }
+{ "p2p": { "park": "wss://rendezvous.example/park/xps?k=…", "forward": "ssh://127.0.0.1:22" } }
 ```
 
-The caller's half is `claim`, with `bind` where `--local` would go, and
-`listen`/`to` is the other server shape; `extra_roots` is spelled as
-`connectors.rest` spells it. A flag typed beside the file replaces the
-key it names, and a flag naming a different mode than the file is
-refused as the conflict it is. `examples/19-a-tunnel-a-program-can-use`
-runs both halves this way.
+The caller's half is `relay`, with `ports` where `-p` would go;
+`extra_roots` is spelled as `connectors.rest` spells it. A flag typed
+beside the file replaces the key it names, and a flag naming a different
+role than the file is refused as the conflict it is. A `tunnel` block is
+still read, for one release, with a warning naming each key's
+replacement. `examples/19-a-tunnel-a-program-can-use` runs both halves
+this way.
 
 **Or with the key as a header, and none in the URL.** Either half may
 present its key as `Authorization: Bearer …` on the handshake instead of
@@ -101,8 +102,8 @@ present its key as `Authorization: Bearer …` on the handshake instead of
 access logs record:
 
 ```json
-{ "tunnel": { "claim": "wss://rendezvous.example/s/xps", "bind": "127.0.0.1:2222",
-              "headers": { "Authorization": "Bearer …" } } }
+{ "p2p": { "relay": "wss://rendezvous.example/s/xps", "ports": ["2222"],
+           "headers": { "Authorization": "Bearer …" } } }
 ```
 
 `--header 'Authorization: Bearer …'` is the same, one flag at a time, and
@@ -186,9 +187,9 @@ not put a credential in a URL -- where it is in the request line every
 proxy and access log between the two ends records. The header is the
 credential when it is present: a `?k=` beside it must agree, two that
 disagree are refused as one bad key is, and a scheme the relay does not
-read is a bad key rather than an absent one. `drt p2p --H
-'Authorization: Bearer …'` sends it, and `headers` in the `p2p` block
-is the same thing from a file.
+read is a bad key rather than an absent one. `drt p2p --H auth=<key>`
+(or `--H 'Authorization=Bearer …'`) sends it, and `headers` in the `p2p`
+block is the same thing from a file.
 
 - **403** at the handshake: bad key, or unknown label — deliberately
   indistinguishable, so probing the relay tells you nothing. The WebSocket

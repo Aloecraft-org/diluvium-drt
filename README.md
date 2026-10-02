@@ -28,7 +28,7 @@ hostcall encoding (moved here from diluvium).
 | [`crates/drt-swarm`](crates/drt-swarm) | The swarm: `dvs.c` semantics ported over the `Engine` seam (instance table, attenuated caps with provenance, lifecycle drain, budgets, hibernation + `wake_on_message`); the snapshot store; endpoint refs. |
 | [`crates/drt`](crates/drt) | The binary: `run` \| `start` \| `repl` \| `p2p` \| `ssh` \| `ps` — see SPEC.md §13a. |
 | [`crates/drt-web`](crates/drt-web) | The browser tier: the same `drt`, C core linked in, behind a terminal contract a page attaches xterm.js to. See [`doc/Browser.md`](doc/Browser.md). |
-| [`connectors/`](connectors) | Connector implementations, each feature-gated: `time`, `crypto`, `fs`, `sql` and `data` (each a granted directory), `rest` and `ssmtp` (each an allowlist), `ssh` (client, `host:ssh/exec` and the interactive `host:ssh/shell`) and `exec` (local, `host:exec/run`, wired only by name and announced when it is). |
+| [`connectors/`](connectors) | Connector implementations, each feature-gated: `time`, `crypto`, `fs`, `sql` and `data` (each a granted directory), `rest` and `ssmtp` (each an allowlist), `ssh` (client, `host:ssh/exec` and the interactive `host:ssh/shell`), `exec` (local, `host:exec/run`, wired only by name and announced when it is), `socket` and `ws` (each an allowlist; `ws` is what `stdlib:browser-access` signals over), and `listen`, the inbound half. |
 
 ## Building
 
@@ -82,7 +82,8 @@ Or take the binary yourself. The names are `doc/ALIGNMENT.md` §4's —
 
 ```sh
 # also drt_linux_arm64_musl, drt_darwin_arm64, drt_darwin_x86_64,
-# drt_windows_x86_64.exe, and each of those with _slim
+# drt_windows_x86_64.exe, and each with _slim before the extension:
+# drt_linux_x86_64_musl_slim, drt_windows_x86_64_slim.exe
 BASE=https://github.com/Aloecraft-org/diluvium-drt/releases/latest/download
 curl -fLO $BASE/drt_linux_x86_64_musl
 curl -fLO $BASE/SHA256SUMS.txt
@@ -165,8 +166,10 @@ plumbing, because it is just an IP address.
 [`doc/WireGuard.md`](doc/WireGuard.md) sizes that last rung honestly,
 including what is and is not proven about hole punching.
 
-`drt ps` and REPL *attach* are still ahead: both reach a deployment running
-in another process, which is the control endpoint's job and lands with sshd.
+`drt ps` reaches a deployment running in another process over its `ssh`
+listener (SPEC.md §13a), and the same questions are `:ps` and friends in a
+REPL the deployment serves. REPL *attach*, a REPL wired into a running
+instance's state, is still ahead.
 
 A seams-only build (`--no-default-features`) compiles the traits without the
 C core. The wasm targets link the C core in — `drt` itself builds for

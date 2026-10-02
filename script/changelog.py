@@ -31,6 +31,13 @@ Usage:
   script/changelog.py mirror-tags           tags the mirror should carry,
                                             newest first
   script/changelog.py latest                the tag `latest/` resolves to
+  script/changelog.py buildinfo-check --tag TAG --file BUILDINFO.txt
+                                            fail unless the artifacts'
+                                            profile.<p>.connectors and
+                                            .features lines say what the
+                                            entry says (--newest and
+                                            --allow-unknown for a dev build,
+                                            whose skipped legs say unknown)
   script/changelog.py generate              write CHANGELOG.md and
                                             changelog.json from the YAML
   script/changelog.py check                 fail unless the generated
@@ -548,12 +555,64 @@ def release_check(doc, tag, publishing):
                  "version": entry["version"]}
 
 
+# BUILDINFO's `profile.windows.*` lines are the `full` profile measured off
+# the PE binary on a Windows runner (release.yml, build-windows), so they
+# are held to the entry's `full`.
+BUILDINFO_PROFILE_OF = {"windows": "full"}
+
+
+def buildinfo_check(entry, text, allow_unknown=False):
+    """The entry's per-profile `connectors` and `features` against a
+    BUILDINFO.txt's `profile.<p>.connectors` and `.features` lines. Every
+    profile the entry names must be present and equal as a set; a profile
+    the file names and the entry does not is reported too, since it is a
+    build the notes do not describe. A line reading `unknown` is a leg
+    that did not run; `allow_unknown` lets it pass, for a dev build, and
+    a release has none. -> problems."""
+    lines = {}
+    for line in text.splitlines():
+        if line.startswith("profile.") and ": " in line:
+            key, _, value = line.partition(": ")
+            lines[key] = value.strip()
+    bad = []
+    for field in ("connectors", "features"):
+        stated = entry.get(field) or {}
+        for key in sorted(lines):
+            parts = key.split(".")
+            if len(parts) != 3 or parts[2] != field:
+                continue
+            profile = BUILDINFO_PROFILE_OF.get(parts[1], parts[1])
+            got = lines[key]
+            if got == "unknown":
+                if not allow_unknown:
+                    bad.append("%s: %s was not measured (unknown)" % (entry["tag"], key))
+                continue
+            if profile not in stated:
+                bad.append("%s: BUILDINFO names profile %s, which the entry's "
+                           "%s does not" % (entry["tag"], parts[1], field))
+                continue
+            have = set() if got == "" else set(got.split(","))
+            want = set(stated[profile])
+            if have != want:
+                bad.append("%s: %s is %s in BUILDINFO, %s in the entry"
+                           % (entry["tag"], key, got, ",".join(stated[profile])))
+        for profile in sorted(stated):
+            key = "profile.%s.%s" % (profile, field)
+            if key not in lines:
+                bad.append("%s: BUILDINFO has no %s line" % (entry["tag"], key))
+    return bad
+
+
 def main():
     ap = argparse.ArgumentParser(add_help=False)
     ap.add_argument("command", choices=["validate", "render", "mirror-tags",
                                         "latest", "generate", "check",
-                                        "consistency", "release-check"])
+                                        "consistency", "release-check",
+                                        "buildinfo-check"])
     ap.add_argument("format", nargs="?", choices=["md", "json"])
+    ap.add_argument("--file", help="buildinfo-check: the BUILDINFO.txt to read")
+    ap.add_argument("--allow-unknown", action="store_true",
+                    help="buildinfo-check: a line reading `unknown` is a leg a dev build skipped")
     ap.add_argument("--tag")
     ap.add_argument("--newest", action="store_true")
     ap.add_argument("--part", choices=["all", "overview", "sections"],
@@ -588,6 +647,21 @@ def main():
                 print(r["tag"])
     elif args.command == "latest":
         print(next(r["tag"] for r in doc["releases"] if r.get("latest")))
+    elif args.command == "buildinfo-check":
+        if not args.file:
+            sys.exit("changelog.py: buildinfo-check needs --file BUILDINFO.txt")
+        if args.newest:
+            entry = doc["releases"][0]
+        else:
+            entry = next((r for r in doc["releases"] if r["tag"] == args.tag), None)
+            if entry is None:
+                sys.exit("changelog.py: no release with tag %r" % args.tag)
+        problems = buildinfo_check(entry, open(args.file).read(), args.allow_unknown)
+        if problems:
+            for p in problems:
+                print("buildinfo: " + p, file=sys.stderr)
+            return 1
+        print("OK: %s carries what the %s entry says" % (args.file, entry["tag"]))
     elif args.command == "consistency":
         problems = consistency(doc)
         if problems:

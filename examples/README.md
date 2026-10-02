@@ -1,14 +1,14 @@
 # DRT examples
 
 A run-through for someone who has a `drt` binary and has never run anything
-with it. Thirty-one sittings — thirty-two directories, because `05` has a
+with it. Thirty-two sittings — thirty-three directories, because `05` has a
 live twin — meant in order: one idea each, a command block you can paste, and
 an `expected.txt` that is the real output of running it rather than a
 transcription of what it ought to say. A **drt app** is a config plus a
 program; the first two examples are that sentence taken apart, and most of the
 rest are one program run under two or three configs, so every difference
 between the outputs is the config's doing and not the program's. This is not a
-reference. Everything here is v0.6.0.
+reference. Everything here is v0.8.0.
 
 | directory | what it teaches | the command |
 |---|---|---|
@@ -73,9 +73,10 @@ cd examples && ./run-all.sh                       # all, skipping the networked 
 cd examples && ./run-all.sh --net                 # all
 ```
 
-Against a build rather than an installed `drt`, use `--all-features`. A bare
+Against a build rather than an installed `drt`, use `--features full -p drt`
+(`--all-features` adds `plugins`, which is a `custom` profile to the gate). A bare
 `cargo build` is a **slim** binary — no `sql`, `ssh`, `rest`, `netcheck`,
-`tunnel` or `relay` — and eight of these need those, so they are skipped and
+`tunnel` or `relay` — and seventeen of these need those, so they are skipped and
 named rather than run:
 
 ```
@@ -129,13 +130,14 @@ output.
 Named rather than omitted, so you are not left looking for them.
 
 - **`crypto`.** In every build's connector list, and the family `01` uses to
-  show you a `denied` — and no example wires it, because in v0.4.0 the crypto
+  show you a `denied` — and no example wires it, because the crypto
   scope demands a signing key even for the keyless calls. That conflict is
   unresolved, and it is why `crypto/random` is not answered with no config.
-- **`drt repl`** works and has no line editor — no history, no arrow keys, no
-  editing a line you have typed. Not a first day's tool.
-- **`drt ps`** is a stub: it prints `drt ps: not built yet`, and reaching a
-  running deployment over the control endpoint lands with sshd.
+- **`drt repl`** has a line editor (history, arrows, Tab on guest names) and
+  is the subject of no example, because every example is a program.
+- **`drt ps`** asks a deployment running under `drt start` with an `ssh`
+  listener (SPEC.md §13a). No numbered example runs one, because it wants a
+  second process holding a key.
 - **The relay's control plane.** `11` and `19` are the tunnel and the relay
   themselves.
   The half only `drt start` has — the supervisor, the admit question asked

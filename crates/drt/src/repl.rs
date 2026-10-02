@@ -60,6 +60,8 @@ pub struct Repl {
     names_stale: bool,
     /// What [`Repl::banner`] says, and what the lines evaluate under.
     unsafe_stdlib: bool,
+    /// `:quit` was typed: the loop that owns the terminal returns.
+    quit: bool,
     /// Served to someone else's terminal (SSH): `print` comes back with the
     /// answers, and nothing reaches for this process's own terminal.
     served: bool,
@@ -133,6 +135,7 @@ impl Repl {
             names: Arc::new(Mutex::new(Vec::new())),
             names_stale: true,
             unsafe_stdlib,
+            quit: false,
             served: false,
             may_order: true,
         })
@@ -185,9 +188,9 @@ impl Repl {
     /// the tty and the page -- and they must not drift.
     pub fn banner(&self) -> &'static str {
         if self.unsafe_stdlib {
-            "drt repl — unsafe stdlib: os, io, require — ^D to leave"
+            "drt repl — unsafe stdlib: os, io, require — :help lists the colon commands, ^D leaves"
         } else {
-            "drt repl — ^D to leave"
+            "drt repl — :help lists the colon commands, ^D leaves"
         }
     }
 
@@ -369,6 +372,9 @@ fn piped(mut repl: Repl) -> Result<(), String> {
                     return Ok(());
                 };
                 if !repl.continuing() && meta(&mut repl, &line)? {
+                    if repl.quit {
+                        return Ok(());
+                    }
                     continue;
                 }
                 repl.feed(&line)?;
@@ -397,8 +403,32 @@ fn piped(mut repl: Repl) -> Result<(), String> {
 /// How long the guest waits on `:ssh`'s `host:ssh/shell` reply.
 const SESSION_WAIT_MS: u32 = i32::MAX as u32;
 
+/// Every colon command, for `:help`: one line each, in the order a person
+/// meets them.
+const META_HELP: &str = "\
+:help                this list
+:quit, :q            leave (so does ^D)
+:ssh [args]          an SSH session on this terminal; alone, the config's host:ssh/shell
+:ps                  a running deployment's instances (SPEC.md §13a)
+:status              its state
+:caps <id>           what instance <id> holds
+:pause <id>          hibernate <id> if it is parked
+:resume <id>         wake <id>
+:stop                hibernate what is parked and end the deployment";
+
 fn meta(repl: &mut Repl, line: &str) -> Result<bool, String> {
     let trimmed = line.trim_start();
+    match trimmed.trim_end() {
+        ":help" | ":h" | ":?" => {
+            let _ = writeln!(stdio::stderr(), "{META_HELP}");
+            return Ok(true);
+        }
+        ":quit" | ":q" | ":exit" => {
+            repl.quit = true;
+            return Ok(true);
+        }
+        _ => {}
+    }
     if control_meta(repl, trimmed) {
         return Ok(true);
     }
@@ -455,7 +485,8 @@ fn control_meta(repl: &Repl, trimmed: &str) -> bool {
     let Some(handle) = control::handle() else {
         let _ = writeln!(
             stdio::stderr(),
-            ":{}: no deployment is running in this process; these reach a `drt start`, from              a REPL it serves or with `drt ps ssh://host:port`",
+            ":{}: no deployment is running in this process; these reach a `drt start`, \
+             from a REPL it serves or with `drt ps ssh://host:port`",
             ask.verb()
         );
         return true;
@@ -732,6 +763,9 @@ pub async fn edit<T: ego_cli::term::Terminal>(
                 match session.read_line().await {
                     Ok(ReadOutcome::Line(line)) => {
                         if !repl.continuing() && meta(repl, &line)? {
+                            if repl.quit {
+                                return Ok(());
+                            }
                             continue;
                         }
                         repl.feed(&line)?;
