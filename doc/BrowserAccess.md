@@ -308,6 +308,9 @@ The host sends one message after the channel opens:
   finds no `scope` asks for a named service, or for no target at all (§6).
 - **`forwarding`**: `true` when the host is a relay (`doc/P2P.md` §4.4),
   which calls a destination the caller names and joins the two sessions.
+- **`caps`**: capability names a program or REPL behind the host may hold
+  (`doc/P2P.md` §7.2), such as `host:time/*`. Omitted when there are none.
+  Descriptive: what a session gets is the host's decision at open time.
 - **The caller's messages.** `{"t":"resize","stream":N,"cols":C,"rows":R}`
   reports the terminal size of one of the caller's streams, for a service
   that is a terminal (`doc/P2P.md` §5.2). `{"t":"call","to":"<peer>"}`

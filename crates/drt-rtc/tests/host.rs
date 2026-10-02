@@ -106,6 +106,7 @@ async fn host_in_mode(scope: &[String], direct: bool, services: &[(&str, &str)])
         direct,
         hello_scope: true,
         forward: Forward::None,
+        caps: Vec::new(),
         accept: Vec::new(),
     };
     let mut host = Host::start(cfg).unwrap();

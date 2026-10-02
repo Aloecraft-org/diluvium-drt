@@ -94,6 +94,12 @@ pub async fn start(
         direct,
         hello_scope: false,
         forward,
+        // A REPL behind this host holds the config's ceiling; a TCP target
+        // or another peer holds nothing of DRT's.
+        caps: match spec {
+            ForwardSpec::Repl => crate::webrtc::caps_of(config),
+            _ => Vec::new(),
+        },
         accept,
     };
     let mut host = Host::start(cfg)?;
@@ -197,6 +203,21 @@ pub async fn listen(
         fingerprint_text(&record.fingerprint)
     );
     eprintln!("drt p2p: call it with: drt p2p '{rtc}'");
+    // Inside a project, the record is also a file under .drt_root/live, so
+    // a launcher on this machine calls the peer in direct mode with nothing
+    // sent (`doc/P2P.md` §3.1). Rewritten whenever the record changes.
+    let live = live_record_path(serving.local.port());
+    if let Some(path) = &live {
+        write_live_record(path, &rtc);
+        let mut record = serving.record.clone();
+        let path = path.clone();
+        tokio::spawn(async move {
+            while record.changed().await.is_ok() {
+                let rtc = record.borrow().clone();
+                write_live_record(&path, &rtc);
+            }
+        });
+    }
     if let Some(port) = role.signal {
         let addr = SocketAddr::new(bind.ip(), port);
         let listener = tokio::net::TcpListener::bind(addr)
@@ -225,10 +246,33 @@ pub async fn listen(
     match serving.done {
         Some(done) => {
             let _ = done.await;
+            if let Some(path) = &live {
+                let _ = std::fs::remove_file(path);
+            }
             eprintln!("drt p2p: the session ended");
             Ok(())
         }
         None => std::future::pending().await,
+    }
+}
+
+/// `.drt_root/live/p2p-<port>.record.json` when the working directory is
+/// a project; otherwise none, and the record is stderr's alone.
+fn live_record_path(port: u16) -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    let root = crate::drt_root::discover(&cwd, None)?;
+    Some(root.live().join(format!("p2p-{port}.record.json")))
+}
+
+fn write_live_record(path: &std::path::Path, rtc: &str) {
+    let written = path
+        .parent()
+        .map(std::fs::create_dir_all)
+        .unwrap_or(Ok(()))
+        .and_then(|_| std::fs::write(path, format!("{rtc}\n")));
+    match written {
+        Ok(()) => eprintln!("drt p2p: record written to {}", path.display()),
+        Err(e) => eprintln!("drt p2p: could not write {}: {e}", path.display()),
     }
 }
 

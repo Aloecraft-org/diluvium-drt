@@ -136,6 +136,11 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # doc/drt-config.schema.json is generated from the serde types and
+      # shipped in the browser package; a stale copy is a lie about the
+      # config file, so the checked-in one must match.
+      - name: Config schema is current
+        run: script/config-schema.sh --check
       - name: Test (default features)
         run: cargo test --workspace
       # The profile that actually covers the code: `cargo test --workspace`

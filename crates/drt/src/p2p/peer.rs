@@ -124,6 +124,20 @@ impl Peer {
 
     /// The address as a line on stderr shows it: a URL without its query,
     /// where a `?k=` key lives; a record by its fingerprint only.
+    /// One spelling for every form that names the same peer, for whoever
+    /// keys something by peer (a launcher's credential scope): a signalling
+    /// address as its base with the scheme resolved and no query or
+    /// `/calls`; a record as `record:` and its fingerprint; a relay URL
+    /// without its key. `drt p2p --show <peer>` prints it, and
+    /// `canonicalPeer` in the browser library computes the same.
+    pub fn canonical(&self) -> String {
+        match &self.how {
+            How::Signal { base, .. } => base.clone(),
+            How::Record(r) => format!("record:{}", fingerprint_text(&r.fingerprint)),
+            How::Ws(url) => url.split('?').next().unwrap_or(url).to_string(),
+        }
+    }
+
     pub fn shown(&self) -> String {
         match &self.how {
             How::Signal { base, .. } => crate::tunnel::shown(base),
@@ -466,6 +480,29 @@ pub fn fingerprint_text(digest: &[u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_spelling_of_a_peer_has_one_canonical_form() {
+        let c = |s: &str| Peer::parse(s).unwrap().canonical();
+        assert_eq!(
+            c("drt://signal.example/v1/mypc"),
+            "https://signal.example/v1/mypc"
+        );
+        assert_eq!(
+            c("drt+ssh://signal.example/v1/mypc/"),
+            "https://signal.example/v1/mypc"
+        );
+        assert_eq!(
+            c("https://signal.example/v1/mypc/calls?k=tok"),
+            "https://signal.example/v1/mypc"
+        );
+        assert_eq!(c("signal.example"), "https://signal.example");
+        assert_eq!(c("drt://127.0.0.1:5001"), "http://127.0.0.1:5001");
+        assert_eq!(
+            c("wss://relay.example/s/xps?k=1"),
+            "wss://relay.example/s/xps"
+        );
+    }
 
     #[test]
     fn a_peer_address_is_read_as_section_3_says() {

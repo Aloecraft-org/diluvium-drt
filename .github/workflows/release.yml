@@ -495,22 +495,23 @@ jobs:
           npx playwright install --with-deps chromium
           DRT_WEB_BUILDINFO="$GITHUB_WORKSPACE/drt_web.buildinfo.txt" npm test
           grep -q '^profile: web$' "$GITHUB_WORKSPACE/drt_web.buildinfo.txt"
+      # One directory that is also the npm package `drt-browser`
+      # (crates/drt-web/npm): the web build, the browser access client, the
+      # SSH client module and the config schema. Tarred as before, and
+      # packed as npm takes it.
       - name: Package
         run: |
           set -eu
-          mkdir drt_web
-          pkg=crates/drt-web/browser-test
-          cp "$pkg/pkg/drt_web.js" "$pkg/pkg/drt_web_bg.wasm" "$pkg/pkg/drt_web.d.ts" \
-             "$pkg/pkg/drt_web_bg.wasm.d.ts" "$pkg/drt-term.js" "$pkg/shell.js" \
-             "$pkg/ssh-terminal.js" "$pkg/relay-leg.js" "$pkg/ssh-command.js" \
-             crates/drt-ssh-web/page/pkg/drt_ssh_web.js crates/drt-ssh-web/page/pkg/drt_ssh_web_bg.wasm \
-             drt_web/
+          script/drt-web-package.sh drt_web "$DRT_RELEASE_TAG"
           tar -czf drt_web.tar.gz drt_web
+          (cd drt_web && npm pack --pack-destination ..)
+          ls drt-browser-*.tgz
       - uses: actions/upload-artifact@v4
         with:
           name: drt-web
           path: |
             drt_web.tar.gz
+            drt-browser-*.tgz
             drt_web.buildinfo.txt
           if-no-files-found: error
           retention-days: 30
@@ -930,8 +931,10 @@ jobs:
             # `drt_wasi.wasm`: run it with
             #   wasmtime run -W exceptions=y --dir . drt_wasi.wasm run app.dlua
             echo "profile.wasi.connectors: ${WASI_CONNECTORS:-unknown}"
-            # `drt_web.tar.gz`: drt_web_bg.wasm, drt_web.js, drt-term.js and
-            # shell.js -- attach it to a terminal per doc/Browser.md.
+            # `drt_web.tar.gz`: drt_web_bg.wasm, drt_web.js, drt-term.js,
+            # shell.js, the browser access client and the config schema;
+            # `drt-browser-<version>.tgz` is the same as an npm package.
+            # Attach it to a terminal per doc/Browser.md.
             echo "profile.web.connectors: ${WEB_CONNECTORS:-unknown}"
             # And what the core inside each of those carries. A package
             # declaring `requires.features` -- `numeric`, when it lands --

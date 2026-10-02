@@ -15,12 +15,32 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  parseRecord, recordFromSdp, answerSdp, fingerprintHex, fingerprintText, isUsableCandidate, encodeWisp, decodeWisp,
+  parseRecord, recordFromSdp, answerSdp, fingerprintHex, fingerprintText, canonicalPeer, isUsableCandidate, encodeWisp, decodeWisp,
   RecordError, StreamClosed, WISP, DATA_MAX,
 } from './drt_browser_access.js';
 
 const vectors = JSON.parse(readFileSync(new URL('../vectors/browser-access-v1.json', import.meta.url)));
 const hex = (b) => Buffer.from(b).toString('hex');
+
+test('canonicalPeer gives every spelling of a peer one form, as drt p2p --show does', () => {
+  const c = (a) => canonicalPeer(a).canonical;
+  assert.equal(c('drt://signal.example/v1/mypc'), 'https://signal.example/v1/mypc');
+  assert.equal(c('drt+ssh://signal.example/v1/mypc/'), 'https://signal.example/v1/mypc');
+  assert.equal(c('https://signal.example/v1/mypc/calls?k=tok'), 'https://signal.example/v1/mypc');
+  assert.equal(c('signal.example'), 'https://signal.example');
+  assert.equal(c('drt://127.0.0.1:5001'), 'http://127.0.0.1:5001');
+  assert.equal(c('drt://[::1]:5001/v1/a'), 'http://[::1]:5001/v1/a');
+  assert.equal(c('wss://relay.example/s/xps?k=1'), 'wss://relay.example/s/xps');
+  const p = canonicalPeer('drt+ssh://signal.example/v1/mypc?k=tok');
+  assert.deepEqual([p.kind, p.service, p.name, p.url], ['signal', 'ssh', 'mypc', 'https://signal.example/v1/mypc/calls?k=tok']);
+  assert.equal(canonicalPeer('drt://localhost').url, 'http://localhost/');
+  const r = canonicalPeer(vectors.records[0].rtc);
+  assert.equal(r.kind, 'record');
+  assert.equal(r.canonical, `record:${fingerprintText(parseRecord(vectors.records[0].rtc).f)}`);
+  assert.throws(() => canonicalPeer('ftp://x'), /a peer is/);
+  assert.throws(() => canonicalPeer('drt+Bad_Name://x'), /cannot name a service/);
+  assert.throws(() => canonicalPeer(''), /empty/);
+});
 
 test('every valid record parses from its text and from its object, and answers byte for byte', () => {
   for (const v of vectors.records) {

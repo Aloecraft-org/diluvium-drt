@@ -51,6 +51,10 @@ pub struct Args {
     /// --listen or --match.
     #[arg(value_name = "PEER")]
     pub peer: Option<String>,
+    /// Print the canonical form of a peer address and exit: one spelling
+    /// for every form that names the same peer, for keying things by peer.
+    #[arg(long, value_name = "PEER")]
+    pub show: Option<String>,
     /// Map a port, in ssh -L's shape: <local>:<remote> binds 127.0.0.1:<local>
     /// and asks the far side for <remote> on each connection; :<remote>
     /// makes stdio ask for it; <local> alone asks for whatever the far side
@@ -577,6 +581,10 @@ fn headers(
 /// Carry out a [`Resolved`]: the one match on [`Role`]. `--match` runs a
 /// deployment and never returns; the others run on a runtime of their own.
 pub fn run(args: &Args, config: &RootConfig) -> Result<(), String> {
+    if let Some(peer) = &args.show {
+        println!("{}", Peer::parse(peer)?.canonical());
+        return Ok(());
+    }
     let resolved = resolve(config, args)?;
     let roots = crate::roots::load_roots_named(resolved.extra_roots_key, &resolved.extra_roots)?;
     if let Role::Match(m) = &resolved.role {

@@ -55,6 +55,7 @@ async fn main() {
         direct: false,
         hello_scope: true,
         forward: drt_rtc::Forward::None,
+        caps: Vec::new(),
         accept: Vec::new(),
     };
     let mut host = Host::start(cfg).expect("the host starts");

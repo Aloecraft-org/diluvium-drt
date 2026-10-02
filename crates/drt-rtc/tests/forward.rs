@@ -86,7 +86,16 @@ async fn host(
     services: Vec<(String, Sink)>,
     accept: Vec<Cidr>,
 ) -> (Host, Record) {
-    let cfg = HostConfig {
+    let mut host = Host::start(config(forward, services, accept)).unwrap();
+    let rtc = match host.next_event().await {
+        Some(Event::Record { rtc }) => rtc,
+        other => panic!("the host's first word is its record, not {other:?}"),
+    };
+    (host, Record::decode(&rtc).unwrap())
+}
+
+fn config(forward: Forward, services: Vec<(String, Sink)>, accept: Vec<Cidr>) -> HostConfig {
+    HostConfig {
         bind: "127.0.0.1:0".parse().unwrap(),
         identity: Identity::generate().unwrap(),
         stun: vec![],
@@ -103,14 +112,9 @@ async fn host(
         direct: true,
         hello_scope: false,
         forward,
+        caps: Vec::new(),
         accept,
-    };
-    let mut host = Host::start(cfg).unwrap();
-    let rtc = match host.next_event().await {
-        Some(Event::Record { rtc }) => rtc,
-        other => panic!("the host's first word is its record, not {other:?}"),
-    };
-    (host, Record::decode(&rtc).unwrap())
+    }
 }
 
 async fn connected(host: &mut Host, record: &Record, peer: &str) -> Client {
@@ -156,6 +160,27 @@ fn hello_of(client: &Client) -> serde_json::Value {
 }
 
 // depth: the tests
+
+#[tokio::test]
+async fn hello_names_the_caps_the_host_was_given_and_nothing_when_none() {
+    let (mut host, record) = host(Forward::None, vec![], vec![]).await;
+    let client = connected(&mut host, &record, "p1").await;
+    assert!(hello_of(&client).get("caps").is_none());
+    drop(client);
+    let mut cfg = config(Forward::None, vec![], vec![]);
+    cfg.caps = vec!["host:time/*".into(), "host:fs/read".into()];
+    let mut host = Host::start(cfg).unwrap();
+    let rtc = match host.next_event().await {
+        Some(Event::Record { rtc }) => rtc,
+        other => panic!("{other:?}"),
+    };
+    let record = Record::decode(&rtc).unwrap();
+    let client = connected(&mut host, &record, "p2").await;
+    assert_eq!(
+        hello_of(&client)["caps"],
+        serde_json::json!(["host:time/*", "host:fs/read"])
+    );
+}
 
 #[tokio::test]
 async fn one_forward_takes_every_stream_whatever_port_it_asks_for() {

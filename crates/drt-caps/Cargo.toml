@@ -10,3 +10,7 @@ repository.workspace = true
 serde = { workspace = true }
 rmpv = { workspace = true }
 thiserror = { workspace = true }
+schemars = { version = "1", optional = true }
+
+[features]
+schemars = ["dep:schemars"]

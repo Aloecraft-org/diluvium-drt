@@ -74,6 +74,7 @@ use drt_caps::{AttenuationError, Grant};
 /// attenuation means "inherit the parent's" — a child may state a smaller
 /// number, never a larger one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Budget {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -91,6 +92,7 @@ pub struct Budget {
 /// either field means "no bound stated", which under attenuation means
 /// "inherit the parent's".
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Numeric {
     /// The most elements one kernel call may process. `None` is no bound;
@@ -112,6 +114,7 @@ pub struct Numeric {
 /// - `reproducible`: bit-identical to the portable kernel on every target.
 /// - `fast`: no cross-target guarantee.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum Tier {
     Exact,
@@ -181,6 +184,7 @@ impl Numeric {
 /// Where a program's source comes from. Config never carries the
 /// application's own filenames as *scopes* — this is the program itself.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum Program {
     /// A `.dlua`/`.lua` file, resolved against the process working directory
@@ -195,6 +199,7 @@ pub enum Program {
 /// [`InstanceConfig::check_attenuation`] is that rule, checked identically
 /// whether the parent is the process or another instance.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct InstanceConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -310,6 +315,7 @@ impl InstanceConfig {
 /// directory for `fs`, a directory for `sql`, a key), never the
 /// application's filenames. Programs name resources within the scope.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ConnectorWiring {
     /// Names a registered backing when a build carries more than one
@@ -340,6 +346,7 @@ pub struct ConnectorWiring {
 /// so a config reads uniformly, and the difference is real and is stated
 /// rather than hidden by the spelling.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct PluginWiring {
     /// The `<name>.plugin.json` that describes this plugin, resolved the
@@ -366,6 +373,7 @@ pub struct PluginWiring {
 /// with the same field names and the same defaults, so a deployment moves
 /// between the C host and DRT by moving its config.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Listener {
     /// `http`, the queue bridge below, or `ssh`, the REPL over SSH
@@ -485,6 +493,7 @@ fn default_admit_grace_ms() -> u64 {
 /// deployment that states none keeps everything resident, bounded by the
 /// instance table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Residency {
     /// How many non-root instances may be resident at once. The root is
@@ -513,6 +522,7 @@ fn default_park_floor_ms() -> u64 {
 /// replace the key *values* and not this shape — and because per-label
 /// revocation is what a leaked device key needs.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct RelayConfig {
     /// e.g. `127.0.0.1:8090` — behind the edge, which terminates TLS and
@@ -561,6 +571,7 @@ pub struct RelayConfig {
 /// below two. A `stun1`/`stun2` pair on separate addresses is what makes
 /// that classification available to anyone pointed at them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct StunConfig {
     /// e.g. `0.0.0.0:3478`, or a bare host paired with `port`. Unlike the
@@ -604,6 +615,7 @@ fn default_stun_report_ms() -> u64 {
 /// minted here verifies against coturn too, so either can stand behind
 /// the same `--ice` answer (issue #12).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct TurnConfig {
     /// e.g. `0.0.0.0:3478`, or a bare host paired with `port`. Faces the
@@ -680,6 +692,7 @@ fn default_turn_report_ms() -> u64 {
 /// and a key pasted from one should work in the other. Keys are base64, the
 /// tool's own encoding, not hex.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct WireguardPeer {
     /// The peer's public key, base64. Its identity: there is no other name
@@ -717,6 +730,7 @@ pub struct WireguardPeer {
 /// and never inferred from a missing privilege, by this repository's rule
 /// that a config which did not ask is not steered.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum WireguardMode {
     #[default]
@@ -748,6 +762,7 @@ impl WireguardMode {
 /// `mode = "userspace"`: `ssh -p 2222 127.0.0.1` with nothing configured on
 /// the client. The caller half; `tunnel`'s `bind` is the same shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct WireguardForward {
     /// The local `ip:port` to listen on. Port `0` takes an ephemeral one,
@@ -765,6 +780,7 @@ pub struct WireguardForward {
 /// where in kernel mode the kernel would deliver to the box's own sshd.
 /// `tunnel --park --to`'s shape: dialed lazily, on the first connection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct WireguardExpose {
     /// The `ip:port` a peer dials. The address is the block's own
@@ -793,6 +809,7 @@ pub struct WireguardExpose {
 /// relay -- trade the two measured endpoints, tell both sides -- completes
 /// here without a second daemon holding the socket.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct WireguardConfig {
     /// The UDP port to listen on. **Required, and never zero**: gotatun
@@ -932,6 +949,7 @@ fn default_admit_timeout_ms() -> u64 {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct RelayLabel {
     /// Presented by the device parking a leg (`/park/<label>?k=…`).
@@ -971,6 +989,7 @@ pub struct RelayLabel {
 /// its own. `bind`, as every other block spells the local address it
 /// listens on. `park`, `to` and `listen` as the flags are.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct TunnelConfig {
     /// The `ws://` or `wss://` URL the caller half dials: the relay's
@@ -1029,6 +1048,7 @@ pub struct TunnelConfig {
 /// `tunnel` is read as an alias of this block for one release, each of its
 /// keys mapped to its replacement here with a warning naming both.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct P2pConfig {
     /// The positional: the peer to call (`doc/P2P.md` §3).
@@ -1100,6 +1120,7 @@ pub struct P2pConfig {
 /// Process identity. The host key doubles as the node identity and the
 /// snapshot stamp source (SPEC.md §§8–9).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Identity {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1109,6 +1130,7 @@ pub struct Identity {
 /// Authorized keys → capability grant sets: an SSH principal is an attenuated
 /// node in the provenance tree.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SshPrincipal {
     /// The public key, OpenSSH one-line format.
@@ -1130,6 +1152,7 @@ pub struct SshPrincipal {
 /// deployment means asking it about the deployment's own network rather than
 /// about whatever shell ran the verb.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct NetcheckConfig {
     /// STUN servers, `host:port`. The decisive measurement is the UDP mapping,
@@ -1176,6 +1199,7 @@ fn default_netcheck_queue() -> String {
 /// rendezvous. `webrtc` and every event name are placeholders until the
 /// owner names the feature (`doc/Plan-0.8.0.md` §6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct WebrtcConfig {
     /// The session socket. A wildcard is advertised as the address this box
@@ -1277,6 +1301,7 @@ fn default_webrtc_reply_queue() -> String {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct RootConfig {
     #[serde(flatten)]

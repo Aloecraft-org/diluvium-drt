@@ -58,6 +58,7 @@ async fn host(port: u16, direct: bool) -> (Host, Record) {
         direct,
         hello_scope: false,
         forward: Forward::None,
+        caps: Vec::new(),
         accept: Vec::new(),
     };
     let mut host = Host::start(cfg).unwrap();

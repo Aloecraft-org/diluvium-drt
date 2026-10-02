@@ -137,6 +137,11 @@ pub struct HostConfig {
     /// (`doc/P2P.md` §5.1). [`Forward::None`] is the `webrtc` block's
     /// shape: every stream names its target.
     pub forward: Forward,
+    /// Capability names the root holds, for `hello` (`doc/P2P.md` §7.2):
+    /// what a program or REPL behind this host may be granted, as
+    /// `host:time/*` strings. Empty, `hello` says nothing of them; a host
+    /// that forwards to a TCP target holds none.
+    pub caps: Vec<String>,
     /// Addresses a session's packets may come from; empty admits every
     /// address. A session whose packets arrive from outside the ranges
     /// ends, whatever its record said (`doc/P2P.md` §6, `--accept`).
@@ -1647,6 +1652,9 @@ fn hello(cfg: &HostConfig) -> String {
     }
     if matches!(cfg.forward, Forward::Relay(_)) {
         msg["forwarding"] = true.into();
+    }
+    if !cfg.caps.is_empty() {
+        msg["caps"] = cfg.caps.iter().map(String::as_str).collect();
     }
     msg.to_string()
 }

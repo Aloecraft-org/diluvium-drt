@@ -26,7 +26,7 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use drt_config::WebrtcConfig;
+use drt_config::{RootConfig, WebrtcConfig};
 use drt_rtc::host::{Event, SessionState, StreamState};
 use drt_rtc::{Command, Entry, Host, HostConfig, Identity, Scope};
 
@@ -53,10 +53,10 @@ impl WebrtcBridge {
     /// `drt start` reports itself up: a scope entry that is not
     /// `scheme://host[:port]`, a `default` outside the scope, an identity
     /// file that exists and does not parse, a port in use.
-    pub fn start(config: &WebrtcConfig) -> Result<WebrtcBridge, String> {
+    pub fn start(config: &WebrtcConfig, root: &RootConfig) -> Result<WebrtcBridge, String> {
         // Dropping the host stops it, and the bridge lives as long as the
         // deployment does.
-        let host = Host::start(host_config(config)?)?;
+        let host = Host::start(host_config(config, root)?)?;
         Ok(WebrtcBridge {
             host,
             queue: config.queue.clone(),
@@ -116,7 +116,7 @@ impl WebrtcBridge {
 }
 
 /// The block, checked and turned into what the host takes.
-fn host_config(c: &WebrtcConfig) -> Result<HostConfig, String> {
+fn host_config(c: &WebrtcConfig, config: &RootConfig) -> Result<HostConfig, String> {
     let bind: SocketAddr = c
         .bind
         .parse()
@@ -180,6 +180,7 @@ fn host_config(c: &WebrtcConfig) -> Result<HostConfig, String> {
         // The block's shape: a browser names its target, in scope or by
         // service name. `drt p2p`'s serving side is where a forward lives.
         forward: drt_rtc::Forward::None,
+        caps: caps_of(config),
         accept: Vec::new(),
     })
 }
@@ -217,6 +218,16 @@ pub fn command_from(v: &rmpv::Value) -> Result<Command, String> {
 
 /// A report as the program sees it, named by `event` like every other
 /// block's so one `if m.event == …` chain reads them all.
+/// The capability names a root holds, for `hello`: the config's ceiling,
+/// grants only, as the `caps` entries of a profile spell them.
+pub fn caps_of(config: &RootConfig) -> Vec<String> {
+    crate::config::ceiling(config)
+        .iter()
+        .filter(|g| g.effect == drt_caps::Effect::Grant)
+        .map(|g| g.capability.clone())
+        .collect()
+}
+
 pub fn report_value(e: &Event) -> rmpv::Value {
     use rmpv::Value;
     let opt = |s: Option<&str>| s.map(Value::from).unwrap_or(Value::Nil);
@@ -324,9 +335,10 @@ mod tests {
 
     #[test]
     fn a_bad_scope_or_default_is_refused_at_start_by_name() {
-        let e = host_config(&block(&["http://h/path"], None)).unwrap_err();
+        let root = RootConfig::default();
+        let e = host_config(&block(&["http://h/path"], None), &root).unwrap_err();
         assert!(e.starts_with("webrtc.scope entry"), "{e}");
-        let e = host_config(&block(&["http://a:80"], Some("http://b:80"))).unwrap_err();
+        let e = host_config(&block(&["http://a:80"], Some("http://b:80")), &root).unwrap_err();
         assert!(e.contains("is not in webrtc.scope"), "{e}");
     }
 
@@ -340,9 +352,17 @@ mod tests {
             }))
             .unwrap()
         };
-        let e = host_config(&with(serde_json::json!({"SSH": "ssh://127.0.0.1:22"}))).unwrap_err();
+        let e = host_config(
+            &with(serde_json::json!({"SSH": "ssh://127.0.0.1:22"})),
+            &RootConfig::default(),
+        )
+        .unwrap_err();
         assert!(e.contains("cannot name a service"), "{e}");
-        let e = host_config(&with(serde_json::json!({"ssh": "ssh://127.0.0.1:2222"}))).unwrap_err();
+        let e = host_config(
+            &with(serde_json::json!({"ssh": "ssh://127.0.0.1:2222"})),
+            &RootConfig::default(),
+        )
+        .unwrap_err();
         assert!(e.contains("is not in webrtc.scope"), "{e}");
     }
 }

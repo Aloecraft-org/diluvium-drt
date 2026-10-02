@@ -97,6 +97,16 @@ is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
   - **`drt ssh`** takes a peer address in place of a host
     (`drt ssh me@drt+ssh://signal.example/v1/mypc`, a record, a
     file), `-u` beside `-l`, and `--relay`/`--fallback`.
+  - **For a launcher:** `hello` carries `caps`, the capability names a
+    program or REPL behind the host may hold; `drt p2p --listen` inside
+    a project writes its record to `.drt_root/live/p2p-<port>.record.json`;
+    `drt p2p --show <peer>` prints a peer's one canonical form, and
+    `canonicalPeer` in the browser library computes the same;
+    `doc/drt-config.schema.json` is the config file's JSON Schema,
+    generated from the serde types (`script/config-schema.sh`); and
+    the web build ships as the npm package `drt-browser` beside
+    `drt_web.tar.gz`, with the browser access client, the SSH client
+    module and the schema inside.
   - **In the browser:** `session.connect()` with no target, or a port
     alone, asks for whatever the peer forwards to; `session.resize`
     reports a terminal's size on `control`; `offer().accept`,

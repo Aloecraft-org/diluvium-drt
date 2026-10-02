@@ -15,6 +15,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -536,4 +537,56 @@ fn a_relay_joins_two_sessions_and_the_caller_is_told() {
         b"x\n",
     );
     assert!(out.is_empty() && err.contains("not a relay"), "{err}");
+}
+
+/// Inside a project, `--listen` writes its record under .drt_root/live so
+/// a launcher on this machine calls it in direct mode with nothing sent.
+#[test]
+fn a_listener_inside_a_project_writes_its_record_under_live() {
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(project.path().join(".drt_root")).unwrap();
+    let port = free_port();
+    let mut cmd = drt();
+    let mut child = cmd
+        .args([
+            "p2p",
+            "--listen",
+            &port.to_string(),
+            "--forward",
+            "127.0.0.1:1",
+        ])
+        .current_dir(project.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut err = BufReader::new(child.stderr.take().unwrap());
+    let (mut record, mut written) = (None, None);
+    let start = Instant::now();
+    while written.is_none() && start.elapsed() < WAIT {
+        let mut line = String::new();
+        if err.read_line(&mut line).unwrap() == 0 {
+            break;
+        }
+        if let Some(p) = line.strip_prefix("drt p2p: record written to ") {
+            written = Some(PathBuf::from(p.trim()));
+        } else if let Some(r) = line.strip_prefix("drt p2p: record ") {
+            record = Some(r.trim().to_string());
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    let written = written.expect("the record's path");
+    assert_eq!(
+        written,
+        project
+            .path()
+            .join(".drt_root/live")
+            .join(format!("p2p-{port}.record.json"))
+    );
+    assert_eq!(
+        std::fs::read_to_string(&written).unwrap().trim(),
+        record.unwrap()
+    );
 }

@@ -641,7 +641,7 @@ pub fn serve_with_observer<B: Acceptor>(
     #[cfg(feature = "webrtc")]
     let mut webrtc = match &config.webrtc {
         Some(cfg) => {
-            let bridge = crate::webrtc::WebrtcBridge::start(cfg)?;
+            let bridge = crate::webrtc::WebrtcBridge::start(cfg, config)?;
             eprintln!(
                 "drt webrtc: serving on {}, record on `{}`",
                 bridge.local_addr(),

@@ -23,6 +23,10 @@ export interface Hello {
   scope: ScopeEntry[];
   /** Named services the peer serves (§10.3). */
   services?: string[];
+  /** Capability names a program or REPL behind the peer may hold (doc/P2P.md §7.2). */
+  caps?: string[];
+  /** True when the peer is a relay that calls a destination the caller names (doc/P2P.md §4.1). */
+  forwarding?: boolean;
   limits: { max_streams: number };
   [key: string]: unknown;
 }
@@ -208,6 +212,22 @@ export function answerSdp(hostRecord: string | object, mid: string): string;
 export function fingerprintHex(f: string): string;
 /** A record's `f` as `drt p2p` prints and takes it: `SHA256:` and unpadded base64. */
 export function fingerprintText(f: string): string;
+
+/** A peer address of doc/P2P.md §3 read as `drt p2p` reads it; see `canonicalPeer`. */
+export interface PeerAddress {
+  kind: 'signal' | 'record' | 'ws';
+  /** One spelling per peer, what `drt p2p --show` prints: the key to store credentials under. */
+  canonical: string;
+  /** Where the caller's request goes, query included; null for a record. */
+  url: string | null;
+  /** The service a `drt+<service>://` address opens. */
+  service: string | null;
+  /** The name at a signalling server, when the address has one. */
+  name: string | null;
+  record: BrowserAccessRecord | null;
+}
+/** Read a peer address: a `drt://` form, a bare host, an http(s) URL, a record or its text, or a relay URL. Throws when none fits. */
+export function canonicalPeer(address: string | object): PeerAddress;
 /** Whether v1 can use a candidate line (§2.1); parseRecord drops the rest. */
 export function isUsableCandidate(line: string): boolean;
 

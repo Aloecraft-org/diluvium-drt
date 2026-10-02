@@ -229,6 +229,19 @@ The positional of a call, the argument of `--relay` and `--fallback`, and a
 that is the profile's request over HTTPS, and over HTTP for a loopback
 address.
 
+**One canonical form per peer.** Every spelling above that names the same
+peer converges on one string: a signalling address as its base with the
+scheme resolved and no query or `/calls`, a record as `record:` and its
+fingerprint, a relay URL without its key. `drt p2p --show <peer>` prints
+it, and `canonicalPeer` in the browser library computes the same, so
+anything keyed by peer (a launcher's stored token or pinned fingerprint)
+has one key and nobody ports the parser.
+
+**The record as a file.** Inside a project, `--listen` also writes its
+record to `.drt_root/live/p2p-<port>.record.json`, rewritten when it
+changes and removed when a `-` session ends, so a launcher on the same
+machine calls the peer in direct mode with nothing sent.
+
 **A named service goes in the scheme.** RFC 3986 allows `+` in a scheme,
 so `drt+ssh://signal.example/v1/mypc` calls the same peer as
 `drt://signal.example/v1/mypc` and opens its service `ssh`
@@ -418,7 +431,11 @@ unaffected.
 
 ### 7.2 `doc/BrowserAccess.md`
 
-- `hello` gains `forwarding` (§4.4).
+- `hello` gains `forwarding` (§4.4), and `caps`: the capability names a
+  program or REPL behind the host may hold, from the config's ceiling,
+  grants only. A host that forwards to a TCP target or another peer sends
+  none. It is what a launcher shows as a root's permissions; it is not
+  what a session was granted, which the session itself decides (§5.2).
 - `hello` carries `scope` and `default` only when the serving side's
   config asks it to. By default it carries the names of named services
   and nothing about the addresses and ports behind them, which are the

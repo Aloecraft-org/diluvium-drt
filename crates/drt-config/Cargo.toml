@@ -36,6 +36,7 @@ sha2 = "0.11"
 ed25519-dalek = { version = "3", optional = true, default-features = false, features = ["zeroize"] }
 # `public_key` and `signature` are base64 in the JSON.
 base64 = { version = "0.22", optional = true }
+schemars = { version = "1", optional = true }
 
 [features]
 # Consent and GSR: the types, the ceiling hash, and signing. On for every
@@ -52,7 +53,15 @@ consent = ["dep:ed25519-dalek", "dep:base64"]
 # Underscore-prefixed because it is not a consumer-facing feature: nothing
 # but CI should ever turn it on.
 _preserve-order-test = ["serde_json/preserve_order"]
+# JSON Schema for the config file (`cargo run -p drt-config --features schemars
+# --example schema`), what a profile editor validates against. Off the
+# build otherwise: the serde types stay the source of truth.
+schemars = ["dep:schemars", "drt-caps/schemars"]
 
 [dev-dependencies]
 rmp-serde = { workspace = true }
 rmpv = { workspace = true }
+
+[[example]]
+name = "schema"
+required-features = ["schemars"]

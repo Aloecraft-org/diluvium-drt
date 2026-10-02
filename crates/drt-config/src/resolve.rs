@@ -70,6 +70,20 @@ pub enum Entry {
 /// The spelling that makes an entry a stdlib program rather than a file.
 pub const STDLIB_PREFIX: &str = "stdlib:";
 
+/// On the wire an entry is its string: a path, or `stdlib:<name>`.
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for Entry {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Entry".into()
+    }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "description": "A program: a path relative to dlua_dir, or stdlib:<name> for one of drt's own."
+        })
+    }
+}
+
 impl Entry {
     pub fn parse(text: &str) -> Result<Entry, BadEntry> {
         if let Some(name) = text.strip_prefix(STDLIB_PREFIX) {
@@ -124,6 +138,7 @@ impl TryFrom<String> for Entry {
 /// One argument value. The set of shapes a profile's `args` can declare,
 /// which is also the set of shapes a command line can override.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(untagged)]
 pub enum ArgValue {
     Bool(bool),

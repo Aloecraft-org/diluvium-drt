@@ -12,6 +12,7 @@
 //   send(pending.record);                       // to the API, as the page does
 //   const session = await pending.accept(hostRecord);
 //   session.hello.services;                     // what the host serves, by name
+//   session.hello.caps;                         // what a program behind it may hold
 //   const t = session.connect();                // whatever it forwards to
 //   const s = session.connect('127.0.0.1', 8123);
 //   s.writable / s.readable / await s.closed    // Web Streams, bytes
@@ -659,6 +660,69 @@ async function trusted(hostRecord, options) {
 /** A record's `f` as `drt p2p` prints and takes it: `SHA256:` and base64 without padding. */
 export function fingerprintText(f) {
   return `SHA256:${String(f).replace(/=+$/, '')}`;
+}
+
+/**
+ * A peer address of doc/P2P.md §3, read as `drt p2p` reads it, with one
+ * spelling for every form that names the same peer (`drt p2p --show`):
+ * `canonical` is the key to store a credential or a pinned fingerprint
+ * under; `url` is where the caller's request goes, query included;
+ * `service` is what a `drt+<service>://` address asks to open.
+ *
+ *   drt://host[:port][/v1/<name>]   https, or http when host is loopback
+ *   drt+<service>://…               the same, naming a service
+ *   host                            drt://host
+ *   http(s)://…/v1/<name>[/calls]   as written
+ *   {…} or a record                 `record:SHA256:…`, direct mode
+ *   ws(s)://…                       a relay URL, its key dropped
+ *
+ * Returns { kind: 'signal' | 'record' | 'ws', canonical, url, service, name, record }.
+ * Throws on an address no form fits.
+ */
+export function canonicalPeer(address) {
+  const text = typeof address === 'string' ? address.trim() : '';
+  if (typeof address === 'object' || text.startsWith('{')) {
+    const record = parseRecord(address);
+    const canonical = `record:${fingerprintText(record.f)}`;
+    return { kind: 'record', canonical, url: null, service: null, name: null, record };
+  }
+  if (!text) throw new Error('a peer address is empty');
+  const at = text.indexOf('://');
+  if (at < 0) return canonicalPeer(`drt://${text}`);
+  const scheme = text.slice(0, at).toLowerCase();
+  const rest = text.slice(at + 3);
+  if (scheme === 'ws' || scheme === 'wss') {
+    return { kind: 'ws', canonical: text.split('?')[0], url: text, service: null, name: null, record: null };
+  }
+  let service = null;
+  if (scheme.startsWith('drt+')) {
+    service = scheme.slice(4);
+    if (!isServiceName(service)) throw new Error(`'${text}': '${service}' cannot name a service (§10.3)`);
+  } else if (scheme !== 'drt' && scheme !== 'http' && scheme !== 'https') {
+    throw new Error(`'${text}': a peer is drt://host[:port]/v1/<name>, drt+<service>://…, a bare host, an http(s):// URL, a record, or wss:// as a relay`);
+  }
+  const slash = rest.indexOf('/');
+  let authority = slash < 0 ? rest : rest.slice(0, slash);
+  let path = slash < 0 ? '' : rest.slice(slash);
+  const q = authority.indexOf('?');
+  if (q >= 0) {
+    path = authority.slice(q) + path;
+    authority = authority.slice(0, q);
+  }
+  const m = /^\[([^\]]+)\](?::\d+)?$|^([^:]+)(?::\d+)?$|^(.+)$/.exec(authority);
+  const host = m ? (m[1] ?? m[2] ?? m[3]) : '';
+  if (!host || /[@#]/.test(authority)) throw new Error(`'${text}' does not start with a host`);
+  const loopback = /^localhost$/i.test(host) || /^127\./.test(host) || host === '::1';
+  const resolved = scheme === 'http' || scheme === 'https' ? scheme : loopback ? 'http' : 'https';
+  const qm = path.indexOf('?');
+  const query = qm >= 0 ? path.slice(qm + 1) : null;
+  let bare = (qm >= 0 ? path.slice(0, qm) : path).replace(/\/+$/, '');
+  if (bare.endsWith('/calls')) bare = bare.slice(0, -'/calls'.length);
+  const named = /^\/v1\/([^/]+)$/.exec(bare);
+  const name = named ? named[1] : null;
+  const canonical = `${resolved}://${authority}${bare}`;
+  const url = `${canonical}${name ? '/calls' : '/'}${query ? `?${query}` : ''}`;
+  return { kind: 'signal', canonical, url, service, name, record: null };
 }
 
 async function open(pc, control, wisp, early, answer, options) {
