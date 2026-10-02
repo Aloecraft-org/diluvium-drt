@@ -1078,6 +1078,11 @@ pub struct P2pConfig {
     /// `--accept`, repeatable: the caller ranges a parked peer admits.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accept: Vec<String>,
+    /// `--pair`: whom the signalling server may tell a parked peer to call
+    /// (`doc/DRT-Signalling.md` §6.2): `*` for any name at the server it is
+    /// parked at, or `drt://<server>/v1/<glob>`. Absent, no one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pair: Option<String>,
     /// `--forward`: what a serving peer serves (`doc/P2P.md` §5). An empty
     /// string is a bare `--forward`: a relay.
     #[serde(default, skip_serializing_if = "Option::is_none")]

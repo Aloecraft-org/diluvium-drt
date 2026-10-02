@@ -380,6 +380,12 @@ impl Window {
 pub enum Command {
     /// Make a session from a browser's presence record.
     Open { peer: String, rtc: String },
+    /// Make a session by calling an answerer's record: this host is the
+    /// controlling, DTLS-client side, and serves on the session as on any
+    /// other (`doc/BrowserAccess.md` §10, `doc/DRT-Signalling.md` §6.2).
+    /// The record is the answerer's reply to this host's own record, sent
+    /// as the caller's request; who sent it is the program's business.
+    Call { peer: String, rtc: String },
     /// End one.
     Close { peer: String },
 }
@@ -762,48 +768,57 @@ impl Loop {
 
     fn on_command(&mut self, c: Command) {
         match c {
-            Command::Open { peer, rtc } => {
-                let refuse = |reason: String| Event::Session {
-                    peer: peer.clone(),
-                    state: SessionState::Closed,
-                    reason: Some(reason),
-                };
-                let record = match Record::decode(&rtc) {
-                    Ok(r) => r,
-                    Err(e) => return self.ctx.report(refuse(e.to_string())),
-                };
-                if self.sessions.len() >= self.ctx.cfg.max_sessions {
-                    return self
-                        .ctx
-                        .report(refuse("busy: the session cap is reached".into()));
-                }
-                if self
-                    .sessions
-                    .iter()
-                    .any(|s| s.peer == peer || s.remote_ufrag == record.ufrag)
-                {
-                    return self.ctx.report(refuse(
-                        "duplicate: that peer or ufrag already has a session".into(),
-                    ));
-                }
-                self.next_key += 1;
-                match Session::new(
-                    &self.ctx,
-                    self.next_key,
-                    peer.clone(),
-                    &record,
-                    &self.host_candidate,
-                    true,
-                ) {
-                    Ok(s) => self.sessions.push(s),
-                    Err(e) => self.ctx.report(refuse(e)),
-                }
-            }
+            Command::Open { peer, rtc } => self.open(peer, rtc, false),
+            Command::Call { peer, rtc } => self.open(peer, rtc, true),
             Command::Close { peer } => {
                 if let Some(s) = self.sessions.iter_mut().find(|s| s.peer == peer) {
                     s.end("closed by the program");
                 }
             }
+        }
+    }
+
+    /// A session from a record: answering it (`Open`) or calling it
+    /// (`Call`). The same session once connected; only the ICE, DTLS and
+    /// SCTP roles differ.
+    fn open(&mut self, peer: String, rtc: String, calling: bool) {
+        let refuse = |reason: String| Event::Session {
+            peer: peer.clone(),
+            state: SessionState::Closed,
+            reason: Some(reason),
+        };
+        let record = match Record::decode(&rtc) {
+            Ok(r) => r,
+            Err(e) => return self.ctx.report(refuse(e.to_string())),
+        };
+        if self.sessions.len() >= self.ctx.cfg.max_sessions {
+            return self
+                .ctx
+                .report(refuse("busy: the session cap is reached".into()));
+        }
+        if self
+            .sessions
+            .iter()
+            .any(|s| s.peer == peer || s.remote_ufrag == record.ufrag)
+        {
+            return self.ctx.report(refuse(
+                "duplicate: that peer or ufrag already has a session".into(),
+            ));
+        }
+        self.next_key += 1;
+        match Session::new(
+            &self.ctx,
+            self.next_key,
+            peer.clone(),
+            &record,
+            &self.host_candidate,
+            Roles {
+                verify_fingerprint: true,
+                calling,
+            },
+        ) {
+            Ok(s) => self.sessions.push(s),
+            Err(e) => self.ctx.report(refuse(e)),
         }
     }
 
@@ -868,7 +883,10 @@ impl Loop {
             format!("direct:{remote}"),
             &record,
             &self.host_candidate,
-            false,
+            Roles {
+                verify_fingerprint: false,
+                calling: false,
+            },
         ) else {
             return;
         };
@@ -1107,6 +1125,16 @@ impl Drop for Stream {
     }
 }
 
+/// How a session is set up against its record.
+#[derive(Debug, Clone, Copy)]
+struct Roles {
+    /// Off for direct mode, whose record carries no fingerprint (§3.4).
+    verify_fingerprint: bool,
+    /// This host called (`Command::Call`): ICE controlling, DTLS client,
+    /// SCTP client. Off, it answers, as it does for every browser.
+    calling: bool,
+}
+
 impl Session {
     fn new(
         ctx: &Ctx,
@@ -1114,7 +1142,7 @@ impl Session {
         peer: String,
         record: &Record,
         host_candidate: &Candidate,
-        verify_fingerprint: bool,
+        roles: Roles,
     ) -> Result<Session, String> {
         let id = &ctx.cfg.identity;
         let now = Instant::now();
@@ -1125,11 +1153,11 @@ impl Session {
             })
             .set_dtls_cert(id.cert.clone())
             .set_ice_lite(false)
-            .set_fingerprint_verification(verify_fingerprint)
+            .set_fingerprint_verification(roles.verify_fingerprint)
             .build(now.into_std());
         rtc.add_local_candidate(host_candidate.clone());
         let mut api = rtc.direct_api();
-        api.set_ice_controlling(false);
+        api.set_ice_controlling(roles.calling);
         api.set_remote_ice_credentials(IceCreds {
             ufrag: record.ufrag.clone(),
             pass: record.pwd.clone(),
@@ -1138,8 +1166,9 @@ impl Session {
             hash_func: "sha-256".into(),
             bytes: record.fingerprint.to_vec(),
         });
-        api.start_dtls(false).map_err(|e| format!("rtc: {e}"))?;
-        api.start_sctp(false);
+        api.start_dtls(roles.calling)
+            .map_err(|e| format!("rtc: {e}"))?;
+        api.start_sctp(roles.calling);
         let channel = |label: &str, id: u16| ChannelConfig {
             label: label.into(),
             ordered: true,

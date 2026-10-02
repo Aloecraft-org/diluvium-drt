@@ -56,6 +56,7 @@ and begin `/v1/<name>/`.
 | `POST /v1/<name>/calls/<id>/answer` | answerer | Body: the answerer's record. 204; the held call gets it. |
 | `DELETE /v1/<name>/calls/<id>` | either | Withdraw a call, or refuse one. The held call gets 410. |
 | `GET /v1/<name>/events` | answerer | The call notification stream (§5): `text/event-stream`. |
+| `POST /v1/<name>/pair` | answerer | Ask the server to tell another parked name to call this one (§6.2). 202. |
 | `POST /v1/<name>/pair/<id>/result` | answerer | The outcome of a pairing the server asked for (§6.2). 204. |
 
 - **Bodies are sent as `text/plain;charset=utf-8`.** A browser then sends a
@@ -182,8 +183,9 @@ Three optional parts a server may offer; `drt p2p --match` does, and
 Two parked peers connect when one calls the other (§3). A server that
 pairs peers when neither asked, as a room or a matchmaker does, tells one
 of them to call. Optional, like §6.1; a server that offers it documents
-so. Decided in `doc/Ask-Discofetch-Reply-2.md`; `doc/P2P.md` §12 holds
-what is still open in code.
+so. Decided in `doc/Ask-Discofetch-Reply-2.md`; `drt p2p --park --pair`
+is the told side and `drt p2p --match` a server that offers it
+(`doc/P2P.md` §2.2, §12).
 
 - **The notification** is a sibling of `calls` in the poll result (§4.1),
   under the same cursor:
@@ -194,10 +196,11 @@ what is still open in code.
              "token": "<caller token>", "expires_in": 20}]}
   ```
 
-  `name` is who to call, `server` the base to call it at, usually the one
-  the answerer is parked at, `token` the caller token that name requires
-  (absent when it requires none), and `expires_in` seconds until the
-  server stops expecting the call. The call notification stream (§5)
+  `name` is who to call, `server` the base to call it at (absent: the
+  server this poll went to, which is the usual case), `token` the caller
+  token that name requires (absent when it requires none), and
+  `expires_in` seconds until the server stops expecting the call. The
+  call notification stream (§5)
   gains `event: pair`, carrying the cursor and nothing else, exactly as
   `event: call` does. A polling-only server needs only the array. An
   answerer that does not know `pair` ignores the key. Not a new call
@@ -228,6 +231,13 @@ what is still open in code.
   `declined` (the consent rule said no, so the server sees it rather
   than infers it from silence). A result after `expires_in` is 404, as
   an answer after the hold is.
+- **How a server is asked** is its own business: a room's seat, a
+  matchmaker's rule. One form a server may offer, and `drt p2p --match`
+  does, is `POST /v1/<name>/pair` with `<name>`'s answerer token and the
+  body `{"name": "<other>"}`: tell `<other>` to call `<name>`, with
+  `<name>`'s caller token. 202 with `{"id": "p3"}`; 503 when `<other>`
+  has no present answerer; 400 for a body that names no one or names
+  `<name>` itself.
 
 ## 7. What a server sees
 

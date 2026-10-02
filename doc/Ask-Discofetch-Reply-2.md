@@ -11,25 +11,26 @@ in place rather than quietly folded in.
 every `hello` and the `webrtc` block shows its entries by default again,
 so a generated host config produces the dev.11 wire and
 fetchpoint-browser-client dev.13 needs no change. Dev.17's "not a `v`
-bump" was wrong and is corrected below. Ask 1 is decided here and open in
-code: the poll result gains a `pair` array, consent is one value, the
-told side calls and keeps serving, and it reports the outcome back. What
-it waits on is a call-and-serve mode in `drt p2p`.
+bump" was wrong and is corrected below. Ask 1 is decided here and landed
+the same day: the poll result gains a `pair` array, consent is one value,
+the told side calls and keeps serving, and it reports the outcome back.
+`drt p2p --match` offers the ask, so the whole loop runs on loopback.
 
 ---
 
 ## surface block
 
-1. Pairing started by the signalling server: decided, open in code.
+1. Pairing started by the signalling server: decided, landed.
 2. `hello.scope`: landed, with a correction.
 3. The note on hold time.
 
 ---
 
-## 1. Pairing started by the signalling server (P2P.md §12) — decided, open in code
+## 1. Pairing started by the signalling server (P2P.md §12) — decided, `landed`
 
 The shapes below are in `doc/DRT-Signalling.md` §6.2 and are final; the
-server half can be built against them now.
+server half can be built against them now, and tested against
+`drt p2p --park --pair` as the told side.
 
 ### The notification
 
@@ -71,9 +72,12 @@ The server picks one and tells it. The other side needs nothing new: it
 sees an ordinary call in its poll, and its caller-token and `DRT-Accept`
 checks apply as they do today. The told side is parked and serving and
 now also calls, and it keeps serving on the session that results. The
-wire already allows that: the profile is symmetric and a page answers and
-serves today (`doc/BrowserAccess.md` §10). `drt p2p`'s call role does not
-yet: it consumes only, as stdio or mapped ports.
+wire already allowed that (the profile is symmetric, `doc/BrowserAccess.md`
+§10); the host now does too: `Command::Call` in `drt-rtc` is the same
+session with the ICE, DTLS and SCTP roles flipped.
+`a_host_that_calls_a_page_serves_it_all_the_same` in
+`crates/drt-rtc/tests/host.rs` has a page answer a host's call and reach
+the host's named service over it.
 
 ### Failure
 
@@ -90,12 +94,17 @@ than infers it from silence. A 503 on the call itself is `unreachable`
 with the status in `why`. A result after `expires_in` is 404, as an
 answer after the hold is.
 
-### What it would take — `open`
+### What landed — `landed`
 
-Moderate. Reading `pair` and the consent value on the parked side is
-small. The cost is a call-and-serve mode in `drt p2p`: a call role that
-keeps the park's `--forward` open on the session it originates.
-`doc/P2P.md` §12 carries this as decided and names what is not built.
+The parked side reads `pair`, `event: pair` wakes its poll, `--pair`
+(and the key `pair`) is the consent, and the outcome goes back as above.
+`drt p2p --match` offers the ask, `POST /v1/<name>/pair {"name": other}`
+with `<name>`'s answerer token, tells `other`, and records the result.
+`the_match_server_pairs_two_parked_peers_when_one_asks` in
+`crates/drt/tests/p2p.rs` runs the loop on loopback: three parked peers
+at one match server, one asks for a call from a peer with `--pair *` and
+gets it, then from a peer without `--pair` and sees `declined`. The ask
+request is one form of asking; a room decides for itself and needs none.
 
 ## 2. `hello.scope` optional — `landed`, with a correction
 

@@ -54,6 +54,17 @@ impl Client {
     /// The same, with ICE credentials the caller chose: direct mode's
     /// browser picks its own (`doc/BrowserAccess.md` §3.4).
     pub async fn with_creds(host: &Record, creds: IceCreds) -> (Client, String) {
+        Client::in_role(host, creds, true).await
+    }
+
+    /// A page that answers (`doc/BrowserAccess.md` §10.4): the controlled,
+    /// DTLS-server side, as `listen` in the browser library is. The host
+    /// calls it (`Command::Call`) with the record this returns.
+    pub async fn answering(host: &Record) -> (Client, String) {
+        Client::in_role(host, IceCreds::new(), false).await
+    }
+
+    async fn in_role(host: &Record, creds: IceCreds, calling: bool) -> (Client, String) {
         let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let addr = socket.local_addr().unwrap();
         let mut rtc = Rtc::builder()
@@ -69,7 +80,7 @@ impl Client {
             .try_into()
             .unwrap();
         let mut api = rtc.direct_api();
-        api.set_ice_controlling(true);
+        api.set_ice_controlling(calling);
         api.set_remote_ice_credentials(IceCreds {
             ufrag: host.ufrag.clone(),
             pass: host.pwd.clone(),
@@ -78,8 +89,8 @@ impl Client {
             hash_func: "sha-256".into(),
             bytes: host.fingerprint.to_vec(),
         });
-        api.start_dtls(true).unwrap();
-        api.start_sctp(true);
+        api.start_dtls(calling).unwrap();
+        api.start_sctp(calling);
         let channel = |label: &str, id: u16| ChannelConfig {
             label: label.into(),
             ordered: true,

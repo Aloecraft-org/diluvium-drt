@@ -96,6 +96,13 @@ pub struct Args {
     /// signalling server and checked here as well. Repeatable.
     #[arg(long, value_name = "CIDR")]
     pub accept: Vec<String>,
+    /// With --park: let the signalling server pair this side with another
+    /// parked peer by telling it whom to call: * for any name at the server
+    /// it is parked at, or drt://<server>/v1/<glob> for a name pattern at a
+    /// named server. Without it, such a request is declined and the server
+    /// is told so.
+    #[arg(long, value_name = "ALLOW")]
+    pub pair: Option<String>,
     /// What --listen or --park serves: host:port for one target;
     /// ssh://host:port for one target as the named service ssh; a host
     /// with -P or -A for its ports; drt://… for another DRT peer; - for
@@ -168,6 +175,8 @@ pub struct ParkRole {
     pub signalling: Peer,
     pub forward: ForwardSpec,
     pub accept: Vec<Cidr>,
+    /// Whom the server may tell this side to call; `None` declines all.
+    pub pair: Option<park::PairRule>,
     pub headers: Vec<(String, String)>,
     pub stun: Vec<String>,
     pub settings: ServeSettings,
@@ -278,6 +287,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
     } else {
         Some((flags.accept.clone(), From::Flag))
     };
+    let pair = pick(flags.pair.as_ref(), f.pair.as_ref());
     let forward = pick(flags.forward.as_ref(), f.forward.as_ref());
     let all_ports = if flags.all_ports {
         Some((true, From::Flag))
@@ -453,10 +463,14 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
                 })
                 .transpose()?
                 .unwrap_or_default();
+            let pair = pair
+                .map(|(allow, _)| park::PairRule::parse(&allow).map_err(|e| format!("--pair {e}")))
+                .transpose()?;
             Role::Park(ParkRole {
                 signalling,
                 forward,
                 accept,
+                pair,
                 settings: settings(&stun, &headers),
                 headers,
                 stun,
@@ -465,6 +479,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
         (None, None, Some((port, _)), None) => {
             serving_only("a listen")?;
             belongs("accept", "a park", accept.as_ref().map(|(_, s)| *s))?;
+            belongs("pair", "a park", from(&pair))?;
             belongs("capacity", "a match", capacity.as_ref().map(|(_, s)| *s))?;
             belongs("relay", "a call or a park", from(&relay))?;
             if let Some(from) = headers_from {
@@ -491,6 +506,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
         (None, None, None, Some((port, _))) => {
             serving_only("a match")?;
             belongs("accept", "a park", accept.as_ref().map(|(_, s)| *s))?;
+            belongs("pair", "a park", from(&pair))?;
             belongs("signal", "a listen", signal.as_ref().map(|(_, s)| *s))?;
             belongs(
                 "authorized_keys",
@@ -824,6 +840,38 @@ mod tests {
             e.contains("`p2p.listen` in the config") && e.contains("the peer on the command line"),
             "{e}"
         );
+    }
+
+    #[test]
+    fn pair_is_a_parks_key_and_parses_to_its_rule() {
+        let none = cfg("{}");
+        let Ok(Role::Park(p)) = role(
+            &none,
+            Args {
+                park: Some("drt://s.example/v1/a".into()),
+                pair: Some("*".into()),
+                ..Args::default()
+            },
+        ) else {
+            panic!()
+        };
+        assert_eq!(p.pair, Some(park::PairRule::AnyHere));
+        let file =
+            cfg(r#"{"p2p":{"park":"drt://s.example/v1/a","pair":"drt://s.example/v1/room-*"}}"#);
+        let Ok(Role::Park(p)) = role(&file, Args::default()) else {
+            panic!()
+        };
+        assert!(matches!(p.pair, Some(park::PairRule::At { .. })));
+        let e = role(
+            &none,
+            Args {
+                listen: Some(5000),
+                pair: Some("*".into()),
+                ..Args::default()
+            },
+        )
+        .unwrap_err();
+        assert!(e.contains("`--pair`") && e.contains("a park"), "{e}");
     }
 
     #[test]

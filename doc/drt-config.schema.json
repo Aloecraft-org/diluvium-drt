@@ -586,6 +586,13 @@
           "maximum": 65535,
           "minimum": 0
         },
+        "pair": {
+          "description": "`--pair`: whom the signalling server may tell a parked peer to call\n(`doc/DRT-Signalling.md` §6.2): `*` for any name at the server it is\nparked at, or `drt://<server>/v1/<glob>`. Absent, no one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "park": {
           "description": "`--park`: the signalling server to answer calls at, by name.",
           "type": [

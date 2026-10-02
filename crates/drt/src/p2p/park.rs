@@ -5,22 +5,31 @@
 //! A `wss://` park is today's `drt tunnel --park` under this verb (§4.3):
 //! one WebSocket leg held at the relay, carrying one target's bytes.
 //!
+//! Pairing (`doc/DRT-Signalling.md` §6.2): a `pair` entry in the poll
+//! tells this side whom to call; [`PairRule`] is the consent `--pair`
+//! gives, and [`follow_pair`] makes the call, serving on it, and reports
+//! the outcome.
+//!
 //! ## surface block
 //!
-//! - Entry points: [`run`], the role carried out.
-//! - Configurable: [`POLL`], [`BACKOFF_MAX`], [`ACCEPT_HEADER`].
+//! - Entry points: [`run`], the role carried out; [`follow_pair`], one
+//!   `pair` entry carried out.
+//! - Configurable: [`POLL`], [`BACKOFF_MAX`], [`ACCEPT_HEADER`],
+//!   [`PAIR_CONNECT`].
 //! - Fan-out: the match on [`How`] in `run`; what the WebSocket park can
-//!   carry, in [`ws_sink`].
+//!   carry, in [`ws_sink`]; the two forms of [`PairRule`]; the four
+//!   [`Outcome`]s.
 
 use std::time::Duration;
 
 use drt_config::RootConfig;
-use drt_rtc::host::Window;
+use drt_rtc::host::{Event, SessionState, Window};
 use drt_rtc::Command;
 use tokio_rustls::rustls::pki_types::CertificateDer;
 
 use super::http;
-use super::peer::{ForwardSpec, How};
+use super::peer::{ForwardSpec, How, Peer};
+use super::serve::Serving;
 use super::ParkRole;
 
 /// How often a parked side polls when it holds no notification stream, and
@@ -31,6 +40,111 @@ pub const POLL: Duration = Duration::from_secs(5);
 pub const BACKOFF_MAX: Duration = Duration::from_secs(60);
 /// The admission range travels on the poll (`doc/P2P.md` §11).
 pub const ACCEPT_HEADER: &str = "DRT-Accept";
+/// How long a paired call may take to connect before it is reported as
+/// unreachable.
+pub const PAIR_CONNECT: Duration = Duration::from_secs(30);
+
+/// Whom the server may tell this side to call (`--pair`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PairRule {
+    /// `*`: any name at the server this side is parked at.
+    AnyHere,
+    /// `drt://<server>/v1/<glob>`: names matching `glob` at `server`, a
+    /// base as `Peer::parse` resolves it.
+    At { server: String, glob: String },
+}
+
+impl PairRule {
+    pub fn parse(s: &str) -> Result<PairRule, String> {
+        let s = s.trim();
+        if s == "*" {
+            return Ok(PairRule::AnyHere);
+        }
+        let peer = Peer::parse(s)?;
+        match peer.how {
+            How::Signal {
+                base,
+                name: Some(glob),
+                ..
+            } => Ok(PairRule::At {
+                server: server_of(&base).to_string(),
+                glob,
+            }),
+            _ => Err(format!(
+                "'{s}': * for any name at the server this side is parked at, or \
+                 drt://<server>/v1/<glob> for a name pattern at a named server"
+            )),
+        }
+    }
+
+    /// Whether a `pair` entry naming `name` at `server` (the server this
+    /// side is parked at when the entry names none) may be followed.
+    pub fn allows(&self, here: &str, server: &str, name: &str) -> bool {
+        match self {
+            PairRule::AnyHere => same_server(here, server),
+            PairRule::At { server: at, glob } => {
+                same_server(at, server) && glob_matches(glob, name)
+            }
+        }
+    }
+}
+
+/// The server half of a signalling base: `https://s.example/v1/mypc` is
+/// at `https://s.example`.
+fn server_of(base: &str) -> &str {
+    base.rsplit_once("/v1/").map(|(s, _)| s).unwrap_or(base)
+}
+
+fn same_server(a: &str, b: &str) -> bool {
+    a.trim_end_matches('/')
+        .eq_ignore_ascii_case(b.trim_end_matches('/'))
+}
+
+/// `*` matches any run of characters; nothing else is special.
+fn glob_matches(glob: &str, name: &str) -> bool {
+    let mut parts = glob.split('*');
+    let first = parts.next().unwrap_or("");
+    let Some(mut rest) = name.strip_prefix(first) else {
+        return false;
+    };
+    if !glob.contains('*') {
+        return rest.is_empty();
+    }
+    let parts: Vec<&str> = parts.collect();
+    for (i, part) in parts.iter().enumerate() {
+        if i + 1 == parts.len() {
+            return rest.ends_with(part);
+        }
+        match rest.find(part) {
+            Some(at) => rest = &rest[at + part.len()..],
+            None => return false,
+        }
+    }
+    true
+}
+
+/// What became of a `pair` entry, as reported to the server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    Connected,
+    /// The called name answered with a refusal.
+    Refused,
+    /// The call failed before an answer, or the session never connected.
+    Unreachable,
+    /// The consent rule said no.
+    Declined,
+}
+
+impl Outcome {
+    fn name(self) -> &'static str {
+        match self {
+            Outcome::Connected => "connected",
+            Outcome::Refused => "refused",
+            Outcome::Unreachable => "unreachable",
+            Outcome::Declined => "declined",
+        }
+    }
+}
 
 /// The role: serve the forward, and answer calls at the signalling server
 /// until stopped.
@@ -82,6 +196,12 @@ async fn park_signal(
         crate::tunnel::shown(base),
         role.forward.describe()
     );
+    let serving = std::sync::Arc::new(serving);
+    let pairing = std::sync::Arc::new(Pairing {
+        signalling: role.signalling.clone(),
+        headers: headers.clone(),
+        rule: role.pair.clone(),
+    });
 
     // The call notification stream, when the server has one: each event
     // wakes the poll below. A stream that will not open is polling alone.
@@ -99,7 +219,10 @@ async fn park_signal(
                             text.push_str(&String::from_utf8_lossy(&piece));
                             while let Some(at) = text.find("\n\n") {
                                 let event: String = text.drain(..at + 2).collect();
-                                if event.lines().any(|l| l.trim() == "event: call") {
+                                if event
+                                    .lines()
+                                    .any(|l| matches!(l.trim(), "event: call" | "event: pair"))
+                                {
                                     let _ = wake_tx.send(());
                                 }
                             }
@@ -160,6 +283,14 @@ async fn park_signal(
                         Err(e) => eprintln!("drt p2p: {id}: {e}"),
                     }
                 }
+                for entry in page["pair"].as_array().into_iter().flatten() {
+                    let (serving, pairing, roots) =
+                        (serving.clone(), pairing.clone(), roots.to_vec());
+                    let entry = entry.clone();
+                    tokio::spawn(async move {
+                        follow_pair(&entry, &pairing, &serving, &roots).await;
+                    });
+                }
             }
             Ok(reply) => {
                 let why = reply
@@ -186,6 +317,137 @@ async fn park_signal(
             _ = tokio::time::sleep(POLL) => {}
             _ = wake.recv() => {}
         }
+    }
+}
+
+// depth: pairing (doc/DRT-Signalling.md §6.2)
+
+/// What following a `pair` entry needs of the park: where it is parked,
+/// the headers that identify it there, and its consent.
+#[derive(Debug, Clone)]
+pub struct Pairing {
+    pub signalling: Peer,
+    pub headers: Vec<(String, String)>,
+    pub rule: Option<PairRule>,
+}
+
+/// One `pair` entry: decline it, or call the name it gives with the token
+/// it gives, at the server it gives (the one this side is parked at when
+/// it gives none), serving on the session that results; then report.
+pub async fn follow_pair(
+    entry: &serde_json::Value,
+    park: &Pairing,
+    serving: &Serving,
+    roots: &[CertificateDer<'static>],
+) {
+    let (Some(id), Some(name)) = (entry["id"].as_str(), entry["name"].as_str()) else {
+        return;
+    };
+    let here = server_of(&park.signalling.canonical()).to_string();
+    let server = entry["server"].as_str().unwrap_or(&here).to_string();
+    let result_url = park.signalling.url(&format!("/pair/{id}/result"));
+    let report = |outcome: Outcome, why: String| {
+        let (headers, roots, result_url) =
+            (park.headers.clone(), roots.to_vec(), result_url.clone());
+        async move {
+            eprintln!("drt p2p: pair {id}: {}{}", outcome.name(), why_shown(&why));
+            let body = serde_json::json!({"outcome": outcome.name(), "why": why}).to_string();
+            match http::request("POST", &result_url, &headers, Some(&body), &roots).await {
+                Ok(r) if r.status == 204 || r.status == 200 => {}
+                Ok(r) => eprintln!(
+                    "drt p2p: pair {id}: the result was not taken: {}",
+                    r.refusal(&result_url)
+                        .unwrap_or_else(|| format!("answered {}", r.status))
+                ),
+                Err(e) => eprintln!("drt p2p: pair {id}: the result was not taken: {e}"),
+            }
+        }
+    };
+    let allowed = park
+        .rule
+        .as_ref()
+        .is_some_and(|rule| rule.allows(&here, &server, name));
+    if !allowed {
+        return report(
+            Outcome::Declined,
+            match &park.rule {
+                None => "no --pair".to_string(),
+                Some(_) => format!(
+                    "{name} at {} is outside --pair",
+                    crate::tunnel::shown(&server)
+                ),
+            },
+        )
+        .await;
+    }
+    eprintln!(
+        "drt p2p: pair {id}: calling {name} at {}",
+        crate::tunnel::shown(&server)
+    );
+    // The caller's request (§3), with the caller token the entry gives.
+    let calls_url = format!("{}/v1/{name}/calls", server.trim_end_matches('/'));
+    let mut headers = Vec::new();
+    if let Some(token) = entry["token"].as_str() {
+        headers.push(("Authorization".to_string(), format!("Bearer {token}")));
+    }
+    let mine = serving.record.borrow().clone();
+    let answer = match http::request("POST", &calls_url, &headers, Some(&mine), roots).await {
+        Ok(r) if r.status == 200 => r.text(),
+        Ok(r) => {
+            let why = r
+                .refusal(&calls_url)
+                .unwrap_or_else(|| format!("answered {}", r.status));
+            let outcome = if r.status == 410 {
+                Outcome::Refused
+            } else {
+                Outcome::Unreachable
+            };
+            return report(outcome, why).await;
+        }
+        Err(e) => return report(Outcome::Unreachable, e).await,
+    };
+    let peer = format!("pair:{name}");
+    let mut events = serving.events.subscribe();
+    serving.sender.send(Command::Call {
+        peer: peer.clone(),
+        rtc: answer,
+    });
+    let fate = tokio::time::timeout(PAIR_CONNECT, async {
+        loop {
+            match events.recv().await {
+                Ok(Event::Session {
+                    peer: p,
+                    state,
+                    reason,
+                }) if p == peer => return Some((state, reason)),
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(_) => return None,
+            }
+        }
+    })
+    .await;
+    match fate {
+        Ok(Some((SessionState::Connected, _))) => report(Outcome::Connected, String::new()).await,
+        Ok(Some((SessionState::Closed, reason))) => {
+            report(Outcome::Unreachable, reason.unwrap_or_default()).await
+        }
+        Ok(None) => report(Outcome::Unreachable, "the host stopped".into()).await,
+        Err(_) => {
+            serving.sender.send(Command::Close { peer });
+            report(
+                Outcome::Unreachable,
+                format!("no session within {}s", PAIR_CONNECT.as_secs()),
+            )
+            .await
+        }
+    }
+}
+
+fn why_shown(why: &str) -> String {
+    if why.is_empty() {
+        String::new()
+    } else {
+        format!(": {why}")
     }
 }
 
@@ -266,5 +528,47 @@ async fn park_ws(
                 announce = true;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_pair_rule_is_any_name_here_or_a_pattern_at_a_named_server() {
+        let here = "http://127.0.0.1:9000";
+        let any = PairRule::parse("*").unwrap();
+        assert!(any.allows(here, here, "room-7"));
+        assert!(any.allows(here, "http://127.0.0.1:9000/", "x"));
+        assert!(!any.allows(here, "https://elsewhere.example", "room-7"));
+
+        let at = PairRule::parse("drt://127.0.0.1:9000/v1/room-*").unwrap();
+        assert_eq!(
+            at,
+            PairRule::At {
+                server: "http://127.0.0.1:9000".into(),
+                glob: "room-*".into()
+            }
+        );
+        assert!(at.allows(here, here, "room-7"));
+        assert!(!at.allows(here, here, "lobby"));
+        assert!(!at.allows(here, "http://127.0.0.1:9001", "room-7"));
+
+        // A name without a server is not a rule: the risk is the server.
+        assert!(PairRule::parse("room-*").is_err());
+        assert!(PairRule::parse("drt://127.0.0.1:9000").is_err());
+    }
+
+    #[test]
+    fn the_glob_is_star_and_nothing_else() {
+        assert!(glob_matches("*", "anything"));
+        assert!(glob_matches("room-*", "room-7"));
+        assert!(!glob_matches("room-*", "lobby-room-7"));
+        assert!(glob_matches("*-7", "room-7"));
+        assert!(glob_matches("r*m*7", "room-7"));
+        assert!(glob_matches("exact", "exact"));
+        assert!(!glob_matches("exact", "exactly"));
+        assert!(!glob_matches("a.b", "aXb"));
     }
 }

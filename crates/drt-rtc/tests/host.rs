@@ -409,6 +409,42 @@ async fn direct_mode_ignores_a_browsers_own_short_ufrag() {
     assert!(!client.within(NOTHING, |c| c.connected).await);
 }
 
+// depth: the host as the calling side (doc/DRT-Signalling.md §6.2)
+
+/// `Command::Call`: the host is the calling side of a session with a page
+/// that answers, and serves on it as it serves a page that called: the
+/// page gets `hello` and reaches a named service by an even stream id
+/// (doc/BrowserAccess.md §10.2).
+#[tokio::test]
+async fn a_host_that_calls_a_page_serves_it_all_the_same() {
+    let port = echo_server().await;
+    let entry = format!("http://127.0.0.1:{port}");
+    let (mut host, record) =
+        host_in_mode(std::slice::from_ref(&entry), false, &[("echo", &entry)]).await;
+    let (mut page, page_record) = Client::answering(&record).await;
+    host.send(Command::Call {
+        peer: "page".into(),
+        rtc: page_record,
+    });
+    page.connect().await;
+    assert_eq!(
+        session_event(&mut host, "page").await,
+        (SessionState::Connected, None)
+    );
+    let hello: serde_json::Value = serde_json::from_str(page.hello.as_deref().unwrap()).unwrap();
+    assert_eq!(hello["services"], serde_json::json!(["echo"]));
+    page.send(wisp::connect(2, wisp::STREAM_TCP, 0, "echo"));
+    page.send(wisp::data(2, b"called, and served"));
+    assert_eq!(page.read_stream(2, 18).await.0, b"called, and served");
+    host.send(Command::Close {
+        peer: "page".into(),
+    });
+    assert_eq!(
+        session_event(&mut host, "page").await.0,
+        SessionState::Closed
+    );
+}
+
 // depth: named services (doc/BrowserAccess.md §10.3)
 
 #[tokio::test]

@@ -58,6 +58,9 @@ pub struct Serving {
     /// How many sessions have connected; a listening peer with `--signal`
     /// names each call by it.
     pub calls: Arc<std::sync::atomic::AtomicU64>,
+    /// Every event the host reports, for a role that waits on one session's
+    /// fate (a pairing, `park::follow_pair`); the log above reads them all.
+    pub events: tokio::sync::broadcast::Sender<Event>,
 }
 
 /// Build the host for a forward, serve, and wait for its first record.
@@ -116,8 +119,11 @@ pub async fn start(
     let (record_tx, record) = watch::channel(first);
     let calls = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let counted = calls.clone();
+    let (events, _) = tokio::sync::broadcast::channel::<Event>(256);
+    let fanout = events.clone();
     tokio::spawn(async move {
         while let Some(e) = host.next_event().await {
+            let _ = fanout.send(e.clone());
             match e {
                 Event::Record { rtc } => {
                     eprintln!("drt p2p: record {rtc}");
@@ -168,6 +174,7 @@ pub async fn start(
         done,
         local,
         calls,
+        events,
     })
 }
 

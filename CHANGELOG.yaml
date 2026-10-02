@@ -171,15 +171,19 @@ releases:
           every default-configured host. The `webrtc` block shows its scope
           by default again, as before; `drt p2p` sends `scope` empty and
           names services only; `default` is absent when hidden.
-        - **Pairing, decided.** A signalling server that pairs two parked
-          peers tells one to call: a `pair` array beside `calls` in the
-          poll result, `event: pair` on the stream, a consent value on the
-          parked side (`--pair`), and an outcome posted back
-          (`doc/DRT-Signalling.md` §6.2, `doc/Ask-Discofetch-Reply-2.md`).
-          Decided for Discofetch to build its server half against; the
-          parked side's half waits on a call-and-serve mode in `drt p2p`.
-          `doc/BrowserAccess.md` §5 says a page's boundary is what it was
-          opened for, not `hello.scope`.
+        - **Pairing.** A signalling server that pairs two parked peers
+          tells one to call (`doc/DRT-Signalling.md` §6.2): a `pair` array
+          beside `calls` in the poll result and `event: pair` on the
+          stream name whom to call, where, with what caller token. The
+          told side calls and keeps serving, since the host now calls as
+          well as answers, and posts the outcome back. `drt p2p --park
+          --pair *` consents to any name at its own server, or
+          `--pair drt://<server>/v1/<glob>`; without it a request is
+          declined and the server told. `drt p2p --match` offers the ask:
+          `POST /v1/<name>/pair {"name": other}`. Decided with Discofetch
+          (`doc/Ask-Discofetch-Reply-2.md`). `doc/BrowserAccess.md` §5
+          says a page's boundary is what it was opened for, not
+          `hello.scope`.
         - **Half-close on the wire.** The Wisp profile gains `END` (0x05):
           the sender will write no more and still reads, TCP's half-close.
           A host says `half_close` in `hello`; a caller says it with a

@@ -457,10 +457,23 @@ impl Match {
     }
 
     fn get(&self, path: &str) -> (u16, String) {
+        self.request("GET", path, "")
+    }
+
+    fn post(&self, path: &str, body: &str) -> (u16, String) {
+        self.request("POST", path, body)
+    }
+
+    fn request(&self, method: &str, path: &str, body: &str) -> (u16, String) {
         let mut conn = TcpStream::connect(self.base.trim_start_matches("http://")).unwrap();
         conn.set_read_timeout(Some(WAIT)).unwrap();
         conn.write_all(
-            format!("GET {path} HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n").as_bytes(),
+            format!(
+                "{method} {path} HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\
+                 Content-Type: text/plain;charset=utf-8\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .as_bytes(),
         )
         .unwrap();
         let mut reply = String::new();
@@ -532,6 +545,112 @@ fn the_match_server_claims_names_by_token_and_holds_a_capacity() {
     assert_eq!(server.get("/v1/third/calls?k=t").0, 429);
     let _ = parked.kill();
     let _ = parked.wait();
+}
+
+/// `drt p2p --park` at `server`, read until it is present there; its
+/// stderr is kept for the lines a test waits on.
+struct Parked {
+    child: Child,
+    err: BufReader<std::process::ChildStderr>,
+}
+
+impl Parked {
+    fn start(server: &Match, name: &str, args: &[&str]) -> Parked {
+        let port = echo();
+        let mut child = drt()
+            .arg("p2p")
+            .arg("--park")
+            .arg(format!("{}/v1/{name}", server.base))
+            .args(args)
+            .arg("--forward")
+            .arg(format!("127.0.0.1:{port}"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let err = BufReader::new(child.stderr.take().unwrap());
+        let mut parked = Parked { child, err };
+        parked.until("present at ");
+        parked
+    }
+
+    /// Read stderr until a line contains `what`; the lines before it.
+    fn until(&mut self, what: &str) -> String {
+        let start = Instant::now();
+        let mut seen = String::new();
+        loop {
+            let mut line = String::new();
+            assert!(
+                self.err.read_line(&mut line).unwrap() > 0,
+                "the parked peer ended before {what:?}:\n{seen}"
+            );
+            seen.push_str(&line);
+            if line.contains(what) {
+                return seen;
+            }
+            assert!(
+                start.elapsed() < WAIT,
+                "no {what:?} within {WAIT:?}:\n{seen}"
+            );
+        }
+    }
+}
+
+impl Drop for Parked {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Pairing (doc/DRT-Signalling.md §6.2): a parked peer asks the server for
+/// a call from another parked peer; the server tells that peer, which
+/// calls with the asker's caller token and keeps serving, and reports the
+/// outcome. A peer without `--pair` declines and says so.
+#[test]
+fn the_match_server_pairs_two_parked_peers_when_one_asks() {
+    let server = Match::start(4);
+    let mut told = Parked::start(&server, "told", &["--H", "auth=told-token", "--pair", "*"]);
+    let mut asker = Parked::start(
+        &server,
+        "asker",
+        &[
+            "--H",
+            "auth=asker-token",
+            "--H",
+            "DRT-Caller-Token=asker-caller",
+        ],
+    );
+    let mut deaf = Parked::start(&server, "deaf", &["--H", "auth=deaf-token"]);
+
+    // The asker holds its name; the server tells `told` to call it.
+    let (status, body) = server.post("/v1/asker/pair?k=asker-token", r#"{"name":"told"}"#);
+    assert_eq!((status, body.as_str()), (202, r#"{"id":"p1"}"#));
+    let lines = told.until("pair p1: connected");
+    assert!(lines.contains("pair p1: calling asker at "), "{lines}");
+    assert!(lines.contains("pair:asker: connected"), "{lines}");
+    asker.until(": connected");
+
+    // One without consent declines, and the server hears it.
+    let (status, _) = server.post("/v1/asker/pair?k=asker-token", r#"{"name":"deaf"}"#);
+    assert_eq!(status, 202);
+    let lines = deaf.until("pair p1: declined");
+    assert!(lines.contains("no --pair"), "{lines}");
+
+    // Asking for a name nobody holds, or without the asker's token, fails
+    // by name.
+    assert_eq!(
+        server
+            .post("/v1/asker/pair?k=asker-token", r#"{"name":"nobody"}"#)
+            .0,
+        503
+    );
+    assert_eq!(server.post("/v1/asker/pair", r#"{"name":"told"}"#).0, 401);
+    assert_eq!(
+        server.post("/v1/asker/pair?k=asker-token", "not json").0,
+        400
+    );
 }
 
 /// The answerer's `--accept` travels as DRT-Accept, and the match server

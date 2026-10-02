@@ -11,8 +11,8 @@
 --   `args.capacity` the names held at once.
 -- - Configurable: HOLD_MS (§3), PRESENT_MS (§4.2), WAITING_CAP (§6),
 --   RECORD_MAX (§1), KEEPALIVE_MS (§5), the CORS headers.
--- - Fan-out: `routes`, the five requests of §2, each with whose token it
---   takes; `claim`, how a name is held.
+-- - Fan-out: `routes`, the five requests of §2 and the two of §6.2
+--   (pairing), each with whose token it takes; `claim`, how a name is held.
 --
 -- Admission is by token, not origin: every reply carries
 -- access-control-allow-origin: *, so a page opened from file:// (Origin:
@@ -46,6 +46,12 @@ end
 
 -- `json` is the reply; the encoder is Diluvium's `json` module under another name.
 local json_text = json.encode
+-- A body read as JSON, or nil: a body that is not JSON is not a request.
+local function json_body(text)
+  if text == '' then return nil end
+  local ok, v = pcall(json.decode, text)
+  return ok and v or nil
+end
 
 local function json(conn, status, body, extra)
   queue.push(replies, {conn = conn, status = status, body = body,
@@ -168,7 +174,7 @@ local function claim(m, name, token, now)
     if held_count() >= CAPACITY then
       fail(m.conn, 429, 'no room for another name', {['retry-after'] = '30'}); return nil
     end
-    r = {token = token, streams = {}, calls = {}, last = 0}
+    r = {token = token, streams = {}, calls = {}, pairs = {}, last = 0}
     names[name] = r
   end
   local h = m.headers or {}
@@ -196,13 +202,13 @@ local function find(r, id)
   return n, n and r.calls[n]
 end
 
-local function event(cursor)
-  return 'id: ' .. cursor .. '\nevent: call\ndata: {"cursor":"' .. cursor .. '"}\n\n'
+local function event(cursor, kind)
+  return 'id: ' .. cursor .. '\nevent: ' .. (kind or 'call') .. '\ndata: {"cursor":"' .. cursor .. '"}\n\n'
 end
 
-local function notify(r, cursor, now)
+local function notify(r, cursor, now, kind)
   for conn in pairs(r.streams) do
-    queue.push(replies, {conn = conn, chunk = event(cursor)}); r.streams[conn] = now
+    queue.push(replies, {conn = conn, chunk = event(cursor, kind)}); r.streams[conn] = now
   end
 end
 
@@ -230,15 +236,22 @@ local function list(m, r, params, now)
   local since = params.since or '0'
   if not since:match('^%d+$') then return fail(m.conn, 400, 'a malformed cursor') end
   r.polled = now
-  local out = {}
+  local out, pair = {}, {}
   for n = tonumber(since) + 1, r.last do
     local c = r.calls[n]
     if c and not c.answered then
       out[#out + 1] = {id = 'c' .. n, record = c.record, expires_in = math.ceil((c.ends - now) / 1000)}
     end
+    local p = r.pairs[n]
+    if p and not p.outcome then
+      local e = {id = 'p' .. n, name = p.name, expires_in = math.ceil((p.ends - now) / 1000)}
+      if p.token then e.token = p.token end
+      pair[#pair + 1] = e
+    end
   end
   -- An empty table encodes as an object, so an empty list is written out.
-  json(m.conn, 200, '{"cursor":"' .. r.last .. '","calls":' .. (#out > 0 and json_text(out) or '[]') .. '}')
+  json(m.conn, 200, '{"cursor":"' .. r.last .. '","calls":' .. (#out > 0 and json_text(out) or '[]')
+    .. ',"pair":' .. (#pair > 0 and json_text(pair) or '[]') .. '}')
 end
 
 local function answer(m, r, id, base)
@@ -260,6 +273,41 @@ local function withdraw(m, r, id)
   json(m.conn, 204, '')
 end
 
+-- depth: pairing (§6.2)
+
+-- `POST /v1/<name>/pair {"name": other}`, with <name>'s answerer token: the
+-- server tells `other` to call <name>, with <name>'s caller token. `other`
+-- must be present. The entry shares the cursor with calls, so a poll by
+-- cursor sees it once.
+local function ask_pair(m, r, name, now)
+  local body = json_body(m.body)
+  local other = type(body) == 'table' and body.name
+  if type(other) ~= 'string' or other == '' then return fail(m.conn, 400, 'the body names whom to tell: {"name": "…"}') end
+  if other == name then return fail(m.conn, 400, 'a name does not call itself') end
+  local o = names[other]
+  if not o or not present(o, now) then return fail(m.conn, 503, 'no answerer is present under that name') end
+  o.last = o.last + 1
+  o.pairs[o.last] = {name = name, token = r.caller, ends = now + HOLD_MS, asked_by = name}
+  notify(o, o.last, now, 'pair')
+  json(m.conn, 202, '{"id":"p' .. o.last .. '"}')
+end
+
+-- `POST /v1/<name>/pair/<id>/result`, with <name>'s answerer token.
+local function pair_result(m, r, id, now)
+  local n = tonumber(id:match('^p(%d+)$') or '')
+  local p = n and r.pairs[n]
+  if not p or now >= p.ends then return fail(m.conn, 404, 'no such pairing') end
+  local body = json_body(m.body)
+  local outcome = type(body) == 'table' and body.outcome
+  if outcome ~= 'connected' and outcome ~= 'refused' and outcome ~= 'unreachable' and outcome ~= 'declined' then
+    return fail(m.conn, 400, 'outcome is connected, refused, unreachable or declined')
+  end
+  p.outcome = outcome
+  print('p2p match: ' .. p.asked_by .. ' asked for a call from ' .. m.name .. ': ' .. outcome
+    .. ((type(body.why) == 'string' and body.why ~= '') and (' (' .. body.why .. ')') or ''))
+  json(m.conn, 204, '')
+end
+
 local function events(m, r, now)
   queue.push(replies, {conn = m.conn, stream = true, body = 'retry: 2000\n\n',
                        content_type = 'text/event-stream', headers = with({['cache-control'] = 'no-cache'})})
@@ -276,6 +324,8 @@ local routes = {
   {'POST',   '^/v1/([^/]+)/calls/([^/]+)/answer$', 'answerer'},
   {'DELETE', '^/v1/([^/]+)/calls/([^/]+)$',        'either'},
   {'GET',    '^/v1/([^/]+)/events$',               'answerer'},
+  {'POST',   '^/v1/([^/]+)/pair$',                 'answerer'},
+  {'POST',   '^/v1/([^/]+)/pair/([^/]+)/result$',  'answerer'},
 }
 
 local function route(m, now)
@@ -295,6 +345,8 @@ local function route(m, now)
       if i == 2 then return list(m, r, params, now) end
       if i == 3 then return answer(m, r, id, '/v1/' .. name .. '/calls/') end
       if i == 4 then return withdraw(m, r, id) end
+      if i == 6 then return ask_pair(m, r, name, now) end
+      if i == 7 then m.name = name; return pair_result(m, r, id, now) end
       return events(m, r, now)
     end
   end
@@ -313,10 +365,13 @@ local function housekeep(now)
         r.calls[n] = nil
       end
     end
+    for n, p in pairs(r.pairs) do
+      if now >= p.ends then r.pairs[n] = nil end
+    end
     for conn, at in pairs(r.streams) do
       if now - at >= KEEPALIVE_MS then queue.push(replies, {conn = conn, chunk = ': keepalive\n\n'}); r.streams[conn] = now end
     end
-    if not present(r, now) and next(r.calls) == nil then names[name] = nil end
+    if not present(r, now) and next(r.calls) == nil and next(r.pairs) == nil then names[name] = nil end
   end
 end
 

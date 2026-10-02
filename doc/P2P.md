@@ -126,8 +126,10 @@ callers, so there is no one fingerprint to hold it to.
 `--pair <allow>` lets the server pair this side with another parked peer
 (`doc/DRT-Signalling.md` §6.2): `*` for any name at the server it is
 parked at, or `drt://<server>/v1/<glob>` for a name pattern at a named
-server. Without it, a `pair` entry in the poll is declined and the server
-is told so. Decided; not built (§12).
+server. Told to call, this side makes the caller's request with the token
+the entry gives, serves on the session as it serves a caller's, and
+reports the outcome. Without `--pair`, a `pair` entry is declined and the
+server is told so.
 
 **Two parked peers reach each other by one calling the other.** Parking
 and calling are not exclusive: a machine parked as `a` runs
@@ -552,19 +554,19 @@ form of what it was given.
 7. **The fingerprint flag is `--fingerprint`**, not `--pin`: `pin` is the
    SSH host key's word on `ssh.html` and `drt ssh`.
 
-## 12. Decided, open in code
+## 12. Decided in review, later
 
 1. **Pairing started by the signalling server.** Decided 2026-10-02
    (`doc/Ask-Discofetch-Reply-2.md`), shapes in `doc/DRT-Signalling.md`
    §6.2: a `pair` array in the poll result and `event: pair` on the
    stream tell a parked side which name to call; consent is `--pair`
    (§2.2), off by default; the told side calls and keeps serving; it
-   posts the outcome back. What is not built: the parked side reading
-   `pair` and the consent value, which is small, and a call-and-serve
-   mode in `drt p2p`, a call role that keeps the park's `--forward` open
-   on the session it originates, which is where the cost is. The wire
-   already allows it (`doc/BrowserAccess.md` §10); the verb's call role
-   today only consumes.
+   posts the outcome back. Built: the serving host calls as well as
+   answers (`Command::Call` in `drt-rtc`, the same session once
+   connected, with the ICE, DTLS and SCTP roles flipped), the parked
+   side follows a `pair` entry under its `--pair`, and `--match` offers
+   the ask (`POST /v1/<name>/pair`). Not a separate call-and-serve role:
+   the park is one, when told.
 
 ## Not in this proposal
 
