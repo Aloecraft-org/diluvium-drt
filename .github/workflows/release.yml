@@ -508,6 +508,16 @@ jobs:
       # drt-ssh-in-the-page check needs. The step CI's browser job runs.
       - name: Build the SSH client
         run: script/drt-ssh-page.sh
+      # drt-ssh-in-the-page signs in to a real sshd as root through
+      # `sudo -n`, as CI's browser job does, and a root sshd needs its
+      # privilege separation directory, which only the service creates.
+      # Without it the check reports "sshd never listened" (run 92).
+      - name: A stock OpenSSH sshd
+        run: |
+          set -eu
+          sudo apt-get install -y --no-install-recommends openssh-server
+          sudo mkdir -p /run/sshd
+          /usr/sbin/sshd -V 2>&1 || true
       - name: The browser suite, in Chromium
         working-directory: crates/drt-web/browser-test
         run: |
