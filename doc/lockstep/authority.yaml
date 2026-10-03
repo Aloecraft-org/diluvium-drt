@@ -10,8 +10,11 @@ tiers:
     - spawn subagents within limits
     - in a batch, branch a step from an earlier unmerged step of the
       same batch (operating.md, Batches)
+    - turn on auto-merge, with a merge commit, for this repo's own pull
+      request; GitHub merges it only once every check the ruleset on
+      main requires passes, owner-paths among them
   approve_first:
-    - merge to main, except inside self_merge
+    - merge to main, except inside self_merge or by auto-merge (autonomous)
     - any change to .claude/CLAUDE.md, .claude/rules/, authority.yaml or goal.md
     - any write outside this repo
     - any message to a person other than the owner
@@ -21,6 +24,8 @@ tiers:
     - new credentials or wider scope
     - reading untrusted input
   never:
+    - add the owner-ok label, or merge or turn on auto-merge for a pull
+      request the owner-paths check fails
     - manufactured reviews, mentions, testimonials or accounts
     - presenting as a human
     - deleting or exporting customer data
