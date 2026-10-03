@@ -6,7 +6,8 @@
 //!
 //! ## surface block
 //!
-//! - Entry points: [`Client::new`], then [`Client::connect`], [`Client::send`],
+//! - Entry points: [`Client::new`] or [`Client::with_creds`], then
+//!   [`Client::connect`], [`Client::send`],
 //!   [`Client::next_packet`], [`Client::read_stream`]; [`Client::until`]
 //!   and [`Client::within`] to run it.
 //! - Configurable: [`LIMIT`], how long any one wait may take.
@@ -39,15 +40,33 @@ pub struct Client {
     pub open: [bool; 2],
     pub connected: bool,
     pub hello: Option<String>,
+    /// `control` messages after `hello`, oldest first.
+    pub control_msgs: Vec<String>,
     pub inbox: Vec<Vec<u8>>,
 }
 
 impl Client {
     /// What a browser does with the host's record: everything but the SDP.
     pub async fn new(host: &Record) -> (Client, String) {
+        Client::with_creds(host, IceCreds::new()).await
+    }
+
+    /// The same, with ICE credentials the caller chose: direct mode's
+    /// browser picks its own (`doc/BrowserAccess.md` §3.4).
+    pub async fn with_creds(host: &Record, creds: IceCreds) -> (Client, String) {
+        Client::in_role(host, creds, true).await
+    }
+
+    /// A page that answers (`doc/BrowserAccess.md` §10.4): the controlled,
+    /// DTLS-server side, as `listen` in the browser library is. The host
+    /// calls it (`Command::Call`) with the record this returns.
+    pub async fn answering(host: &Record) -> (Client, String) {
+        Client::in_role(host, IceCreds::new(), false).await
+    }
+
+    async fn in_role(host: &Record, creds: IceCreds, calling: bool) -> (Client, String) {
         let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let addr = socket.local_addr().unwrap();
-        let creds = IceCreds::new();
         let mut rtc = Rtc::builder()
             .set_local_ice_credentials(creds.clone())
             .build(Instant::now().into_std());
@@ -61,7 +80,7 @@ impl Client {
             .try_into()
             .unwrap();
         let mut api = rtc.direct_api();
-        api.set_ice_controlling(true);
+        api.set_ice_controlling(calling);
         api.set_remote_ice_credentials(IceCreds {
             ufrag: host.ufrag.clone(),
             pass: host.pwd.clone(),
@@ -70,8 +89,8 @@ impl Client {
             hash_func: "sha-256".into(),
             bytes: host.fingerprint.to_vec(),
         });
-        api.start_dtls(true).unwrap();
-        api.start_sctp(true);
+        api.start_dtls(calling).unwrap();
+        api.start_sctp(calling);
         let channel = |label: &str, id: u16| ChannelConfig {
             label: label.into(),
             ordered: true,
@@ -99,6 +118,7 @@ impl Client {
             open: [false; 2],
             connected: false,
             hello: None,
+            control_msgs: Vec::new(),
             inbox: Vec::new(),
         };
         (client, record.encode().unwrap())
@@ -116,7 +136,12 @@ impl Client {
                     RtcEvent::ChannelOpen(id, _) if id == self.control => self.open[0] = true,
                     RtcEvent::ChannelOpen(id, _) if id == self.wisp => self.open[1] = true,
                     RtcEvent::ChannelData(d) if d.id == self.control => {
-                        self.hello = Some(String::from_utf8(d.data).unwrap())
+                        let text = String::from_utf8(d.data).unwrap();
+                        if self.hello.is_none() {
+                            self.hello = Some(text);
+                        } else {
+                            self.control_msgs.push(text);
+                        }
                     }
                     RtcEvent::ChannelData(d) if d.id == self.wisp => self.inbox.push(d.data),
                     _ => {}

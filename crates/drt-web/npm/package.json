@@ -1,0 +1,25 @@
+{
+  "name": "drt-browser",
+  "version": "0.0.0-set-by-release",
+  "description": "DRT in a page: the browser build of drt behind a terminal contract, the browser access client for calling drt peers over WebRTC, the SSH client module, and the config file's JSON Schema.",
+  "license": "Apache-2.0",
+  "repository": "github:Aloecraft-org/diluvium-drt",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./drt_web.js",
+    "./wasm": "./drt_web_bg.wasm",
+    "./access": {
+      "types": "./drt_browser_access.d.ts",
+      "default": "./drt_browser_access.js"
+    },
+    "./term": "./drt-term.js",
+    "./shell": "./shell.js",
+    "./ssh": "./ssh-command.js",
+    "./ssh-client": "./drt_ssh_web.js",
+    "./ssh-client/wasm": "./drt_ssh_web_bg.wasm",
+    "./config.schema.json": "./config.schema.json",
+    "./package.json": "./package.json"
+  },
+  "files": ["*.js", "*.d.ts", "*.wasm", "*.json", "README.md"]
+}

@@ -21,6 +21,12 @@ pub const CONNECT: u8 = 0x01;
 pub const DATA: u8 = 0x02;
 pub const CONTINUE: u8 = 0x03;
 pub const CLOSE: u8 = 0x04;
+/// This profile's one extension (`doc/BrowserAccess.md` §6): the sender
+/// will write no more on the stream and still reads it, TCP's half-close.
+/// No payload. A peer that does not know it ignores it, as §6 says of an
+/// unknown type, which is why a side sends it only to a peer that said it
+/// understands (`half_close` in `hello`, or the caller's `features`).
+pub const END: u8 = 0x05;
 
 pub const STREAM_TCP: u8 = 0x01;
 pub const STREAM_UDP: u8 = 0x02;
@@ -79,6 +85,10 @@ pub enum Packet<'a> {
         stream: u32,
         reason: u8,
     },
+    /// The sender will write no more on this stream (`END`).
+    End {
+        stream: u32,
+    },
     /// A known type whose payload is too short to be one. The host answers
     /// a malformed `CONNECT` with `CLOSE 0x41` and ignores the rest.
     Malformed {
@@ -120,6 +130,7 @@ pub fn parse(msg: &[u8]) -> Option<Packet<'_>> {
             stream,
             reason: body[0],
         },
+        END => Packet::End { stream },
         CONNECT | CONTINUE | CLOSE => Packet::Malformed { kind, stream },
         _ => Packet::Unknown { kind, stream },
     })
@@ -152,6 +163,10 @@ pub fn cont(stream: u32, remaining: u32) -> Vec<u8> {
     let mut v = header(CONTINUE, stream, 4);
     v.extend_from_slice(&remaining.to_le_bytes());
     v
+}
+
+pub fn end(stream: u32) -> Vec<u8> {
+    header(END, stream, 0)
 }
 
 pub fn close(stream: u32, reason: u8) -> Vec<u8> {
@@ -210,8 +225,15 @@ mod tests {
             })
         );
         assert_eq!(
-            parse(&[0x05, 1, 0, 0, 0]),
-            Some(Packet::Unknown { kind: 5, stream: 1 })
+            parse(&[0x06, 1, 0, 0, 0]),
+            Some(Packet::Unknown { kind: 6, stream: 1 })
+        );
+        // END is this profile's own: no payload, and what follows the
+        // header is ignored.
+        assert_eq!(parse(&end(1)), Some(Packet::End { stream: 1 }));
+        assert_eq!(
+            parse(&[END, 1, 0, 0, 0, 9]),
+            Some(Packet::End { stream: 1 })
         );
     }
 

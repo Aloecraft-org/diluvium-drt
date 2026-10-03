@@ -1,6 +1,6 @@
 [package]
 name = "drt-connector-ssh"
-description = "The ssh client connector: host:ssh/exec over ego-transport's ssh scheme"
+description = "The ssh client connector: host:ssh/exec and host:ssh/shell"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,9 +11,26 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 rmpv = { workspace = true }
 ego_transport = { workspace = true }
-tokio = { version = "1", default-features = false, features = ["time", "rt", "rt-multi-thread"] }
+tokio = { version = "1", default-features = false, features = ["time", "rt", "rt-multi-thread", "net", "macros"] }
 drt-caps = { workspace = true }
 drt-connector = { workspace = true }
+# The interactive client (`interactive`): russh directly, the version the
+# workspace already resolves through ego_transport and patches to the
+# fork, so this adds no second copy. `rsa` and an agent because a person's
+# servers and keys are not all Ed25519.
+russh = { version = "0.63.2", default-features = false, features = ["ring", "rsa"] }
+
+[target.'cfg(unix)'.dependencies]
+# The terminal for an interactive session (src/console.rs): termios for
+# raw mode and a password without echo, TIOCGWINSZ for the size, poll(2)
+# so the stdin reader ends with the session.
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# The same on the Windows console: modes (VT input and output), the
+# window's size, and a reader that waits with a timeout. The version and
+# features the tree already builds for Windows.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

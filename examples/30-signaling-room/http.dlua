@@ -1,0 +1,51 @@
+-- Replies, and the two tokens of §1.
+local M = {}
+local replies = queue.declare('http_out', {capacity = 64, exported = true})
+local CORS = {
+  ['access-control-allow-origin']   = '*',
+  ['access-control-allow-methods']  = 'GET, POST, DELETE, OPTIONS',
+  ['access-control-allow-headers']  = 'authorization, content-type, last-event-id',
+  ['access-control-expose-headers'] = 'location, retry-after',
+}
+local roles = {}   -- token -> 'answerer' or 'caller'
+
+function M.tokens(answerer, caller) roles = {[answerer] = 'answerer', [caller] = 'caller'} end
+
+-- '/v1/page/calls?since=3&k=t' -> '/v1/page/calls', {since = '3', k = 't'}
+function M.split(target)
+  local path, query = target:match('^([^?]*)%??(.*)$')
+  local params = {}
+  for k, v in query:gmatch('([^&=]+)=([^&]*)') do params[k] = v end
+  return path, params
+end
+
+-- nil when the token may do this; the status when it may not.
+function M.refuse(m, params, who)
+  local bearer = m.headers.authorization and m.headers.authorization:match('^Bearer%s+(%S+)$')
+  local role = roles[bearer or params.k or '']
+  if not role then return 401 end
+  if who ~= 'either' and role ~= who then return 403 end
+end
+
+local function with(extra)
+  local h = {}
+  for k, v in pairs(CORS) do h[k] = v end
+  for k, v in pairs(extra or {}) do h[k] = v end
+  return h
+end
+
+function M.json(conn, status, body, extra)
+  queue.push(replies, {conn = conn, status = status, body = body,
+                       content_type = 'application/json', headers = with(extra)})
+end
+
+function M.fail(conn, status, why, extra) M.json(conn, status, json.encode({error = why}), extra) end
+
+function M.stream(conn, first)
+  queue.push(replies, {conn = conn, stream = true, body = first, content_type = 'text/event-stream',
+                       headers = with({['cache-control'] = 'no-cache'})})
+end
+
+function M.chunk(conn, text) queue.push(replies, {conn = conn, chunk = text}) end
+
+return M

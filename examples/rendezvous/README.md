@@ -12,13 +12,13 @@ drt --config rendezvous.json start
 On the machine you want to reach, one long-running process:
 
 ```
-drt tunnel --park "wss://rendezvous.example/park/xps?k=$PARK_KEY" --to 127.0.0.1:22
+drt p2p --park "wss://rendezvous.example/park/xps?k=$PARK_KEY" --forward ssh://127.0.0.1:22
 ```
 
 From anywhere:
 
 ```
-ssh -o ProxyCommand="drt tunnel wss://rendezvous.example/s/xps?k=$CALLER_KEY" user@xps
+ssh -o ProxyCommand="drt p2p --relay wss://rendezvous.example/s/xps?k=$CALLER_KEY" user@xps
 ```
 
 `rsync -e`, `sftp -o`, `-L`/`-R` and agent forwarding all work through the

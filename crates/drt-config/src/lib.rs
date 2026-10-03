@@ -74,6 +74,7 @@ use drt_caps::{AttenuationError, Grant};
 /// attenuation means "inherit the parent's" — a child may state a smaller
 /// number, never a larger one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Budget {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -91,6 +92,7 @@ pub struct Budget {
 /// either field means "no bound stated", which under attenuation means
 /// "inherit the parent's".
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Numeric {
     /// The most elements one kernel call may process. `None` is no bound;
@@ -112,6 +114,7 @@ pub struct Numeric {
 /// - `reproducible`: bit-identical to the portable kernel on every target.
 /// - `fast`: no cross-target guarantee.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum Tier {
     Exact,
@@ -181,6 +184,7 @@ impl Numeric {
 /// Where a program's source comes from. Config never carries the
 /// application's own filenames as *scopes* — this is the program itself.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum Program {
     /// A `.dlua`/`.lua` file, resolved against the process working directory
@@ -195,6 +199,7 @@ pub enum Program {
 /// [`InstanceConfig::check_attenuation`] is that rule, checked identically
 /// whether the parent is the process or another instance.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct InstanceConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -310,6 +315,7 @@ impl InstanceConfig {
 /// directory for `fs`, a directory for `sql`, a key), never the
 /// application's filenames. Programs name resources within the scope.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ConnectorWiring {
     /// Names a registered backing when a build carries more than one
@@ -340,6 +346,7 @@ pub struct ConnectorWiring {
 /// so a config reads uniformly, and the difference is real and is stated
 /// rather than hidden by the spelling.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct PluginWiring {
     /// The `<name>.plugin.json` that describes this plugin, resolved the
@@ -366,10 +373,13 @@ pub struct PluginWiring {
 /// with the same field names and the same defaults, so a deployment moves
 /// between the C host and DRT by moving its config.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Listener {
-    /// `http` today; `ssh` lands with the control endpoint. Non-local
-    /// schemes resolve through ego-transport.
+    /// `http`, the queue bridge below, or `ssh`, the REPL over SSH
+    /// (SPEC.md §9): a PTY gets a REPL instance holding its key's grants,
+    /// with `identity.host_key_path` as the host key. The queue and HTTP
+    /// fields mean nothing to `ssh`.
     pub scheme: String,
     /// e.g. `127.0.0.1:8080`. The C defaults its bind to the loopback —
     /// the LB's side — and so should configs here: the edge terminates
@@ -425,6 +435,24 @@ pub struct Listener {
         alias = "response_headers"
     )]
     pub resp_headers: Vec<String>,
+    /// Whether a reply may open a streamed response: `stream = true` sends
+    /// the head, later `chunk` replies send the body as they arrive, and
+    /// `done` ends it. Off by default, because a streamed response holds
+    /// its connection, and one of `max_conns`, for as long as it runs. DRT's
+    /// own; the C host has no streaming.
+    #[serde(default)]
+    pub streaming: bool,
+    /// How long a streamed response may go without a chunk before the
+    /// host closes it and tells the program. `0` is no limit, which leaves
+    /// a stream the program forgets open until the client leaves.
+    #[serde(default = "default_stream_idle_ms")]
+    pub stream_idle_ms: u64,
+    /// `ssh` only: an `authorized_keys` file whose keys get the REPL with
+    /// what `drt repl` here would hold. `~/.ssh/authorized_keys` when
+    /// unset and present, which is the stance sshd takes: the account's
+    /// own list of who may act as it. `principals` grant per key instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorized_keys: Option<PathBuf>,
 }
 
 fn default_request_queue() -> String {
@@ -441,6 +469,12 @@ fn default_conn_deadline_ms() -> u64 {
 }
 fn default_max_conns() -> usize {
     64
+}
+/// A minute: past the keepalive interval of any event stream worth
+/// holding open (an SSE comment every 15 to 30 seconds is the custom), so
+/// only a stream the program has stopped writing to reaches it.
+fn default_stream_idle_ms() -> u64 {
+    60_000
 }
 /// Two seconds: long enough to cover a program's declare-before-serve
 /// boot (measured in tens of milliseconds on a real deployment), short
@@ -459,6 +493,7 @@ fn default_admit_grace_ms() -> u64 {
 /// deployment that states none keeps everything resident, bounded by the
 /// instance table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Residency {
     /// How many non-root instances may be resident at once. The root is
@@ -487,6 +522,7 @@ fn default_park_floor_ms() -> u64 {
 /// replace the key *values* and not this shape — and because per-label
 /// revocation is what a leaked device key needs.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct RelayConfig {
     /// e.g. `127.0.0.1:8090` — behind the edge, which terminates TLS and
@@ -535,6 +571,7 @@ pub struct RelayConfig {
 /// below two. A `stun1`/`stun2` pair on separate addresses is what makes
 /// that classification available to anyone pointed at them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct StunConfig {
     /// e.g. `0.0.0.0:3478`, or a bare host paired with `port`. Unlike the
@@ -578,6 +615,7 @@ fn default_stun_report_ms() -> u64 {
 /// minted here verifies against coturn too, so either can stand behind
 /// the same `--ice` answer (issue #12).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct TurnConfig {
     /// e.g. `0.0.0.0:3478`, or a bare host paired with `port`. Faces the
@@ -654,6 +692,7 @@ fn default_turn_report_ms() -> u64 {
 /// and a key pasted from one should work in the other. Keys are base64, the
 /// tool's own encoding, not hex.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct WireguardPeer {
     /// The peer's public key, base64. Its identity: there is no other name
@@ -691,6 +730,7 @@ pub struct WireguardPeer {
 /// and never inferred from a missing privilege, by this repository's rule
 /// that a config which did not ask is not steered.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum WireguardMode {
     #[default]
@@ -722,6 +762,7 @@ impl WireguardMode {
 /// `mode = "userspace"`: `ssh -p 2222 127.0.0.1` with nothing configured on
 /// the client. The caller half; `tunnel`'s `bind` is the same shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct WireguardForward {
     /// The local `ip:port` to listen on. Port `0` takes an ephemeral one,
@@ -739,6 +780,7 @@ pub struct WireguardForward {
 /// where in kernel mode the kernel would deliver to the box's own sshd.
 /// `tunnel --park --to`'s shape: dialed lazily, on the first connection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct WireguardExpose {
     /// The `ip:port` a peer dials. The address is the block's own
@@ -767,6 +809,7 @@ pub struct WireguardExpose {
 /// relay -- trade the two measured endpoints, tell both sides -- completes
 /// here without a second daemon holding the socket.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct WireguardConfig {
     /// The UDP port to listen on. **Required, and never zero**: gotatun
@@ -906,6 +949,7 @@ fn default_admit_timeout_ms() -> u64 {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct RelayLabel {
     /// Presented by the device parking a leg (`/park/<label>?k=…`).
@@ -945,6 +989,7 @@ pub struct RelayLabel {
 /// its own. `bind`, as every other block spells the local address it
 /// listens on. `park`, `to` and `listen` as the flags are.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct TunnelConfig {
     /// The `ws://` or `wss://` URL the caller half dials: the relay's
@@ -983,9 +1028,104 @@ pub struct TunnelConfig {
     pub headers: BTreeMap<String, String>,
 }
 
+/// `drt p2p`, from a file: `drt --config mypc.json p2p` (`doc/P2P.md` §8).
+///
+/// Every flag of the verb is a key here under the flag's name (`-p` is
+/// `ports`, `-P` is `forward_ports`, `-A` is `all_ports`, `--H` is the
+/// `headers` map), so a credential -- a signalling token in `headers`, a
+/// caller token -- lives in a 0600 file and not in `ps` or a paste. Which
+/// role this is (call, park, listen, match) is told by which keys are
+/// present, exactly as the flags tell it, and two roles in one block are
+/// refused by name. Flags merge over the file per key: a flag naming a key
+/// the file also names replaces it, and a flag naming a different role than
+/// the file is the conflict two flags would be.
+///
+/// One key has no flag: `identity_file`, the ICE credentials and DTLS
+/// certificate a listening or parked peer keeps so its record and
+/// fingerprint survive a restart (`~/.drt/p2p/identity.json` when absent).
+/// `authorized_keys` is also the `--authorized-keys` flag.
+///
+/// `tunnel` is read as an alias of this block for one release, each of its
+/// keys mapped to its replacement here with a warning naming both.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct P2pConfig {
+    /// The positional: the peer to call (`doc/P2P.md` §3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<String>,
+    /// `-p`, repeatable: `<local>:<remote>`, `:<remote>`, or `<local>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ports: Vec<String>,
+    /// `--relay`: a peer that carries the session, by request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<String>,
+    /// `--fallback`: `relay`, tried only when no direct path exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<String>,
+    /// `--park`: the signalling server to answer calls at, by name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub park: Option<String>,
+    /// `--listen`: the UDP port to serve on, with a fixed record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listen: Option<u16>,
+    /// `--match`: the TCP port to be a signalling server on.
+    #[serde(default, rename = "match", skip_serializing_if = "Option::is_none")]
+    pub match_port: Option<u16>,
+    /// `--host`: an address to bind, `0.0.0.0`, or a CIDR to admit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// `--accept`, repeatable: the caller ranges a parked peer admits.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accept: Vec<String>,
+    /// `--pair`: whom the signalling server may tell a parked peer to call
+    /// (`doc/DRT-Signalling.md` §6.2): `*` for any name at the server it is
+    /// parked at, or `drt://<server>/v1/<glob>`. Absent, no one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pair: Option<String>,
+    /// `--forward`: what a serving peer serves (`doc/P2P.md` §5). An empty
+    /// string is a bare `--forward`: a relay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward: Option<String>,
+    /// `-A`: every port of the `forward` host.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub all_ports: bool,
+    /// `-P`: the ports of the `forward` host, `80,8080:8090,31200`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward_ports: Option<String>,
+    /// `--signal`: a listening peer's own signalling port; 0 for one the
+    /// system chooses, as the bare flag does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<u16>,
+    /// `--stun`, repeatable: `host:port` servers asked for a public address.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stun: Vec<String>,
+    /// `--fingerprint`: the answerer's DTLS fingerprint, `SHA256:…`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    /// `--H`, by name: HTTP headers for the signalling side. `auth` is
+    /// shorthand for `Authorization: Bearer <value>`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    /// `--capacity`: names a `match` server holds at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capacity: Option<usize>,
+    /// `--extra-root`: PEM files trusted beside the public roots.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_roots: Vec<PathBuf>,
+    /// `--authorized-keys`: the REPL default's key file, in place of the
+    /// running user's `~/.ssh/authorized_keys`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorized_keys: Option<PathBuf>,
+    /// The ICE credentials and DTLS certificate a serving peer keeps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_file: Option<PathBuf>,
+}
+
 /// Process identity. The host key doubles as the node identity and the
 /// snapshot stamp source (SPEC.md §§8–9).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Identity {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -995,6 +1135,7 @@ pub struct Identity {
 /// Authorized keys → capability grant sets: an SSH principal is an attenuated
 /// node in the provenance tree.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SshPrincipal {
     /// The public key, OpenSSH one-line format.
@@ -1016,6 +1157,7 @@ pub struct SshPrincipal {
 /// deployment means asking it about the deployment's own network rather than
 /// about whatever shell ran the verb.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct NetcheckConfig {
     /// STUN servers, `host:port`. The decisive measurement is the UDP mapping,
@@ -1062,6 +1204,7 @@ fn default_netcheck_queue() -> String {
 /// rendezvous. `webrtc` and every event name are placeholders until the
 /// owner names the feature (`doc/Plan-0.8.0.md` §6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct WebrtcConfig {
     /// The session socket. A wildcard is advertised as the address this box
@@ -1098,6 +1241,12 @@ pub struct WebrtcConfig {
     /// besides. Empty is allowed and reaches nothing.
     #[serde(default)]
     pub scope: Vec<String>,
+    /// Named services (`doc/BrowserAccess.md` §10.3): a name a peer can
+    /// open a stream to, each an alias of one entry in `scope`, so
+    /// `{"ssh": "ssh://127.0.0.1:22"}` lets a caller say `ssh` and reach
+    /// exactly what that entry does.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub services: BTreeMap<String, String>,
     #[serde(default = "default_webrtc_max_sessions")]
     pub max_sessions: usize,
     #[serde(default = "default_webrtc_max_streams")]
@@ -1106,10 +1255,29 @@ pub struct WebrtcConfig {
     pub idle_stream_timeout_s: u64,
     #[serde(default = "default_webrtc_connect_s")]
     pub connect_timeout_s: u64,
+    /// Direct mode (`doc/BrowserAccess.md` §3.4): a caller holding this
+    /// host's record makes a session with no signaling at all, by choosing
+    /// its own ICE credentials. The record is then the whole grant, so a
+    /// host that turns this on hands its record only to whoever may reach
+    /// its scope. Signaled sessions work beside it either way.
+    #[serde(default)]
+    pub direct: bool,
+    /// Whether `hello` shows the scope's entries and `default`. On by
+    /// default for this block, as every v1 client was written against:
+    /// a browser names its target by address, and the entries are what it
+    /// may name. Off, `hello` sends `scope` empty and names the services
+    /// only, which is `drt p2p`'s posture: the addresses behind a forward
+    /// are this side's policy and, for a forward into a private network,
+    /// a map of it for anyone admitted (`doc/P2P.md` §7.2).
+    #[serde(default = "default_true")]
+    pub hello_scope: bool,
     /// Reports: `webrtc_record`, `webrtc_session`, `webrtc_stream`.
     #[serde(default = "default_webrtc_queue")]
     pub queue: String,
-    /// Commands: `{command = "open", peer, rtc}`, `{command = "close", peer}`.
+    /// Commands: `{command = "open", peer, rtc}` answers a browser's record;
+    /// `{command = "call", peer, rtc}` calls an answerer's, for a deployment
+    /// its signalling told to call (`doc/DRT-Signalling.md` §6.2);
+    /// `{command = "close", peer}`.
     #[serde(default = "default_webrtc_reply_queue")]
     pub reply_queue: String,
 }
@@ -1143,6 +1311,7 @@ fn default_webrtc_reply_queue() -> String {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct RootConfig {
     #[serde(flatten)]
@@ -1170,6 +1339,8 @@ pub struct RootConfig {
     pub wireguard: Option<WireguardConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tunnel: Option<TunnelConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p2p: Option<P2pConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub netcheck: Option<NetcheckConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

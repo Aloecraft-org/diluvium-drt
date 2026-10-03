@@ -20,13 +20,14 @@
 //!   [`WebrtcBridge::report`].
 //! - Configurable: [`HELD_MAX`], [`MAX_PEER`]; everything else is the block's
 //!   (`drt_config::WebrtcConfig`).
-//! - Fan-out: [`command_from`] (the two commands), [`report_value`] (the
-//!   three reports).
+//! - Fan-out: [`command_from`] (the three commands: `open` answers a
+//!   browser's record, `call` calls an answerer's, `close` ends a session),
+//!   [`report_value`] (the three reports).
 
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use drt_config::WebrtcConfig;
+use drt_config::{RootConfig, WebrtcConfig};
 use drt_rtc::host::{Event, SessionState, StreamState};
 use drt_rtc::{Command, Entry, Host, HostConfig, Identity, Scope};
 
@@ -53,10 +54,10 @@ impl WebrtcBridge {
     /// `drt start` reports itself up: a scope entry that is not
     /// `scheme://host[:port]`, a `default` outside the scope, an identity
     /// file that exists and does not parse, a port in use.
-    pub fn start(config: &WebrtcConfig) -> Result<WebrtcBridge, String> {
+    pub fn start(config: &WebrtcConfig, root: &RootConfig) -> Result<WebrtcBridge, String> {
         // Dropping the host stops it, and the bridge lives as long as the
         // deployment does.
-        let host = Host::start(host_config(config)?)?;
+        let host = Host::start(host_config(config, root)?)?;
         Ok(WebrtcBridge {
             host,
             queue: config.queue.clone(),
@@ -116,7 +117,7 @@ impl WebrtcBridge {
 }
 
 /// The block, checked and turned into what the host takes.
-fn host_config(c: &WebrtcConfig) -> Result<HostConfig, String> {
+fn host_config(c: &WebrtcConfig, config: &RootConfig) -> Result<HostConfig, String> {
     let bind: SocketAddr = c
         .bind
         .parse()
@@ -139,6 +140,22 @@ fn host_config(c: &WebrtcConfig) -> Result<HostConfig, String> {
             Some(e)
         }
     };
+    let mut services = Vec::new();
+    for (name, target) in &c.services {
+        if !drt_rtc::scope::is_service_name(name) {
+            return Err(format!(
+                "webrtc.services: '{name}' cannot name a service; a name is 1 to 32 of a-z, 0-9 and -, \
+                 starting with a letter or digit"
+            ));
+        }
+        let e = Entry::parse(target).map_err(|e| format!("webrtc.services.{name}: {e}"))?;
+        if scope.allows(&e.host, e.port).is_none() {
+            return Err(format!(
+                "webrtc.services.{name} '{target}' is not in webrtc.scope; a stream to it would be refused"
+            ));
+        }
+        services.push((name.clone(), drt_rtc::Sink::Dial(e)));
+    }
     if c.stun_refresh_s == 0 {
         return Err("webrtc.stun_refresh_s must be at least 1".into());
     }
@@ -153,11 +170,19 @@ fn host_config(c: &WebrtcConfig) -> Result<HostConfig, String> {
         service: c.service.clone(),
         default,
         scope,
+        services,
         max_sessions: c.max_sessions,
         max_streams: c.max_streams_per_session,
         idle_timeout: Duration::from_secs(c.idle_stream_timeout_s),
         connect_timeout: Duration::from_secs(c.connect_timeout_s),
         stun_refresh: Duration::from_secs(c.stun_refresh_s),
+        direct: c.direct,
+        hello_scope: c.hello_scope,
+        // The block's shape: a browser names its target, in scope or by
+        // service name. `drt p2p`'s serving side is where a forward lives.
+        forward: drt_rtc::Forward::None,
+        caps: caps_of(config),
+        accept: Vec::new(),
     })
 }
 
@@ -168,7 +193,18 @@ fn text<'a>(v: &'a rmpv::Value, key: &str) -> Option<&'a str> {
         .and_then(|(_, v)| v.as_str())
 }
 
-/// `{command = "open", peer, rtc}` or `{command = "close", peer}`.
+/// `{command = "open", peer, rtc}`, `{command = "call", peer, rtc}` or
+/// `{command = "close", peer}`.
+///
+/// `call` is for a deployment its own signalling told to call another
+/// peer (`doc/DRT-Signalling.md` §6.2): the program makes the caller's
+/// request with the host's record, which it already holds from
+/// `webrtc_record`, and hands the answerer's record here. The host is then
+/// the calling side of that session and serves on it as on any other, and
+/// reports it as `webrtc_session` and `webrtc_stream` exactly as for
+/// `open`. Consent and the request are the program's, as all its
+/// signalling is; `peer` is a name the program chooses for the session,
+/// bounded like any other.
 pub fn command_from(v: &rmpv::Value) -> Result<Command, String> {
     let peer = || {
         let peer = text(v, "peer").ok_or_else(|| "a command needs `peer`, a string".to_string())?;
@@ -186,14 +222,36 @@ pub fn command_from(v: &rmpv::Value) -> Result<Command, String> {
                 .ok_or("`open` needs `rtc`, the browser's presence record")?
                 .to_string(),
         }),
+        Some("call") => Ok(Command::Call {
+            peer: peer()?,
+            rtc: text(v, "rtc")
+                .ok_or("`call` needs `rtc`, the answerer's record")?
+                .to_string(),
+        }),
         Some("close") => Ok(Command::Close { peer: peer()? }),
-        Some(other) => Err(format!("unknown command '{other}' (open, close)")),
+        Some(other) => Err(format!("unknown command '{other}' (open, call, close)")),
         None => Err("a command needs `command`, a string".into()),
     }
 }
 
 /// A report as the program sees it, named by `event` like every other
 /// block's so one `if m.event == …` chain reads them all.
+/// The capability names a root holds, for `hello`: the config's ceiling,
+/// grants only, as the `caps` entries of a profile spell them.
+pub fn caps_of(config: &RootConfig) -> Vec<String> {
+    cap_names(&crate::config::ceiling(config))
+}
+
+/// The grants of a set, by name: what `granted` on `control` says a
+/// session holds (`doc/P2P.md` §7.2).
+pub fn cap_names(grants: &[drt_caps::Grant]) -> Vec<String> {
+    grants
+        .iter()
+        .filter(|g| g.effect == drt_caps::Effect::Grant)
+        .map(|g| g.capability.clone())
+        .collect()
+}
+
 pub fn report_value(e: &Event) -> rmpv::Value {
     use rmpv::Value;
     let opt = |s: Option<&str>| s.map(Value::from).unwrap_or(Value::Nil);
@@ -282,6 +340,22 @@ mod tests {
             command_from(&map(&[("command", "close"), ("peer", "b1")])),
             Ok(Command::Close { peer: "b1".into() })
         );
+        assert_eq!(
+            command_from(&map(&[
+                ("command", "call"),
+                ("peer", "pair-1"),
+                ("rtc", "{}")
+            ])),
+            Ok(Command::Call {
+                peer: "pair-1".into(),
+                rtc: "{}".into()
+            })
+        );
+        assert!(
+            command_from(&map(&[("command", "call"), ("peer", "pair-1")]))
+                .unwrap_err()
+                .contains("the answerer's record")
+        );
         assert!(command_from(&map(&[("command", "open"), ("peer", "b1")]))
             .unwrap_err()
             .contains("`rtc`"));
@@ -301,9 +375,34 @@ mod tests {
 
     #[test]
     fn a_bad_scope_or_default_is_refused_at_start_by_name() {
-        let e = host_config(&block(&["http://h/path"], None)).unwrap_err();
+        let root = RootConfig::default();
+        let e = host_config(&block(&["http://h/path"], None), &root).unwrap_err();
         assert!(e.starts_with("webrtc.scope entry"), "{e}");
-        let e = host_config(&block(&["http://a:80"], Some("http://b:80"))).unwrap_err();
+        let e = host_config(&block(&["http://a:80"], Some("http://b:80")), &root).unwrap_err();
+        assert!(e.contains("is not in webrtc.scope"), "{e}");
+    }
+
+    #[test]
+    fn a_service_must_be_named_as_section_10_3_says_and_be_in_scope() {
+        let with = |services: serde_json::Value| -> WebrtcConfig {
+            serde_json::from_value(serde_json::json!({
+                "identity_file": "/nonexistent/for/this/test",
+                "scope": ["ssh://127.0.0.1:22"],
+                "services": services,
+            }))
+            .unwrap()
+        };
+        let e = host_config(
+            &with(serde_json::json!({"SSH": "ssh://127.0.0.1:22"})),
+            &RootConfig::default(),
+        )
+        .unwrap_err();
+        assert!(e.contains("cannot name a service"), "{e}");
+        let e = host_config(
+            &with(serde_json::json!({"ssh": "ssh://127.0.0.1:2222"})),
+            &RootConfig::default(),
+        )
+        .unwrap_err();
         assert!(e.contains("is not in webrtc.scope"), "{e}");
     }
 }

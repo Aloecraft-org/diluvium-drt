@@ -6,24 +6,25 @@ port forwarding.
 
 That works today, and the whole trick is one flag.
 
-## The simplest case: something already listens
+## The simplest case: a UDP port you can reach
 
-If the far end can accept a WebSocket, one command in front of its sshd:
-
-```
-drt tunnel --listen 0.0.0.0:8443 --to 127.0.0.1:22
-```
-
-and from anywhere:
+On the far end, one command in front of its sshd:
 
 ```
-ssh -o ProxyCommand="drt tunnel wss://gate.example:8443" user@host
+drt p2p --listen 5000 --host 0.0.0.0 --forward ssh://127.0.0.1:22
+```
+
+It prints its record. From anywhere, with that record in a file:
+
+```
+ssh -o ProxyCommand="drt p2p host.record.json" user@host
 ```
 
 `ProxyCommand` is OpenSSH's own escape hatch: instead of opening a socket
 itself, it runs that command and speaks SSH over its stdin and stdout. `drt
-tunnel` with a URL is exactly that shape — stdio in, WebSocket out — so ssh
-never learns it is not holding a socket.
+p2p` with a peer is exactly that shape — stdio in, a direct WebRTC session
+out — so ssh never learns it is not holding a socket, and no machine other
+than the two ends carries a byte (`doc/P2P.md`).
 
 ## The far end has no address at all
 
@@ -31,12 +32,16 @@ Behind CGNAT nothing can dial in, so both ends dial out and meet at a relay.
 The client command does not change:
 
 ```
-drt start --config rendezvous.json                                        # public
-drt tunnel --park "wss://relay.example/park/xps?k=$PARK_KEY" --to 127.0.0.1:22   # device
-ssh -o ProxyCommand="drt tunnel wss://relay.example/s/xps?k=$CALLER_KEY" user@xps
+drt start --config rendezvous.json                                              # public
+drt p2p --park "wss://relay.example/park/xps?k=$PARK_KEY" --forward ssh://127.0.0.1:22   # device
+ssh -o ProxyCommand="drt p2p --relay wss://relay.example/s/xps?k=$CALLER_KEY" user@xps
 ```
 
 `11-tunnel-and-relay` is that arrangement in full, with the relay config.
+The relay is asked for by name: `--relay` says a third machine may carry
+the bytes. A signalling server carries only the two records once, so
+`drt p2p --park drt://signal.example/v1/xps` and `ssh -o ProxyCommand="drt
+p2p drt://signal.example/v1/xps"` meet there and go direct.
 
 ## What comes free
 
@@ -44,17 +49,17 @@ Everything that rides SSH, because the bridge moves bytes and never looks
 inside:
 
 ```
-scp  -o ProxyCommand="drt tunnel wss://…" file user@host:
-rsync -e 'ssh -o ProxyCommand="drt tunnel wss://…"' ./dir/ user@host:dir/
-sftp -o ProxyCommand="drt tunnel wss://…" user@host
-ssh  -o ProxyCommand="drt tunnel wss://…" -L 5432:localhost:5432 user@host
+scp  -o ProxyCommand="drt p2p drt://…" file user@host:
+rsync -e 'ssh -o ProxyCommand="drt p2p drt://…"' ./dir/ user@host:dir/
+sftp -o ProxyCommand="drt p2p drt://…" user@host
+ssh  -o ProxyCommand="drt p2p drt://…" -L 5432:localhost:5432 user@host
 ```
 
 Agent forwarding works too. Put it in `~/.ssh/config` and stop typing it:
 
 ```
 Host xps
-    ProxyCommand drt tunnel wss://relay.example/s/xps?k=YOUR_KEY
+    ProxyCommand drt p2p drt://signal.example/v1/xps
     User you
 ```
 
@@ -86,7 +91,7 @@ Host xps
 - **`host:ssh/exec`** is a *hostcall a program makes*. One connection, one
   command, output back as data — `ssh host "ls /var/log"`. No session, no
   shell, no PTY, and a fresh handshake every call.
-- **`drt tunnel`** is *plumbing for a human's own client*. DRT never speaks
+- **`drt p2p`** is *plumbing for a human's own client*. DRT never speaks
   SSH here; it carries bytes and OpenSSH does the rest.
 
 Want a program to read a command's output? `ssh/exec`. Want a shell? Tunnel.

@@ -27,6 +27,14 @@ drt-connector = { workspace = true }
 # and (in build.rs) for wasi-libc.
 drt-swarm = { workspace = true }
 drt-caps = { workspace = true }
+# The byte stream in a page (src/ws.rs) is `AsyncRead + AsyncWrite`, which
+# are tokio's traits, and its two halves are tokio channels. No runtime:
+# `sync` and `io-util` are the traits and the channels, and the executor in
+# a page is `wasm_bindgen_futures`.
+tokio = { version = "1", default-features = false, features = ["sync", "io-util"] }
+# The SSH server in the page (doc/SshInBrowser.md): the same crate the
+# native REPL server is, so there is one SSH posture and not two.
+drt-sshd = { workspace = true }
 clap = { workspace = true }
 serde_json = "1"
 
@@ -52,3 +60,13 @@ console_error_panic_hook = "0.1"
 # the terminal object this crate is already handed, so nothing imports
 # xterm.js and the page keeps its own theme, addons and font.
 ego_cli = { workspace = true }
+# Not used here: named to turn on one feature of russh's crypto backend.
+# `ring` on this target refuses to guess where entropy comes from, and
+# this is its own opt-in for "the page's `crypto.getRandomValues`" --
+# `getrandom/js`, reached through ring's switch rather than around it. The
+# same question `.cargo/config.toml` answers for getrandom 0.3, which is
+# the one drt-platform uses; ring is on 0.2 and asks separately.
+ring = { version = "0.17", features = ["wasm32_unknown_unknown_js"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "io-util", "time"] }

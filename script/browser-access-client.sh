@@ -32,9 +32,14 @@ node --test crates/drt-rtc/client/test.mjs
 
 cargo build -p drt-rtc --example browser_check
 (cd crates/drt-rtc/browser-check && SESSIONS=3 node check.mjs)
+# Page to page (doc/BrowserAccess.md §10): a page answering and serving.
+(cd crates/drt-rtc/browser-check && node pages.mjs)
 if [ -n "$DRT" ]; then
     cargo build -p drt --features full
     (cd crates/drt-rtc/browser-check && SESSIONS=2 node check.mjs --drt)
+    # A page as the told side of pairing (doc/DRT-Signalling.md §6.2),
+    # against `drt p2p --match` and a parked `drt p2p`.
+    (cd crates/drt-rtc/browser-check && node pairing.mjs)
 fi
 
 if [ -n "$OUT" ]; then

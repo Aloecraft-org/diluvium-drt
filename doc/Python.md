@@ -10,7 +10,7 @@ half of this is about a Windows box no CI runner has.
 probably WSL.
 
 **The answer.** Nothing needs building. `exec/run` shipped in `full` and
-runs Python today; `ssh/exec` runs it on another box; `drt tunnel` reaches
+runs Python today; `ssh/exec` runs it on another box; `drt p2p` reaches
 a box with no inbound address. What this document is really about is §6 —
 the narrowing everyone reaches for first does not narrow anything.
 
@@ -181,14 +181,14 @@ On the WSL box, in front of its sshd — `--park` takes the park URL itself,
 and the two keys are per label and different on purpose (`doc/Relay.md`):
 
 ```sh
-drt tunnel --park "wss://rendezvous.example/park/wsl?k=$PARK_KEY" --to 127.0.0.1:22
+drt p2p --park "wss://rendezvous.example/park/wsl?k=$PARK_KEY" --forward ssh://127.0.0.1:22
 ```
 
 and from wherever `drt` runs, the caller's half as an `ssh`
 `ProxyCommand`:
 
 ```sh
-ssh -o ProxyCommand="drt tunnel wss://rendezvous.example/s/wsl?k=$CALLER_KEY" mike@wsl
+ssh -o ProxyCommand="drt p2p --relay wss://rendezvous.example/s/wsl?k=$CALLER_KEY" mike@wsl
 ```
 
 Everything ssh knows keeps working through it — host-key verification,
@@ -202,7 +202,7 @@ stdio-only, the OpenSSH `ProxyCommand` shape (`crates/drt/src/tunnel.rs`:
 point at. Now there is: beside the deployment,
 
 ```sh
-drt tunnel "wss://rendezvous.example/s/wsl?k=$CALLER_KEY" --local 127.0.0.1:2222
+drt p2p --relay "wss://rendezvous.example/s/wsl?k=$CALLER_KEY" -p 2222
 ```
 
 binds a local port and gives each accepted connection its own fresh leg

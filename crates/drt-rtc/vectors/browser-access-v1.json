@@ -167,6 +167,10 @@
     {
       "hex": "040200000048",
       "name": "CLOSE stream 2, blocked by scope (0x48)"
+    },
+    {
+      "hex": "0501000000",
+      "name": "END stream 1: the sender writes no more"
     }
   ]
 }

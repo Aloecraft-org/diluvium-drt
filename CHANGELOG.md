@@ -14,17 +14,22 @@ carries in the release. See `doc/Release.md`.
 
 ## [0.8.0] - unreleased
 
-`v0.8.0` &middot; dv ABI 2 &middot; diluvium `d8497b0dd917` (v0.17.1)
+`v0.8.0` &middot; dv ABI 2 &middot; diluvium `97bb9f9d2897` (v0.17.2)
 
-**A browser reaches a DRT host directly, and the core is diluvium
-0.17.1.** The `webrtc` block lets a stock browser open a data
-channel to this process and carry TCP streams to the targets the
-block names, with the WebRTC stack in the binary and the signaling
-left to the program, which now holds a socket to the Discofetch API
-through the new `ws` connector. Underneath it the embedded core moves from
-0.15.1 to 0.17.1: dv ABI 2, the numeric tier on in `full` and `web`,
-and `buildinfo` reading the core's features off the core. The plan
-is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
+**A browser reaches a DRT host directly, two machines reach each
+other with nothing in between, and the core is diluvium 0.17.2.**
+The `webrtc` block lets a stock browser open a data channel to this
+process and carry TCP streams to the targets the block names, with
+the WebRTC stack in the binary and the signaling left to the
+program. `drt p2p` makes the same session between two `drt`s, or a
+`drt` and a page, through a signalling server that passes one
+record each way and never sees the session; `drt ssh` rides it, and
+`drt ps` reaches a running deployment over its new `ssh` listener.
+Underneath it the embedded core moves from 0.15.1 to
+0.17.2: dv ABI 2, the numeric tier on in `full` and `web`, and
+`buildinfo` reading the core's features off the core. The plan is
+`doc/Plan-0.8.0.md`; the wires are `doc/BrowserAccess.md`,
+`doc/P2P.md` and `doc/DRT-Signalling.md`.
 
 ### Connectors
 
@@ -42,6 +47,351 @@ is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
 
 ### Added
 
+- **`drt p2p`: one verb for peer-to-peer sessions (`doc/P2P.md`).**
+  With no `--relay` and no `--fallback`, no machine other than the
+  two ends carries a byte of the session; when no such path exists it
+  fails and says so. Four roles: call, listen, park and match, with
+  `--relay` and `--fallback` as the carriers, and `drt tunnel` as an
+  alias that prints the `drt p2p` form of what it was given and runs
+  it.
+  - **Call:** `drt p2p <peer>` with a peer address of §3
+    (`drt://host/v1/<name>`, `drt+<service>://…`, a bare host, an
+    `http(s)://` URL, a record or a file holding one). Stdio is the
+    session, as `ProxyCommand` wants; `-p <local>:<remote>` binds
+    ports in `ssh -L`'s shape, `<remote>` a port, a service name or
+    `host:port`. `--fingerprint SHA256:…` (also `--fingerp`) refuses
+    a record whose DTLS fingerprint differs, the defence against a
+    signalling server answering with its own. `--H name=value`
+    (`auth=` for a bearer token) goes to the signalling side only;
+    `--stun` gives the caller the public address the host already
+    gathered.
+  - **Listen:** `drt p2p --listen <port>` binds UDP with a fixed
+    record and prints it with the command that calls it. `--forward`
+    is one target, `ssh://host:port` as the service `ssh`, a host
+    with `-P`/`-A` for its ports, `-` for this process's stdio, or
+    `drt://…` for another peer; absent, the REPL: the built-in SSH
+    server as the service `ssh` (keys from `principals` and
+    `~/.ssh/authorized_keys`), and raw terminal bytes as the service
+    `repl`, with the window reported over `control`, so a page
+    attaches with no SSH client and no key. `--host` binds an
+    address, `0.0.0.0`, or a CIDR that is also who may connect;
+    `--signal [port]` answers the caller's request at `POST /` and
+    `/v1/<any>/calls` with `access-control-allow-origin: *`.
+  - **Park:** `drt p2p --park drt://host/v1/<name>` is the profile's
+    answerer natively: it polls by cursor, holds the call
+    notification stream when there is one, answers each call with
+    its record, and serves the same `--forward`. `--accept <cidr>`
+    travels as `DRT-Accept` and is checked on the packets themselves.
+  - **The wire:** a Wisp `CONNECT` with an empty host asks for
+    whatever the far side forwards to, at the port named or at none;
+    `hello` names services and carries `scope` only when the
+    `webrtc` block's new `hello_scope` asks; a `resize` message on
+    `control` sizes a stream's terminal. Every host is upgraded with
+    this, so nothing negotiates it.
+  - **Match:** `drt p2p --match <port>` is the reference signalling
+    server (`stdlib:p2p-match`, grown from example 30): names claimed
+    by the first answerer token to poll them, a caller token and an
+    admission range set on the claim, `--capacity` names at once, and
+    `access-control-allow-origin: *` on every reply, since admission
+    is by token and not origin.
+  - **Carriers:** a peer with a bare `--forward` is a relay. The
+    caller names the destination on `control`, the relay calls it and
+    mirrors the two sessions' Wisp packets, reading none, and its
+    `hello` says `forwarding`, so the caller prints `via relay`.
+    `--fallback` tries direct first.
+  - **`drt ssh`** takes a peer address in place of a host
+    (`drt ssh me@drt+ssh://signal.example/v1/mypc`, a record, a
+    file), `-u` beside `-l`, and `--relay`/`--fallback`.
+  - **`hello.scope` is always an array.** dev.17 omitted it unless the
+    new `hello_scope` was on, and a v1 client that indexes it threw on
+    every default-configured host. The `webrtc` block shows its scope
+    by default again, as before; `drt p2p` sends `scope` empty and
+    names services only; `default` is absent when hidden.
+  - **Pairing.** A signalling server that pairs two parked peers
+    tells one to call (`doc/DRT-Signalling.md` §6.2): a `pair` array
+    beside `calls` in the poll result and `event: pair` on the
+    stream name whom to call, where, with what caller token. The
+    told side calls and keeps serving, since the host now calls as
+    well as answers, and posts the outcome back. `drt p2p --park
+    --pair *` consents to any name at its own server, or
+    `--pair drt://<server>/v1/<glob>`; without it a request is
+    declined and the server told. `drt p2p --match` offers the ask:
+    `POST /v1/<name>/pair {"name": other}`. A page is a told side
+    too: `listen(base, {pair})` in the browser library follows a
+    `pair` entry under the same consent value, calls with the
+    entry's token, serves on the session and reports, with every
+    outcome handed to `onPair`; proven in Chromium against `--match`
+    and a parked `drt p2p`. A `webrtc` block's program, which does
+    its own signalling, calls with `{command = "call", peer, rtc}`.
+    A told side bounds the whole follow by the entry's `expires_in`,
+    so a call that never connects is reported before the hold ends.
+    Decided with Discofetch
+    (`doc/Ask-Discofetch-Reply-2.md`). `doc/BrowserAccess.md` §5
+    says a page's boundary is what it was opened for, not
+    `hello.scope`. In the browser library, a session `answer` or
+    `listen` hands out is ready once the caller's `hello` and credit
+    are in, so a page a host called can `connect` at once; a caller
+    that serves nothing settles it after `ANSWER_SETTLE_MS`.
+  - **Half-close on the wire.** The Wisp profile gains `END` (0x05):
+    the sender will write no more and still reads, TCP's half-close.
+    A host says `half_close` in `hello`; a caller says it with a
+    `features` message on `control`; each side sends `END` only to a
+    peer that said so, and an older peer sees `CLOSE` as before. So
+    `printf x | drt p2p <peer>` gets its answer, with no grace wait,
+    and a closed `writable` in the browser library is a half-close.
+  - **The control endpoint (SPEC.md §13a).** `drt ps [ssh://host:port]`
+    reaches a running deployment over its ssh listener: the instance
+    table, `--status`, `--caps <id>`, `--pause <id>` (hibernate a parked
+    instance), `--resume <id>`, `--stop` (hibernate what is parked and
+    end). Inside a project the endpoint `drt start` wrote under
+    `.drt_root/live/control` is found unasked. The same questions are
+    `:ps`, `:status`, `:caps`, `:pause`, `:resume` and `:stop` in a REPL
+    the deployment serves. Any admitted key may ask; the orders need a
+    key holding `host:*`. It signs in as `drt ssh` does (`-l`, `-i`,
+    `--hostkey`, `--known-hosts`, `--strict`); `--json` is the answer
+    for a program. The wire is the `drt` SSH subsystem carrying
+    framed msgpack.
+  - **`granted` on `control`.** Once a service knows what a stream
+    holds (for the REPL behind a key, after sign-in) the host sends
+    `{"t":"granted","stream":N,"caps":[…]}`; the browser library
+    settles `stream.granted`. `hello.caps` is the ceiling; this is the
+    session's own.
+  - **A request's `peer`.** The `http` listener hands a program the
+    client's `ip:port`, and `drt p2p --match` refuses a caller outside
+    the answerer's `DRT-Accept` by it (403), before the parked side
+    hears of the call. A caller shows the server's own refusal text.
+  - **The REPL as bytes, in a page:** `DrtTerm.repl(cols, rows, sink,
+    closed)` in the browser module is the in-page root's REPL as a byte
+    stream with `input`, `resize` and `close`, the shape `drt p2p`'s
+    named service `repl` has natively, so a launcher attaches a
+    terminal to a root one way for both. `tests/p2p.rs` now runs on
+    Windows in CI, with the C core built by MSYS2's mingw-w64, on
+    diluvium 0.17.2, whose build script hands that compiler a plain
+    path.
+  - **For a launcher:** `hello` carries `caps`, the capability names a
+    program or REPL behind the host may hold; `drt p2p --listen` inside
+    a project writes its record to `.drt_root/live/p2p-<port>.record.json`;
+    `drt p2p --show <peer>` prints a peer's one canonical form, and
+    `canonicalPeer` in the browser library computes the same;
+    `doc/drt-config.schema.json` is the config file's JSON Schema,
+    generated from the serde types (`script/config-schema.sh`); and
+    the web build ships as the npm package `drt-browser` beside
+    `drt_web.tar.gz`, with the browser access client, the SSH client
+    module and the schema inside.
+  - **In the browser:** `session.connect()` with no target, or a port
+    alone, asks for whatever the peer forwards to; `session.resize`
+    reports a terminal's size on `control`; `offer().accept`,
+    `accept` and `direct` take `fingerprint`, a `SHA256:…` to compare
+    or a function asked before anything flows. `ssh.html#call=` takes
+    `drt://` and `drt+ssh://` addresses and a `fingerprint`, and on
+    every link the page opens a host's service `ssh` first, then `to`
+    or its scope when the host shows one, else what it forwards to.
+  - The `p2p` config block, every flag a key; `tunnel` is read as an
+    alias for one release with a warning per key. `doc/P2P.md` is the
+    design, `doc/ssh-transport-matrix.md` every row in its terms.
+- **Streamed responses from the `http` listener.** With `streaming`
+  set on a listener, a reply carrying `stream = true` sends the
+  response head at once, each later reply with a `chunk` for the same
+  `conn` is written as it arrives, and `done = true` ends the
+  response. An event stream, or a download the program produces as it
+  goes, reaches the client while the program is still writing it.
+  - The body is chunked, and only `done` writes the terminating
+    chunk, so a client can tell a stream that was cut from one that
+    finished.
+  - A stream that ends without `done` is reported on the request
+    queue as `{conn, event = "closed", reason}`: `client` when the
+    client left, `idle` after `stream_idle_ms` (default 60 s) with no
+    chunk, and `backlog` when the program wrote over a megabyte ahead
+    of a client that was not reading.
+  - Off by default. A listener without `streaming` answers a stream
+    500 and names the setting, and a `chunk` sent before a head is
+    answered 500. Both acceptors serve it, so it works on `wasi` too.
+  - `examples/31-streaming-responses` serves Server-Sent Events this
+    way, and `doc/DRT-Signalling.md` §9 now puts the call notification
+    stream on the same listener as the rest of the profile.
+- **`doc/DRT-Signalling.md`, and `examples/30-signaling-room` as its
+  reference server.** The profile is how a caller, an answerer and a
+  signalling server written by different people still meet: plain
+  HTTP under `/v1/<name>/`, a caller token and an answerer token, and
+  records the server never reads.
+  - A caller's `POST /v1/<name>/calls` is held until the answerer
+    answers, and its reply is the answerer's record, so `drt tunnel
+    rtc:http://…/v1/<name>/calls` works unchanged.
+  - The answerer reads calls with `GET …/calls?since=<cursor>`, which
+    never repeats or misses one, and answers with `POST
+    …/calls/<id>/answer` or refuses with `DELETE`.
+  - `GET …/events` is the call notification stream, Server-Sent
+    Events on a streaming listener, saying only when to poll.
+  - 503 when no answerer is present, 504 after the hold time, 410 to
+    a refused caller, and 429 past sixteen waiting calls.
+  The example is the whole profile in four `.dlua` files, and a test
+  runs it for the refusals its demo does not show. With it, stock
+  `ssh` reaches a page over WebRTC (row 6 of
+  `doc/ssh-transport-matrix.md`); the browser suite runs exactly that
+  in Chromium, with the example's program and config unchanged.
+- **`listen` in `drt_browser_access.js`**: a page answers every call
+  a signalling server holds for one name, with no signalling code of
+  its own. `listen('https://…/v1/page', { token, services: { ssh } })`
+  holds the call notification stream, polls by cursor once on
+  connecting and once per notification, and polls every three
+  seconds while it has no stream. Each call is answered and the
+  page's record posted back. `accept` may refuse a call, which
+  withdraws it, and `onSession` gets each session once it is up. The
+  browser suite's row 6 now answers through it.
+- **The REPL over SSH: `drt start`'s `ssh` listener** (SPEC.md §9).
+  A stock `ssh` client that signs in with a known key gets a REPL
+  instance of its own, holding that key's grants.
+  - `{"scheme": "ssh", "address": "127.0.0.1:2222"}` in `listeners`,
+    with `identity.host_key_path` as the host key.
+  - A key in `principals` holds its principal's grants, which must
+    sit inside the deployment's own; a principal granted more is
+    refused at startup, by name. A key in the listener's
+    `authorized_keys` file, `~/.ssh/authorized_keys` when it names
+    none, holds what `drt repl` here would, the stance sshd takes. A
+    line with options (`from=`, `command=`) is skipped with a
+    warning rather than honoured without its restriction.
+  - One REPL per session, on its own thread. `print` reaches the
+    session that typed it, and `:ssh` is refused there, since it
+    would take the server's terminal.
+  - Not yet: a REPL attached to a running instance's state. The
+    `drt` subsystem is the control endpoint's, below.
+  The server is the page's, moved to its own crate, `drt-sshd`, so
+  the page and native DRT share one SSH posture. Tested with stock
+  OpenSSH `ssh` and with `drt ssh`: a session, `print`, state between
+  lines, a principal's grants, an unknown key, and an overreaching
+  principal.
+- **`drt ssh`, and `:ssh` in the REPL**: an interactive SSH client on
+  this terminal. The REPL hands its terminal to the session and gets
+  it back, with the instance and its state as they were.
+  - `drt ssh [user@]host[:port]` over TCP. Like OpenSSH, it trusts
+    `~/.ssh/known_hosts` and asks about a host it has not seen, and
+    refuses a changed key by name before anything signs in. It signs
+    in with the agent, `~/.ssh`'s keys (asking for a passphrase),
+    then a password. The remote shell's exit status is the command's,
+    a resize reaches the remote end, and `~.` disconnects.
+  - `--via` reaches the host the ways `drt p2p` does: a relay claim
+    (`wss://…/s/<label>?k=…`), a record, a file holding one, or a
+    signalling URL. `--hostkey` pins a key in place of known_hosts;
+    `-i FILE` (repeatable) replaces `~/.ssh`'s keys, `--known-hosts`
+    the file, `--strict` refuses a host not already there, `--to`
+    names the service or address at the far end, and `--extra-root`
+    trusts a PEM for the signalling side.
+  - `:ssh <the same arguments>` in the native REPL is the same
+    session.
+  - `:ssh` alone is the config's new `host:ssh/shell`: the ssh
+    connector's scope (host, user, key, pinned host key) as an
+    interactive shell, granted by name beside `host:ssh/exec`. A
+    program calls it with a long reply deadline, because the session
+    lasts as long as the person wants.
+  - In a page, `drt ssh` at the `$` prompt and `:ssh` in the REPL do
+    the same with the client `ssh.html` uses, which `drt-term.js`
+    takes as `attach(…, { ssh })`. A page cannot open TCP, so
+    `--via` is required. While a session runs the keyboard is the
+    session's, so nothing typed into the remote shell reaches the
+    prompt afterwards. `drt_web.tar.gz` now carries
+    `ssh-command.js` and the client module.
+  - On Windows too, on the console of Windows 10 1809 or later: VT
+    input and output, the console's size, and the agent on OpenSSH's
+    named pipe, then Pageant.
+  The native session is russh directly rather than ego-transport's
+  client, so RSA servers and keys, the agent and passwords work, and
+  the host key is decided before authentication. Tested against
+  OpenSSH under a pseudo-terminal, including through `sudo` as CI runs
+  it, and in Chromium from the page's shell and REPL.
+- **`ssh.html#call=`**: the SSH page calls through a signalling
+  server (`doc/DRT-Signalling.md`). Its record goes out in one
+  `POST` to the link's URL, the answerer's comes back, and the page
+  signs in over the session. A page that serves `ssh` is reached on
+  that service, which is row 8 of `doc/ssh-transport-matrix.md`,
+  browser to browser from a link. A DRT host is reached on its
+  scope, as for `#rtc=`. A refused call says what its status means.
+  The page's CSP now admits `fetch` to `http:` and `https:` for this
+  one request. The browser suite opens the page as it ships, calls
+  through `examples/30-signaling-room`, and signs in to a page
+  answering with `listen`; the SSH page's gate does the same through
+  `examples/29-browser-access` to sshd.
+- **`drt tunnel rtc:`**, the relay's `ProxyCommand` over WebRTC
+  instead (row 3 of `doc/ssh-transport-matrix.md`). The process is
+  the caller in a browser access session and moves stdio over one
+  stream; nothing between the ends carries a byte.
+  - `rtc:<record>` or `rtc:<file>`: the answerer's record in hand,
+    for a host in direct mode. No signaling at all.
+  - `rtc:https://…/v1/<name>/calls`: `POST` this caller's record and
+    read the answerer's back, the caller's request of
+    `doc/DRT-Signalling.md`. A refusal is reported by its meaning in
+    that profile: `503: no answerer is present`.
+  - `--to` names the service or `host:port`; the service `ssh` if
+    omitted. A refused stream says why: `blocked (0x48)`.
+  Underneath it, `drt_rtc::caller` is the caller natively: its own
+  record, a connection to an answerer's, and Wisp streams it opens
+  with credit, as async byte streams. The SSH page's gate runs stock
+  `ssh` through both forms to a stock sshd.
+- **Either peer serves, and services have names**
+  (`doc/BrowserAccess.md` §10). Browser access was one-way: a browser
+  called, a DRT host answered, and only the browser opened streams,
+  each to an address in the host's scope. Now:
+  - **A page can answer a session**: `answer(callerRecord, {services})`
+    in `drt_browser_access.js` takes a caller's record, answers it and
+    returns the page's own record for signaling to carry back. Two
+    pages connect with no DRT process between them; each side needs
+    signaling, and across a network a STUN server.
+  - **Either peer opens streams to what the other serves.** The caller
+    opens odd stream ids and the answerer even ones; whichever side
+    serves sends `hello` and its credit, as the host always has.
+  - **Named services**: `session.connect('ssh')` is a `CONNECT` with
+    port 0 and the name, and a peer's `hello` lists its `services`.
+    A `webrtc` block names its own as aliases of scope entries:
+    `"services": {"ssh": "ssh://127.0.0.1:22"}`.
+  Compatible both ways within v1: a host that predates this refuses
+  port 0 with 0x41, and a caller that predates it keeps working.
+  Proven by `crates/drt-rtc/browser-check/pages.mjs`, two Chromium
+  pages: a page answering a page, 1 MiB through a named service and
+  the page's own credit, the answerer opening a stream back to the
+  caller, and an unknown name refused with 0x48.
+- **SSH into a page** (rows 6 to 8 of `doc/ssh-transport-matrix.md`,
+  `doc/SshInBrowser.md`). The `web` module carries an SSH server: a
+  standard `ssh` reaches the page's own shell, directly over a byte
+  stream the page supplies (a WebSocket, an `RTCDataChannel`, a relay
+  leg) or with `ProxyCommand="drt tunnel …"` through a relay the page
+  parks on, and a session gets exactly what the page's shell exposes.
+  - **Keys only.** No password method, and the authorized list has no
+    "anyone" form, so an empty one admits nobody. Nothing listens
+    until the page supplies a host key, a list and a socket.
+  - **One russh, from a fork.** Upstream russh (0.63.3) does not
+    build its server for wasm; `[patch.crates-io]` points the
+    workspace at the fork carrying that one commit on 0.63.2, so the
+    page's server, the SSH page's client and the native `ssh`
+    connector share one crate.
+  - **Its cost is in `web`:** `drt_web_bg.wasm` 3,409,303 ->
+    5,486,220 bytes, +465 KB gzipped. It ships there so the artifact
+    the browser suite gates is the one that ships.
+  - `GUARANTEES.md` says where it stops. The browser suite runs
+    OpenSSH into the page, and through a relay with `drt tunnel`, in
+    Chromium; `drt-web`'s own tests hold the key posture natively.
+
+  Carried over from `claude/drt-wasm-port-planning-4ua6qk`, written
+  2026-09-07 before `main`'s history was rewritten and never merged.
+
+  **Over WebRTC, as the named service `ssh`** (row 8): a page answers
+  a session (§10.4) and serves `ssh` on it through
+  `browser-test/stream-leg.js`, and a second page running the SSH
+  page's module reaches the first page's shell with
+  `Ssh.connect(session.connect('ssh'), pin)`. The browser suite runs
+  exactly that in Chromium, with no DRT process between the pages.
+- **`examples/29-browser-access`**: a host that does its own
+  signalling. One `http` listener answers the profile's `POST
+  /v1/box/calls` with the host's record and hands the caller's to
+  the `webrtc` block as `open`; the browser then reaches the host's
+  scope directly. No room and no third party. The SSH page's gate runs the example's
+  program unchanged and signs in to a stock sshd through it.
+- **Three numeric examples**: `26-arrays` (a typed buffer the core
+  owns, elementwise arithmetic, contents printed as IEEE bits),
+  `27-reductions-and-grouping` (summation order, NaN-last ordering,
+  first-appearance group ids) and `28-fft` (`rfft`, as `real:imag`
+  bit patterns). Each needs `numeric` and is skipped where the build
+  lacks it; one `expected.txt` holds on every target that has it.
+  A drt-swarm test checks what ABI 2 carries, not only its number:
+  the feature list is the core's and a guest can call `array`.
 - **A determinism corpus, run on every target DRT ships**
   (`tests/determinism/`). diluvium's own numeric corpus, vendored
   unchanged, plus DRT's: what every profile answers the same (integer
@@ -74,6 +424,40 @@ is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
   resize, a second page and stock `ssh` at once beside an open
   session, a wrong pin refused before anything authenticates, TOFU,
   an exit status, and no uncaught error in any page.
+- **SSH in a browser, over browser access** (row 5 of
+  `doc/ssh-transport-matrix.md`). The SSH module's `Ssh.connect`
+  takes a `{readable, writable}` pair of Web Streams as well as a
+  WebSocket URL, so a page runs SSH over a stream from
+  `drt_browser_access.js` to an sshd in a `webrtc` block's scope:
+  directly between the browser and the host, with no relay. Host-key
+  pinning is unchanged, and a stream the host refuses fails the
+  connect with the host's CLOSE byte as its `code` (0x48 for a target
+  out of scope).
+
+  The same gate proves it: a `webrtc` host scoped to the test sshd,
+  signaling through the M0 mock, and the page's module signing in,
+  running a command and returning its exit status over WebRTC; a
+  wrong pin refused before anything authenticates; and a port out of
+  scope refused with 0x48.
+- **Direct mode** (`doc/BrowserAccess.md` §3.4): with the `webrtc`
+  block's `direct` on, a browser holding the host's record makes a
+  session with no signaling at all. The browser chooses one ICE
+  value as its ufrag and password; the host makes the session from
+  the first binding request addressed to it, and keeps it only when
+  the request passes integrity against the host's password. The
+  record is the whole grant, up to `max_sessions` and to the scope,
+  and the browser's certificate is not checked, so whatever runs
+  over the stream authenticates the ends. SSH does.
+  - `drt_browser_access.js` gains `direct(hostRecord)`.
+  - `ssh.html` follows `#rtc=<record>&user=…[&to=host:port]`, and has
+    a host-record field beside the relay URL. The page grows to
+    894,179 bytes (+26.7 KB, +9 KB gzipped) for the client it now
+    inlines.
+  - `drt-rtc`'s host tests cover a session from the record alone, and
+    nothing without `direct`, with a wrong password, or with a
+    browser's own short ufrag. The SSH page's gate reaches the stock
+    sshd in direct mode, through the library and through the shipped
+    page with its CSP.
 - **The `webrtc` block** (`doc/BrowserAccess.md`). A browser builds
   its session from the host's presence record with no answer round
   trip, and the host carries Wisp v1 streams over the data channel
@@ -147,18 +531,62 @@ is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
 
 ### Changed
 
-- **diluvium 0.15.1 -> 0.17.1, dv ABI 1 -> 2.** The pin names the
-  tag, `v0.17.1`, rather than following diluvium's default branch,
-  where ABI 3 lands when 0.18.0 ships.
+- **diluvium 0.15.1 -> 0.17.2, dv ABI 1 -> 2.** The pin names the
+  tag, `v0.17.2`, rather than following diluvium's default branch,
+  where ABI 3 lands when 0.18.0 ships. 0.17.2 is 0.17.1's runtime
+  with a build-script fix for `diluvium-sys` under a native Windows
+  GCC, which drt's Windows CI row found.
 - **`buildinfo`'s `features` is read off the core** (`dv_features()`)
   instead of stated per profile, and says what the core says:
   `regex,json,msgpack,snapshot`, plus `numeric` where it is on, in
   the core's own order. A custom build reports its core's list rather
   than an empty one. `diluvium_version` is still stated, because
-  0.17.1 has no `dv_version()`.
+  0.17.2 has no `dv_version()`.
+- **A serving peer keeps an identity file.** A listening or parked
+  `drt p2p` writes `~/.drt/p2p/identity.json` (`p2p.identity_file`
+  to put it elsewhere) and a `webrtc` block writes its
+  `identity_file`, relative to the config file: the ICE credentials
+  and DTLS certificate, created `0600` when missing, so the record
+  and fingerprint survive a restart. A file that exists and does not
+  parse is refused, never replaced.
+- **What a release carries, and what its page says.** Beside the
+  binaries: `ssh.html`, `drt_browser_access.js` and `.d.ts`,
+  `drt-browser-<version>.tgz` (the npm form of `drt_web.tar.gz`,
+  which now also holds the SSH client modules and the config schema)
+  and `NOTES.md`, the whole entry as a file the mirror can vouch for.
+  A release body opens with the entry's overview and links the full
+  notes; a dev build's body is the newest entry's overview and the
+  commits since the dev build before it. Dev builds carry the web
+  build, the client and the page; they still skip wasip2 and Windows.
+- **`connectors/ssh` is built from the russh fork** (0.63.2 plus one
+  wasm-only commit, `Cargo.toml`'s `[patch.crates-io]`), so one
+  russh serves the native connector, `drt ssh` and the page. Nothing
+  changes off wasm.
+- `drt tunnel --park`'s stderr line is `parked at <base>` and no
+  longer names what it delivers to; `doc/Relay.md` follows.
+
+### Deprecated
+
+- **`drt tunnel` is `drt p2p` now, and goes away in a release.** A
+  call (`drt tunnel wss://…`, `--local`) or a park (`--park … --to`)
+  prints the `drt p2p` form of what it was given on stderr and runs
+  as that. `drt tunnel --listen`, the WebSocket to TCP bridge, is not
+  a peer: it still runs, warns, and moves to the `relay` block.
+- **The `tunnel` config block is read as `p2p` for one release**,
+  each key warned about with its replacement: `claim` is `relay` (or
+  `peer`, without the `rtc:`), `bind` is `ports` (the port only, on
+  127.0.0.1), `to` is `forward`, `park` stays `park`. A
+  `tunnel.listen` key is refused by `drt p2p`. Examples 11, 14 and 19
+  are spelled with the verb and the block.
+- **`--header 'Name: value'` on the tunnel verbs is `--H name=value`
+  on `drt p2p`**, with `auth=<token>` for a bearer token.
 
 ### Fixed
 
+- **Ctrl+Backspace deletes a word in `drt repl` on a native terminal.**
+  Terminals send BS for it, and crossterm reported BS as Ctrl+H, which
+  nothing binds, so the word stayed while Ctrl+arrows moved by words.
+  The REPL now reads it as the page always has.
 - **Browser access readers skip the candidate lines §2.1 says they
   skip** (issue #38). `Record::decode` and the client library's
   `parseRecord` kept every `candidate:` line, so a TCP or relay line
@@ -174,7 +602,7 @@ is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
   stated zero is a real bound; in `dv.h` 0 means no limit, so passing
   it on would turn the tightest bound into none. It is withheld
   instead, which leaves the core at its default -- also no limit --
-  and 0.17.1 enforces neither bound yet, so nothing behaves
+  and 0.17.2 enforces neither bound yet, so nothing behaves
   differently today. Needs a "no limit" sentinel upstream.
 - **The `webrtc` block has only been proven on one machine.**
   Chromium connects to it, several sessions at once, through
@@ -203,12 +631,66 @@ is `doc/Plan-0.8.0.md`; the wire is `doc/BrowserAccess.md`.
 deployment that holds them.** A snapshot taken under dv ABI 1 does
 not restore under ABI 2; that is the ABI bump doing its job.
 
-Two things a program can see change, both from diluvium 0.16.0:
+**Two things a program can see change**, both from diluvium 0.16.0:
 `tostring` of a table, function or coroutine prints `table: #N`, an
 identity, where it printed an address; and `pairs` over keys that
 are tables, functions, userdata or coroutines visits them in
 creation order. A program that scraped the hex out of `tostring` was
 scraping an address; `string.format("%p")` still gives one.
+
+**`drt tunnel` is `drt p2p`.** Every old command still runs this
+release and prints its new spelling on stderr; move units and
+`~/.ssh/config` lines before the next one.
+
+| 0.7.0 | 0.8.0 |
+|---|---|
+| `drt tunnel wss://…/s/<label>?k=…` | `drt p2p --relay wss://…/s/<label>?k=…` |
+| `drt tunnel wss://… --local 127.0.0.1:2222` | `drt p2p --relay wss://… -p 2222` (127.0.0.1 only) |
+| `drt tunnel --park wss://…/park/x?k=… --to 127.0.0.1:22` | `drt p2p --park wss://…/park/x?k=… --forward ssh://127.0.0.1:22` |
+| `--header 'Authorization: Bearer T'` | `--H auth=T` |
+| `drt tunnel --listen 0.0.0.0:8443 --to …` | unchanged, warns; the `relay` block's in a release |
+
+In a config, `tunnel` becomes `p2p`: `claim` is `relay`, `bind` is
+`ports`, `to` is `forward`, `park` is unchanged; a `tunnel` block is
+still read with one warning per key, and `tunnel.listen` is refused
+by `drt p2p`.
+
+**`drt buildinfo` says more.** `features` is
+`regex,json,msgpack,snapshot`, plus `numeric` in `full` and `web`,
+where it was `regex`; `verbs` gains `p2p` and `ssh`; `connectors`
+gains `ws` in `full`. A package whose `requires.features` named
+`regex` is still admitted. Anything that compares `buildinfo` output
+needs the new lines.
+
+**`drt ps` works now**, against a deployment with an `ssh` listener:
+add `{"scheme": "ssh", "address": "127.0.0.1:2222"}` to `listeners`,
+set `identity.host_key_path`, and put the asking key in `principals`
+or `~/.ssh/authorized_keys`; `--pause`, `--resume` and `--stop` need
+a key holding `host:*`.
+
+**`host:ssh/shell` is a new capability**, granted by name; a grant
+of `host:ssh/exec` does not include it.
+
+**A serving `drt p2p` or a `webrtc` block writes an identity file**
+(`~/.drt/p2p/identity.json`, or `webrtc.identity_file`, relative to
+the config). Keep it: a new one is a new record and a new
+fingerprint, and every peer or page holding the old record stops
+reaching the host.
+
+**Embedding the web build:** `drt_web_bg.wasm` grows from 3.4 MB to
+5.5 MB for the in-page SSH server, and `drt_web.tar.gz` carries more
+files; the same set is the npm package `drt-browser`. `drt-term.js`'s
+`attach` is unchanged unless it is passed `ssh`.
+
+**Scripts that list release assets:** `NOTES.md`, `ssh.html`,
+`drt_browser_access.js` and `.d.ts`, and `drt-browser-<version>.tgz`
+are new, and dev builds now carry the web pieces too.
+
+**From a `v0.8.0-dev.*` build:** `hello.scope` is an array on every
+`hello` again (dev.17 omitted it), `drt tunnel rtc:<peer> --to X` is
+`drt p2p <peer> -p :X`, and the browser library's `answer` and
+`listen` sessions resolve only once the caller's `hello` and credit
+are in.
 
 
 ## [0.7.0] - 2026-09-21

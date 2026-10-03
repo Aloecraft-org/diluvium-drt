@@ -81,6 +81,8 @@ drt-connector = { workspace = true }
 drt-swarm = { workspace = true }
 drt-connector-time = { workspace = true, optional = true }
 drt-connector-ssh = { workspace = true, optional = true }
+# The REPL over SSH (src/sshd.rs): the SSH server a page runs too.
+drt-sshd = { workspace = true, optional = true }
 drt-connector-fs = { workspace = true, optional = true }
 drt-connector-sql = { workspace = true, optional = true }
 drt-connector-crypto = { workspace = true, optional = true }
@@ -129,13 +131,18 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 drt-rtc = { workspace = true }
 str0m = { version = "0.23", default-features = false, features = ["rust-crypto"] }
 
+[target.'cfg(unix)'.dev-dependencies]
+# `drt ssh` and the REPL's `:ssh` under a pseudo-terminal, against OpenSSH
+# (tests/ssh_cli.rs): openpty and the window-size ioctl.
+libc = "0.2"
+
 [features]
 # One codebase, feature profiles (SPEC.md §3): `slim` runs a script with
 # fs/time/stdio only; `full` is everything this build can carry. Each
 # connector is its own gate so a profile is a feature list, not a fork.
 default = ["slim"]
 slim = ["connector-time", "connector-fs", "connector-crypto", "listen", "cli"]
-full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "connector-exec", "connector-socket", "connector-ws", "connector-data", "tunnel", "relay", "stun", "netcheck", "turn", "wireguard", "webrtc", "numeric"]
+full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "connector-exec", "connector-socket", "connector-ws", "connector-data", "tunnel", "relay", "stun", "netcheck", "turn", "wireguard", "webrtc", "numeric", "sshd", "p2p"]
 # The portable build (doc/Wasm.md D2): what `drt` carries on
 # wasm32-wasip2, under wasmtime. Every connector here compiles for that
 # target with no source change and is exercised by the examples gate
@@ -183,6 +190,10 @@ web = ["connector-time", "connector-fs", "connector-crypto", "cli", "numeric"]
 cli = ["dep:ego_cli", "dep:futures-executor"]
 connector-time = ["dep:drt-connector-time"]
 connector-ssh = ["dep:drt-connector-ssh", "runtime"]
+# `drt start`'s `ssh` listener: the REPL over SSH (SPEC.md §9), on
+# drt-sshd, the server a page runs. Native: it binds a socket and drives a
+# REPL per session on a thread of its own.
+sshd = ["dep:drt-sshd", "cli", "runtime", "listen"]
 connector-fs = ["dep:drt-connector-fs"]
 connector-sql = ["dep:drt-connector-sql"]
 connector-crypto = ["dep:drt-connector-crypto"]
@@ -238,6 +249,11 @@ listen = ["dep:httparse"]
 # WS->TCP listener half. In `full` beside `ssh` — the NAT-traversal story
 # is a server-and-CLI concern, not a notebook's.
 tunnel = ["dep:tokio", "dep:tokio-tungstenite", "dep:futures-util", "dep:tokio-rustls", "dep:webpki-roots"]
+# `drt p2p` (doc/P2P.md): one verb for peer-to-peer sessions. The caller and
+# the serving side are `webrtc`'s host and caller; the REPL default is
+# `sshd`'s server; `--relay wss://` and `--park wss://` are `tunnel`'s legs;
+# `--match` runs a deployment, so `listen`. In `full` beside them all.
+p2p = ["webrtc", "sshd", "tunnel", "listen", "dep:base64"]
 # `drt turn`, and the `turn` block inside `drt start`: the TURN relay for
 # the peers `stun` says cannot punch (src/turn.rs). Beside `stun` in
 # `full`, on ego-transport's server, for `stun`'s reasons and the ssh

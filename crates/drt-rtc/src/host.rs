@@ -8,6 +8,15 @@
 //! between the socket, the data channel and TCP without passing through
 //! anything a program wrote.
 //!
+//! **Direct mode** (`doc/BrowserAccess.md` §3.4) makes a session with no
+//! `open` at all: a binding request no session claims, addressed to this
+//! host's ufrag from a browser ufrag of [`DIRECT_UFRAG_LEN`], becomes a
+//! session whose remote password is that same ufrag. The request has to pass
+//! integrity against the host's password to be kept, so only a caller holding
+//! the host's record gets one; the browser's DTLS certificate is not known in
+//! advance, so its fingerprint is not checked, and whatever runs over the
+//! stream authenticates the ends (SSH does).
+//!
 //! **The host runs on a thread of its own, with a stack it chose.** str0m's
 //! `Rtc::do_poll_output` recurses once per SCTP packet it hands to DTLS
 //! (`str0m-0.23.1/src/lib.rs:1734`, `return self.do_poll_output()`), so a
@@ -26,13 +35,19 @@
 //!   thread), [`Host::send`], [`Host::try_event`], [`Host::next_event`].
 //! - Configurable: [`WISP_BUFFER`], [`HIGH_WATER`], [`LOW_WATER`],
 //!   [`SETUP_DEADLINE`], [`STUN_RETRY`], [`TICK`],
-//!   [`HOST_STACK`], and everything in [`HostConfig`].
+//!   [`HOST_STACK`], [`DIRECT_UFRAG_LEN`], and everything in
+//!   [`HostConfig`].
 //! - Fan-out: [`Command`] (what the program asks), [`Event`] (what the
-//!   host reports), [`Internal`] (what a stream's tasks tell the loop), and
-//!   [`Session::on_wisp`]'s match over [`wisp::Packet`].
+//!   host reports), [`Internal`] (what a stream's tasks tell the loop),
+//!   [`Session::on_wisp`]'s match over [`wisp::Packet`], and
+//!   [`Forward`], where a stream that names no target goes
+//!   (`doc/P2P.md` §5.1), with [`Sink`] as the two places any stream can
+//!   end: a TCP dial, or a [`Service`] the process supplies.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -42,12 +57,13 @@ use str0m::net::{Protocol, Receive};
 use str0m::{
     Candidate, CandidateKind, Event as RtcEvent, IceConnectionState, IceCreds, Input, Output, Rtc,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::{mpsc, watch};
 use tokio::task::AbortHandle;
 use tokio::time::Instant;
 
+use crate::cidr::Cidr;
 use crate::identity::Identity;
 use crate::record::Record;
 use crate::scope::{self, Entry, Scope};
@@ -70,6 +86,11 @@ pub const TICK: Duration = Duration::from_secs(1);
 /// The host thread's stack. See the module note: str0m recurses once per
 /// SCTP packet in a batch, and this is five times the measured worst case.
 pub const HOST_STACK: usize = 16 * 1024 * 1024;
+/// A direct-mode browser's ufrag, which is also its ICE password: long
+/// enough to be a password (RFC 8839 asks 22 characters, 128 bits) and short
+/// enough to be a record's `u`. A browser's own ufrags are 4 or 8
+/// characters, so a signaled session never matches.
+pub const DIRECT_UFRAG_LEN: std::ops::RangeInclusive<usize> = 22..=32;
 
 /// The largest datagram read off the socket.
 const RECV_MTU: usize = 2000;
@@ -97,10 +118,261 @@ pub struct HostConfig {
     pub service: String,
     pub default: Option<Entry>,
     pub scope: Scope,
+    /// Named services (§10.3): each name a [`Sink`], reached by a CONNECT
+    /// with port 0 and the name. A TCP sink is checked as a scope entry is.
+    pub services: Vec<(String, Sink)>,
     pub max_sessions: usize,
     pub max_streams: usize,
     pub idle_timeout: Duration,
     pub connect_timeout: Duration,
+    /// Direct mode: a caller holding the record needs no signaling (see
+    /// the module note).
+    pub direct: bool,
+    /// Whether `hello` shows the scope's entries and `default`. Off, it
+    /// sends `scope` empty and names the services and nothing about the
+    /// addresses behind them, which are this side's policy and, for a
+    /// forward into a private network, a map of it (`doc/P2P.md` §7.2).
+    /// `scope` itself is always there: a v1 client reads it as an array.
+    pub hello_scope: bool,
+    /// Where a stream that names no target, or only a port, goes
+    /// (`doc/P2P.md` §5.1). [`Forward::None`] is the `webrtc` block's
+    /// shape: every stream names its target.
+    pub forward: Forward,
+    /// Capability names the root holds, for `hello` (`doc/P2P.md` §7.2):
+    /// what a program or REPL behind this host may be granted, as
+    /// `host:time/*` strings. Empty, `hello` says nothing of them; a host
+    /// that forwards to a TCP target holds none.
+    pub caps: Vec<String>,
+    /// Addresses a session's packets may come from; empty admits every
+    /// address. A session whose packets arrive from outside the ranges
+    /// ends, whatever its record said (`doc/P2P.md` §6, `--accept`).
+    pub accept: Vec<Cidr>,
+}
+
+/// Where a stream that names no target goes: the serving side's
+/// `--forward` (`doc/P2P.md` §5). Only the serving side routes, and only
+/// by this; a caller's request never causes an error by itself.
+#[derive(Clone)]
+pub enum Forward {
+    /// Nothing: a stream names its target, in `scope` or `services`. A
+    /// stream that names none is refused as malformed, as it always was.
+    None,
+    /// One target. A port the stream asks for is ignored.
+    One(Sink),
+    /// A host and a set of its ports. A stream that asks for a port gets it
+    /// if the set holds it; one that asks for none gets the one port of a
+    /// one-port set, and is otherwise refused as a closed port is.
+    Ports { host: String, ports: PortSet },
+    /// A relay (`doc/P2P.md` §4.1): the caller names the destination on
+    /// `control`, this side calls it through the [`Relay`] and mirrors the
+    /// two sessions' Wisp packets onto each other, reading none. `hello`
+    /// says `forwarding`. Streams opened before the destination answers
+    /// wait for it; a stream opened with no destination named is refused.
+    Relay(Arc<dyn Relay>),
+}
+
+/// How a relaying host reaches the destination a caller names: whoever
+/// embeds the host knows how a peer address is read and signalled, and the
+/// host knows only that the result is a [`crate::caller::Call`].
+pub trait Relay: Send + Sync {
+    fn call(
+        &self,
+        to: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<crate::caller::Call, String>> + Send>>;
+}
+
+impl std::fmt::Debug for Forward {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Forward::None => f.write_str("None"),
+            Forward::One(sink) => f.debug_tuple("One").field(sink).finish(),
+            Forward::Ports { host, ports } => f
+                .debug_struct("Ports")
+                .field("host", host)
+                .field("ports", ports)
+                .finish(),
+            Forward::Relay(_) => f.write_str("Relay"),
+        }
+    }
+}
+
+/// A set of ports: `80,8080:8090,31200`, or every port (`-A`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortSet {
+    ranges: Vec<(u16, u16)>,
+    any: bool,
+}
+
+impl PortSet {
+    /// Every port.
+    pub fn any() -> PortSet {
+        PortSet {
+            ranges: Vec::new(),
+            any: true,
+        }
+    }
+
+    /// A comma-separated list of ports and `low:high` ranges. Malformed is
+    /// an error, never a guess.
+    pub fn parse(s: &str) -> Result<PortSet, String> {
+        let mut ranges = Vec::new();
+        for item in s.split(',') {
+            let item = item.trim();
+            let port = |p: &str| {
+                p.parse::<u16>()
+                    .ok()
+                    .filter(|p| *p != 0)
+                    .ok_or_else(|| format!("'{s}': '{p}' is not a port"))
+            };
+            let range = match item.split_once(':') {
+                Some((low, high)) => {
+                    let (low, high) = (port(low)?, port(high)?);
+                    if low > high {
+                        return Err(format!("'{s}': {low}:{high} runs backwards"));
+                    }
+                    (low, high)
+                }
+                None => {
+                    let p = port(item)?;
+                    (p, p)
+                }
+            };
+            ranges.push(range);
+        }
+        Ok(PortSet { ranges, any: false })
+    }
+
+    pub fn contains(&self, port: u16) -> bool {
+        self.any
+            || self
+                .ranges
+                .iter()
+                .any(|(lo, hi)| (*lo..=*hi).contains(&port))
+    }
+
+    /// The one port, when the set holds exactly one.
+    pub fn single(&self) -> Option<u16> {
+        match self.ranges.as_slice() {
+            [(lo, hi)] if lo == hi && !self.any => Some(*lo),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for PortSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.any {
+            return f.write_str("every port");
+        }
+        let parts: Vec<String> = self
+            .ranges
+            .iter()
+            .map(|(lo, hi)| {
+                if lo == hi {
+                    lo.to_string()
+                } else {
+                    format!("{lo}:{hi}")
+                }
+            })
+            .collect();
+        f.write_str(&parts.join(","))
+    }
+}
+
+/// Where a stream the host serves ends.
+#[derive(Clone)]
+pub enum Sink {
+    /// A TCP target, resolved and checked as scope entries are (§6).
+    Dial(Entry),
+    /// The process itself: the REPL, this process's stdio, another peer.
+    Local(Arc<dyn Service>),
+}
+
+impl std::fmt::Debug for Sink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Sink::Dial(e) => f.debug_tuple("Dial").field(e).finish(),
+            Sink::Local(s) => f.debug_tuple("Local").field(&s.name()).finish(),
+        }
+    }
+}
+
+/// A byte stream either side of a [`Service`] holds an end of.
+pub trait Duplex: AsyncRead + AsyncWrite + Send + Unpin {}
+impl<T: AsyncRead + AsyncWrite + Send + Unpin> Duplex for T {}
+
+/// The future a [`Service`] answers with: the stream, or the Wisp `CLOSE`
+/// reason the caller gets instead.
+pub type Opening = Pin<Box<dyn Future<Output = Result<Pin<Box<dyn Duplex>>, u8>> + Send>>;
+
+/// Something in this process a stream can be handed to. The host runs the
+/// stream's two directions over what `open` returns, exactly as it does
+/// over a TCP connection, so a service never sees a Wisp packet.
+pub trait Service: Send + Sync {
+    /// What this is, for reports and refusals.
+    fn name(&self) -> String;
+    /// Open a stream for a `CONNECT` the host routed here: the host and
+    /// port the stream asked for, which may be empty and 0, the window
+    /// the peer reports for it over `control` (`doc/P2P.md` §5.2), which
+    /// a terminal-shaped service reads and the rest ignore, and a
+    /// [`Report`] for what the stream was granted. Runs on the host's own
+    /// runtime.
+    fn open(&self, host: &str, port: u16, window: Window, report: Report) -> Opening;
+}
+
+/// A service's way of saying what one stream holds (`doc/P2P.md` §7.2):
+/// `granted(caps)` sends `{"t":"granted","stream":N,"caps":[…]}` on
+/// `control`, once the service knows, which for a REPL behind a key is
+/// after the key signed in. `hello.caps` is the ceiling; this is the
+/// session's own.
+#[derive(Clone)]
+pub struct Report {
+    internal: mpsc::UnboundedSender<Internal>,
+    key: u64,
+    stream: u32,
+}
+
+impl Report {
+    /// A report nobody reads, for a service opened outside a session: a
+    /// relay's parked leg (`drt p2p --park wss://`), where there is no
+    /// `control` to tell.
+    pub fn none() -> Report {
+        let (internal, _) = mpsc::unbounded_channel();
+        Report {
+            internal,
+            key: 0,
+            stream: 0,
+        }
+    }
+
+    pub fn granted(&self, caps: &[String]) {
+        let _ = self.internal.send(Internal::Granted {
+            key: self.key,
+            stream: self.stream,
+            caps: caps.to_vec(),
+        });
+    }
+}
+
+/// A stream's terminal size as the peer last reported it over `control`
+/// (`{"t":"resize","stream":N,"cols":C,"rows":R}`): columns and rows,
+/// 0 until the peer says. Read it on every keystroke; that is how a
+/// resize reaches the thing drawing the line.
+#[derive(Clone, Default, Debug)]
+pub struct Window(Arc<std::sync::atomic::AtomicU64>);
+
+impl Window {
+    pub fn get(&self) -> (u32, u32) {
+        let packed = self.0.load(std::sync::atomic::Ordering::Relaxed);
+        ((packed >> 32) as u32, packed as u32)
+    }
+
+    pub fn set(&self, cols: u32, rows: u32) {
+        self.0.store(
+            (u64::from(cols) << 32) | u64::from(rows),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
 }
 
 /// What the program asks of the host.
@@ -108,6 +380,12 @@ pub struct HostConfig {
 pub enum Command {
     /// Make a session from a browser's presence record.
     Open { peer: String, rtc: String },
+    /// Make a session by calling an answerer's record: this host is the
+    /// controlling, DTLS-client side, and serves on the session as on any
+    /// other (`doc/BrowserAccess.md` §10, `doc/DRT-Signalling.md` §6.2).
+    /// The record is the answerer's reply to this host's own record, sent
+    /// as the caller's request; who sent it is the program's business.
+    Call { peer: String, rtc: String },
     /// End one.
     Close { peer: String },
 }
@@ -146,6 +424,17 @@ pub enum Event {
         /// Target to browser.
         bytes_down: u64,
     },
+}
+
+/// A cloneable way to queue [`Command`]s, from [`Host::sender`].
+#[derive(Clone)]
+pub struct Sender(mpsc::UnboundedSender<Command>);
+
+impl Sender {
+    /// Queue a command. Never blocks; a host that has stopped drops it.
+    pub fn send(&self, command: Command) {
+        let _ = self.0.send(command);
+    }
 }
 
 /// A serving host. Dropping it closes its command channel, which ends the
@@ -259,6 +548,12 @@ impl Host {
         let _ = self.commands.send(command);
     }
 
+    /// A handle that queues commands from anywhere, while the `Host` itself
+    /// stays with whoever reads its events.
+    pub fn sender(&self) -> Sender {
+        Sender(self.commands.clone())
+    }
+
     /// The next report, if one is waiting. Never blocks.
     pub fn try_event(&mut self) -> Option<Event> {
         self.events.try_recv().ok()
@@ -273,7 +568,7 @@ impl Host {
 /// The address a wildcard bind is advertised as: the one this box would
 /// route from. `connect` on a UDP socket sends nothing; it only asks the
 /// routing table.
-fn candidate_ip(bound: SocketAddr) -> Result<IpAddr, String> {
+pub(crate) fn candidate_ip(bound: SocketAddr) -> Result<IpAddr, String> {
     if !bound.ip().is_unspecified() {
         return Ok(bound.ip());
     }
@@ -344,6 +639,33 @@ enum Internal {
         key: u64,
         stream: u32,
         code: u8,
+    },
+    /// A relay's call to its destination is up: where to send the caller's
+    /// packets, and what the destination said of itself.
+    RelayUp {
+        key: u64,
+        to: mpsc::UnboundedSender<Vec<u8>>,
+        hello: String,
+    },
+    /// The destination refused, or could not be reached.
+    RelayFailed {
+        key: u64,
+        why: String,
+    },
+    /// A packet from the destination, for the caller as it is.
+    RelayPacket {
+        key: u64,
+        packet: Vec<u8>,
+    },
+    /// The destination's session ended.
+    RelayDone {
+        key: u64,
+    },
+    /// A service says what one of its streams holds, for `control`.
+    Granted {
+        key: u64,
+        stream: u32,
+        caps: Vec<String>,
     },
 }
 
@@ -446,47 +768,57 @@ impl Loop {
 
     fn on_command(&mut self, c: Command) {
         match c {
-            Command::Open { peer, rtc } => {
-                let refuse = |reason: String| Event::Session {
-                    peer: peer.clone(),
-                    state: SessionState::Closed,
-                    reason: Some(reason),
-                };
-                let record = match Record::decode(&rtc) {
-                    Ok(r) => r,
-                    Err(e) => return self.ctx.report(refuse(e.to_string())),
-                };
-                if self.sessions.len() >= self.ctx.cfg.max_sessions {
-                    return self
-                        .ctx
-                        .report(refuse("busy: the session cap is reached".into()));
-                }
-                if self
-                    .sessions
-                    .iter()
-                    .any(|s| s.peer == peer || s.remote_ufrag == record.ufrag)
-                {
-                    return self.ctx.report(refuse(
-                        "duplicate: that peer or ufrag already has a session".into(),
-                    ));
-                }
-                self.next_key += 1;
-                match Session::new(
-                    &self.ctx,
-                    self.next_key,
-                    peer.clone(),
-                    &record,
-                    &self.host_candidate,
-                ) {
-                    Ok(s) => self.sessions.push(s),
-                    Err(e) => self.ctx.report(refuse(e)),
-                }
-            }
+            Command::Open { peer, rtc } => self.open(peer, rtc, false),
+            Command::Call { peer, rtc } => self.open(peer, rtc, true),
             Command::Close { peer } => {
                 if let Some(s) = self.sessions.iter_mut().find(|s| s.peer == peer) {
                     s.end("closed by the program");
                 }
             }
+        }
+    }
+
+    /// A session from a record: answering it (`Open`) or calling it
+    /// (`Call`). The same session once connected; only the ICE, DTLS and
+    /// SCTP roles differ.
+    fn open(&mut self, peer: String, rtc: String, calling: bool) {
+        let refuse = |reason: String| Event::Session {
+            peer: peer.clone(),
+            state: SessionState::Closed,
+            reason: Some(reason),
+        };
+        let record = match Record::decode(&rtc) {
+            Ok(r) => r,
+            Err(e) => return self.ctx.report(refuse(e.to_string())),
+        };
+        if self.sessions.len() >= self.ctx.cfg.max_sessions {
+            return self
+                .ctx
+                .report(refuse("busy: the session cap is reached".into()));
+        }
+        if self
+            .sessions
+            .iter()
+            .any(|s| s.peer == peer || s.remote_ufrag == record.ufrag)
+        {
+            return self.ctx.report(refuse(
+                "duplicate: that peer or ufrag already has a session".into(),
+            ));
+        }
+        self.next_key += 1;
+        match Session::new(
+            &self.ctx,
+            self.next_key,
+            peer.clone(),
+            &record,
+            &self.host_candidate,
+            Roles {
+                verify_fingerprint: true,
+                calling,
+            },
+        ) {
+            Ok(s) => self.sessions.push(s),
+            Err(e) => self.ctx.report(refuse(e)),
         }
     }
 
@@ -510,10 +842,62 @@ impl Loop {
         // its (host, browser) ufrag pair, a response by transaction id,
         // DTLS and SCTP by source address.
         if let Some(s) = self.sessions.iter_mut().find(|s| s.rtc.accepts(&input)) {
+            // Who may connect is checked on the packets themselves, so the
+            // rule holds against a signalling server that ignored it: a
+            // caller that signals from one address and connects from
+            // another is judged by the one it connects from.
+            if !admitted(&self.ctx.cfg.accept, source.ip()) {
+                s.end(&format!("address {} is not admitted", source.ip()));
+                return;
+            }
             if let Err(e) = s.rtc.handle_input(input) {
                 s.end(&format!("rtc: {e}"));
             }
+        } else if self.ctx.cfg.direct && admitted(&self.ctx.cfg.accept, source.ip()) {
+            self.direct_session(buf, input);
         }
+    }
+
+    /// Direct mode: make a session from a binding request nobody claimed,
+    /// and keep it only when the request passes integrity against this
+    /// host's password. Anything else is dropped without an answer, as an
+    /// unknown datagram always is.
+    fn direct_session(&mut self, buf: &[u8], input: Input) {
+        let Some(remote) = direct_ufrag(buf, &self.ctx.cfg.identity.ufrag) else {
+            return;
+        };
+        if self.sessions.len() >= self.ctx.cfg.max_sessions
+            || self.sessions.iter().any(|s| s.remote_ufrag == remote)
+        {
+            return;
+        }
+        let record = Record {
+            ufrag: remote.clone(),
+            pwd: remote.clone(),
+            fingerprint: [0; 32],
+            candidates: Vec::new(),
+        };
+        let Ok(mut s) = Session::new(
+            &self.ctx,
+            self.next_key + 1,
+            format!("direct:{remote}"),
+            &record,
+            &self.host_candidate,
+            Roles {
+                verify_fingerprint: false,
+                calling: false,
+            },
+        ) else {
+            return;
+        };
+        if !s.rtc.accepts(&input) {
+            return;
+        }
+        self.next_key += 1;
+        if let Err(e) = s.rtc.handle_input(input) {
+            s.end(&format!("rtc: {e}"));
+        }
+        self.sessions.push(s);
     }
 
     fn on_internal(&mut self, i: Internal) {
@@ -527,7 +911,12 @@ impl Loop {
             | Internal::Failed { key, .. }
             | Internal::TcpData { key, .. }
             | Internal::Written { key, .. }
-            | Internal::TcpDone { key, .. } => *key,
+            | Internal::TcpDone { key, .. }
+            | Internal::RelayUp { key, .. }
+            | Internal::RelayFailed { key, .. }
+            | Internal::RelayPacket { key, .. }
+            | Internal::RelayDone { key }
+            | Internal::Granted { key, .. } => *key,
         };
         match self.sessions.iter_mut().find(|s| s.key == key) {
             Some(s) => s.on_internal(&self.ctx, i),
@@ -626,10 +1015,41 @@ impl Loop {
     }
 }
 
+/// The browser ufrag of a direct-mode binding request: a STUN Binding
+/// request whose USERNAME is `<host ufrag>:<browser ufrag>`, the host half
+/// this host's and the browser half [`DIRECT_UFRAG_LEN`] ice-chars. `None`
+/// for anything else. Integrity is not checked here; the session is.
+fn direct_ufrag(buf: &[u8], host_ufrag: &str) -> Option<String> {
+    const BINDING_REQUEST: u16 = 0x0001;
+    const MAGIC_COOKIE: u32 = 0x2112_A442;
+    const USERNAME: u16 = 0x0006;
+    let u16_at = |i: usize| buf.get(i..i + 2).map(|b| u16::from_be_bytes([b[0], b[1]]));
+    if u16_at(0)? != BINDING_REQUEST
+        || buf.get(4..8)? != MAGIC_COOKIE.to_be_bytes()
+        || 20 + usize::from(u16_at(2)?) != buf.len()
+    {
+        return None;
+    }
+    let mut at = 20;
+    while at + 4 <= buf.len() {
+        let (kind, len) = (u16_at(at)?, usize::from(u16_at(at + 2)?));
+        let value = buf.get(at + 4..at + 4 + len)?;
+        if kind == USERNAME {
+            let (host, browser) = std::str::from_utf8(value).ok()?.split_once(':')?;
+            let ok = host == host_ufrag
+                && DIRECT_UFRAG_LEN.contains(&browser.len())
+                && browser.bytes().all(crate::record::ice_char);
+            return ok.then(|| browser.to_string());
+        }
+        at += 4 + len.div_ceil(4) * 4;
+    }
+    None
+}
+
 /// A server-reflexive line with its related address blanked, as browsers
 /// write theirs: the relation is the LAN address, and a host that chose not
 /// to publish its host candidate should not publish it here instead.
-fn srflx_line(c: &Candidate, addr: &SocketAddr) -> String {
+pub(crate) fn srflx_line(c: &Candidate, addr: &SocketAddr) -> String {
     let line = c.to_sdp_string();
     let head = line.split(" raddr ").next().unwrap_or(&line);
     let blank = if addr.is_ipv4() { "0.0.0.0" } else { "::" };
@@ -657,11 +1077,29 @@ struct Session {
     streams: HashMap<u32, Stream>,
     /// Set when the session should end; `Loop::reap` does the ending.
     dead: Option<String>,
+    /// A relaying session's other half (`Forward::Relay`).
+    relay: RelayState,
+    /// The peer said it understands `END` (`{"t":"features","half_close":true}`
+    /// on `control`): a target's end of stream is sent as `END`, not `CLOSE`.
+    peer_half_close: bool,
+}
+
+/// Where a relaying session's destination stands.
+enum RelayState {
+    /// Not a relay, or no destination named yet; packets meanwhile are
+    /// refused, since no `CONNECT` can be answered without one.
+    None,
+    /// Calling; the caller's packets wait here, oldest first.
+    Calling(Vec<Vec<u8>>),
+    /// Up: the caller's packets go here as they are.
+    Up(mpsc::UnboundedSender<Vec<u8>>),
 }
 
 struct Stream {
     host: String,
     port: u16,
+    /// What the peer says this stream's terminal measures, if anything.
+    window: Window,
     /// Present once connected. Dropping it ends the writer task.
     to_tcp: Option<mpsc::UnboundedSender<Vec<u8>>>,
     /// `DATA` that arrived before the connection did.
@@ -673,6 +1111,10 @@ struct Stream {
     last_activity: Instant,
     /// The connect task, then the reader and the writer.
     tasks: Vec<AbortHandle>,
+    /// The peer sent `END`: nothing more is written to the target.
+    ended_in: bool,
+    /// The target's read side ended and `END` went to the peer.
+    ended_out: bool,
 }
 
 impl Drop for Stream {
@@ -683,6 +1125,16 @@ impl Drop for Stream {
     }
 }
 
+/// How a session is set up against its record.
+#[derive(Debug, Clone, Copy)]
+struct Roles {
+    /// Off for direct mode, whose record carries no fingerprint (§3.4).
+    verify_fingerprint: bool,
+    /// This host called (`Command::Call`): ICE controlling, DTLS client,
+    /// SCTP client. Off, it answers, as it does for every browser.
+    calling: bool,
+}
+
 impl Session {
     fn new(
         ctx: &Ctx,
@@ -690,6 +1142,7 @@ impl Session {
         peer: String,
         record: &Record,
         host_candidate: &Candidate,
+        roles: Roles,
     ) -> Result<Session, String> {
         let id = &ctx.cfg.identity;
         let now = Instant::now();
@@ -700,10 +1153,11 @@ impl Session {
             })
             .set_dtls_cert(id.cert.clone())
             .set_ice_lite(false)
+            .set_fingerprint_verification(roles.verify_fingerprint)
             .build(now.into_std());
         rtc.add_local_candidate(host_candidate.clone());
         let mut api = rtc.direct_api();
-        api.set_ice_controlling(false);
+        api.set_ice_controlling(roles.calling);
         api.set_remote_ice_credentials(IceCreds {
             ufrag: record.ufrag.clone(),
             pass: record.pwd.clone(),
@@ -712,8 +1166,9 @@ impl Session {
             hash_func: "sha-256".into(),
             bytes: record.fingerprint.to_vec(),
         });
-        api.start_dtls(false).map_err(|e| format!("rtc: {e}"))?;
-        api.start_sctp(false);
+        api.start_dtls(roles.calling)
+            .map_err(|e| format!("rtc: {e}"))?;
+        api.start_sctp(roles.calling);
         let channel = |label: &str, id: u16| ChannelConfig {
             label: label.into(),
             ordered: true,
@@ -750,6 +1205,8 @@ impl Session {
             gate,
             streams: HashMap::new(),
             dead: None,
+            relay: RelayState::None,
+            peer_half_close: false,
         })
     }
 
@@ -828,6 +1285,7 @@ impl Session {
                 self.outbox.push_back(wisp::cont(0, WISP_BUFFER));
             }
             RtcEvent::ChannelData(d) if d.id == self.wisp => self.on_wisp(ctx, &d.data),
+            RtcEvent::ChannelData(d) if d.id == self.control => self.on_control(ctx, &d.data),
             RtcEvent::ChannelClose(id) if id == self.wisp || id == self.control => {
                 self.end("a data channel closed");
             }
@@ -933,7 +1391,109 @@ impl Session {
         });
     }
 
+    /// What the peer says on `control`: `resize` for one of its streams
+    /// (`doc/P2P.md` §5.2), `call` for the destination of a relay (§4.1).
+    /// Any other `t` is ignored, as §5 says.
+    fn on_control(&mut self, ctx: &Ctx, msg: &[u8]) {
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(msg) else {
+            return;
+        };
+        if v["t"] == "call" {
+            return self.on_call(ctx, v["to"].as_str().unwrap_or(""));
+        }
+        if v["t"] == "features" {
+            self.peer_half_close = v["half_close"] == true;
+            return;
+        }
+        if v["t"] != "resize" {
+            return;
+        }
+        let (Some(id), Some(cols), Some(rows)) =
+            (v["stream"].as_u64(), v["cols"].as_u64(), v["rows"].as_u64())
+        else {
+            return;
+        };
+        if let Some(s) = u32::try_from(id).ok().and_then(|id| self.streams.get(&id)) {
+            s.window.set(
+                cols.min(u64::from(u16::MAX)) as u32,
+                rows.min(u64::from(u16::MAX)) as u32,
+            );
+        }
+    }
+
+    /// `{"t":"call","to":…}`: call the destination and join the sessions
+    /// (`doc/P2P.md` §4.1). Once per session; a second is ignored.
+    fn on_call(&mut self, ctx: &Ctx, to: &str) {
+        let Forward::Relay(relay) = &ctx.cfg.forward else {
+            return;
+        };
+        if !matches!(self.relay, RelayState::None) || to.is_empty() {
+            return;
+        }
+        self.relay = RelayState::Calling(Vec::new());
+        let (relay, internal, key, to) = (
+            relay.clone(),
+            ctx.internal.clone(),
+            self.key,
+            to.to_string(),
+        );
+        tokio::spawn(async move {
+            let call = match relay.call(&to).await {
+                Ok(call) => call,
+                Err(why) => {
+                    let _ = internal.send(Internal::RelayFailed { key, why });
+                    return;
+                }
+            };
+            let raw = match call.raw().await {
+                Ok(raw) => raw,
+                Err(why) => {
+                    let _ = internal.send(Internal::RelayFailed { key, why });
+                    return;
+                }
+            };
+            let hello = call.hello().to_string();
+            let crate::caller::Raw {
+                mut incoming,
+                outgoing,
+            } = raw;
+            let _ = internal.send(Internal::RelayUp {
+                key,
+                to: outgoing,
+                hello,
+            });
+            // The destination's packets, to the caller as they are; the
+            // call is held here for as long as they flow.
+            while let Some(packet) = incoming.recv().await {
+                if internal
+                    .send(Internal::RelayPacket { key, packet })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            drop(call);
+            let _ = internal.send(Internal::RelayDone { key });
+        });
+    }
+
     fn on_wisp(&mut self, ctx: &Ctx, msg: &[u8]) {
+        if matches!(ctx.cfg.forward, Forward::Relay(_)) {
+            match &mut self.relay {
+                RelayState::Up(to) => {
+                    let _ = to.send(msg.to_vec());
+                }
+                RelayState::Calling(waiting) => waiting.push(msg.to_vec()),
+                // No destination named: a CONNECT is refused as a closed
+                // port is, and nothing else means anything yet.
+                RelayState::None => {
+                    if let Some(Packet::Connect { stream, .. }) = wisp::parse(msg) {
+                        self.refuse(ctx, stream, "", 0, reason::BLOCKED);
+                    }
+                }
+            }
+            return;
+        }
         let now = Instant::now();
         match wisp::parse(msg) {
             Some(Packet::Connect {
@@ -953,11 +1513,21 @@ impl Session {
                 s.bytes_up += payload.len() as u64;
                 s.last_activity = now;
                 s.queued += 1;
+                // The credit this side granted is a promise the peer must
+                // keep: past it the stream is closed 0x49 rather than the
+                // queue allowed to grow, whether the bytes wait on the
+                // dial or on a target slower than the peer.
+                if s.queued > WISP_BUFFER {
+                    self.close_stream(ctx, stream, reason::THROTTLED, true);
+                    return;
+                }
                 match &s.to_tcp {
                     Some(tx) => {
                         let _ = tx.send(payload.to_vec());
                     }
-                    None => s.early.push(payload.to_vec()),
+                    // Not yet connected: held. After the peer's END: dropped.
+                    None if !s.ended_in => s.early.push(payload.to_vec()),
+                    None => {}
                 }
             }
             Some(Packet::Close {
@@ -968,6 +1538,20 @@ impl Session {
                 // audit records the reason it gave.
                 self.close_stream(ctx, stream, code, false);
             }
+            Some(Packet::End { stream }) => {
+                // The peer will write no more: the target's write side is
+                // shut (dropping the sender ends the writer, which shuts
+                // down), and its reads go on. Both halves ended closes it.
+                let Some(s) = self.streams.get_mut(&stream) else {
+                    return;
+                };
+                s.ended_in = true;
+                s.to_tcp = None;
+                s.last_activity = now;
+                if s.ended_out {
+                    self.close_stream(ctx, stream, reason::VOLUNTARY, true);
+                }
+            }
             // CONTINUE is the server's to send; a short message, another
             // malformed packet, or an unknown type is ignored (§6).
             _ => {}
@@ -975,11 +1559,16 @@ impl Session {
     }
 
     fn on_connect(&mut self, ctx: &Ctx, id: u32, kind: u8, port: u16, host: &[u8]) {
-        let host = match std::str::from_utf8(host) {
-            Ok(h) if !h.is_empty() => h.to_string(),
-            _ => return self.refuse(ctx, id, "", port, reason::INVALID),
+        let Ok(host) = std::str::from_utf8(host).map(str::to_string) else {
+            return self.refuse(ctx, id, "", port, reason::INVALID);
         };
-        if id == 0 || port == 0 {
+        // An empty host asks for whatever this side forwards to, at the
+        // port named or at none (`doc/P2P.md` §5.1); a name with port 0 is
+        // a service (§10.3). Anything else with port 0 is malformed.
+        if id == 0 || (port == 0 && !host.is_empty() && !scope::is_service_name(&host)) {
+            return self.refuse(ctx, id, &host, port, reason::INVALID);
+        }
+        if host.is_empty() && matches!(ctx.cfg.forward, Forward::None) {
             return self.refuse(ctx, id, &host, port, reason::INVALID);
         }
         if self.streams.contains_key(&id) {
@@ -997,17 +1586,37 @@ impl Session {
         if self.streams.len() >= ctx.cfg.max_streams {
             return self.refuse(ctx, id, &host, port, reason::THROTTLED);
         }
-        let Some(entry) = ctx.cfg.scope.allows(&host, port).cloned() else {
-            return self.refuse(ctx, id, &host, port, reason::BLOCKED);
+        let sink = match route(&ctx.cfg, &host, port) {
+            Ok(sink) => sink,
+            Err(code) => return self.refuse(ctx, id, &host, port, code),
         };
         let internal = ctx.internal.clone();
         let gate = self.gate.subscribe();
         let (key, timeout) = (self.key, ctx.cfg.connect_timeout);
-        let target = host.clone();
+        let (asked_host, asked_port) = (host.clone(), port);
+        let window = Window::default();
+        let stream_window = window.clone();
+        let report = Report {
+            internal: internal.clone(),
+            key,
+            stream: id,
+        };
         let connect = tokio::spawn(async move {
-            let msg = match dial(&entry, &target, port, timeout).await {
-                Ok(tcp) => {
+            let opened: Result<(Reader, Writer), u8> = match sink {
+                Sink::Dial(entry) => dial(&entry, timeout).await.map(|tcp| {
                     let (r, w) = tcp.into_split();
+                    (Box::new(r) as Reader, Box::new(w) as Writer)
+                }),
+                Sink::Local(service) => service
+                    .open(&asked_host, asked_port, window, report)
+                    .await
+                    .map(|io| {
+                        let (r, w) = tokio::io::split(io);
+                        (Box::new(r) as Reader, Box::new(w) as Writer)
+                    }),
+            };
+            let msg = match opened {
+                Ok((r, w)) => {
                     let (to_tcp, rx) = mpsc::unbounded_channel();
                     let writer = tokio::spawn(write_loop(w, rx, internal.clone(), key, id));
                     let reader = tokio::spawn(read_loop(r, gate, internal.clone(), key, id));
@@ -1031,6 +1640,7 @@ impl Session {
             Stream {
                 host,
                 port,
+                window: stream_window,
                 to_tcp: None,
                 early: Vec::new(),
                 queued: 0,
@@ -1039,6 +1649,8 @@ impl Session {
                 bytes_down: 0,
                 last_activity: Instant::now(),
                 tasks: vec![connect.abort_handle()],
+                ended_in: false,
+                ended_out: false,
             },
         );
     }
@@ -1060,7 +1672,12 @@ impl Session {
                 for early in s.early.drain(..) {
                     let _ = to_tcp.send(early);
                 }
-                s.to_tcp = Some(to_tcp);
+                // An END that arrived while the dial was in flight: the
+                // early bytes go out, then the sender drops and the writer
+                // shuts the write half as it would have had END come later.
+                if !s.ended_in {
+                    s.to_tcp = Some(to_tcp);
+                }
                 s.tasks.extend(tasks);
                 s.last_activity = now;
                 ctx.report(Event::Stream {
@@ -1074,6 +1691,31 @@ impl Session {
                     bytes_down: 0,
                 });
             }
+            Internal::TcpDone {
+                stream,
+                code: reason::VOLUNTARY,
+                ..
+            } if self.peer_half_close
+                && self.streams.get(&stream).is_some_and(|s| !s.ended_out) =>
+            {
+                // The target's end of stream, to a peer that understands
+                // half-close: `END`, and the peer may still write. The
+                // stream closes when both halves have ended, now if the
+                // peer's `END` came first, else when the peer ends or
+                // closes its side.
+                let both = match self.streams.get_mut(&stream) {
+                    Some(s) => {
+                        s.ended_out = true;
+                        s.last_activity = now;
+                        s.ended_in
+                    }
+                    None => false,
+                };
+                self.outbox.push_back(wisp::end(stream));
+                if both {
+                    self.close_stream(ctx, stream, reason::VOLUNTARY, true);
+                }
+            }
             Internal::Failed { stream, code, .. } | Internal::TcpDone { stream, code, .. } => {
                 self.close_stream(ctx, stream, code, true);
             }
@@ -1084,6 +1726,39 @@ impl Session {
                 s.bytes_down += bytes.len() as u64;
                 s.last_activity = now;
                 self.outbox.push_back(wisp::data(stream, &bytes));
+            }
+            Internal::RelayUp { to, hello, .. } => {
+                let waiting = match std::mem::replace(&mut self.relay, RelayState::Up(to.clone())) {
+                    RelayState::Calling(waiting) => waiting,
+                    _ => Vec::new(),
+                };
+                for pkt in waiting {
+                    let _ = to.send(pkt);
+                }
+                let told = serde_json::json!({"t": "called", "hello": hello}).to_string();
+                if let Some(mut ch) = self.rtc.channel(self.control) {
+                    let _ = ch.write(false, told.as_bytes());
+                }
+            }
+            Internal::RelayFailed { why, .. } => {
+                let told = serde_json::json!({"t": "failed", "why": why}).to_string();
+                if let Some(mut ch) = self.rtc.channel(self.control) {
+                    let _ = ch.write(false, told.as_bytes());
+                }
+                self.end(&format!("the destination could not be reached: {why}"));
+            }
+            Internal::RelayPacket { packet, .. } => self.outbox.push_back(packet),
+            Internal::RelayDone { .. } => self.end("the destination's session ended"),
+            Internal::Granted { stream, caps, .. } => {
+                // Only for a stream still open: a service that answers
+                // after the peer closed has nothing to tell it.
+                if self.streams.contains_key(&stream) {
+                    let told = serde_json::json!({"t": "granted", "stream": stream, "caps": caps})
+                        .to_string();
+                    if let Some(mut ch) = self.rtc.channel(self.control) {
+                        let _ = ch.write(false, told.as_bytes());
+                    }
+                }
             }
             Internal::Written { stream, .. } => {
                 let Some(s) = self.streams.get_mut(&stream) else {
@@ -1104,31 +1779,115 @@ impl Session {
     }
 }
 
-/// `hello` (§5): the scope, over the data channel and nowhere else.
+/// `hello` (§5): the services' names (§10.3), and the scope when the
+/// config asks for it (`doc/P2P.md` §7.2), over the data channel and
+/// nowhere else.
 fn hello(cfg: &HostConfig) -> String {
     let entry = |e: &Entry| serde_json::json!({"scheme": e.scheme, "host": e.host, "port": e.port});
     let mut msg = serde_json::json!({
         "v": 1,
         "t": "hello",
         "service": cfg.service,
-        "scope": cfg.scope.entries.iter().map(entry).collect::<Vec<_>>(),
         "limits": {"max_streams": cfg.max_streams},
     });
-    if let Some(d) = &cfg.default {
-        msg["default"] = entry(d);
+    // `scope` is always an array: a v1 client indexes it without looking.
+    // What it holds is this side's choice.
+    msg["scope"] = if cfg.hello_scope {
+        cfg.scope
+            .entries
+            .iter()
+            .map(entry)
+            .collect::<Vec<_>>()
+            .into()
+    } else {
+        serde_json::Value::Array(Vec::new())
+    };
+    if cfg.hello_scope {
+        if let Some(d) = &cfg.default {
+            msg["default"] = entry(d);
+        }
     }
+    if !cfg.services.is_empty() {
+        msg["services"] = cfg.services.iter().map(|(name, _)| name.as_str()).collect();
+    }
+    if matches!(cfg.forward, Forward::Relay(_)) {
+        msg["forwarding"] = true.into();
+    }
+    if !cfg.caps.is_empty() {
+        msg["caps"] = cfg.caps.iter().map(String::as_str).collect();
+    }
+    // This host understands `END` (§6): a peer that does too says so on
+    // `control`, and the two halves of a stream can end separately.
+    msg["half_close"] = true.into();
     msg.to_string()
 }
+
+/// Whether `ip` is inside one of `ranges`; an empty list admits everyone.
+fn admitted(ranges: &[Cidr], ip: IpAddr) -> bool {
+    ranges.is_empty() || ranges.iter().any(|r| r.contains(ip))
+}
+
+/// Where a `CONNECT` to `host:port` goes, by `doc/P2P.md` §5.1's table:
+/// a named service by its name; an empty host by what this side forwards
+/// to; a host and port by the scope, or by the forward's port set when
+/// the host is the forward's. The error is the Wisp close reason.
+fn route(cfg: &HostConfig, host: &str, port: u16) -> Result<Sink, u8> {
+    if host.is_empty() {
+        return match (&cfg.forward, port) {
+            (Forward::None, _) | (Forward::Relay(_), _) => Err(reason::INVALID),
+            (Forward::One(sink), _) => Ok(sink.clone()),
+            (Forward::Ports { host, ports }, 0) => match ports.single() {
+                Some(p) => Ok(Sink::Dial(tcp_entry(host, p))),
+                None => Err(reason::BLOCKED),
+            },
+            (Forward::Ports { host, ports }, p) if ports.contains(p) => {
+                Ok(Sink::Dial(tcp_entry(host, p)))
+            }
+            (Forward::Ports { .. }, _) => Err(reason::BLOCKED),
+        };
+    }
+    if port == 0 {
+        // A named service (§10.3) is its sink under another name.
+        return match cfg.services.iter().find(|(name, _)| name == host) {
+            Some((_, sink)) => Ok(sink.clone()),
+            None => Err(reason::BLOCKED),
+        };
+    }
+    if let Some(entry) = cfg.scope.allows(host, port) {
+        return Ok(Sink::Dial(entry.clone()));
+    }
+    if let Forward::Ports {
+        host: forward_host,
+        ports,
+    } = &cfg.forward
+    {
+        if forward_host.eq_ignore_ascii_case(host) && ports.contains(port) {
+            return Ok(Sink::Dial(tcp_entry(forward_host, port)));
+        }
+    }
+    Err(reason::BLOCKED)
+}
+
+/// A forward's host at one of its ports, as the entry the dial checks
+/// against. The scheme is advice to a browser and this side gives none.
+fn tcp_entry(host: &str, port: u16) -> Entry {
+    Entry {
+        scheme: "tcp".to_string(),
+        host: host.to_string(),
+        port,
+    }
+}
+
+/// The two halves of whatever a stream ends in.
+type Reader = Box<dyn AsyncRead + Send + Unpin>;
+type Writer = Box<dyn AsyncWrite + Send + Unpin>;
 
 // depth: the TCP side of a stream
 
 /// Resolve, check every address against the entry, connect to the first
 /// that answers. The error is the Wisp close reason.
-async fn dial(entry: &Entry, host: &str, port: u16, timeout: Duration) -> Result<TcpStream, u8> {
-    let name = host
-        .strip_prefix('[')
-        .and_then(|h| h.strip_suffix(']'))
-        .unwrap_or(host);
+async fn dial(entry: &Entry, timeout: Duration) -> Result<TcpStream, u8> {
+    let (name, port) = (entry.host.as_str(), entry.port);
     let addrs: Vec<SocketAddr> =
         match tokio::time::timeout(timeout, tokio::net::lookup_host((name, port))).await {
             Err(_) => return Err(reason::TIMEOUT),
@@ -1163,7 +1922,7 @@ async fn dial(entry: &Entry, host: &str, port: u16, timeout: Duration) -> Result
 }
 
 async fn write_loop(
-    mut w: tokio::net::tcp::OwnedWriteHalf,
+    mut w: Writer,
     mut rx: mpsc::UnboundedReceiver<Vec<u8>>,
     internal: mpsc::UnboundedSender<Internal>,
     key: u64,
@@ -1184,7 +1943,7 @@ async fn write_loop(
 }
 
 async fn read_loop(
-    mut r: tokio::net::tcp::OwnedReadHalf,
+    mut r: Reader,
     mut gate: watch::Receiver<bool>,
     internal: mpsc::UnboundedSender<Internal>,
     key: u64,

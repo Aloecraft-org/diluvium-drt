@@ -91,6 +91,7 @@ jobs:
           - connector-rest
           - connector-ssmtp
           - connector-ssh
+          - sshd
           - connector-exec
           - connector-socket
           - connector-ws
@@ -121,11 +122,30 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      # crates/drt/tests/ssh_cli.rs runs `drt ssh` against sshd as root,
+      # through `sudo -n`, as the ssh-page job's e2e.mjs does, and a root
+      # sshd needs its privilege separation directory. Without it the
+      # tests report themselves skipped, which is not a pass.
+      - name: A stock OpenSSH sshd
+        run: |
+          set -eu
+          sudo apt-get install -y --no-install-recommends openssh-server
+          sudo mkdir -p /run/sshd
+          /usr/sbin/sshd -V 2>&1 || true
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # doc/drt-config.schema.json is generated from the serde types and
+      # shipped in the browser package; a stale copy is a lie about the
+      # config file, so the checked-in one must match.
+      - name: Config schema is current
+        run: script/config-schema.sh --check
       - name: Test (default features)
+        # sshd was installed above, so an ssh test that skips is a broken
+        # runner, not a pass: crates/drt/tests/ssh_cli.rs panics instead.
+        env:
+          DRT_TEST_REQUIRE_SSH: "1"
         run: cargo test --workspace
       # The profile that actually covers the code: `cargo test --workspace`
       # builds `drt` with its DEFAULT feature (slim), so relay, tunnel, ssh
@@ -144,6 +164,8 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y gdb
           sudo sysctl -w kernel.core_pattern=/tmp/core.%e.%p
       - name: Test (all features)
+        env:
+          DRT_TEST_REQUIRE_SSH: "1"
         run: |
           ulimit -c unlimited
           cargo test --workspace --all-features
@@ -229,6 +251,12 @@ jobs:
     #
     # The crate's native half -- tests/term.rs over the rlib -- runs in
     # `test` with the rest of the workspace; this job is the browser.
+    #
+    # `ssh-into-the-page` and `ssh-through-a-relay` ride along. They need
+    # `ssh` and `ssh-keygen`, which ubuntu-latest carries, and a native
+    # `drt` for the relay and the ProxyCommand, built below. The suite
+    # names either skip rather than passing without them
+    # (doc/SshInBrowser.md).
     runs-on: ubuntu-latest
     env:
       WASI_SDK_VERSION: "27.0"
@@ -283,13 +311,29 @@ jobs:
       # release-only failure (`strip` hiding the externref table from
       # wasm-bindgen) reached a rehearsal because nothing here built what
       # the release does.
+      # The whole-chain check runs this as the relay and as `ssh`'s
+      # ProxyCommand: a page parking a leg, a standard client claiming it.
+      # `full` because that is the profile carrying `relay` and `tunnel`.
+      - name: A native drt, for the relay and the tunnel
+        run: cargo build -p drt --no-default-features --features full
       - name: Build the module and its glue
         run: DRT_WEB_PROFILE=release-small script/drt-web.sh
+      # The SSH page, as the caller in ssh-over-webrtc-to-a-page: a second
+      # page reaching this module's SSH server over WebRTC.
+      - name: The SSH page, for the WebRTC check
+        run: script/drt-ssh-page.sh
       - name: Playwright, and its Chromium
         working-directory: crates/drt-web/browser-test
         run: |
           npm ci
           npx playwright install --with-deps chromium
+      # drt-ssh-in-the-page signs in to sshd as root, as the ssh-page job.
+      - name: A stock OpenSSH sshd
+        run: |
+          set -eu
+          sudo apt-get install -y --no-install-recommends openssh-server
+          sudo mkdir -p /run/sshd
+          /usr/sbin/sshd -V 2>&1 || true
       - name: The examples gate, in Chromium
         working-directory: crates/drt-web/browser-test
         run: npm test
@@ -326,8 +370,9 @@ jobs:
     # SSH in the browser (doc/Plan-0.8.0.md §2.2): dist/ssh.html built as
     # the release builds it, then e2e.mjs -- stock sshd, the relay, a
     # parked device, stock `ssh` over ProxyCommand and the page in
-    # Chromium, eight checks. script/drt-ssh-page-gate.sh is the gate the
-    # release runs too, less the package step.
+    # Chromium, then the same sshd over WebRTC through a `webrtc` host.
+    # script/drt-ssh-page-gate.sh is the gate the release runs too, less
+    # the package step.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -452,27 +497,38 @@ jobs:
     # the one the C core leaves open: diluvium-sys drives a GCC-style
     # compiler and refuses MSVC by name, because `cl.exe` accepts none of
     # the flags it passes. Installed as the HOST toolchain rather than
-    # added as a target to the runner's MSVC one, which is what makes the
-    # C toolchain question go away here: rustup's `rust-mingw` component
-    # is in the minimal profile and carries its own
-    # `x86_64-w64-mingw32-gcc`, `ld` and mingw libraries, so the link
-    # needs nothing installed and nothing on PATH. The runner image does
-    # ship a mingw-w64 of its own at `C:\mingw64\bin`, and it is a UCRT
-    # build -- which is the one not to link Rust's msvcrt-based
-    # windows-gnu against.
+    # added as a target to the runner's MSVC one. rustc links a windows-gnu
+    # binary through whatever `x86_64-w64-mingw32-gcc` is on PATH, and on
+    # this runner that is the image's own mingw-w64 at `C:\mingw64\bin`,
+    # a UCRT build; it falls back to its bundled `rust-mingw` linker only
+    # when none is found. The first three steps link that way, with no C
+    # of their own that cares which CRT. The fourth does care, below.
     #
-    # Two crates, because this is a gate and not the suite. `drt-platform`
+    # Three crates, because this is a gate and not the suite. `drt-platform`
     # is where `process::Tree` lives, a Job Object here and a process group
     # on unix. `drt-connector-exec` is the connector built on it, and its
     # `tests/portable.rs` is the contract both platforms answer --
     # `tests/run.rs` is `#![cfg(unix)]` and compiles to nothing here, which
-    # is exactly why a Windows run of the suite had to exist. Neither crate
-    # pulls in the C core, which is why this job needs no C compiler at
-    # all; widening it to a crate that embeds diluvium means bringing a
-    # mingw-w64 for the target and pointing `CC` at it, the way the musl
-    # legs in release.yml point `CC` at musl-gcc.
+    # is exactly why a Windows run of the suite had to exist.
+    # `drt-connector-ssh` carries `drt ssh`'s session and its console half.
+    # None of the three pulls in the C core.
+    #
+    # The fourth step does: `drt` itself with `p2p`, which embeds diluvium,
+    # so this is where the C compiler question is answered. MSYS2's MINGW64
+    # environment is the msvcrt-based mingw-w64, the one Rust's windows-gnu
+    # links against (the runner's own `C:\mingw64` is a UCRT build, which is
+    # the one not to use), and `CC` points cc-rs at it the way the musl legs
+    # in release.yml point `CC` at musl-gcc. The same gcc is the linker for
+    # that step: an object its headers compiled, linked by the UCRT
+    # toolchain against its libraries, fails on `__imp__setjmp`, the one
+    # symbol the two mingw-w64 builds spell differently, and that is what
+    # mixing them looks like. One toolchain compiles and links. That makes
+    # this the one place the p2p verb's code runs on Windows: release.yml
+    # cross-builds it on Linux and smokes the binary, but `tests/p2p.rs`
+    # -- a listener, a caller, a relay, the match server, all as processes
+    # on loopback -- had never executed on this platform.
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 75
     defaults:
       run:
         shell: bash
@@ -510,6 +566,30 @@ jobs:
           fi
       - name: Test (drt-platform, drt-connector-exec)
         run: cargo test -p drt-platform -p drt-connector-exec
+      # `drt ssh`'s session, on Windows: connect, trust, sign-in and the
+      # shell against an in-process SSH server (tests/interactive.rs), and
+      # the console's UTF-16 decoding. The console modes themselves need a
+      # console, which a runner does not give a test. No C core here
+      # either; ring's C builds with the runner's gcc.
+      - name: Test (drt-connector-ssh)
+        run: cargo test -p drt-connector-ssh
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: mingw-w64-x86_64-gcc
+      # `cargo test` builds the binary the tests spawn, so `slim,p2p` is
+      # the whole p2p verb and nothing it does not need (no sql, no mail).
+      # diluvium 0.17.2's build script hands this gcc a plain path; before
+      # it, the verbatim `\\?\C:\…` form needed a wrapper here.
+      - name: Test (drt p2p, on Windows)
+        run: |
+          set -eu
+          export CC="$RUNNER_TEMP/msys64/mingw64/bin/gcc.exe"
+          export AR="$RUNNER_TEMP/msys64/mingw64/bin/ar.exe"
+          export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="$CC"
+          "$CC" --version | head -1
+          cargo test -p drt --no-default-features --features "slim,p2p" --lib p2p --test p2p
 
   fidelity:
     # The benchmark's *deterministic* fields, checked against the committed

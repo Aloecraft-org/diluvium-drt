@@ -1,0 +1,29 @@
+{
+  "_comment": "A signalling server for doc/DRT-Signalling.md, serving one name. conn_deadline_ms is past room.dlua's hold time, so a call nobody answers gets the program's 504, not the listener's. Behind a TLS terminator for pages on an https origin.",
+  "program": { "path": "app.dlua" },
+  "args": {
+    "name": "page",
+    "answerer_token": "answerer-token-for-the-example-only",
+    "caller_token": "caller-token-for-the-example-only"
+  },
+  "connectors": { "time": {} },
+  "listeners": [
+    {
+      "scheme": "http",
+      "address": "127.0.0.1:18495",
+      "conn_deadline_ms": 30000,
+      "max_body": 1024,
+      "streaming": true,
+      "headers": ["authorization", "last-event-id"],
+      "resp_headers": [
+        "access-control-allow-origin",
+        "access-control-allow-methods",
+        "access-control-allow-headers",
+        "access-control-expose-headers",
+        "cache-control",
+        "location",
+        "retry-after"
+      ]
+    }
+  ]
+}

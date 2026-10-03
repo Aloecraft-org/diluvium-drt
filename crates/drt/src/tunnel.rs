@@ -113,6 +113,11 @@ pub enum Mode {
     /// `drt tunnel --park <url> --to <target>`: the device side of the
     /// relay, dialing `to` lazily when a caller claims the leg.
     Park { park: String, to: String },
+    /// `drt tunnel rtc:<peer> [--to <service or host:port>]`: stdio over a
+    /// WebRTC session instead of a relay, which is `drt p2p <peer> -p :<to>`
+    /// now (`doc/P2P.md` §9) and runs as that. `to` defaults to the
+    /// service `ssh`.
+    Rtc { peer: String, to: String },
 }
 
 /// `drt tunnel`'s flags, as typed. Each is one key of the `tunnel` block
@@ -304,8 +309,12 @@ pub fn resolve(file: Option<&drt_config::TunnelConfig>, flags: &Flags) -> Result
         )),
     };
     let mode = match (claim, park, listen) {
+        (Some((claim, _)), None, None) if claim.starts_with("rtc:") => {
+            belongs("bind", "a relay `claim`", &bind)?;
+            rtc_mode(&claim, to.map(|(t, _)| t))?
+        }
         (Some((claim, _)), None, None) => {
-            belongs("to", "`park` or `listen`", &to)?;
+            belongs("to", "`park`, `listen` or an `rtc:` claim", &to)?;
             match bind {
                 Some((bind, _)) => Mode::Local { claim, bind },
                 None => Mode::Stdio { claim },
@@ -360,7 +369,20 @@ pub async fn run(
         Mode::Local { claim, bind } => local_to_ws(&bind, &claim, extra_roots, headers).await,
         Mode::Listen { listen, to } => ws_to_tcp(&listen, &to).await,
         Mode::Park { park: url, to } => park(&url, &to, extra_roots, headers).await,
+        Mode::Rtc { .. } => Err("an `rtc:` claim runs as `drt p2p`, through cli.rs's alias".into()),
     }
+}
+
+/// An `rtc:` claim, as a mode. The peer is read by `drt p2p`, which runs it.
+fn rtc_mode(claim: &str, to: Option<String>) -> Result<Mode, String> {
+    let rest = &claim["rtc:".len()..];
+    if rest.is_empty() {
+        return Err("tunnel: `rtc:` names no peer".into());
+    }
+    Ok(Mode::Rtc {
+        peer: rest.to_string(),
+        to: to.unwrap_or_else(|| "ssh".to_string()),
+    })
 }
 
 /// Dial a `ws://` or `wss://` URL, trusting `extra_roots` beside the
@@ -452,7 +474,7 @@ pub async fn connect(
 /// It also answers pings, which the caller half did not. A gate that
 /// pings an idle `ProxyCommand` session — an hour into an ssh session
 /// with nothing typed — was previously answered with silence.
-async fn pump<S, T>(stream: S, ws: Ws<T>) -> Result<(), String>
+pub(crate) async fn pump<S, T>(stream: S, ws: Ws<T>) -> Result<(), String>
 where
     S: AsyncRead + AsyncWrite + Send + 'static,
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -747,32 +769,9 @@ async fn park_once(
     headers: &[(String, String)],
     announce: bool,
 ) -> Result<Parked, String> {
-    use futures_util::{SinkExt, StreamExt};
-    use tokio_tungstenite::tungstenite::Message;
-
-    let mut ws = connect(url, extra_roots, headers)
-        .await
-        .map_err(|e| format!("cannot park at {}: {e}", shown(url)))?;
-    if announce {
-        eprintln!(
-            "drt tunnel: parked at {}, delivering to {target} when a caller claims it",
-            shown(url)
-        );
-    }
-
-    // Hold, answering pings, until the first claimed bytes arrive.
-    let first = loop {
-        match ws.next().await {
-            Some(Ok(Message::Binary(b))) if !b.is_empty() => break b,
-            Some(Ok(Message::Ping(p))) => {
-                let _ = ws.send(Message::Pong(p)).await;
-            }
-            Some(Ok(Message::Close(_))) | None => return Ok(Parked::Dropped),
-            Some(Ok(_)) => continue,
-            Some(Err(e)) => return Err(format!("parked leg: {e}")),
-        }
+    let Some((ws, first)) = park_leg(url, extra_roots, headers, announce).await? else {
+        return Ok(Parked::Dropped);
     };
-
     // Claimed. The session runs detached so the caller of park() can
     // re-park immediately — replenish-on-claim is this line.
     eprintln!("drt tunnel: leg claimed, session to {target}");
@@ -784,6 +783,40 @@ async fn park_once(
         }
     });
     Ok(Parked::Claimed)
+}
+
+/// Park one leg and hold it until a caller claims it: the leg and the first
+/// claimed bytes, or `None` when the relay dropped it unclaimed. The half
+/// of a park that does not know what the leg will carry, so `drt p2p
+/// --park wss://` runs it too.
+pub(crate) async fn park_leg(
+    url: &str,
+    extra_roots: &[CertificateDer<'static>],
+    headers: &[(String, String)],
+    announce: bool,
+) -> Result<Option<(WsClient, Vec<u8>)>, String> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let mut ws = connect(url, extra_roots, headers)
+        .await
+        .map_err(|e| format!("cannot park at {}: {e}", shown(url)))?;
+    if announce {
+        eprintln!("drt tunnel: parked at {}", shown(url));
+    }
+
+    // Hold, answering pings, until the first claimed bytes arrive.
+    loop {
+        match ws.next().await {
+            Some(Ok(Message::Binary(b))) if !b.is_empty() => return Ok(Some((ws, b))),
+            Some(Ok(Message::Ping(p))) => {
+                let _ = ws.send(Message::Pong(p)).await;
+            }
+            Some(Ok(Message::Close(_))) | None => return Ok(None),
+            Some(Ok(_)) => continue,
+            Some(Err(e)) => return Err(format!("parked leg: {e}")),
+        }
+    }
 }
 
 /// One claimed session: dial the local target now (lazily, on purpose),
@@ -913,5 +946,44 @@ mod tests {
             shown("ws://127.0.0.1:18490/s/fp?"),
             "ws://127.0.0.1:18490/s/fp?…"
         );
+    }
+
+    /// `rtc:` picks the WebRTC caller: `--to` is its target and defaults
+    /// to the service `ssh`, and `--local` is a relay claim's alone.
+    #[test]
+    fn an_rtc_claim_is_its_own_mode() {
+        use super::{resolve, Flags, Mode};
+        let flags = |url: &str, to: Option<&str>, local: Option<&str>| Flags {
+            url: Some(url.into()),
+            to: to.map(Into::into),
+            local: local.map(Into::into),
+            ..Flags::default()
+        };
+        let mode = |f: Flags| resolve(None, &f).map(|r| r.mode);
+        assert_eq!(
+            mode(flags("rtc:https://box.example/v1/box/calls", None, None)),
+            Ok(Mode::Rtc {
+                peer: "https://box.example/v1/box/calls".into(),
+                to: "ssh".into()
+            })
+        );
+        let record = r#"{"v":1,"u":"abcd","p":"0123456789abcdefghijKL","f":"x","c":[]}"#;
+        assert_eq!(
+            mode(flags(&format!("rtc:{record}"), Some("127.0.0.1:22"), None)),
+            Ok(Mode::Rtc {
+                peer: record.into(),
+                to: "127.0.0.1:22".into()
+            })
+        );
+        let e = mode(flags(
+            "rtc:https://box.example/v1/box/calls",
+            None,
+            Some("127.0.0.1:2222"),
+        ))
+        .unwrap_err();
+        assert!(e.contains("belongs with a relay `claim`"), "{e}");
+        // A relay claim still refuses `to`, and says an rtc: claim takes it.
+        let e = mode(flags("wss://relay.example/s/box", Some("ssh"), None)).unwrap_err();
+        assert!(e.contains("an `rtc:` claim"), "{e}");
     }
 }

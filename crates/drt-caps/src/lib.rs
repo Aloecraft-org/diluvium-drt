@@ -49,6 +49,7 @@ pub fn call_capability(call: &str) -> String {
 /// extension, and attenuation treats it asymmetrically: allows may only
 /// shrink, denies may only grow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum Effect {
     Grant,
@@ -63,10 +64,25 @@ pub enum Effect {
 #[serde(transparent)]
 pub struct Scope(pub rmpv::Value);
 
+/// A scope is any value: the capability's declared [`ScopeType`] decides
+/// what shape qualifies, and that is validated, not described here.
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for Scope {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Scope".into()
+    }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "description": "What a grant applies to: a value whose shape the capability declares (Capabilities.md)."
+        })
+    }
+}
+
 /// A grant is `effect × capability × scope` (Capabilities.md §1). Scope is
 /// optional with a sane default on purpose: mandatory scope on every grant is
 /// friction, and friction is what gets hacked around.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Grant {
     #[serde(default = "default_effect")]
@@ -111,6 +127,7 @@ impl Grant {
 /// Who a capability set belongs to or was granted by: an instance, the
 /// process root, an SSH principal — all nodes in one provenance tree.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(transparent)]
 pub struct Principal(pub String);
 

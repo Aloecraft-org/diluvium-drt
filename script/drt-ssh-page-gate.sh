@@ -2,8 +2,9 @@
 # The SSH page's gate (doc/Plan-0.8.0.md §2.2): build dist/ssh.html, build
 # `drt` with `full`, then crates/drt-ssh-web/page/e2e.mjs -- stock sshd,
 # the relay, a parked device, stock `ssh` over ProxyCommand and the page in
-# Chromium, eight checks. CI and the release both run this, so the page
-# that ships is the one that passed.
+# Chromium, then the same sshd over WebRTC through a `webrtc` host and the
+# browser access client. CI and the release both run this, so the page that
+# ships is the one that passed.
 #
 #   script/drt-ssh-page-gate.sh [--package DIR]
 #

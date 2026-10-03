@@ -1,0 +1,34 @@
+-- The call notification stream of §5: Server-Sent Events, one event per
+-- call that arrives, carrying only the newest cursor.
+local http = require('http')
+local M = {}
+local KEEPALIVE_MS = 25000   -- under the listener's stream_idle_ms (60 s)
+local streams = {}           -- conn -> when it was last written to
+local newest = 0             -- the newest cursor, for a reconnect's Last-Event-ID
+
+local function event(cursor)
+  return 'id: ' .. cursor .. '\nevent: call\ndata: {"cursor":"' .. cursor .. '"}\n\n'
+end
+
+function M.open(m, r)
+  http.stream(m.conn, 'retry: 2000\n\n')
+  streams[m.conn] = r.now
+  local seen = tonumber(m.headers['last-event-id'] or '')
+  if seen and seen < newest then http.chunk(m.conn, event(newest)) end   -- calls came meanwhile
+end
+
+function M.notify(cursor, now)
+  newest = cursor
+  for conn in pairs(streams) do http.chunk(conn, event(cursor)); streams[conn] = now end
+end
+
+function M.keepalive(now)
+  for conn, at in pairs(streams) do
+    if now - at >= KEEPALIVE_MS then http.chunk(conn, ': keepalive\n\n'); streams[conn] = now end
+  end
+end
+
+function M.closed(conn) streams[conn] = nil end
+function M.held() return next(streams) ~= nil end
+
+return M

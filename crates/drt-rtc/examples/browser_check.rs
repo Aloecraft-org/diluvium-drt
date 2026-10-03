@@ -46,11 +46,17 @@ async fn main() {
         scope: Scope::new(vec![
             Entry::parse(&format!("http://127.0.0.1:{port}")).unwrap()
         ]),
+        services: Vec::new(),
         max_sessions: 8,
         max_streams: 8,
         idle_timeout: Duration::from_secs(60),
         connect_timeout: Duration::from_secs(5),
         stun_refresh: Duration::from_secs(25),
+        direct: false,
+        hello_scope: true,
+        forward: drt_rtc::Forward::None,
+        caps: Vec::new(),
+        accept: Vec::new(),
     };
     let mut host = Host::start(cfg).expect("the host starts");
     let mut lines = BufReader::new(tokio::io::stdin()).lines();

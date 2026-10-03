@@ -14,10 +14,13 @@ crate-type = ["cdylib", "rlib"]
 # `rsa` feature into the native graph, where the ssh connector's russh lives
 # and is deliberately modern-suite only.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-# The version ego-transport already resolves, on `ring` for its reasons;
-# `rsa` because servers and appliances that only offer RSA host keys still
-# exist (doc/Plan-0.8.0.md §0.1). Measured: +85 KB raw, +32 KB gzipped.
-russh = { version = "=0.63.1", default-features = false, features = ["ring", "rsa"] }
+# The russh the workspace resolves, which the root Cargo.toml patches to
+# the fork carrying the server's wasm build (0.63.2 plus that commit), so
+# the page's client and the page's server are one crate. On `ring` for its
+# reasons; `rsa` because servers and appliances that only offer RSA host
+# keys still exist (doc/Plan-0.8.0.md §0.1). Measured: +85 KB raw, +32 KB
+# gzipped.
+russh = { version = "0.63.2", default-features = false, features = ["ring", "rsa"] }
 tokio = { version = "1", default-features = false, features = ["io-util", "sync"] }
 # PINNED for the reason crates/drt-web gives: the glue's ABI has to match
 # the wasm-bindgen CLI that generates it, and a workspace holds one version.

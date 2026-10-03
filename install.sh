@@ -35,7 +35,9 @@ VERSION="${DRT_VERSION:-$STAMPED_VERSION}"
 case "$(uname -s)" in
   Linux)  OS=linux ;;
   Darwin) OS=darwin ;;
-  *) echo "install.sh: $(uname -s) has no prebuilt DRT yet; build it with 'cargo build --release --features full -p drt'" >&2; exit 1 ;;
+  MINGW*|MSYS*|CYGWIN*)
+    echo "install.sh: on Windows, take drt_windows_x86_64.exe (or _slim) from $MIRROR/$VERSION/ and verify it against SHA256SUMS.txt there; this script installs the Linux and macOS builds" >&2; exit 1 ;;
+  *) echo "install.sh: $(uname -s) has no prebuilt DRT; build it with 'cargo build --release --features full -p drt'" >&2; exit 1 ;;
 esac
 case "$(uname -m)" in
   x86_64|amd64)  ARCH=x86_64 ;;

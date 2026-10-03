@@ -83,7 +83,8 @@ are still there in a binary speaking ABI 2. A package asking for more than
 the binary speaks is refused by name, at admission, with both numbers in
 the message — never by a missing symbol at first call.
 
-`dv_abi` moved to `2` in 0.8.0, with the pin to diluvium `v0.17.1`, which
+`dv_abi` moved to `2` in 0.8.0, with the pin to diluvium `v0.17.2` (first
+taken at `v0.17.1`), which
 carries the numeric round's `dv.h` additions (`doc/Plan-2026-09.md` §3.1).
 Nothing about the rule changed; the number did. A snapshot taken under 1
 does not restore under 2, which is the bump doing its job.
@@ -135,7 +136,9 @@ compatibility fact travels with the bytes.
 ## Before you publish
 
 The rehearsal is the gate, not a formality: **Actions → Release → Run
-workflow** with `publish` off runs the tests and builds and smoke-tests
+workflow**, on the branch whose `release.yml` is meant (a dispatch runs the
+workflow file of the ref it is given), with `tag` set to the tag about to
+be cut and `publish` off, runs the tests and builds and smoke-tests
 every platform, leaving the artifacts on the run. Only when that is green
 does the same dispatch with `tag` set and `publish=true` touch the
 Releases page. The publish job depends on tests and builds, so a failure
@@ -171,6 +174,12 @@ credentials are commonly scoped to refuse tag pushes — has to use.
 
 **The rehearsal is still the gate.** Neither route removes it: run the
 dispatch with `publish` off first, and only publish once it is green.
+A dispatch that creates the tag has failed once since the correction
+above (run 85, 2026-10-01: `Create release` answered 403 and
+`v0.8.0-dev.15` is a tag with no release); pushing the tag from a
+person's account is the route that has not. If a tag push's `Create
+release` fails, re-run that job in the same run: a fresh dispatch for a
+tag that exists is refused by preflight.
 
 The stale rule cost a version number on 2026-09-06: `v0.5.0rc5` was tagged
 at `main` before the release branch had merged, preflight refused it
@@ -197,8 +206,8 @@ Actions token was not permitted to create it — 403, `Resource not
 accessible by integration`. A human account was not subject to that, which
 is why pushing the tag by hand was the whole fix rather than a workaround.
 
-Use a dispatch for a *rehearsal* (`publish` off, no tag), which is what
-it is for. Only publish, by either route, once that is green.
+Use a dispatch for a *rehearsal* (`publish` off, `tag` set), which is
+what it is for. Only publish, by either route, once that is green.
 
 ## v0.5.0rc1's rehearsal — two failures CI could not have caught
 
@@ -572,7 +581,13 @@ first second of life.
   web build (`drt_web.tar.gz`), the browser access client
   (`drt_browser_access.js` and `.d.ts`), the SSH page (`ssh.html`), no
   changelog entry, always a prerelease, and the ten newest dev releases
-  kept. `script/dev-tag.sh` prints the next free tag; the number is
+  kept. Its body is the newest entry's overview (the tree it was cut
+  from) and the commits since the dev build before it, with the whole
+  list and the whole entry in a `NOTES.md` asset; the mirror does not
+  carry dev builds, so that asset is where the full notes are. A
+  release's body is its entry with the overview first and a link to the
+  full notes on the mirror and in `NOTES.md` before the sections, since
+  a release page folds a long body. `script/dev-tag.sh` prints the next free tag; the number is
   allocated from the tags that exist and never reused, so `dev.5` names
   one build forever.
 - **Every merge to `main`**, `.github/workflows/dev-build.yml` → a dev
@@ -580,7 +595,13 @@ first second of life.
   to get a commit into someone's hands. The same workflow runs at 06:17
   UTC as a backstop, in case a push run failed or was never queued, and
   takes a `workflow_dispatch` so it can be rehearsed. It decides,
-  allocates a number, and dispatches; it never builds.
+  allocates a number, and dispatches; it never builds. Dispatched with
+  `full` on, it cuts a dev build of every target a release builds
+  (arm64, both macOS, wasip2, Windows and its smoke), whether or not
+  HEAD moved; `release.yml` takes the same input, so a dev tag
+  dispatched by hand can ask for every leg too. That is how a branch's
+  cross-target legs are exercised before a candidate is cut, since the
+  rehearsal runs them without publishing anything.
 
   `script/dev-tag.sh --if-changed` is the skip: exit 3 means HEAD is the
   commit the newest dev tag already points at, so a quiet day ends green
@@ -761,8 +782,8 @@ which was true and unhelpful.
 
 **On DRT as the primary install candidate: yes, staged.** The argument
 for: one binary that runs a script (`drt run`), serves a deployment
-(`drt start`), reads the C host's own configs, and tunnels (`drt
-tunnel`) covers everything a newcomer reaches for plus the runtime story,
+(`drt start`), reads the C host's own configs, and reaches peers (`drt
+p2p`) covers everything a newcomer reaches for plus the runtime story,
 while the `diluvium` interpreter remains the compiler/embedding artifact.
 The staging: keep `/start` pointing at diluvium until discofetch runs on
 DRT in production; flip it after — an install one-liner should hand out

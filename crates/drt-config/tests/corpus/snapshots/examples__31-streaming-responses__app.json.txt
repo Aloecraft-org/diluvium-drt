@@ -1,0 +1,54 @@
+parsed to:
+RootConfig {
+    root: InstanceConfig {
+        program: Some(
+            Path(
+                "<corpus>/app.dlua",
+            ),
+        ),
+        caps: [],
+        budget: Budget {
+            instructions: None,
+            memory_kb: None,
+        },
+        numeric: Numeric {
+            max_elements: None,
+            max_tier: None,
+        },
+    },
+    connectors: {},
+    plugins: {},
+    listeners: [
+        Listener {
+            scheme: "http",
+            address: "127.0.0.1:18496",
+            queue: "http_in",
+            reply_queue: "http_out",
+            max_body: 65536,
+            conn_deadline_ms: 10000,
+            max_conns: 64,
+            admit_timeout_ms: 2000,
+            headers: [],
+            resp_headers: [],
+            streaming: true,
+            stream_idle_ms: 5000,
+            authorized_keys: None,
+        },
+    ],
+    residency: None,
+    relay: None,
+    stun: None,
+    turn: None,
+    wireguard: None,
+    tunnel: None,
+    p2p: None,
+    netcheck: None,
+    webrtc: None,
+    identity: Identity {
+        host_key_path: None,
+    },
+    principals: [],
+    dlua_dir: None,
+    entry: None,
+    args: {},
+}

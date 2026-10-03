@@ -1,0 +1,46 @@
+-- A signalling server for doc/DRT-Signalling.md, v1, serving one name.
+-- room.dlua holds the calls, answers.dlua answers or refuses one,
+-- events.dlua is the call notification stream, http.dlua the replies and
+-- the two tokens.
+local http    = require('http')
+local room    = require('room')
+local answers = require('answers')
+local events  = require('events')
+
+local requests = queue.declare('http_in', {capacity = 32})   -- first: requests wait here
+local _, args = queue.wait({queue.declare('args', {capacity = 1})})
+http.tokens(args.answerer_token, args.caller_token)
+
+-- The five requests of §2: method, path, whose token, handler.
+local routes = {
+  {'POST',   '^/v1/([^/]+)/calls$',                'caller',   room.call},
+  {'GET',    '^/v1/([^/]+)/calls$',                'answerer', room.list},
+  {'POST',   '^/v1/([^/]+)/calls/([^/]+)/answer$', 'answerer', answers.answer},
+  {'DELETE', '^/v1/([^/]+)/calls/([^/]+)$',        'either',   answers.withdraw},
+  {'GET',    '^/v1/([^/]+)/events$',               'answerer', events.open},
+}
+
+local function route(m, now)
+  local path, query = http.split(m.path)
+  if m.method == 'OPTIONS' then return http.json(m.conn, 204, '') end   -- a CORS preflight
+  for _, r in ipairs(routes) do
+    local method, pattern, who, handler = table.unpack(r)
+    local name, id = path:match(pattern)
+    if m.method == method and name then
+      if name ~= args.name then return http.fail(m.conn, 404, 'no such name') end
+      local refused = http.refuse(m, query, who)
+      if refused then return http.fail(m.conn, refused, 'this token may not do that') end
+      return handler(m, {id = id, query = query, now = now, base = '/v1/' .. name .. '/calls/'})
+    end
+  end
+  http.fail(m.conn, 404, 'no such request')
+end
+
+while true do
+  local _, m = queue.wait({requests}, 1000)   -- once a second at least: expiries, keepalives
+  local now = host.monotonic()
+  if m and m.event == 'closed' then events.closed(m.conn)   -- an answerer left its stream
+  elseif m then route(m, now) end
+  room.expire(now)
+  events.keepalive(now)
+end

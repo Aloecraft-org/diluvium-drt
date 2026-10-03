@@ -117,7 +117,7 @@ covers queues — same semantics as `dvs_holds`/`dvs_may_grant`, differentially
 tested against them) plus what the C layer never had: **provenance**. Every
 instance's set records who granted it, attenuated from what, back to the
 process root. One introspection surface serves it all — caps, budgets, usage,
-queue depths, residency, health — behind `drt ps` / `drt caps <id>`, a
+queue depths, residency, health — behind `drt ps` / `drt ps --caps <id>`, a
 grant-gated hostcall, and (later) Lab. SSH principals (§9) are nodes in the
 same tree.
 
@@ -141,7 +141,8 @@ One trait, several backings, zero distinctions at the call site:
 - v1 set: `time`, `fs`, `sql`, `listen` (over ego-transport), `exec` (behind a
   loud flag — granting it is leaving the sandbox, the instruction budget cannot
   bound it), `ssh` client (`host:ssh/exec`, scoped `{host, user, key}`, exec's
-  caveats verbatim).
+  caveats verbatim; `host:ssh/shell`, the same scope as an interactive
+  session on the process's terminal).
 - Hostcall metering (open in `doc/Hostcall.md`): settle it here as host-side
   arithmetic — charge per message and per byte at the queue layer. Not a
   format change.
@@ -266,6 +267,18 @@ There is deliberately **no `--detach`**.
 the config's `listeners` name. A config with none is a complete, legitimate
 deployment that binds nothing — a headless swarm driving its root program.
 
+**Built, 2026-10-02:** `drt ps [ssh://host:port]` and its `--status`,
+`--caps <id>`, `--pause <id>`, `--resume <id>`, `--stop`, over the ssh
+listener's `drt` subsystem (framed msgpack: a 4-byte big-endian length,
+then one map, `{"ask": verb, "id": n}` and `{"ok": …}` back); the same
+questions as `:ps` and friends in a REPL the deployment serves; and the
+endpoint under `.drt_root/live/control`, written by `drt start` and found
+by a `drt ps` run in the project. Any admitted key may ask; the three
+orders need a key holding `host:*`. `pause` is the caveat below, exactly;
+`stop` hibernates what is parked and ends the loop, with the snapshot
+store's half still ahead. Not yet: a REPL attached to a running instance's
+state, which is §9's attach in full.
+
 **The client commands reach a running deployment over a transport endpoint** —
 the §9 sshd subsystem channel carrying framed msgpack, which is the same
 mechanism serving REPL attach and remote access. One mechanism, three uses. A
@@ -282,10 +295,10 @@ under one directory — and never a daemon.)
 |---|---|
 | `run <program>` | one program to completion, foreground. No listeners, no control endpoint. |
 | `start` | the deployment. Foreground; binds what the config names. |
-| `stop` | graceful: stop accepting, hibernate everything parked into the snapshot store, exit. This *is* the durable-agents story, so it earns v1. |
-| `ps` / `caps <id>` / `status` | introspection against a running deployment (§6). |
+| `ps --stop` | graceful: hibernate what is parked and end the loop (built 2026-10-02); writing the hibernated set to the snapshot store is still ahead. This *is* the durable-agents story, so it earns v1. |
+| `ps` / `ps --caps <id>` / `ps --status` | introspection against a running deployment (§6). |
 | `repl` / `attach` | the REPL instance, local or wired into a live deployment (§9). |
-| `pause` / `resume` | **named, not built in v1.** See the caveat below. |
+| `pause` / `resume` | built 2026-10-02 as `drt ps --pause <id>` / `--resume <id>`, with exactly the meaning the caveat below allows. |
 
 **The `pause` caveat, because it is a doctrine trap.** `pause <instance>`
 must not mean "suspend that agent": §8 is emphatic that hibernation is
@@ -318,18 +331,19 @@ protocol**.
 
 Two shapes, one principle (the bridge never looks inside):
 
-- **`drt tunnel <wss-url>`** — bridge this process's stdio to the WSS
-  connection: the OpenSSH `ProxyCommand` contract. This is what buys
-  "works like normal SSH" without reimplementing any of it: `ssh -o
-  ProxyCommand="drt tunnel wss://gate/fp" user@fp`, and rsync/sftp/`-L`/
-  `-R`/agent forwarding are all the real ssh client's, inherited. Host-key
-  verification and auth stay end-to-end between ssh and sshd; a gateway
-  relaying the WSS leg can drop the connection but reads ciphertext. TLS
-  on the `wss://` leg is belt over braces — middleboxes see ordinary
-  HTTPS; it is not load-bearing for secrecy.
-- **`drt tunnel --listen <addr> --to <host:port>`** — the other half:
-  accept WebSockets, bridge each to a TCP target, in front of any sshd
-  (today a stock one; later `drt start`'s own control endpoint).
+- **`drt p2p <peer>`** — the OpenSSH `ProxyCommand` contract over a
+  direct WebRTC session (`doc/P2P.md`): `ssh -o ProxyCommand="drt p2p
+  drt://signal.example/v1/box" user@box`, and rsync/sftp/`-L`/`-R`/agent
+  forwarding are all the real ssh client's, inherited. Host-key
+  verification and auth stay end-to-end between ssh and sshd. With no
+  `--relay` and no `--fallback`, no machine other than the two ends
+  carries a byte of the session; `--relay wss://…` is the old relay leg,
+  as a carrier the user asked for.
+- **`drt p2p --listen <port> --forward <host:port>`** — the other half:
+  a fixed record on a UDP port, every stream to one target, in front of
+  any sshd; with no `--forward`, the REPL itself (§9). `drt tunnel` is an
+  alias for one release and prints the `drt p2p` form of what it was
+  given.
 
 **The seam this names upstream (ego-transport):** in-process composition —
 the `host:ssh/exec` connector dialing *via* wss or webrtc, and the browser

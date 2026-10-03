@@ -122,6 +122,7 @@ RootConfig {
     turn: None,
     wireguard: None,
     tunnel: None,
+    p2p: None,
     netcheck: None,
     webrtc: None,
     identity: Identity {

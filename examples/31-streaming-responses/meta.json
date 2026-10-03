@@ -1,0 +1,8 @@
+{
+  "name": "31-streaming-responses",
+  "teaches": "A reply with stream = true sends the response head at once, and the program writes the body in pieces as it has them: an event stream is a head and one chunk per event. A client that leaves is reported to the program.",
+  "cmd": "./demo.sh",
+  "needs_network": false,
+  "needs_listener": true,
+  "normalise": []
+}

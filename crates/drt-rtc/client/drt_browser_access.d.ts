@@ -20,8 +20,17 @@ export interface Hello {
   t: 'hello';
   service?: string;
   default?: ScopeEntry;
+  /** What the peer lets a caller name by address; empty when it names services only (doc/P2P.md §7.2). */
   scope: ScopeEntry[];
+  /** Named services the peer serves (§10.3). */
+  services?: string[];
+  /** Capability names a program or REPL behind the peer may hold (doc/P2P.md §7.2). */
+  caps?: string[];
+  /** True when the peer is a relay that calls a destination the caller names (doc/P2P.md §4.1). */
+  forwarding?: boolean;
   limits: { max_streams: number };
+  /** The peer understands END (§6): a closed writable is a half-close, not a close. */
+  half_close?: boolean;
   [key: string]: unknown;
 }
 
@@ -33,7 +42,12 @@ export interface ScopeEntry {
   label?: string;
 }
 
+/** What a side serves (§10.3): a name, and what to do with a stream to it. */
+export type Services = Record<string, (stream: Stream, session: Session) => void>;
+
 export interface OfferOptions {
+  /** Services this side serves to the peer (§10.2). */
+  services?: Services;
   /** STUN servers. v1 has no relay, so TURN entries buy nothing. */
   iceServers?: RTCIceServer[];
   /** How long to wait for ICE gathering before publishing (§3.1). Default 2000. */
@@ -42,7 +56,14 @@ export interface OfferOptions {
   RTCPeerConnection?: typeof RTCPeerConnection;
 }
 
+/**
+ * The answerer's DTLS fingerprint, checked before the answer is applied:
+ * `SHA256:<base64>` to compare against, or a function asked with it.
+ */
+export type Fingerprint = string | ((fingerprint: string) => boolean | Promise<boolean>);
+
 export interface AcceptOptions {
+  fingerprint?: Fingerprint;
   /** How long to wait for both channels, `hello` and the first CONTINUE. Default 15000. */
   timeoutMs?: number;
 }
@@ -66,14 +87,25 @@ export interface Pending {
 }
 
 export interface Session {
-  readonly hello: Hello;
+  /**
+   * The peer's hello. Null only on an answered session whose caller serves
+   * nothing (§10.4): it sent neither hello nor credit, and `connect` throws.
+   */
+  readonly hello: Hello | null;
   readonly pc: RTCPeerConnection;
+  /** 'caller' opens odd stream ids, 'answerer' even ones (§10.2). */
+  readonly role: 'caller' | 'answerer';
   /**
    * A TCP stream to `host:port`, which must match an entry in
-   * `hello.scope`. Usable at once: Wisp v1 has no "connected" packet, so
-   * a refusal arrives as `closed` rejecting with a StreamClosed.
+   * `hello.scope`; with no port, a stream to the named service `host`
+   * (§10.3); with no arguments, or a port alone, a stream to whatever the
+   * peer forwards to, at that port (doc/P2P.md §5.1). Usable at once: Wisp
+   * v1 has no "connected" packet, so a refusal arrives as `closed`
+   * rejecting with a StreamClosed.
    */
-  connect(host: string, port: number): Stream;
+  connect(host?: string | number, port?: number): Stream;
+  /** Report a stream's terminal size over `control` (doc/P2P.md §5.2). */
+  resize(stream: Stream | number, cols: number, rows: number): void;
   /** End the session: every stream fails, and the connection closes. */
   close(): void;
   /** Resolves, with why, when the session ends for any reason. */
@@ -82,6 +114,12 @@ export interface Session {
 
 export interface Stream {
   readonly id: number;
+  /** What the far side granted this stream, once it said (doc/P2P.md §7.2); null until then. */
+  readonly caps: string[] | null;
+  /** Resolves with `caps` when the far side says; rejects if the stream ends first. */
+  readonly granted: Promise<string[]>;
+  /** This side will write no more (END, §6): reads go on until the peer ends; `close()` where the peer lacks END. */
+  end(): void;
   /** Bytes from the target. Ends when the target closes cleanly. */
   readonly readable: ReadableStream<Uint8Array>;
   /** Bytes to the target, split at 16379 per packet and paced by Wisp credit. */
@@ -108,10 +146,146 @@ export class StreamClosed extends Error {
 
 export function offer(options?: OfferOptions): Promise<Pending>;
 
+export interface AnswerOptions extends OfferOptions, AcceptOptions {
+  /** The `service` label this side's hello carries. */
+  label?: string;
+  /**
+   * Once the channels are open, how long to wait for the caller's `hello`
+   * and credit before the session is read as one whose caller serves
+   * nothing (`session.hello` stays null). Default ANSWER_SETTLE_MS.
+   */
+  settleMs?: number;
+  /** A certificate the page keeps, so its fingerprint holds across sessions. */
+  certificates?: RTCCertificate[];
+}
+/** A page answering (§10.4): its record, for signaling, and the session. */
+export interface Answering {
+  record: BrowserAccessRecord;
+  recordText: string;
+  pc: RTCPeerConnection;
+  /**
+   * The session, once both channels are open and the caller's `hello` and
+   * credit have arrived (so `connect` works at once), or `settleMs` after
+   * the channels opened with neither.
+   */
+  session: Promise<Session>;
+  close(): void;
+}
+export function answer(callerRecord: BrowserAccessRecord | string | object, options?: AnswerOptions): Promise<Answering>;
+
+/** A call as a signalling server lists it (doc/DRT-Signalling.md §4.1). */
+export interface IncomingCall {
+  id: string;
+  /** The caller's record, as text. */
+  record: string;
+  /** Seconds until the server stops holding it. */
+  expires_in: number;
+}
+/** A `pair` entry in the poll (doc/DRT-Signalling.md §6.2): whom to call. */
+export interface PairEntry {
+  id: string;
+  /** The name to call. */
+  name: string;
+  /** The server to call it at; absent, the one this side is parked at. */
+  server?: string;
+  /** The caller token that name requires; absent when it requires none. */
+  token?: string;
+  /** Seconds until the server stops expecting the call. */
+  expires_in: number;
+}
+export type PairOutcome = 'connected' | 'refused' | 'unreachable' | 'declined';
+/** What became of a `pair` entry, as reported to the server. */
+export interface PairReport {
+  entry: PairEntry;
+  outcome: PairOutcome;
+  why: string;
+  /** The session, for `connected`; this side serves on it. */
+  session: Session | null;
+}
+export interface ListenOptions extends AnswerOptions {
+  /** The name's answerer token: a bearer header on requests, `?k=` on the event stream. */
+  token?: string;
+  /**
+   * Consent to be paired (§6.2): `*` for any name at the server this side
+   * is parked at, or `drt://<server>/v1/<glob>`; see `parsePairRule`.
+   * Absent, every `pair` entry is declined and the server told so.
+   */
+  pair?: string;
+  /** The ceiling on a call this side was told to make, entry to session; the entry's `expires_in` bounds it below. PAIR_CONNECT_MS. */
+  pairConnectMs?: number;
+  /** Every `pair` entry's outcome, once reported. */
+  onPair?(report: PairReport): void;
+  /** Poll interval while no call notification stream is held; LISTEN_POLL_MS. */
+  pollMs?: number;
+  /** false polls only, never opening the call notification stream. */
+  events?: boolean;
+  /** Return false to refuse a call; the server tells its caller 410. */
+  accept?(call: IncomingCall): boolean | Promise<boolean>;
+  /** A call answered and connected. */
+  onSession?(session: Session, call: IncomingCall): void;
+  /** A failure that did not stop listening; `call` is null for a poll's own, a PairEntry for a pair follow's. */
+  onError?(error: unknown, call: IncomingCall | PairEntry | null): void;
+  fetch?: typeof fetch;
+  EventSource?: typeof EventSource;
+}
+/** What `listen` returns. */
+export interface Listening {
+  /** The cursor the next poll passes back. */
+  readonly cursor: string;
+  /** Whether the call notification stream is open now. */
+  readonly streaming: boolean;
+  /** Poll now, after any poll already running. */
+  poll(): Promise<void>;
+  /** Stop listening. Sessions already made stay up. */
+  close(): void;
+}
+/**
+ * Answer every call a signalling server holds for one name:
+ * `base` is `…/v1/<name>` (doc/DRT-Signalling.md).
+ */
+export function listen(base: string, options?: ListenOptions): Listening;
+/** The consent rule `listen`'s `pair` option is read as; throws a TypeError on anything else. */
+export function parsePairRule(text: string): { server: string | null; glob: string };
+/** Whether `rule` lets a side parked at `here` call `name` at `server`. */
+export function pairAllows(rule: { server: string | null; glob: string }, here: string, server: string, name: string): boolean;
+/** The caller's record as the offer a page that answers applies (§10.4). */
+export function offerSdp(callerRecord: BrowserAccessRecord | string | object, mid?: string): string;
+/** Whether `name` can name a service (§10.3). */
+export function isServiceName(name: string): boolean;
+/**
+ * Direct mode (§3.4): a session from the host's record alone, for a host
+ * with `direct` on. The browser chooses its own ICE credentials; nothing is
+ * signaled.
+ */
+export function direct(
+  hostRecord: BrowserAccessRecord | string | object,
+  options?: Omit<OfferOptions, 'gatherTimeoutMs'> & AcceptOptions,
+): Promise<Session>;
+/** `sdp` with every `a=ice-ufrag` and `a=ice-pwd` line replaced. */
+export function withIceCredentials(sdp: string, ufrag: string, pwd: string): string;
+
 export function parseRecord(input: string | object): BrowserAccessRecord;
 export function recordFromSdp(sdp: string): BrowserAccessRecord;
 export function answerSdp(hostRecord: string | object, mid: string): string;
 export function fingerprintHex(f: string): string;
+/** A record's `f` as `drt p2p` prints and takes it: `SHA256:` and unpadded base64. */
+export function fingerprintText(f: string): string;
+
+/** A peer address of doc/P2P.md §3 read as `drt p2p` reads it; see `canonicalPeer`. */
+export interface PeerAddress {
+  kind: 'signal' | 'record' | 'ws';
+  /** One spelling per peer, what `drt p2p --show` prints: the key to store credentials under. */
+  canonical: string;
+  /** Where the caller's request goes, query included; null for a record. */
+  url: string | null;
+  /** The service a `drt+<service>://` address opens. */
+  service: string | null;
+  /** The name at a signalling server, when the address has one. */
+  name: string | null;
+  record: BrowserAccessRecord | null;
+}
+/** Read a peer address: a `drt://` form, a bare host, an http(s) URL, a record or its text, or a relay URL. Throws when none fits. */
+export function canonicalPeer(address: string | object): PeerAddress;
 /** Whether v1 can use a candidate line (§2.1); parseRecord drops the rest. */
 export function isUsableCandidate(line: string): boolean;
 
@@ -123,6 +297,10 @@ export interface WispPacket {
   buffer?: number;
   /** On CLOSE. */
   reason?: number;
+  /** On CONNECT: the stream type, port (0 for a named service) and hostname. */
+  kind?: number;
+  port?: number;
+  host?: string | null;
 }
 export function encodeWisp(
   type: number,
@@ -139,7 +317,13 @@ export const RECORD_MAX_BYTES: 512;
 export const MAX_CANDIDATES: 8;
 export const UFRAG_LEN: [number, number];
 export const PWD_LEN: [number, number];
+export const DIRECT_UFRAG_LEN: 32;
+export const SERVE_BUFFER: number;
+export const LISTEN_POLL_MS: number;
+export const PAIR_CONNECT_MS: number;
+export const PAIR_MARGIN_MS: number;
+export const SERVE_MAX_STREAMS: number;
 export const MESSAGE_MAX: 16384;
 export const DATA_MAX: 16379;
-export const WISP: { readonly CONNECT: 1; readonly DATA: 2; readonly CONTINUE: 3; readonly CLOSE: 4 };
+export const WISP: { readonly CONNECT: 1; readonly DATA: 2; readonly CONTINUE: 3; readonly CLOSE: 4; readonly END: 5 };
 export const CLOSE_REASON: Readonly<Record<number, string>>;

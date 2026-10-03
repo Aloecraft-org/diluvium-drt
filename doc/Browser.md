@@ -128,7 +128,7 @@ term.putFile('/app.dlua', new TextEncoder().encode('print("hello")'));
 ```
 
 ```
-  attach(DrtTerm, terminal, { prompt, banner, DrtEditor }) -> handle
+  attach(DrtTerm, terminal, { prompt, banner, DrtEditor, ssh }) -> handle
   handle.term            the DrtTerm: putFile, putDir, getFile, listFiles, setCwd
   handle.run(line)       submit a line nobody typed; resolves with its exit status
   handle.reset()         abandon whatever is running, return to the prompt
@@ -146,6 +146,59 @@ rather than importing it so a host can pass its own, and `drt-term.js`
 decides only *when* a line is wanted and with which prompt. `shell.js` behind it is just enough sh for the examples'
 `meta.json` commands: `;`, single and double quotes, `$?`, `echo`, and
 `drt` -- the real one. Anything else is `command not found`, status 127.
+
+### The REPL as bytes: `DrtTerm.repl`
+
+For a host that holds a byte stream rather than an xterm object -- a
+launcher attaching a terminal to a root, which may be this module or a
+`drt` reached over WebRTC -- the REPL is also a stream, the same shape
+as `drt p2p`'s named service `repl` (doc/P2P.md §5.2): keystrokes in,
+bytes out, the size reported beside them, line editing inside.
+
+```js
+const term = new DrtTerm(() => {});
+const repl = term.repl(cols, rows, (bytes) => terminal.write(bytes), (status) => done(status));
+terminal.onData((keys) => repl.input(new TextEncoder().encode(keys)));
+terminal.onResize(({ cols, rows }) => repl.resize(cols, rows));
+// repl.close() when the far side goes away; ^D ends it from inside.
+```
+
+The editor is the same `ego_cli` session as `DrtEditor`'s, over a
+terminal whose keys arrive as bytes decoded as the native service decodes
+them, so the two REPL shapes cannot differ in what a key does. One at a
+time in a page: while it runs the runtime's output is the stream's, and
+the `DrtTerm`'s own sink gets it back when the session ends.
+
+### `drt ssh` and `:ssh` in a page
+
+With `ssh`, the page's shell answers `drt ssh` and the REPL answers `:ssh`
+as the native ones do, with the SSH client `ssh.html` uses
+(`drt_ssh_web.js` and its wasm, shipped beside `drt-term.js`):
+
+```js
+// drt_ssh_web.js is a classic script defining `wasm_bindgen`.
+await wasm_bindgen({ module_or_path: './drt_ssh_web_bg.wasm' });
+const access = await import('./drt_browser_access.js'); // for --via rtc:
+attach(DrtTerm, terminal, { DrtEditor, ssh: { Ssh: wasm_bindgen.Ssh, access, store } });
+```
+
+```
+$ drt ssh me@box --via wss://relay.example/s/box?k=…
+$ drt ssh me@box --via rtc:https://signal.example/v1/box/calls?k=…
+dv> :ssh me@box --via rtc:<the host's record>
+```
+
+A page cannot open a TCP connection, so `--via` is required: a relay
+claim, or `rtc:` and a host's record or a signalling URL. With no `--to`, a
+page that serves the service `ssh` is reached on it, and a host on its
+first `ssh://` scope entry. Host keys are remembered per name in `store`
+(`get(key)` and `set(key, value)`, async), asked about the first time and
+refused when they change; `--hostkey` pins one instead. Sign-in tries
+`store`'s `key` (`{privateOpenssh}`, the record `ssh.html` keeps) and then
+a password. While a session runs the keyboard is the session's: the
+editor sees no key until it ends, so nothing typed into the remote shell
+comes back at the prompt. Without `store`, the page remembers for as long
+as it lives.
 
 `run` is there because a panel has buttons as well as a keyboard -- a
 "try this example" link, a restored session, a test. It submits the line
@@ -319,3 +372,92 @@ root. What a host gains by moving is everything a `Deployment` is over a
 bare swarm -- connectors behind the grants, hibernation and wake, the
 residency policy -- so the panel stops being a viewer of the C swarm and
 becomes a host of this one. +184 KB on the module.
+
+## SSH into the page
+
+`DrtSocket` and `DrtSshServer`, and between them a standard `ssh` client
+gets the terminal above. The design and what was measured are
+`doc/SshInBrowser.md`; what a host writes is this.
+
+The transport first, because it is useful on its own. `DrtSocket` is a
+byte stream whose socket stays in the page: nothing in it imports a
+WebSocket API, so a real `WebSocket`, an `RTCDataChannel` or a relayed
+pair all work, and the page's whole side is three calls.
+
+```js
+const server = new DrtSshServer(hostKey, authorizedKeys);
+const socket = server.serve((shell) => {
+  const terminal = terminalFor(shell);              // ssh-terminal.js
+  attach(DrtTerm, terminal, { DrtEditor });         // the same shell as a tab
+});
+
+ws.binaryType = 'arraybuffer';
+ws.onmessage = (e) => socket.deliver(new Uint8Array(e.data));
+ws.onclose = () => socket.close();
+for (;;) {                                          // drt -> the wire
+  const out = await socket.nextOutgoing();
+  if (out === undefined) break;
+  ws.send(out);
+}
+```
+
+`hostKey` is an OpenSSH private key the page **keeps**;
+`DrtSshServer.generateHostKey()` hands one back rather than holding it,
+because a host key that changes on reload trains whoever connects to click
+through the warning that says it changed. `server.fingerprint` is the
+`SHA256:...` string `ssh` prints, so a page can show it and be checked
+against instead of trusted on first use.
+
+`authorizedKeys` is the contents of an `authorized_keys` file. There is no
+"accept any key": the empty string authenticates nobody, and
+`server.authorized` counts what got in, so a host can say `0` out loud.
+There is no password method either. Both are the ssh *client* connector's
+posture pointed the other way (`GUARANTEES.md`).
+
+`ssh-terminal.js` is the adapter, and it is small on purpose: an SSH
+session already has bytes in, bytes out and a window, which is what
+`attach` takes. The editor behind it is `ego_cli`'s, the same one a tab
+gets -- there is no second terminal implementation. A client that resizes
+its window is picked up on the next keystroke, because that is when
+`ego_cli` asks a terminal how big it is.
+
+`socket.startEcho()` is the transport without a protocol on it: bytes in,
+upper-cased bytes back. It ships so a host can check its plumbing before
+SSH is in the way.
+
+### Being reachable: `relay-leg.js`
+
+The snippet above assumes the page already has a socket. A page has no
+inbound address, so where the socket comes from is the other half of the
+question, and the answer is DRT's rendezvous relay -- the same one a
+laptop behind CGNAT uses. The page parks an outbound leg by label; a
+caller claims the label through `drt p2p --relay`; the relay splices them.
+
+```js
+const leg = park(
+  `wss://${label}--tunnel.${zone}/park/${label}?k=${parkKey}`,
+  () => server.serve(onShell),                     // one socket per claim
+  { onEvent: (name) => show(name) },               // parked | claimed | closed
+);
+```
+
+Then, from anywhere:
+
+```sh
+ssh -o ProxyCommand="drt p2p --relay wss://<label>--tunnel.<zone>/s/<label>?k=<caller>" you@<label>
+```
+
+`open` is called once per claim, and a claimed leg is replaced
+immediately -- the relay's replenish-on-claim, which is why a second
+caller finds somebody home. `onEvent` is where a host gets presence
+without asking anything: a panel that says *the tab is reachable* is
+watching `parked` and `closed`. `leg.close()` stops it, and a label with
+no parked leg tells a caller nobody is home.
+
+Nothing in the relay's protocol is new here: it is URLs, HTTP status and
+binary frames, built so `websocat` could speak it, and a browser
+`WebSocket` is that kind of client. `relay-leg.js` is a socket, a
+first-byte test and a re-park.
+
++1,521,413 bytes on the module, which is what a server, two key exchanges
+and a cipher suite cost.

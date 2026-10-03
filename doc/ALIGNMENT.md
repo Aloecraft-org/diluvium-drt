@@ -400,11 +400,14 @@ org before you start; `latest/`-shaped URLs are the ones that break silently.
 
 Everything the name cannot carry goes in `BUILDINFO.txt`, and **BUILDINFO is
 what gets checked** — never the filename. DRT demonstrates the leak:
-`drt_windows_x86_64.exe` is the unprefixed Windows build and it is not
-`full` — there is no `full` for Windows, so the unprefixed name is the
-`windows` profile, the largest that platform gets — and the name cannot say
-so; BUILDINFO's `profile.windows.connectors` line does. DRT's package
-admission already checks `requires.connectors` against BUILDINFO by name.
+`drt_windows_x86_64.exe` is the `full` profile today, but it was once a
+smaller `windows` profile under the same name, and the name could not say
+which; BUILDINFO's `profile.windows.connectors` line does, measured off the
+PE binary on a Windows runner. DRT's package admission already checks
+`requires.connectors` against BUILDINFO by name. One carve-out: a file a
+standard names, such as an npm tarball (`drt-browser-<version>.tgz`),
+keeps the standard's spelling, version included; a stable-name consumer
+takes `drt_web.tar.gz`, the same bytes.
 
 ---
 

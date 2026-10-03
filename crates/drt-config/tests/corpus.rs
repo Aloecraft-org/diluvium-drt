@@ -38,6 +38,9 @@ const SHIPPED: &[&str] = &["examples"];
 /// the rule is now two lists and a test that says they are exhaustive.
 const SHIPPED_EXACT: &[&str] = &[
     "examples/deployment.json",
+    "examples/29-browser-access/app.json",
+    "examples/30-signaling-room/app.json",
+    "examples/31-streaming-responses/app.json",
     "examples/11-tunnel-and-relay/rendezvous.json",
     "examples/19-a-tunnel-a-program-can-use/park.json",
     "examples/19-a-tunnel-a-program-can-use/claim.json",

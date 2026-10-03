@@ -8,8 +8,29 @@
 #![cfg(feature = "netcheck")]
 
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::process::Command;
+use std::time::Duration;
+
+/// A URL nothing answers, for the tests that need an edge to be absent.
+///
+/// Not a freed ephemeral port: every fake edge here binds `127.0.0.1:0`,
+/// and the tests run in parallel, so a port freed by one test is a port a
+/// sibling's edge can hold by the time the binary connects to it. CI saw
+/// exactly that, with the silent edge reporting a sibling's canned
+/// address. Ports under 1024 are outside the kernel's ephemeral range, so
+/// no sibling can take one; the first that refuses a connection is used.
+fn dead_edge() -> String {
+    for port in [1u16, 2, 3, 4, 5, 6, 7, 9, 11, 13, 17, 19, 20, 21, 23, 24] {
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        if let Err(e) = TcpStream::connect_timeout(&addr, Duration::from_millis(200)) {
+            if e.kind() == std::io::ErrorKind::ConnectionRefused {
+                return format!("http://127.0.0.1:{port}/");
+            }
+        }
+    }
+    panic!("no low port on 127.0.0.1 refuses a connection");
+}
 
 /// An edge that reports the source port the connection actually came from,
 /// which is what an edge's `x-real-port` carries. Anything testing the
@@ -132,12 +153,7 @@ fn pinning_one_edge_is_still_one_vantage() {
 #[test]
 fn a_failed_edge_in_a_pinned_run_is_not_half_a_comparison() {
     let a = echoing_edge("gate1");
-    let dead = {
-        let l = TcpListener::bind("127.0.0.1:0").unwrap();
-        let p = l.local_addr().unwrap().port();
-        drop(l);
-        format!("http://127.0.0.1:{p}/")
-    };
+    let dead = dead_edge();
     let text = netcheck(&["--reflect", &a, "--reflect", &dead]);
     assert!(!text.contains("per-destination"), "{text}");
     assert!(!text.contains("independent"), "{text}");
@@ -255,13 +271,7 @@ fn an_edge_that_does_not_name_itself_is_keyed_by_its_url() {
 /// the network.
 #[test]
 fn an_edge_that_does_not_answer_says_why_and_changes_no_verdict() {
-    let port = {
-        let l = TcpListener::bind("127.0.0.1:0").unwrap();
-        let p = l.local_addr().unwrap().port();
-        drop(l);
-        p
-    };
-    let text = netcheck(&["--reflect", &format!("http://127.0.0.1:{port}/")]);
+    let text = netcheck(&["--reflect", &dead_edge()]);
     assert!(text.contains("tcp map    not measured ("), "{text}");
     assert!(text.contains("connect:"), "the reason, not a shrug: {text}");
     assert!(

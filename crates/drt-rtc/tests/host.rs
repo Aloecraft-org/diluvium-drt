@@ -9,14 +9,16 @@
 //! - Entry points: the `#[tokio::test]`s below, one per rule in
 //!   `doc/BrowserAccess.md` §6 that can be seen from outside.
 //! - Configurable: [`LIMIT`], how long any one wait may take.
-//! - Fan-out: [`Client`] (`common/peer.rs`) is the browser; [`host_with`] is the host;
+//! - Fan-out: [`Client`] (`common/peer.rs`) is the browser; [`host_with`] and
+//!   [`direct_host`] are the host, signaled and in direct mode;
 //!   [`echo_server`] and [`sink_server`] are the targets.
 
 use std::time::Duration;
 
 use drt_rtc::host::{Event, SessionState, StreamState};
 use drt_rtc::wisp::{self, reason};
-use drt_rtc::{Command, Entry, Host, HostConfig, Identity, Record, Scope};
+use drt_rtc::{Command, Entry, Forward, Host, HostConfig, Identity, Record, Scope, Sink};
+use str0m::IceCreds;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -75,6 +77,14 @@ async fn sink_server() -> (u16, tokio::sync::mpsc::UnboundedReceiver<&'static st
 // depth: the host
 
 async fn host_with(scope: &[String]) -> (Host, Record) {
+    host_in_mode(scope, false, &[]).await
+}
+
+async fn direct_host(scope: &[String]) -> (Host, Record) {
+    host_in_mode(scope, true, &[]).await
+}
+
+async fn host_in_mode(scope: &[String], direct: bool, services: &[(&str, &str)]) -> (Host, Record) {
     let entries = scope.iter().map(|s| Entry::parse(s).unwrap()).collect();
     let cfg = HostConfig {
         bind: "127.0.0.1:0".parse().unwrap(),
@@ -84,11 +94,20 @@ async fn host_with(scope: &[String]) -> (Host, Record) {
         service: "test".into(),
         default: None,
         scope: Scope::new(entries),
+        services: services
+            .iter()
+            .map(|(name, entry)| (name.to_string(), Sink::Dial(Entry::parse(entry).unwrap())))
+            .collect(),
         max_sessions: 4,
         max_streams: 8,
         idle_timeout: Duration::from_secs(300),
         connect_timeout: Duration::from_secs(5),
         stun_refresh: Duration::from_secs(25),
+        direct,
+        hello_scope: true,
+        forward: Forward::None,
+        caps: Vec::new(),
+        accept: Vec::new(),
     };
     let mut host = Host::start(cfg).unwrap();
     let rtc = match host.next_event().await {
@@ -320,4 +339,135 @@ async fn large_download() {
     let (got, _) = client.read_stream(9, SIZE).await;
     assert_eq!(got.len(), SIZE);
     assert!(got == body, "the bytes arrive in order and intact");
+}
+
+// depth: direct mode (doc/BrowserAccess.md §3.4)
+
+/// A direct-mode browser's credentials: one 32-character ufrag that is also
+/// its password.
+fn direct_creds(tag: char) -> IceCreds {
+    let ufrag: String = std::iter::repeat_n(tag, 24)
+        .chain("Direct09".chars())
+        .collect();
+    IceCreds {
+        ufrag: ufrag.clone(),
+        pass: ufrag,
+    }
+}
+
+/// How long a test that proves nothing connects waits for it not to.
+const NOTHING: Duration = Duration::from_secs(3);
+
+#[tokio::test]
+async fn direct_mode_makes_a_session_from_the_record_alone() {
+    let port = echo_server().await;
+    let (mut host, record) = direct_host(&[format!("http://127.0.0.1:{port}")]).await;
+    let creds = direct_creds('a');
+    // No Command::Open: the record is all the browser was given.
+    let (mut client, _) = Client::with_creds(&record, creds.clone()).await;
+    client.connect().await;
+    assert_eq!(
+        session_event(&mut host, &format!("direct:{}", creds.ufrag)).await,
+        (SessionState::Connected, None)
+    );
+    client.send(wisp::connect(1, wisp::STREAM_TCP, port, "127.0.0.1"));
+    client.send(wisp::data(1, b"direct"));
+    assert_eq!(client.read_stream(1, 6).await.0, b"direct");
+
+    // A second browser gets a session of its own on the same socket.
+    let (mut other, _) = Client::with_creds(&record, direct_creds('b')).await;
+    other.connect().await;
+    other.send(wisp::connect(1, wisp::STREAM_TCP, port, "127.0.0.1"));
+    other.send(wisp::data(1, b"second"));
+    assert_eq!(other.read_stream(1, 6).await.0, b"second");
+}
+
+#[tokio::test]
+async fn without_direct_mode_an_unsignaled_browser_gets_nothing() {
+    let (_host, record) = host_with(&[]).await;
+    let (mut client, _) = Client::with_creds(&record, direct_creds('c')).await;
+    assert!(!client.within(NOTHING, |c| c.connected).await);
+}
+
+#[tokio::test]
+async fn direct_mode_needs_the_hosts_password() {
+    let (_host, mut record) = direct_host(&[]).await;
+    // The ufrag and certificate are right; the password is not the host's.
+    record.pwd = "notTheHostsPassword0123456".into();
+    let (mut client, _) = Client::with_creds(&record, direct_creds('d')).await;
+    assert!(!client.within(NOTHING, |c| c.connected).await);
+}
+
+#[tokio::test]
+async fn direct_mode_ignores_a_browsers_own_short_ufrag() {
+    let (_host, record) = direct_host(&[]).await;
+    let creds = IceCreds {
+        ufrag: "abcdEFGH".into(),
+        pass: "abcdEFGHabcdEFGHabcdEFGH".into(),
+    };
+    let (mut client, _) = Client::with_creds(&record, creds).await;
+    assert!(!client.within(NOTHING, |c| c.connected).await);
+}
+
+// depth: the host as the calling side (doc/DRT-Signalling.md §6.2)
+
+/// `Command::Call`: the host is the calling side of a session with a page
+/// that answers, and serves on it as it serves a page that called: the
+/// page gets `hello` and reaches a named service by an even stream id
+/// (doc/BrowserAccess.md §10.2).
+#[tokio::test]
+async fn a_host_that_calls_a_page_serves_it_all_the_same() {
+    let port = echo_server().await;
+    let entry = format!("http://127.0.0.1:{port}");
+    let (mut host, record) =
+        host_in_mode(std::slice::from_ref(&entry), false, &[("echo", &entry)]).await;
+    let (mut page, page_record) = Client::answering(&record).await;
+    host.send(Command::Call {
+        peer: "page".into(),
+        rtc: page_record,
+    });
+    page.connect().await;
+    assert_eq!(
+        session_event(&mut host, "page").await,
+        (SessionState::Connected, None)
+    );
+    let hello: serde_json::Value = serde_json::from_str(page.hello.as_deref().unwrap()).unwrap();
+    assert_eq!(hello["services"], serde_json::json!(["echo"]));
+    page.send(wisp::connect(2, wisp::STREAM_TCP, 0, "echo"));
+    page.send(wisp::data(2, b"called, and served"));
+    assert_eq!(page.read_stream(2, 18).await.0, b"called, and served");
+    host.send(Command::Close {
+        peer: "page".into(),
+    });
+    assert_eq!(
+        session_event(&mut host, "page").await.0,
+        SessionState::Closed
+    );
+}
+
+// depth: named services (doc/BrowserAccess.md §10.3)
+
+#[tokio::test]
+async fn a_named_service_reaches_its_entry_and_hello_names_it() {
+    let port = echo_server().await;
+    let entry = format!("ssh://127.0.0.1:{port}");
+    let (mut host, record) =
+        host_in_mode(std::slice::from_ref(&entry), false, &[("echo", &entry)]).await;
+    let mut client = open_session(&mut host, &record, "p1").await;
+    let hello: serde_json::Value = serde_json::from_str(client.hello.as_deref().unwrap()).unwrap();
+    assert_eq!(hello["services"], serde_json::json!(["echo"]));
+
+    client.send(wisp::connect(1, wisp::STREAM_TCP, 0, "echo"));
+    client.send(wisp::data(1, b"by name"));
+    assert_eq!(client.read_stream(1, 7).await.0, b"by name");
+    // The audit names what the stream reached, not what it was called.
+    let (state, _, _, _) = stream_event(&mut host, 1).await;
+    assert_eq!(state, StreamState::Open);
+
+    // An unknown name is out of scope; a name no service could have is
+    // malformed, as port 0 always was.
+    client.send(wisp::connect(3, wisp::STREAM_TCP, 0, "telnet"));
+    assert_eq!(client.read_stream(3, 1).await.1, Some(reason::BLOCKED));
+    client.send(wisp::connect(5, wisp::STREAM_TCP, 0, "Not A Name"));
+    assert_eq!(client.read_stream(5, 1).await.1, Some(reason::INVALID));
 }

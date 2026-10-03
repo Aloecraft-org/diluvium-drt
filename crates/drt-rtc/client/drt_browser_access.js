@@ -2,54 +2,125 @@
 // peer connection to a DRT host, its `hello`, and TCP streams to the host's
 // scope over Wisp v1. One ES module, no dependencies, no build step.
 //
-// Signaling is the caller's. This module makes the browser's record and
-// takes the host's; how the two cross -- the Discofetch API's socket and
-// presence (§7.1) -- is the page's business, so this never opens a
-// WebSocket and never polls.
+// Signaling is mostly the page's. This module makes the browser's record
+// and takes the host's; how the two cross -- the Discofetch API's socket
+// and presence (§7.1), or a server of doc/DRT-Signalling.md -- is the
+// page's business. The one exception is `listen`, the answerer's half of
+// that profile, which is the only part of this module that makes requests:
+// its own polls, and the caller's request when the server tells it to call
+// another name (§6.2 there, pairing).
 //
 //   const pending = await offer();              // gathers, then resolves
 //   send(pending.record);                       // to the API, as the page does
 //   const session = await pending.accept(hostRecord);
-//   session.hello.scope;                        // what the host serves
+//   session.hello.services;                     // what the host serves, by name
+//   session.hello.caps;                         // what a program behind it may hold
+//   const t = session.connect();                // whatever it forwards to
 //   const s = session.connect('127.0.0.1', 8123);
 //   s.writable / s.readable / await s.closed    // Web Streams, bytes
+//
+// Or, for a host with direct mode on (§3.4), no signaling at all:
+//
+//   const session = await direct(hostRecord);
+//
+// Or the page answers, and serves (§10): the caller's record in, the
+// page's record back out through signaling, and streams to its services.
+//
+//   const a = await answer(callerRecord, { services: { ssh: (stream) => … } });
+//   send(a.record);
+//   const session = await a.session;
+//
+// Or the page answers every call that reaches it through a server of
+// doc/DRT-Signalling.md, with no signalling code of its own:
+//
+//   const l = listen('https://signal.example/v1/page', { token, services: { ssh } });
+//   l.close();
 //
 // ## surface block
 //
 // - Entry points: `offer(options)` -> Pending {record, recordText,
 //   accept(hostRecord, options)} -> Session {hello, connect(host, port),
-//   close(), closed}; Session.connect -> Stream {id, readable, writable,
-//   close(), closed}. And the pure pieces, for a client that drives its own
+//   close(), closed}; `direct(hostRecord, options)` -> Session, for direct
+//   mode; `answer(callerRecord, options)` -> Answering {record, recordText,
+//   session}, for a page that answers (§10.4); `listen(base, options)` ->
+//   Listening {cursor, streaming, poll(), close()}, which answers every
+//   call a signalling server holds for one name (doc/DRT-Signalling.md
+//   §4, §5) and follows a `pair` entry under `options.pair` (§6.2);
+//   `parsePairRule(text)` and `pairAllows(rule, here, server, name)`, the
+//   consent rule, the twin of PairRule in crates/drt/src/p2p/park.rs;
+//   Session.connect(host, port)
+//   or Session.connect(service) -> Stream {id, readable, writable, close(),
+//   closed}; `options.services`, name -> (stream, session), for what a page
+//   serves (§10.3). And the pure pieces, for a client that drives its own
 //   RTCPeerConnection: `parseRecord`, `recordFromSdp`, `answerSdp`,
-//   `fingerprintHex`, `isUsableCandidate`, `encodeWisp`, `decodeWisp`.
+//   `offerSdp`, `withIceCredentials`, `fingerprintHex`, `isUsableCandidate`,
+//   `isServiceName`, `encodeWisp`, `decodeWisp`.
 // - Configurable: GATHER_CAP_MS, how long `offer` waits for ICE gathering
 //   before it publishes what it has (§3.1); ACCEPT_TIMEOUT_MS, how long
-//   `accept` waits for the channels, `hello` and the first CONTINUE;
+//   `accept` and `direct` wait for the channels, `hello` and the first
+//   CONTINUE, and `answer` for the channels; ANSWER_SETTLE_MS, how long
+//   an answered session then waits for a caller's `hello` and credit
+//   before it is read as a caller that serves nothing (§10.4);
 //   SEND_HIGH_WATER, the data channel buffer past which a stream's writer
-//   waits. The wire's own limits -- RECORD_MAX_BYTES, MAX_CANDIDATES, the
-//   ICE lengths, MESSAGE_MAX -- are constants of v1, not knobs: changing
-//   one is a `v` bump.
+//   waits; SERVE_BUFFER and SERVE_MAX_STREAMS, what a page that serves
+//   grants each stream and how many it holds open; LISTEN_POLL_MS, how
+//   often `listen` polls while it holds no call notification stream;
+//   PAIR_CONNECT_MS and PAIR_MARGIN_MS, the ceiling on a call `listen` was
+//   told to make and what an entry's hold keeps back for the report. The
+//   wire's own limits -- RECORD_MAX_BYTES, MAX_CANDIDATES, the
+//   ICE lengths, DIRECT_UFRAG_LEN, MESSAGE_MAX -- are constants of v1, not
+//   knobs: changing one is a `v` bump.
 // - Fan-out: `onWispPacket`, one branch per packet type the host sends
-//   (DATA, CONTINUE, CLOSE); RecordError's `code`, one per rule a record can
+//   (CONNECT, DATA, CONTINUE, CLOSE); RecordError's `code`, one per rule a record can
 //   break, named as crates/drt-rtc/src/record.rs names them; CLOSE_REASON,
-//   the reasons a stream can end with (§6).
+//   the reasons a stream can end with (§6); `listen`'s handling of one
+//   call: refused by `accept` -> DELETE, a record `answer` cannot take ->
+//   DELETE, otherwise answered -> `onSession`; and of one `pair` entry,
+//   reported as one of four outcomes: `declined` (outside `options.pair`),
+//   `refused` (the name answered 410), `unreachable` (anything else short
+//   of a session), `connected`.
 
 export const GATHER_CAP_MS = 2000;
 export const ACCEPT_TIMEOUT_MS = 15000;
+/** How long an answered session waits for the caller's hello and credit once the channels are open (§10.4). */
+export const ANSWER_SETTLE_MS = 1500;
 export const SEND_HIGH_WATER = 1 << 20;
+/** Packets of DATA a page that serves lets each stream queue (§10.2, as §6). */
+export const SERVE_BUFFER = 128;
+/** Streams a page that serves holds open at once; one more is 0x49. */
+export const SERVE_MAX_STREAMS = 64;
+/**
+ * How often `listen` polls while it holds no call notification stream:
+ * well inside DRT-Signalling.md §4.2's 30 seconds, so the server counts
+ * the page present, and short enough that a caller waits little.
+ */
+export const LISTEN_POLL_MS = 3000;
+/**
+ * The ceiling on a call `listen` was told to make (§6.2), from the entry
+ * to a session, the caller's request included, when the entry names no
+ * hold; an entry's `expires_in` less PAIR_MARGIN_MS bounds it below that.
+ * Past it the call is reported `unreachable`.
+ */
+export const PAIR_CONNECT_MS = 20000;
+/** Kept back from an entry's `expires_in`, for the report to travel before the hold ends. */
+export const PAIR_MARGIN_MS = 3000;
 
 export const RECORD_VERSION = 1;
 export const RECORD_MAX_BYTES = 512;
 export const MAX_CANDIDATES = 8;
 export const UFRAG_LEN = [4, 32];
 export const PWD_LEN = [22, 64];
+/** A direct-mode browser's ufrag, which is also its password (§3.4). */
+export const DIRECT_UFRAG_LEN = 32;
+/** A service's name (§10.3). */
+const SERVICE_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
 /** Every message on either channel is at most this (§4). */
 export const MESSAGE_MAX = 16384;
 /** A DATA packet's payload: the message cap less the 5-byte header. */
 export const DATA_MAX = MESSAGE_MAX - 5;
 
 /** Wisp v1 packet types (§6). */
-export const WISP = Object.freeze({ CONNECT: 0x01, DATA: 0x02, CONTINUE: 0x03, CLOSE: 0x04 });
+export const WISP = Object.freeze({ CONNECT: 0x01, DATA: 0x02, CONTINUE: 0x03, CLOSE: 0x04, END: 0x05 });
 
 /** Why a stream ended (§6's table), by the byte the host sends. */
 export const CLOSE_REASON = Object.freeze({
@@ -190,7 +261,24 @@ export function fingerprintHex(f) {
  * `answer_sdp` builds, and the vectors hold both to it.
  */
 export function answerSdp(hostRecord, mid) {
-  const r = parseRecord(hostRecord);
+  return sdpFromRecord(hostRecord, mid, 'passive');
+}
+
+/**
+ * The offer a page that answers applies (§10.4): the caller's record as an
+ * offer from a DTLS client, so the page's own answer makes it the server.
+ */
+export function offerSdp(callerRecord, mid = '0') {
+  return sdpFromRecord(callerRecord, mid, 'active');
+}
+
+/** Whether `name` can name a service (§10.3). */
+export function isServiceName(name) {
+  return typeof name === 'string' && SERVICE_NAME.test(name);
+}
+
+function sdpFromRecord(record, mid, setup) {
+  const r = parseRecord(record);
   return [
     'v=0',
     'o=- 0 2 IN IP4 127.0.0.1',
@@ -203,7 +291,7 @@ export function answerSdp(hostRecord, mid) {
     `a=ice-ufrag:${r.u}`,
     `a=ice-pwd:${r.p}`,
     `a=fingerprint:sha-256 ${fingerprintHex(r.f)}`,
-    'a=setup:passive',
+    `a=setup:${setup}`,
     'a=sctp-port:5000',
     'a=max-message-size:262144',
     ...r.c.map((c) => `a=${c}`),
@@ -235,6 +323,8 @@ export function encodeWisp(type, stream, body = {}) {
     new DataView(payload.buffer).setUint32(0, body.buffer, true);
   } else if (type === WISP.CLOSE) {
     payload = Uint8Array.of(body.reason);
+  } else if (type === WISP.END) {
+    payload = new Uint8Array(0);
   } else {
     throw new TypeError(`unknown wisp packet type ${type}`);
   }
@@ -253,6 +343,15 @@ export function decodeWisp(bytes) {
   const packet = { type: b[0], stream: view.getUint32(1, true), payload: b.subarray(5) };
   if (packet.type === WISP.CONTINUE && packet.payload.length >= 4) packet.buffer = view.getUint32(5, true);
   if (packet.type === WISP.CLOSE && packet.payload.length >= 1) packet.reason = b[5];
+  if (packet.type === WISP.CONNECT && packet.payload.length >= 3) {
+    packet.kind = b[5];
+    packet.port = view.getUint16(6, true);
+    try {
+      packet.host = new TextDecoder('utf-8', { fatal: true }).decode(b.subarray(8));
+    } catch {
+      packet.host = null;
+    }
+  }
   return packet;
 }
 
@@ -287,10 +386,17 @@ export async function offer(options = {}) {
       record,
       recordText: JSON.stringify(record),
       pc,
-      accept(hostRecord, acceptOptions = {}) {
-        if (used) return Promise.reject(new Error('accept was already called; a session needs a fresh offer'));
+      async accept(hostRecord, acceptOptions = {}) {
+        if (used) throw new Error('accept was already called; a session needs a fresh offer');
         used = true;
-        return open(pc, control, wisp, early, answerSdp(hostRecord, mid), acceptOptions);
+        const merged = { ...options, ...acceptOptions };
+        try {
+          await trusted(hostRecord, merged);
+        } catch (e) {
+          pc.close();
+          throw e;
+        }
+        return open(pc, control, wisp, early, answerSdp(hostRecord, mid), merged);
       },
       close: () => pc.close(),
     };
@@ -298,6 +404,392 @@ export async function offer(options = {}) {
     pc.close();
     throw e;
   }
+}
+
+/**
+ * Direct mode (§3.4): a session from the host's record alone, for a host
+ * whose `webrtc` block has `direct` on. The browser chooses its own ICE
+ * ufrag, uses it as its password as well, and builds the host's answer
+ * locally; the host makes the session from the first connectivity check.
+ * Nothing is published and nothing waits for gathering.
+ *
+ * Options: `iceServers`, `timeoutMs` (as `accept` takes it), and
+ * `RTCPeerConnection` for a runtime without a global one.
+ */
+export async function direct(hostRecord, options = {}) {
+  parseRecord(hostRecord);
+  await trusted(hostRecord, options);
+  const PC = options.RTCPeerConnection ?? globalThis.RTCPeerConnection;
+  if (!PC) throw new Error('no RTCPeerConnection in this runtime');
+  const pc = new PC({ iceServers: options.iceServers ?? [] });
+  const control = pc.createDataChannel('control', { negotiated: true, id: 0 });
+  const wisp = pc.createDataChannel('wisp', { negotiated: true, id: 1 });
+  wisp.binaryType = 'arraybuffer';
+  const early = earlyInbox(control, wisp);
+  try {
+    const ufrag = iceChars(DIRECT_UFRAG_LEN);
+    const made = await pc.createOffer();
+    await pc.setLocalDescription({ type: 'offer', sdp: withIceCredentials(made.sdp, ufrag, ufrag) });
+    const sdp = pc.localDescription.sdp;
+    if (!sdp.includes(`a=ice-ufrag:${ufrag}`)) {
+      throw new Error('this browser did not keep the ICE credentials direct mode chose');
+    }
+    const mid = sdp.match(/^a=mid:(.*)$/m)[1].trim();
+    return await open(pc, control, wisp, early, answerSdp(hostRecord, mid), options);
+  } catch (e) {
+    pc.close();
+    throw e;
+  }
+}
+
+/**
+ * A page answering (§10.4): take the caller's record, answer it, and hand
+ * back the page's own record for signaling to carry to the caller. The
+ * session resolves once both channels are open; the page is the answerer,
+ * so it serves `options.services` and opens even stream ids.
+ *
+ * Options: `services` (name -> (stream, session)), `label` (the `service`
+ * its hello carries), `iceServers`, `gatherTimeoutMs`, `timeoutMs`,
+ * `certificates` (an `RTCCertificate` the page keeps, so its fingerprint
+ * holds across sessions), and `RTCPeerConnection`.
+ */
+export async function answer(callerRecord, options = {}) {
+  const offered = offerSdp(callerRecord);
+  const PC = options.RTCPeerConnection ?? globalThis.RTCPeerConnection;
+  if (!PC) throw new Error('no RTCPeerConnection in this runtime');
+  const config = { iceServers: options.iceServers ?? [] };
+  if (options.certificates) config.certificates = options.certificates;
+  const pc = new PC(config);
+  const control = pc.createDataChannel('control', { negotiated: true, id: 0 });
+  const wisp = pc.createDataChannel('wisp', { negotiated: true, id: 1 });
+  wisp.binaryType = 'arraybuffer';
+  const session = new Session(pc, control, wisp, { role: 'answerer', ...options });
+  const ready = session.readyAnswering(options.timeoutMs ?? ACCEPT_TIMEOUT_MS, options.settleMs ?? ANSWER_SETTLE_MS);
+  // Whoever answered holds `session` and may never look at it again -- a
+  // `listen` that closed an answer the server no longer wanted -- so a
+  // rejection here is theirs to observe, not an unhandled one.
+  const sessionReady = ready.then(() => session);
+  sessionReady.catch(() => {});
+  control.onmessage = (e) => session.onControl(e.data);
+  wisp.onmessage = (e) => session.onWispPacket(e.data);
+  control.onopen = wisp.onopen = () => session.onChannelOpen();
+  try {
+    await pc.setRemoteDescription({ type: 'offer', sdp: offered });
+    await pc.setLocalDescription(await pc.createAnswer());
+    await gathered(pc, options.gatherTimeoutMs ?? GATHER_CAP_MS);
+    const record = recordFromSdp(pc.localDescription.sdp);
+    return {
+      record,
+      recordText: JSON.stringify(record),
+      pc,
+      session: sessionReady,
+      close: () => session.close(),
+    };
+  } catch (e) {
+    session.close();
+    throw e;
+  }
+}
+
+/**
+ * The consent `listen` gives a signalling server to pair it (§6.2), as
+ * `drt p2p --park --pair` gives it: `*` for any name at the server this
+ * side is parked at, or `drt://<server>/v1/<glob>` for names matching
+ * `glob` (`*` is the only special character) at a named server. Anything
+ * else is refused: the risk is not which name but which server a side is
+ * sent to, so a bare name pattern is not a rule.
+ */
+export function parsePairRule(text) {
+  const s = String(text ?? '').trim();
+  if (s === '*') return { server: null, glob: '*' };
+  let peer = null;
+  try {
+    peer = canonicalPeer(s);
+  } catch {}
+  if (!peer || peer.kind !== 'signal' || !peer.name) {
+    throw new TypeError(`'${s}': * for any name at the server this side is parked at, or drt://<server>/v1/<glob> for a name pattern at a named server`);
+  }
+  return { server: serverOf(peer.canonical), glob: peer.name };
+}
+
+/** Whether a rule from `parsePairRule` lets a side parked at `here` call `name` at `server`. */
+export function pairAllows(rule, here, server, name) {
+  if (rule.server === null) return sameServer(here, server);
+  return sameServer(rule.server, server) && globMatches(rule.glob, name);
+}
+
+/** The server half of a signalling base: `https://s.example/v1/mypc` is at `https://s.example`. */
+function serverOf(base) {
+  const at = base.lastIndexOf('/v1/');
+  return at < 0 ? base : base.slice(0, at);
+}
+
+/** Equal but for a trailing slash and ASCII case, as the Rust twin compares. */
+function sameServer(a, b) {
+  const fold = (s) => s.replace(/\/+$/, '').replace(/[A-Z]/g, (c) => c.toLowerCase());
+  return fold(a) === fold(b);
+}
+
+/** `*` matches any run of characters; nothing else is special. */
+function globMatches(glob, name) {
+  const parts = glob.split('*');
+  if (!name.startsWith(parts[0])) return false;
+  let rest = name.slice(parts[0].length);
+  if (parts.length === 1) return rest === '';
+  for (let i = 1; i < parts.length; i++) {
+    if (i === parts.length - 1) return rest.endsWith(parts[i]);
+    const at = rest.indexOf(parts[i]);
+    if (at < 0) return false;
+    rest = rest.slice(at + parts[i].length);
+  }
+  return true;
+}
+
+/**
+ * Answer every call a signalling server holds for one name
+ * (doc/DRT-Signalling.md): `base` is the name's URL, `…/v1/<name>`, and
+ * `options.token` its answerer token.
+ *
+ * It holds the call notification stream (§5) where the runtime has an
+ * `EventSource`, and polls once when it connects and once per
+ * notification. Without the stream, or while it is reconnecting, it polls
+ * every `pollMs` (LISTEN_POLL_MS). Polls run one at a time and carry the
+ * cursor, so no call is read twice.
+ *
+ * Each call is answered with `answer(call.record, options)` and the
+ * page's record posted back; `options.onSession(session, call)` gets the
+ * session once it is up. `options.accept(call)`, if given, may refuse a
+ * call (false, or a promise of false), which withdraws it: the caller
+ * gets 410. A record `answer` cannot take is refused the same way.
+ * Failures that do not stop listening -- a poll the server refused, an
+ * answer that came too late -- go to `options.onError(error, call)`.
+ *
+ * A `pair` entry in the poll (§6.2: the server telling this side to call
+ * another name) is followed only under `options.pair`, the consent rule of
+ * `parsePairRule`; without it, or outside it, the entry is declined and
+ * the server told so. Followed, the page makes the caller's request with
+ * the token the entry gives, serves `options.services` on the session as
+ * a caller that serves does (§10.2), and reports the outcome to the
+ * server. `options.onPair({entry, outcome, why, session})` sees every
+ * outcome; `session` is set for `connected`. Each follow runs beside the
+ * polls, not inside them, and is bounded whole by the entry's
+ * `expires_in` less PAIR_MARGIN_MS, or `pairConnectMs` (PAIR_CONNECT_MS)
+ * when that is less.
+ *
+ * Every other option is `answer`'s. `fetch` and `EventSource` may be
+ * given for a runtime without global ones; `events: false` polls only.
+ */
+export function listen(base, options = {}) {
+  const fetchFn = options.fetch ?? globalThis.fetch?.bind(globalThis);
+  if (!fetchFn) throw new Error('no fetch in this runtime');
+  const ES = options.events === false ? null : (options.EventSource ?? globalThis.EventSource);
+  const root = String(base).replace(/\/+$/, '');
+  const token = options.token;
+  const headers = token ? { authorization: `Bearer ${token}` } : {};
+  const onError = options.onError ?? (() => {});
+  const pollMs = options.pollMs ?? LISTEN_POLL_MS;
+  // Parsed here so a bad value fails the call to listen(), not a poll.
+  const pairRule = options.pair === undefined || options.pair === null ? null : parsePairRule(options.pair);
+  const here = serverOf(root);
+  const state = { cursor: '0', stopped: false, events: null, streaming: false, timer: null };
+  let chain = Promise.resolve();
+
+  const request = async (method, path, body) => {
+    const init = { method, headers: { ...headers } };
+    if (body !== undefined) {
+      init.body = body;
+      init.headers['content-type'] = 'text/plain;charset=utf-8';
+    }
+    const res = await fetchFn(`${root}${path}`, init);
+    if (!res.ok) throw new Error(`${method} ${root}${path} answered ${res.status}`);
+    return res;
+  };
+  const refuse = (call) => request('DELETE', `/calls/${encodeURIComponent(call.id)}`).catch((e) => onError(e, call));
+
+  const take = async (call) => {
+    try {
+      if (options.accept && !(await options.accept(call))) return refuse(call);
+    } catch (e) {
+      onError(e, call);
+      return refuse(call);
+    }
+    let answering;
+    try {
+      answering = await answer(call.record, options);
+    } catch (e) {
+      onError(e, call);
+      return refuse(call);
+    }
+    try {
+      await request('POST', `/calls/${encodeURIComponent(call.id)}/answer`, answering.recordText);
+    } catch (e) {
+      // Expired, withdrawn or answered elsewhere: nobody will connect.
+      answering.close();
+      return onError(e, call);
+    }
+    answering.session.then(
+      (session) => options.onSession?.(session, call),
+      (e) => onError(e, call),
+    );
+  };
+
+  // depth: one pair entry (§6.2), on its own, beside the polls
+  const followPair = async (entry) => {
+    const { id, name } = entry;
+    const server = typeof entry.server === 'string' ? entry.server : here;
+    // The whole follow, the caller's request included, inside the entry's
+    // hold: a result after it is 404, so `unreachable` is reported first.
+    const held = typeof entry.expires_in === 'number' ? entry.expires_in * 1000 - PAIR_MARGIN_MS : Infinity;
+    const budget = Math.max(1000, Math.min(options.pairConnectMs ?? PAIR_CONNECT_MS, held));
+    const deadline = Date.now() + budget;
+    const left = () => Math.max(1, deadline - Date.now());
+    let outcome = 'unreachable';
+    let why = '';
+    let session = null;
+    let pending = null;
+    try {
+      if (!pairRule) {
+        outcome = 'declined';
+        why = 'no pair';
+      } else if (!pairAllows(pairRule, here, server, name)) {
+        outcome = 'declined';
+        why = `${name} at ${server} is outside pair`;
+      } else {
+        // The caller's request (§3), with the caller token the entry gives
+        // and nothing of this side's own; a told side pins no fingerprint
+        // (doc/P2P.md §2.2), and `certificates` is `answer`'s.
+        pending = await offer({
+          RTCPeerConnection: options.RTCPeerConnection,
+          iceServers: options.iceServers,
+          gatherTimeoutMs: options.gatherTimeoutMs,
+          services: options.services,
+          label: options.label,
+        });
+        if (state.stopped) throw new Error('listening stopped');
+        const init = { method: 'POST', headers: { 'content-type': 'text/plain;charset=utf-8' }, body: pending.recordText };
+        if (typeof entry.token === 'string') init.headers.authorization = `Bearer ${entry.token}`;
+        // The server holds this request until the name answers (§3), which
+        // may be the whole hold: the deadline cuts it short.
+        if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) init.signal = AbortSignal.timeout(left());
+        let res;
+        try {
+          res = await fetchFn(`${server.replace(/\/+$/, '')}/v1/${encodeURIComponent(name)}/calls`, init);
+        } catch (e) {
+          const timedOut = e?.name === 'TimeoutError' || e?.name === 'AbortError';
+          throw new Error(timedOut ? `no answer within ${Math.round(budget / 1000)}s` : String(e?.message ?? e));
+        }
+        if (!res.ok) {
+          let said = '';
+          try {
+            said = (await res.json())?.error ?? '';
+          } catch {}
+          outcome = res.status === 410 ? 'refused' : 'unreachable';
+          why = said ? `${res.status} ${said}` : `answered ${res.status}`;
+        } else {
+          const answer = await res.text();
+          if (state.stopped) throw new Error('listening stopped');
+          session = await pending.accept(answer, { timeoutMs: left() });
+          outcome = 'connected';
+        }
+      }
+    } catch (e) {
+      why = String(e?.message ?? e);
+    }
+    // Anything short of a session leaves no connection behind; `accept`
+    // closes on its own failures, and closing twice is nothing.
+    if (outcome !== 'connected') pending?.close();
+    try {
+      await request('POST', `/pair/${encodeURIComponent(id)}/result`, JSON.stringify({ outcome, why }));
+    } catch (e) {
+      onError(e, entry);
+    }
+    try {
+      options.onPair?.({ entry, outcome, why, session });
+    } catch (e) {
+      onError(e, entry);
+    }
+  };
+
+  const pollOnce = async () => {
+    if (state.stopped) return;
+    let got;
+    try {
+      const res = await request('GET', `/calls?since=${encodeURIComponent(state.cursor)}`);
+      got = await res.json();
+    } catch (e) {
+      return onError(e, null);
+    }
+    if (typeof got?.cursor === 'string') state.cursor = got.cursor;
+    // A `pair` entry is followed beside the polls: a follow may take
+    // PAIR_CONNECT_MS, and the server counts this side present only while
+    // it polls (§4.2). Absent from a server without pairing.
+    for (const entry of Array.isArray(got?.pair) ? got.pair : []) {
+      if (state.stopped) return;
+      if (typeof entry?.id === 'string' && typeof entry?.name === 'string') followPair(entry);
+    }
+    for (const call of Array.isArray(got?.calls) ? got.calls : []) {
+      if (state.stopped) return;
+      await take(call);
+    }
+  };
+  const poll = () => (chain = chain.then(pollOnce));
+
+  // Poll on a timer only while no stream is held (§5).
+  const tick = () => {
+    state.timer = null;
+    if (state.stopped || state.streaming) return;
+    poll();
+    state.timer = setTimeout(tick, pollMs);
+  };
+
+  if (ES) {
+    const k = token ? `?k=${encodeURIComponent(token)}` : '';
+    const events = new ES(`${root}/events${k}`);
+    state.events = events;
+    events.addEventListener('open', () => {
+      state.streaming = true;
+      poll();
+    });
+    events.addEventListener('call', () => poll());
+    events.addEventListener('pair', () => poll());
+    events.addEventListener('error', () => {
+      state.streaming = false;
+      if (!state.timer && !state.stopped) tick();
+    });
+  }
+  tick();
+
+  return {
+    get cursor() {
+      return state.cursor;
+    },
+    /** Whether the call notification stream is open now. */
+    get streaming() {
+      return state.streaming;
+    },
+    /** Poll now, after any poll already running. */
+    poll,
+    /** Stop: close the stream and the timer. Sessions already made stay up. */
+    close() {
+      state.stopped = true;
+      state.events?.close();
+      if (state.timer) clearTimeout(state.timer);
+      state.timer = null;
+    },
+  };
+}
+
+/** `sdp` with every `a=ice-ufrag` and `a=ice-pwd` line replaced. */
+export function withIceCredentials(sdp, ufrag, pwd) {
+  return sdp
+    .replace(/^a=ice-ufrag:.*$/gm, `a=ice-ufrag:${ufrag}`)
+    .replace(/^a=ice-pwd:.*$/gm, `a=ice-pwd:${pwd}`);
+}
+
+/** `n` random ice-chars (RFC 8839: ALPHA, DIGIT, `+`, `/`). */
+function iceChars(n) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  return Array.from(crypto.getRandomValues(new Uint8Array(n)), (b) => alphabet[b & 63]).join('');
 }
 
 function gathered(pc, capMs) {
@@ -327,8 +819,97 @@ function earlyInbox(control, wisp) {
   return inbox;
 }
 
+/**
+ * `options.fingerprint`: a `SHA256:<base64>` string the answerer's DTLS
+ * fingerprint must equal, or `fp => boolean | Promise<boolean>` asked
+ * with that fingerprint before the answer is applied, so a stored pin is a
+ * comparison and a missing one is the "trust this peer?" prompt. The
+ * digest is the record's `f`, so nothing has flowed when this runs.
+ */
+async function trusted(hostRecord, options) {
+  const want = options.fingerprint;
+  if (want === undefined || want === null) return;
+  const have = fingerprintText(parseRecord(hostRecord).f);
+  if (typeof want === 'function') {
+    if (!(await want(have))) throw new Error(`the peer's fingerprint ${have} was not trusted`);
+    return;
+  }
+  const expected = String(want).replace(/^sha256:/i, 'SHA256:').replace(/=+$/, '');
+  if (expected !== have && expected !== `SHA256:${have}`) {
+    throw new Error(`the peer's fingerprint is ${have}, not the ${want} expected; a signalling server answering with another peer's record looks exactly like this`);
+  }
+}
+
+/** A record's `f` as `drt p2p` prints and takes it: `SHA256:` and base64 without padding. */
+export function fingerprintText(f) {
+  return `SHA256:${String(f).replace(/=+$/, '')}`;
+}
+
+/**
+ * A peer address of doc/P2P.md §3, read as `drt p2p` reads it, with one
+ * spelling for every form that names the same peer (`drt p2p --show`):
+ * `canonical` is the key to store a credential or a pinned fingerprint
+ * under; `url` is where the caller's request goes, query included;
+ * `service` is what a `drt+<service>://` address asks to open.
+ *
+ *   drt://host[:port][/v1/<name>]   https, or http when host is loopback
+ *   drt+<service>://…               the same, naming a service
+ *   host                            drt://host
+ *   http(s)://…/v1/<name>[/calls]   as written
+ *   {…} or a record                 `record:SHA256:…`, direct mode
+ *   ws(s)://…                       a relay URL, its key dropped
+ *
+ * Returns { kind: 'signal' | 'record' | 'ws', canonical, url, service, name, record }.
+ * Throws on an address no form fits.
+ */
+export function canonicalPeer(address) {
+  const text = typeof address === 'string' ? address.trim() : '';
+  if (typeof address === 'object' || text.startsWith('{')) {
+    const record = parseRecord(address);
+    const canonical = `record:${fingerprintText(record.f)}`;
+    return { kind: 'record', canonical, url: null, service: null, name: null, record };
+  }
+  if (!text) throw new Error('a peer address is empty');
+  const at = text.indexOf('://');
+  if (at < 0) return canonicalPeer(`drt://${text}`);
+  const scheme = text.slice(0, at).toLowerCase();
+  const rest = text.slice(at + 3);
+  if (scheme === 'ws' || scheme === 'wss') {
+    return { kind: 'ws', canonical: text.split('?')[0], url: text, service: null, name: null, record: null };
+  }
+  let service = null;
+  if (scheme.startsWith('drt+')) {
+    service = scheme.slice(4);
+    if (!isServiceName(service)) throw new Error(`'${text}': '${service}' cannot name a service (§10.3)`);
+  } else if (scheme !== 'drt' && scheme !== 'http' && scheme !== 'https') {
+    throw new Error(`'${text}': a peer is drt://host[:port]/v1/<name>, drt+<service>://…, a bare host, an http(s):// URL, a record, or wss:// as a relay`);
+  }
+  const slash = rest.indexOf('/');
+  let authority = slash < 0 ? rest : rest.slice(0, slash);
+  let path = slash < 0 ? '' : rest.slice(slash);
+  const q = authority.indexOf('?');
+  if (q >= 0) {
+    path = authority.slice(q) + path;
+    authority = authority.slice(0, q);
+  }
+  const m = /^\[([^\]]+)\](?::\d+)?$|^([^:]+)(?::\d+)?$|^(.+)$/.exec(authority);
+  const host = m ? (m[1] ?? m[2] ?? m[3]) : '';
+  if (!host || /[@#]/.test(authority)) throw new Error(`'${text}' does not start with a host`);
+  const loopback = /^localhost$/i.test(host) || /^127\./.test(host) || host === '::1';
+  const resolved = scheme === 'http' || scheme === 'https' ? scheme : loopback ? 'http' : 'https';
+  const qm = path.indexOf('?');
+  const query = qm >= 0 ? path.slice(qm + 1) : null;
+  let bare = (qm >= 0 ? path.slice(0, qm) : path).replace(/\/+$/, '');
+  if (bare.endsWith('/calls')) bare = bare.slice(0, -'/calls'.length);
+  const named = /^\/v1\/([^/]+)$/.exec(bare);
+  const name = named ? named[1] : null;
+  const canonical = `${resolved}://${authority}${bare}`;
+  const url = `${canonical}${name ? '/calls' : '/'}${query ? `?${query}` : ''}`;
+  return { kind: 'signal', canonical, url, service, name, record: null };
+}
+
 async function open(pc, control, wisp, early, answer, options) {
-  const session = new Session(pc, control, wisp);
+  const session = new Session(pc, control, wisp, { role: 'caller', ...options });
   const ready = session.ready(options.timeoutMs ?? ACCEPT_TIMEOUT_MS);
   control.onmessage = (e) => session.onControl(e.data);
   wisp.onmessage = (e) => session.onWispPacket(e.data);
@@ -346,17 +927,31 @@ async function open(pc, control, wisp, early, answer, options) {
   return session;
 }
 
-/** A connected session: its `hello`, and streams to the host's scope. */
+/**
+ * A connected session: the peer's `hello`, streams to what the peer serves,
+ * and streams to what this side serves (§10).
+ */
 class Session {
-  constructor(pc, control, wisp) {
+  constructor(pc, control, wisp, options = {}) {
     this.pc = pc;
     this.control = control;
     this.wisp = wisp;
-    /** The host's `hello` (§5): service, default, scope, limits. */
+    /** The peer's `hello` (§5): service, default, scope, services, limits. */
     this.hello = null;
+    /** The peer understands END (§6): from its hello, or its features message. */
+    this.peerHalfClose = false;
     this.streams = new Map();
-    this.nextId = 1;
+    /** §10.2: the caller opens odd ids, the answerer even ones. */
+    this.role = options.role ?? 'caller';
+    this.nextId = this.role === 'caller' ? 1 : 2;
     this.initialCredit = null;
+    this.services = new Map(Object.entries(options.services ?? {}));
+    for (const name of this.services.keys()) {
+      if (!isServiceName(name)) throw new TypeError(`"${name}" cannot name a service (§10.3)`);
+    }
+    this.label = options.label ?? '';
+    this.announced = false;
+    this.serving = 0;
     this.channelsOpen = 0;
     this.ended = false;
     this.waiters = [];
@@ -394,9 +989,75 @@ class Session {
     });
   }
 
+  /**
+   * For a page that answers (§10.4): ready once both channels are open
+   * and the caller's `hello` and credit have arrived, so `connect` works
+   * from the first tick of `onSession`; or, `settleMs` after the channels
+   * opened with neither, since a caller that serves nothing sends neither
+   * and `hello` stays null. A `hello` without credit keeps waiting: a side
+   * that serves sends both (§10.2).
+   */
+  readyAnswering(timeoutMs, settleMs) {
+    return new Promise((resolve, reject) => {
+      let settle = null;
+      const done = () => {
+        clearTimeout(timer);
+        clearTimeout(settle);
+        this.onReady = null;
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        clearTimeout(settle);
+        reject(new Error(`no session within ${timeoutMs} ms (ice ${this.pc.iceConnectionState}, `
+          + `channels ${this.channelsOpen}/2, hello ${this.hello ? 'yes' : 'no'}, `
+          + `credit ${this.initialCredit ?? 'none'})`));
+      }, timeoutMs);
+      this.onReady = () => {
+        if (this.channelsOpen !== 2) return;
+        if (this.hello && this.initialCredit !== null) return done();
+        if (settle === null) {
+          settle = setTimeout(() => {
+            if (!this.hello && this.initialCredit === null) done();
+          }, settleMs);
+        }
+      };
+      this.onEnded = (why) => {
+        clearTimeout(timer);
+        clearTimeout(settle);
+        reject(new Error(why));
+      };
+    });
+  }
+
   onChannelOpen() {
     this.channelsOpen++;
+    if (this.channelsOpen === 2) {
+      this.announce();
+      // What this side understands (§6), whichever role it has: a peer
+      // that does too sends END for a target's end of stream.
+      try {
+        this.control.send(JSON.stringify({ t: 'features', half_close: true }));
+      } catch {}
+    }
     this.onReady?.();
+  }
+
+  /**
+   * §10.2: a side that serves says so once the channels are open -- its
+   * `hello` and its per-stream buffer. The answerer always does, since a
+   * caller's `accept` waits for both.
+   */
+  announce() {
+    if (this.announced || (this.role === 'caller' && this.services.size === 0)) return;
+    this.announced = true;
+    try {
+      this.control.send(JSON.stringify({
+        v: RECORD_VERSION, t: 'hello', service: this.label, scope: [],
+        services: [...this.services.keys()], limits: { max_streams: SERVE_MAX_STREAMS },
+        half_close: true,
+      }));
+      this.send(encodeWisp(WISP.CONTINUE, 0, { buffer: SERVE_BUFFER }));
+    } catch {}
   }
 
   onControl(text) {
@@ -406,10 +1067,16 @@ class Session {
     } catch {
       return;
     }
-    // §5: `hello` is v1's only message; any other `t` is ignored.
+    // §5: `hello` first; `granted` for one of this side's streams
+    // (doc/P2P.md §7.2); any other `t` is ignored.
     if (m && m.t === 'hello' && !this.hello) {
       this.hello = m;
+      if (m.half_close === true) this.peerHalfClose = true;
       this.onReady?.();
+    } else if (m && m.t === 'features') {
+      if (m.half_close === true) this.peerHalfClose = true;
+    } else if (m && m.t === 'granted' && Array.isArray(m.caps)) {
+      this.streams.get(m.stream)?.onGranted(m.caps);
     }
   }
 
@@ -424,25 +1091,73 @@ class Session {
       }
       return;
     }
+    if (p.type === WISP.CONNECT) return this.onConnect(p);
     const s = this.streams.get(p.stream);
     if (!s) return;
     if (p.type === WISP.DATA) s.receive(p.payload);
     else if (p.type === WISP.CONTINUE && p.buffer !== undefined) s.credit(p.buffer);
     else if (p.type === WISP.CLOSE) s.finish(new StreamClosed(p.reason ?? 0x01), false);
+    else if (p.type === WISP.END) s.onEnd();
     // Unknown types are ignored (§6).
   }
 
   /**
-   * A TCP stream to `host:port`, which must match a scope entry in
-   * `hello.scope` (the host checks; §6). Wisp v1 has no "connected"
-   * packet: the stream is usable at once, and a refusal arrives as its
-   * `closed` rejecting with a StreamClosed.
+   * The peer opened a stream to something this side serves (§10.3). Only
+   * a named service is served by a page; an address, an unknown name, or
+   * UDP is 0x48, and a malformed CONNECT, an id of this side's parity or
+   * an id already open is 0x41.
+   */
+  onConnect(p) {
+    const refuse = (reason) => {
+      try {
+        this.send(encodeWisp(WISP.CLOSE, p.stream, { reason }));
+      } catch {}
+    };
+    const theirs = this.role === 'caller' ? 0 : 1;
+    if (p.host === null || p.host === undefined || p.stream === 0 || p.stream % 2 !== theirs
+        || this.streams.has(p.stream)) return refuse(0x41);
+    const handler = p.kind === 0x01 && p.port === 0 ? this.services.get(p.host) : undefined;
+    if (!handler) return refuse(0x48);
+    if (this.serving >= SERVE_MAX_STREAMS) return refuse(0x49);
+    const stream = new Stream(this, p.stream, Infinity, { served: true });
+    this.streams.set(p.stream, stream);
+    this.serving++;
+    stream.closed.finally(() => this.serving--).catch(() => {});
+    try {
+      handler(stream, this);
+    } catch {
+      stream.close();
+    }
+  }
+
+  /**
+   * A stream to what the peer serves: `connect(host, port)` for an entry
+   * in its `hello.scope` (the host checks; §6), or `connect(name)` for one
+   * of its `hello.services` (§10.3). Wisp v1 has no "connected" packet:
+   * the stream is usable at once, and a refusal arrives as its `closed`
+   * rejecting with a StreamClosed.
    */
   connect(host, port) {
     if (this.ended) throw new Error('the session has ended');
-    if (typeof host !== 'string' || host.length === 0) throw new TypeError('host must be a non-empty string');
-    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new TypeError('port must be 1..65535');
-    const id = this.nextId++;
+    // `connect()` asks for whatever the peer forwards to, and `connect(80)`
+    // for port 80 of it (doc/P2P.md §5.1): an empty host on the wire.
+    if (host === undefined || host === '') {
+      host = '';
+      port = port ?? 0;
+      if (port !== 0 && (!Number.isInteger(port) || port < 1 || port > 65535)) throw new TypeError('port must be 1..65535');
+    } else if (typeof host === 'number' && port === undefined) {
+      port = host;
+      host = '';
+      if (!Number.isInteger(port) || port < 1 || port > 65535) throw new TypeError('port must be 1..65535');
+    } else if (typeof host !== 'string') {
+      throw new TypeError('host must be a string');
+    } else if (port === undefined) {
+      if (!isServiceName(host)) throw new TypeError(`"${host}" cannot name a service (§10.3); pass a port for an address`);
+      port = 0;
+    } else if (!Number.isInteger(port) || port < 1 || port > 65535) throw new TypeError('port must be 1..65535');
+    if (this.initialCredit === null) throw new Error('the peer serves nothing: it sent no credit (§10.2)');
+    const id = this.nextId;
+    this.nextId += 2;
     const stream = new Stream(this, id, this.initialCredit);
     this.streams.set(id, stream);
     this.send(encodeWisp(WISP.CONNECT, id, { host, port }));
@@ -452,6 +1167,16 @@ class Session {
   send(packet) {
     if (this.wisp.readyState !== 'open') throw new Error('the wisp channel is not open');
     this.wisp.send(packet);
+  }
+
+  /**
+   * Report a stream's terminal size over `control` (doc/P2P.md §5.2), for
+   * a peer service that is a terminal, such as a DRT host's `repl`.
+   */
+  resize(stream, cols, rows) {
+    if (this.control.readyState !== 'open') return;
+    const id = typeof stream === 'number' ? stream : stream.id;
+    this.control.send(JSON.stringify({ t: 'resize', stream: id, cols: cols | 0, rows: rows | 0 }));
   }
 
   /** Resolves when the channel has room for more; see SEND_HIGH_WATER. */
@@ -491,7 +1216,7 @@ class Session {
  * rejects with a StreamClosed for anything else.
  */
 class Stream {
-  constructor(session, id, credit) {
+  constructor(session, id, credit, { served = false } = {}) {
     this.session = session;
     this.id = id;
     this.remaining = credit;
@@ -501,18 +1226,72 @@ class Stream {
     this.closed = new Promise((res, rej) => ((resolve = res), (reject = rej)));
     this.closed.catch(() => {}); // a caller that never looks is not an unhandled rejection
     this.settle = { resolve, reject };
-    this.readable = new ReadableStream({
-      start: (c) => (this.reader = c),
-      cancel: () => this.close(),
-    });
+    // What the far side granted this stream (doc/P2P.md §7.2): the service
+    // says once it knows, which for a REPL behind a key is after sign-in.
+    // Resolves with the capability names; rejects if the stream ends first.
+    this.caps = null;
+    let grantOk, grantNo;
+    this.granted = new Promise((res, rej) => ((grantOk = res), (grantNo = rej)));
+    this.granted.catch(() => {});
+    this.settleGranted = { resolve: grantOk, reject: grantNo };
+    // A stream this side serves grants the opener credit (§10.2, as §6):
+    // SERVE_BUFFER packets, topped up with CONTINUE as the reader drains
+    // them. What it reads is pulled one packet at a time so the count is
+    // what the reader has taken, not what has arrived.
+    this.served = served;
+    this.inbox = [];
+    this.taken = 0;
+    this.readable = served
+      ? new ReadableStream({
+        start: (c) => (this.reader = c),
+        pull: () => this.pull(),
+        cancel: () => this.close(),
+      }, { highWaterMark: 0 })
+      : new ReadableStream({
+        start: (c) => (this.reader = c),
+        cancel: () => this.close(),
+      });
     this.writable = new WritableStream({
       write: (chunk) => this.write(chunk),
-      close: () => this.close(),
+      // Closing the writable is a half-close when the peer understands
+      // one (§6): what it still has to say arrives on `readable`.
+      close: () => this.end(),
       abort: () => this.close(),
     });
+    this.endedOut = false;
+    this.endedIn = false;
+  }
+
+  /**
+   * This side will write no more. To a peer that understands END the
+   * stream stays open for reading until it ends its side; to one that
+   * does not, this is `close()`.
+   */
+  end() {
+    if (this.done || this.endedOut) return;
+    if (!this.session.peerHalfClose) return this.close();
+    this.endedOut = true;
+    try {
+      this.session.send(encodeWisp(WISP.END, this.id));
+    } catch {}
+    if (this.endedIn) this.close();
+  }
+
+  /** The peer will write no more: `readable` ends; writes still go. */
+  onEnd() {
+    if (this.done || this.endedIn) return;
+    this.endedIn = true;
+    if (this.served) this.pending?.();
+    else {
+      try {
+        this.reader.close();
+      } catch {}
+    }
+    if (this.endedOut) this.close();
   }
 
   async write(chunk) {
+    if (this.endedOut) throw new Error('the stream was ended from this side');
     const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
     for (let at = 0; at < bytes.length; at += DATA_MAX) {
       // Wisp's credit (§6): one packet per unit, topped up by CONTINUE.
@@ -525,7 +1304,34 @@ class Stream {
   }
 
   receive(payload) {
-    if (!this.done) this.reader.enqueue(payload.slice());
+    if (this.done) return;
+    if (!this.served) return this.reader.enqueue(payload.slice());
+    this.inbox.push(payload.slice());
+    this.pending?.();
+  }
+
+  /** A served stream's reader wants a packet. */
+  pull() {
+    if (this.inbox.length === 0) {
+      if (this.done) return;
+      if (this.endedIn) {
+        try {
+          this.reader.close();
+        } catch {}
+        return;
+      }
+      return new Promise((r) => (this.pending = () => {
+        this.pending = null;
+        r(this.pull());
+      }));
+    }
+    this.reader.enqueue(this.inbox.shift());
+    if (++this.taken >= SERVE_BUFFER / 2) {
+      this.taken = 0;
+      try {
+        this.session.send(encodeWisp(WISP.CONTINUE, this.id, { buffer: SERVE_BUFFER - this.inbox.length }));
+      } catch {}
+    }
   }
 
   credit(buffer) {
@@ -548,9 +1354,17 @@ class Stream {
     this.finish(null, true);
   }
 
+  onGranted(caps) {
+    if (this.caps !== null) return;
+    this.caps = caps;
+    this.settleGranted.resolve(caps);
+  }
+
   finish(error, local) {
+    if (this.caps === null) this.settleGranted.reject(new Error('the stream ended before anything was granted'));
     if (this.done) return;
     this.done = true;
+    this.pending?.();
     this.session.streams.delete(this.id);
     const clean = error === null || (!local && error.reason === 0x02);
     try {

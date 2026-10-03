@@ -1,0 +1,1303 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RootConfig",
+  "description": "The one config shape: host-config and spawn-request are this same object.\nA child's config must fit inside its parent's —\n[`InstanceConfig::check_attenuation`] is that rule, checked identically\nwhether the parent is the process or another instance.",
+  "type": "object",
+  "properties": {
+    "args": {
+      "description": "Defaults for the entry, and the declaration of this profile's own\ncommand line: the default's type is what parses an override\n([`resolve::merge_args`]). This is what makes a downloaded,\npre-populated profile a one-command setup with no second schema\nshipped beside it.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/ArgValue"
+      }
+    },
+    "budget": {
+      "$ref": "#/$defs/Budget"
+    },
+    "caps": {
+      "description": "The capability grants: `effect × capability × scope` each.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Grant"
+      }
+    },
+    "connectors": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/ConnectorWiring"
+      }
+    },
+    "dlua_dir": {
+      "description": "Where this profile's source lives, relative to the root. Local\nauthoring; `init/` is delivered content and `live/` is what runs.\n\nOn `RootConfig` and **not** on [`InstanceConfig`], with `entry` and\n`args`, because §5's keystone is one config shape at every depth and a\nspawn request carries source rather than a path. Resolution turns\n`dlua_dir` + `entry` into the [`Program::Source`] the root instance\nloads; `program` stays the instance-level field it always was.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "entry": {
+      "description": "The root program: a file under `dlua_dir`, or `stdlib:<name>`. What\nthe C host's config calls `supervisor`.\n\n**One file of a directory.** `dlua_dir` is a directory and this names\na file in it; the loader may resolve the file's siblings from the same\ndirectory, which is what `require` reaches (`doc/Modules.md`). The\n`stdlib:` spelling is why `stdlib` is not a module name: a stdlib\nprogram is reached here and never by `require`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Entry"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "identity": {
+      "$ref": "#/$defs/Identity"
+    },
+    "listeners": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Listener"
+      }
+    },
+    "netcheck": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NetcheckConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "numeric": {
+      "description": "How much numeric work this instance may do. Beside `budget` rather\nthan inside it: the two bound different things -- instructions the\nguest executes, and elements a kernel processes on its behalf -- and\na kernel charges the instruction budget too (§3.4).",
+      "$ref": "#/$defs/Numeric"
+    },
+    "p2p": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/P2pConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "plugins": {
+      "description": "Plugin families, by the family name a guest calls. Separate from\n`connectors` because a plugin is a program this build has never\nseen and a connector is a backing it carries, and because a reader\nof a config should be able to see at a glance which calls leave\nthis process.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/PluginWiring"
+      }
+    },
+    "principals": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/SshPrincipal"
+      }
+    },
+    "program": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Program"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "relay": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RelayConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "residency": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Residency"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "stun": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StunConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tunnel": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TunnelConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "turn": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TurnConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "webrtc": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WebrtcConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "wireguard": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WireguardConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "ArgValue": {
+      "description": "One argument value. The set of shapes a profile's `args` can declare,\nwhich is also the set of shapes a command line can override.",
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer",
+          "format": "int64"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "description": "A list, so repeated `--stun a --stun b` accumulates. An empty list in\nthe profile is how a key declares itself repeatable.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "Budget": {
+      "description": "Quantitative limits. `None` means \"no limit stated\", which under\nattenuation means \"inherit the parent's\" — a child may state a smaller\nnumber, never a larger one.",
+      "type": "object",
+      "properties": {
+        "instructions": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "memory_kb": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "ConnectorWiring": {
+      "description": "How one connector is wired for this process: which backing this build\nresolves the name to, and the *scope* the host grants it — a place (a\ndirectory for `fs`, a directory for `sql`, a key), never the\napplication's filenames. Programs name resources within the scope.",
+      "type": "object",
+      "properties": {
+        "backing": {
+          "description": "Names a registered backing when a build carries more than one\n(real vs mock, native vs browser). Default: the registry's default\nbacking for the connector's name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Scope"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Effect": {
+      "description": "Grant or deny. `dvs.c` has grants only; `deny` is the Capabilities.md\nextension, and attenuation treats it asymmetrically: allows may only\nshrink, denies may only grow.",
+      "type": "string",
+      "enum": [
+        "grant",
+        "deny"
+      ]
+    },
+    "Entry": {
+      "description": "A program: a path relative to dlua_dir, or stdlib:<name> for one of drt's own.",
+      "type": "string"
+    },
+    "Grant": {
+      "description": "A grant is `effect × capability × scope` (Capabilities.md §1). Scope is\noptional with a sane default on purpose: mandatory scope on every grant is\nfriction, and friction is what gets hacked around.",
+      "type": "object",
+      "properties": {
+        "capability": {
+          "description": "The capability name or trailing-`*` pattern: `host:time`, `host:fs/*`,\n`queue:work/*`, `lifecycle`.",
+          "type": "string"
+        },
+        "effect": {
+          "$ref": "#/$defs/Effect",
+          "default": "grant"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Scope"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "capability"
+      ]
+    },
+    "Identity": {
+      "description": "Process identity. The host key doubles as the node identity and the\nsnapshot stamp source (SPEC.md §§8–9).",
+      "type": "object",
+      "properties": {
+        "host_key_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Listener": {
+      "description": "A listener: a network surface published on purpose (GUARANTEES.md). The\n`http` scheme is `dhost_http.c`'s contract — a queue bridge, where\nrequests land on a named root queue and replies drain from another —\nwith the same field names and the same defaults, so a deployment moves\nbetween the C host and DRT by moving its config.",
+      "type": "object",
+      "properties": {
+        "address": {
+          "description": "e.g. `127.0.0.1:8080`. The C defaults its bind to the loopback —\nthe LB's side — and so should configs here: the edge terminates\nTLS and sets the trusted headers, and a listener facing the world\ndirectly is a deliberate act, not a default.",
+          "type": "string"
+        },
+        "admit_timeout_ms": {
+          "description": "How long a request waits for `queue` to *exist* before the host\nanswers 503 on the program's behalf.\n\nA listener accepts from the moment the process binds it, which is\nbefore the program has run a line — so a request can arrive for a\nqueue the program has not declared yet. Answering that at once is\na definitive answer to a question the deployment has not finished\nhearing, and it lands hardest on a caller that handshakes exactly\nonce at startup: it takes the refusal as the answer and never asks\nagain (issue #11).\n\nSo the request waits, and the wait is bounded rather than open:\npast this, a program that has declared nothing is a program that\ndeclares nothing, and 503 is the truth. `0` restores the immediate\nrefusal. A value at or past `conn_deadline_ms` cannot be reached —\nthe connection's own deadline answers 504 first.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 2000,
+          "minimum": 0
+        },
+        "authorized_keys": {
+          "description": "`ssh` only: an `authorized_keys` file whose keys get the REPL with\nwhat `drt repl` here would hold. `~/.ssh/authorized_keys` when\nunset and present, which is the stance sshd takes: the account's\nown list of who may act as it. `principals` grant per key instead.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "conn_deadline_ms": {
+          "description": "The host-side timeout, per connection: a program that has not\nanswered by then gets its connection a 504 and the late reply is\nconsumed without a reader. `deadline_ms` is the C host's spelling,\naccepted so a `.host.lua` maps without a rename.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 10000,
+          "minimum": 0
+        },
+        "headers": {
+          "description": "The request-header allowlist, lowercased: a header the deployment\ndoes not name never reaches the program. The bound is the C's\n`DH_MAX_HDRS` (16) per direction.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_body": {
+          "description": "Refuse bigger request bodies (413).",
+          "type": "integer",
+          "format": "uint",
+          "default": 65536,
+          "minimum": 0
+        },
+        "max_conns": {
+          "type": "integer",
+          "format": "uint",
+          "default": 64,
+          "minimum": 0
+        },
+        "queue": {
+          "description": "Requests land here, on the root program.",
+          "type": "string",
+          "default": "http_in"
+        },
+        "reply_queue": {
+          "description": "Responses drain from here. Two listeners may share one.",
+          "type": "string",
+          "default": "http_out"
+        },
+        "resp_headers": {
+          "description": "The response-header allowlist: a name a guest reply uses that is\nnot here is dropped whole — never truncated, never cleaned.\n`response_headers` is the C host's config spelling.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scheme": {
+          "description": "`http`, the queue bridge below, or `ssh`, the REPL over SSH\n(SPEC.md §9): a PTY gets a REPL instance holding its key's grants,\nwith `identity.host_key_path` as the host key. The queue and HTTP\nfields mean nothing to `ssh`.",
+          "type": "string"
+        },
+        "stream_idle_ms": {
+          "description": "How long a streamed response may go without a chunk before the\nhost closes it and tells the program. `0` is no limit, which leaves\na stream the program forgets open until the client leaves.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 60000,
+          "minimum": 0
+        },
+        "streaming": {
+          "description": "Whether a reply may open a streamed response: `stream = true` sends\nthe head, later `chunk` replies send the body as they arrive, and\n`done` ends it. Off by default, because a streamed response holds\nits connection, and one of `max_conns`, for as long as it runs. DRT's\nown; the C host has no streaming.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "scheme",
+        "address"
+      ]
+    },
+    "NetcheckConfig": {
+      "description": "The root object the process merges file + flags + env into. The root\n*instance* config is embedded flat — the same shape at depth zero — and\nthe process-level rest is what only the OS process can own: connector\nwiring, listeners, identity, principals.\n`netcheck`: the NAT diagnostic, inside a deployment.\n\nThe verb's flags as keys, plus the two every other reporting block here has.\nA diagnostic a program can read is worth more than one a human reads once: a\nrendezvous program deciding whether to offer a direct path or a relay is\nasking exactly the question `netcheck` answers, and asking it from inside the\ndeployment means asking it about the deployment's own network rather than\nabout whatever shell ran the verb.",
+      "type": "object",
+      "properties": {
+        "pin_source_port": {
+          "type": "boolean"
+        },
+        "port": {
+          "description": "Ports an inbound probe should try. Needs a `reflect` edge to derive the\nprobe host from.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0
+          }
+        },
+        "probe_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "queue": {
+          "description": "Where the verdict lands, on the root program's queues.",
+          "type": "string",
+          "default": "netcheck"
+        },
+        "reflect": {
+          "description": "Reflect edges. An edge supplies what to measure against -- its own STUN\nlist and vantages -- so one of these often replaces every other key.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reflect_at": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "report_ms": {
+          "description": "How often to measure again, in milliseconds. `0` is once, at start,\nwhich is what a deployment deciding its own topology wants; a number is\nfor one that expects the network to move under it.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 0,
+          "minimum": 0
+        },
+        "stun": {
+          "description": "STUN servers, `host:port`. The decisive measurement is the UDP mapping,\nso two of these answer more than any number of anything else.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "udp_port": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "Numeric": {
+      "description": "How much numeric work an instance may do, and how exactly it must be\ndone (`doc/Plan-2026-09.md` §3.4, the numeric spec §4).\n\nBounded per instance and attenuated at spawn for the same reason\n[`Budget`] is: a kernel's cost is not the guest's instruction count, and\na child that could raise its own ceiling has no ceiling. `None` on\neither field means \"no bound stated\", which under attenuation means\n\"inherit the parent's\".",
+      "type": "object",
+      "properties": {
+        "max_elements": {
+          "description": "The most elements one kernel call may process. `None` is no bound;\n`Some(0)` is a bound of zero, which is a real configuration -- an\ninstance that may hold arrays and may not compute over them.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "max_tier": {
+          "description": "The loosest determinism tier a kernel may run at.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Tier"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "P2pConfig": {
+      "description": "`drt p2p`, from a file: `drt --config mypc.json p2p` (`doc/P2P.md` §8).\n\nEvery flag of the verb is a key here under the flag's name (`-p` is\n`ports`, `-P` is `forward_ports`, `-A` is `all_ports`, `--H` is the\n`headers` map), so a credential -- a signalling token in `headers`, a\ncaller token -- lives in a 0600 file and not in `ps` or a paste. Which\nrole this is (call, park, listen, match) is told by which keys are\npresent, exactly as the flags tell it, and two roles in one block are\nrefused by name. Flags merge over the file per key: a flag naming a key\nthe file also names replaces it, and a flag naming a different role than\nthe file is the conflict two flags would be.\n\nOne key has no flag: `identity_file`, the ICE credentials and DTLS\ncertificate a listening or parked peer keeps so its record and\nfingerprint survive a restart (`~/.drt/p2p/identity.json` when absent).\n`authorized_keys` is also the `--authorized-keys` flag.\n\n`tunnel` is read as an alias of this block for one release, each of its\nkeys mapped to its replacement here with a warning naming both.",
+      "type": "object",
+      "properties": {
+        "accept": {
+          "description": "`--accept`, repeatable: the caller ranges a parked peer admits.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "all_ports": {
+          "description": "`-A`: every port of the `forward` host.",
+          "type": "boolean"
+        },
+        "authorized_keys": {
+          "description": "`--authorized-keys`: the REPL default's key file, in place of the\nrunning user's `~/.ssh/authorized_keys`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "capacity": {
+          "description": "`--capacity`: names a `match` server holds at once.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "extra_roots": {
+          "description": "`--extra-root`: PEM files trusted beside the public roots.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "fallback": {
+          "description": "`--fallback`: `relay`, tried only when no direct path exists.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fingerprint": {
+          "description": "`--fingerprint`: the answerer's DTLS fingerprint, `SHA256:…`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "forward": {
+          "description": "`--forward`: what a serving peer serves (`doc/P2P.md` §5). An empty\nstring is a bare `--forward`: a relay.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "forward_ports": {
+          "description": "`-P`: the ports of the `forward` host, `80,8080:8090,31200`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "headers": {
+          "description": "`--H`, by name: HTTP headers for the signalling side. `auth` is\nshorthand for `Authorization: Bearer <value>`.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "host": {
+          "description": "`--host`: an address to bind, `0.0.0.0`, or a CIDR to admit.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "identity_file": {
+          "description": "The ICE credentials and DTLS certificate a serving peer keeps.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "listen": {
+          "description": "`--listen`: the UDP port to serve on, with a fixed record.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "match": {
+          "description": "`--match`: the TCP port to be a signalling server on.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "pair": {
+          "description": "`--pair`: whom the signalling server may tell a parked peer to call\n(`doc/DRT-Signalling.md` §6.2): `*` for any name at the server it is\nparked at, or `drt://<server>/v1/<glob>`. Absent, no one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "park": {
+          "description": "`--park`: the signalling server to answer calls at, by name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "peer": {
+          "description": "The positional: the peer to call (`doc/P2P.md` §3).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ports": {
+          "description": "`-p`, repeatable: `<local>:<remote>`, `:<remote>`, or `<local>`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "relay": {
+          "description": "`--relay`: a peer that carries the session, by request.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "signal": {
+          "description": "`--signal`: a listening peer's own signalling port; 0 for one the\nsystem chooses, as the bare flag does.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "stun": {
+          "description": "`--stun`, repeatable: `host:port` servers asked for a public address.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "PluginWiring": {
+      "description": "A plugin family this deployment wires: which manifest describes it, and\nwhat place it is given to work in.\n\nSeparate from [`ConnectorWiring`] because the two say different things.\nA connector's wiring names a *backing* this build already carries; a\nplugin's names a *file on disk* describing a program this build has\nnever seen. The manifest is the publisher's claim about their own\nprogram -- its family, its transport, its scope, its limits -- and the\ndeployment's half is only where that file is and what scope, if any, to\nhand over.\n\n**A scope handed to a plugin is a promise, not an enforcement**\n(`drt_plugin::manifest::Wiring` says it at length). For a builtin the\nhost makes the request, so an allowlist binds the party doing the work;\na plugin makes its own requests, so the same allowlist binds only a\npublisher who chose to honour it. The key is spelled the same for both\nso a config reads uniformly, and the difference is real and is stated\nrather than hidden by the spelling.",
+      "type": "object",
+      "properties": {
+        "call_timeout_ms": {
+          "description": "How long one call may take, over the manifest's.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "dial_back_timeout_ms": {
+          "description": "How long `spawn` waits to be greeted, over the manifest's.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "manifest": {
+          "description": "The `<name>.plugin.json` that describes this plugin, resolved the\nway every other path in a config is.",
+          "type": "string"
+        },
+        "max_inflight": {
+          "description": "Calls one session may have outstanding, over the manifest's.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "scope": {
+          "description": "The wiring scope handed over, if any. Absent is the C host's\nbehaviour: no scope at all.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Scope"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "manifest"
+      ]
+    },
+    "Program": {
+      "description": "Where a program's source comes from. Config never carries the\napplication's own filenames as *scopes* — this is the program itself.",
+      "oneOf": [
+        {
+          "description": "A `.dlua`/`.lua` file, resolved against the process working directory\nfor the root; spawn requests carry source, not paths.",
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "path"
+          ]
+        },
+        {
+          "description": "Inline source text.",
+          "type": "object",
+          "properties": {
+            "source": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "source"
+          ]
+        }
+      ]
+    },
+    "RelayConfig": {
+      "description": "The rendezvous relay (`drt relay`): parked WSS legs paired by label and\nspliced. Keys are **per label**, not global, because tickets later\nreplace the key *values* and not this shape — and because per-label\nrevocation is what a leaked device key needs.",
+      "type": "object",
+      "properties": {
+        "admit_timeout_ms": {
+          "description": "How long the relay waits for an admit answer before refusing.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 2000,
+          "minimum": 0
+        },
+        "bind": {
+          "description": "e.g. `127.0.0.1:8090` — behind the edge, which terminates TLS and\nroutes `<label>--tunnel.<zone>` here.",
+          "type": "string"
+        },
+        "labels": {
+          "description": "Label → its two keys. A label absent here has no route at all, and\nan empty key is a closed door: the relay carries bytes to someone's\nsshd, so absence must fail rather than open.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/RelayLabel"
+          },
+          "default": {}
+        },
+        "queue": {
+          "description": "Where the relay's control events land on the root program, when the\nrelay runs inside a deployment (`drt start`). Presence, session\nopen/close, and the byte counts a meter needs all arrive here as\nordinary queue messages — the same bridge the http listener uses,\nso the supervisor learns about tunnels without new mechanism.",
+          "type": "string",
+          "default": "relay_in"
+        },
+        "reply_queue": {
+          "description": "Where the relay reads *answers*, which is what turns observation\ninto arbitration.\n\n**Empty means no arbitration**, and that is the default: the static\nper-label key is the only gate, exactly as it is today. Naming a\nreply queue is how a deployment opts in to being asked — and once\nit has, a question it does not answer within `admit_timeout_ms` is\na refusal, because absence must fail for the same reason an empty\nkey does. Opting in is therefore also opting into answering.",
+          "type": "string",
+          "default": ""
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "bind"
+      ]
+    },
+    "RelayLabel": {
+      "type": "object",
+      "properties": {
+        "caller_key": {
+          "description": "Presented by the caller claiming one (`/s/<label>?k=…`). Distinct\nfrom `park_key` on purpose: the device's key is long-lived on a\nlaptop, the caller's is the one handed to whoever is connecting.",
+          "type": "string",
+          "default": ""
+        },
+        "park_key": {
+          "description": "Presented by the device parking a leg (`/park/<label>?k=…`).",
+          "type": "string",
+          "default": ""
+        }
+      },
+      "additionalProperties": false
+    },
+    "Residency": {
+      "description": "The host-side residency policy (`doc/Hibernate.md` §9.1.2: the policy\nbelongs to the host, never the swarm — the swarm's table bounds how many\ninstances *exist*, resident or cached alike). With a budget set, `drt\nstart` hibernates the least-recently-active instances past it; a\ndeployment that states none keeps everything resident, bounded by the\ninstance table.",
+      "type": "object",
+      "properties": {
+        "max_resident": {
+          "description": "How many non-root instances may be resident at once. The root is\nexempt: it holds the request queues, and a deployment whose front\ndoor hibernates is not saving memory, it is closed.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "park_floor_ms": {
+          "description": "The shortest park timeout an instance may arm, in milliseconds. A\npark deadline outlives hibernation (`doc/Plan-0.7.0.md` §6), so a\nguest's choice of timeout is a wake rate for a parked node, and a\nshort one re-armed after every wake is a rebuild loop. Thirty\nseconds: three orders of magnitude above a rebuild, far under the\nminutes-to-hours deadlines the feature exists for (§6.4). A park\nunder it is refused when it is armed. Here and not on the root\nconfig because this is the only block under which anything\nhibernates.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 30000,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "max_resident"
+      ]
+    },
+    "Scope": {
+      "description": "What a grant applies to: a value whose shape the capability declares (Capabilities.md)."
+    },
+    "SshPrincipal": {
+      "description": "Authorized keys → capability grant sets: an SSH principal is an attenuated\nnode in the provenance tree.",
+      "type": "object",
+      "properties": {
+        "caps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Grant"
+          }
+        },
+        "key": {
+          "description": "The public key, OpenSSH one-line format.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "key"
+      ]
+    },
+    "StunConfig": {
+      "description": "The STUN binding server, as `drt start` and `drt stun` run it.\n\nDRT's own, like `relay`: the C host has no STUN, so this is an\nextension rather than a dialect match. It exists for the same reason\nthe relay does — a fetchpoint behind CGNAT has to learn its own\nreflexive address from somewhere, and depending on a third party's\nSTUN service to find out puts a stranger on the path of your own NAT\ntraversal.\n\nTwo servers are the useful deployment, not one: `stun.detect_mapping`\nclassifies a NAT by asking two or more servers about the *same* socket\nand comparing what they saw, and refuses with `NotEnoughServers`\nbelow two. A `stun1`/`stun2` pair on separate addresses is what makes\nthat classification available to anyone pointed at them.",
+      "type": "object",
+      "properties": {
+        "bind": {
+          "description": "e.g. `0.0.0.0:3478`, or a bare host paired with `port`. Unlike the\nrelay and the http listener, a STUN server is *meant* to face the\nworld — its whole job is reporting the address the world sees — so\nthere is no loopback default to inherit here. The config says where.",
+          "type": "string"
+        },
+        "queue": {
+          "description": "Where the server's counters land on the root program when it runs\ninside a deployment (`drt start`), as ordinary queue messages on\nthe same bridge the relay's control plane uses.",
+          "type": "string",
+          "default": "stun_in"
+        },
+        "report_ms": {
+          "description": "How often to report. A binding server is stateless and has no\nevents to speak of — only counters — so it reports on a timer\nrather than per datagram: a busy server would otherwise spend the\ndeployment's queue on telemetry about itself.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 10000,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "bind"
+      ]
+    },
+    "Tier": {
+      "description": "What a kernel implementation promises about its results, from the\nnumeric spec §4. The order is looseness, and it is what attenuation\ncompares: `exact` promises most, `fast` promises nothing across targets.\n\n- `exact`: integer, NTT, decQuad. Bit-identical by construction on every\n  target.\n- `reproducible`: bit-identical to the portable kernel on every target.\n- `fast`: no cross-target guarantee.",
+      "type": "string",
+      "enum": [
+        "exact",
+        "reproducible",
+        "fast"
+      ]
+    },
+    "TunnelConfig": {
+      "description": "`drt tunnel`, from a file: `drt --config device.json tunnel`.\n\nOne key per flag the verb takes, and the mode is told by which keys are\npresent, exactly as the flags tell it: `park` with `to` is the device\nside of the relay, `claim` with `bind` is a local port that claims one\nleg per connection, `claim` alone is the stdio bridge (OpenSSH's\n`ProxyCommand` shape), and `listen` with `to` is a WebSocket acceptor\nin front of any sshd. Two of those in one block is a refusal by name,\nas is a key that belongs to another mode.\n\nWhy a file at all: the `?k=` in a park or claim URL is a credential.\nOn a command line it is in `ps`, in shell history, and in every \"run\nthis\" someone pastes; in a 0600 file it is in none of them. The rest is\nthat a device's tunnel becomes one file a setup script writes and a\nunit runs, which is the shape everything else on a box already has.\n\nFlags merge over the file **per key**: a flag naming a key the file\nalso names replaces it, and a flag naming a different mode than the\nfile is the same conflict two flags would be. Nothing here changes\nwhen the tunnel later takes a direct path: the same two files, and\nwhether a session went direct or through the relay is DRT's to know.\n\n`claim`, because that is what the relay calls the act (`Parked::Claimed`,\n\"claim first, splice second\") and the positional flag has no name of\nits own. `bind`, as every other block spells the local address it\nlistens on. `park`, `to` and `listen` as the flags are.",
+      "type": "object",
+      "properties": {
+        "bind": {
+          "description": "With `claim`: serve this local address instead of stdio, one fresh\nleg per accepted connection. `127.0.0.1:2222`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "claim": {
+          "description": "The `ws://` or `wss://` URL the caller half dials: the relay's\n`/s/<label>?k=…`, or a gate straight in front of a `listen`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "extra_roots": {
+          "description": "PEM files to trust beside the public roots, never instead of them --\nspelled as `connectors.rest`'s `extra_roots` is, for its reason. An\ninternal CA in front of the gate, typically.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "headers": {
+          "description": "Headers for the handshake of every leg this tunnel dials, by name:\na credential the far end reads instead of the URL's `?k=`, typically\n`{\"Authorization\": \"Bearer …\"}`, so the URL carries no secret into\nthe request line every proxy and access log records. `--header`\nis the same one flag at a time, and a flag naming a header this\nmap also names replaces it. Sent on a dial only: a `listen` accepts,\nand naming headers beside one is refused.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "listen": {
+          "description": "The other half: accept WebSocket connections here and bridge each\nto `to`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "park": {
+          "description": "The device side of the relay: hold a parked leg at this `/park/`\nURL and dial `to` lazily when a caller claims it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "to": {
+          "description": "Where `park` and `listen` deliver: a `host:port` this process can\ndial, `127.0.0.1:22` in front of an sshd.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "TurnConfig": {
+      "description": "The TURN relay, as `drt start` and `drt turn` run it: the last rung of\nthe traversal ladder, for the peers `stun` says cannot punch.\n\nDRT's own, like `stun`, and for the same reason: a fetchpoint whose\nmapping changes per destination has no direct path, and the relay\nthat carries it should be one the deployment runs rather than a\nstranger's. Credentials are coturn's `use-auth-secret` scheme byte\nfor byte -- `<expiry>:<principal>`, and a password that is the\nHMAC-SHA1 of that under a shared secret -- which is what\n`crypto/turn_credential` mints under `connectors.crypto.turn`. The\nsame secret in both blocks is the whole deployment, and a credential\nminted here verifies against coturn too, so either can stand behind\nthe same `--ice` answer (issue #12).",
+      "type": "object",
+      "properties": {
+        "bind": {
+          "description": "e.g. `0.0.0.0:3478`, or a bare host paired with `port`. Faces the\nworld, as `stun` does, so there is no loopback default: the config\nsays where.",
+          "type": "string"
+        },
+        "key": {
+          "description": "The shared secret, inline. The same three knobs as\n`connectors.crypto.turn`, resolved in the same order (file, then\nenv, then inline), because it is the same secret; one of the three\nis required, and none is an open relay, which refuses to bind.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key_env": {
+          "description": "The shared secret, from the named environment variable, read once\nat startup; unset is a refusal by name there.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key_file": {
+          "description": "The shared secret, from a file; one trailing newline is trimmed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_allocations": {
+          "description": "Hard cap on simultaneous allocations. Past it a request is refused\nand counted, never queued: a relay is a buffering machine, and this\nis its bound.",
+          "type": "integer",
+          "format": "uint",
+          "default": 256,
+          "minimum": 0
+        },
+        "queue": {
+          "description": "Where the server's reports land on the root program inside\n`drt start`: a counter snapshot on the timer below, and one\n`turn_closed` per allocation as it closes, with the principal and\nthe bytes it relayed -- the message a meter reads.",
+          "type": "string",
+          "default": "turn_in"
+        },
+        "realm": {
+          "description": "The authentication realm, echoed to clients.",
+          "type": "string",
+          "default": "drt"
+        },
+        "relay_address": {
+          "description": "The address peers are told to send relayed traffic to -- on a host\nbehind a NAT, its public address, which is not the bound one.\nDefaults to `bind`'s address when that names a specific one, and\nmust be given when `bind` is a wildcard: a relay handing out an\naddress nobody can reach fails after authentication, which is the\nworst place to fail.",
+          "type": "string",
+          "default": ""
+        },
+        "relay_bind": {
+          "description": "The local address the relay sockets themselves bind to.",
+          "type": "string",
+          "default": "0.0.0.0"
+        },
+        "report_ms": {
+          "description": "How often the counters are reported. Closes are reported as they\nhappen whatever this says, because a short allocation that opened\nand closed between two snapshots would otherwise take its byte\ncount with it.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 10000,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "bind"
+      ]
+    },
+    "WebrtcConfig": {
+      "description": "The WebRTC host inside `drt start` (`doc/BrowserAccess.md` §8): a\nbrowser reaches this process directly over a data channel, and the host\ncarries Wisp v1 streams to the targets `scope` names and to nothing else.\n\nThe block never learns how the two sides found each other. It reports\nits own presence record on `queue` and takes a browser's on\n`reply_queue`; the program does the signaling, as it does WireGuard's\nrendezvous. `webrtc` and every event name are placeholders until the\nowner names the feature (`doc/Plan-0.8.0.md` §6).",
+      "type": "object",
+      "properties": {
+        "bind": {
+          "description": "The session socket. A wildcard is advertised as the address this box\nroutes from; name an address on a box with several.",
+          "type": "string",
+          "default": "0.0.0.0:0"
+        },
+        "connect_timeout_s": {
+          "type": "integer",
+          "format": "uint64",
+          "default": 10,
+          "minimum": 0
+        },
+        "default": {
+          "description": "Where a browser starts: one of `scope`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "direct": {
+          "description": "Direct mode (`doc/BrowserAccess.md` §3.4): a caller holding this\nhost's record makes a session with no signaling at all, by choosing\nits own ICE credentials. The record is then the whole grant, so a\nhost that turns this on hands its record only to whoever may reach\nits scope. Signaled sessions work beside it either way.",
+          "type": "boolean",
+          "default": false
+        },
+        "hello_scope": {
+          "description": "Whether `hello` shows the scope's entries and `default`. On by\ndefault for this block, as every v1 client was written against:\na browser names its target by address, and the entries are what it\nmay name. Off, `hello` sends `scope` empty and names the services\nonly, which is `drt p2p`'s posture: the addresses behind a forward\nare this side's policy and, for a forward into a private network,\na map of it for anyone admitted (`doc/P2P.md` §7.2).",
+          "type": "boolean",
+          "default": true
+        },
+        "identity_file": {
+          "description": "The host's ICE credentials and DTLS certificate, kept so its record\nsurvives a restart. Created `0600` when missing; a file that exists\nand does not parse is refused, never replaced.",
+          "type": "string"
+        },
+        "idle_stream_timeout_s": {
+          "type": "integer",
+          "format": "uint64",
+          "default": 300,
+          "minimum": 0
+        },
+        "max_sessions": {
+          "type": "integer",
+          "format": "uint",
+          "default": 12,
+          "minimum": 0
+        },
+        "max_streams_per_session": {
+          "type": "integer",
+          "format": "uint",
+          "default": 64,
+          "minimum": 0
+        },
+        "publish_host_candidates": {
+          "description": "Whether the record carries the host candidate, which is this box's\nLAN address, to everyone in the room. Off, two machines on one LAN\nmeet through the router's public address, which works only where the\nrouter hairpins.",
+          "type": "boolean",
+          "default": true
+        },
+        "queue": {
+          "description": "Reports: `webrtc_record`, `webrtc_session`, `webrtc_stream`.",
+          "type": "string",
+          "default": "webrtc"
+        },
+        "reply_queue": {
+          "description": "Commands: `{command = \"open\", peer, rtc}` answers a browser's record;\n`{command = \"call\", peer, rtc}` calls an answerer's, for a deployment\nits signalling told to call (`doc/DRT-Signalling.md` §6.2);\n`{command = \"close\", peer}`.",
+          "type": "string",
+          "default": "webrtc_cmd"
+        },
+        "scope": {
+          "description": "`scheme://host[:port]` entries, and nothing a browser can reach\nbesides. Empty is allowed and reaches nothing.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "service": {
+          "description": "The label `hello` carries.",
+          "type": "string",
+          "default": ""
+        },
+        "services": {
+          "description": "Named services (`doc/BrowserAccess.md` §10.3): a name a peer can\nopen a stream to, each an alias of one entry in `scope`, so\n`{\"ssh\": \"ssh://127.0.0.1:22\"}` lets a caller say `ssh` and reach\nexactly what that entry does.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "stun": {
+          "description": "`host:port` STUN servers, asked from the session socket itself: a\nmapping only means something for the socket it was measured on.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "stun_refresh_s": {
+          "description": "Seconds between STUN refreshes once a server has answered. Each one\nkeeps the socket's NAT mapping alive between sessions and re-reports\nthe record if the mapping moved; home routers drop an idle UDP\nmapping after 30 to 120 s.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 25,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "identity_file"
+      ]
+    },
+    "WireguardConfig": {
+      "description": "The WireGuard peer this deployment is, as `drt start` and `drt wg` run\nit.\n\nDRT's own, like `relay`, `stun` and `turn`, and the rung above all\nthree: `netcheck` says whether a direct path can exist, `stun` measures\nthe mapping that decides it, `turn` carries what cannot be punched --\nand this is what runs *over* the path once there is one. In the process,\non gotatun, so a deployment that has a fetchpoint's address gets an\nencrypted link to it without a kernel module, `wg-quick`, or root on\nanything but the interface.\n\nThe connection to hole punching is the whole point of the block's shape:\n`listen_port` is the port `netcheck --udp-port` measures, peers may\nstart with no endpoint at all, and the endpoint is settable at runtime\nover `reply_queue`. So the rendezvous a program already runs over the\nrelay -- trade the two measured endpoints, tell both sides -- completes\nhere without a second daemon holding the socket.",
+      "type": "object",
+      "properties": {
+        "address": {
+          "description": "The address to put on the interface, as CIDR -- `10.9.0.1/24`.\nWithout one the interface comes up with no address and nothing can\nuse it, which is the `ip addr add` this block exists to avoid.\n\nOne address, because that is what the tun layer takes; a second\n(an IPv6 address beside an IPv4 one, say) is still `ip addr add`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expose": {
+          "description": "`mode = \"userspace\"` only: addresses inside the tunnel that reach\nlocal ports. A userspace stack with neither this nor `forward` is\nrefused: a device nothing can reach terminates traffic nobody can\nhand it.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WireguardExpose"
+          }
+        },
+        "forward": {
+          "description": "`mode = \"userspace\"` only: local ports that reach into the tunnel.\nIn kernel mode the interface is reached by address and a forward\nhere is refused, since it is a config that believes it is in the\nother mode.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WireguardForward"
+          }
+        },
+        "interface": {
+          "description": "The tunnel interface to create: `drt0`, `wg0`, `utun` on macOS.\nCreating one needs privilege (CAP_NET_ADMIN on Linux, root on macOS,\nwintun.dll on Windows), and that is the whole privilege this needs:\nno module, no `wg` tools, no `wg-quick`. Not read in\n`mode = \"userspace\"`, which creates nothing.",
+          "type": "string",
+          "default": "drt0"
+        },
+        "listen_port": {
+          "description": "The UDP port to listen on. **Required, and never zero**: gotatun\nreports the port it was *configured* with rather than the one it\nbound, so an ephemeral port could not be read back and named to a\npeer; and a NAT mapping is measured per port, so a peer that wants\nto be punched to must own a stable one. 51820 is the convention.",
+          "type": "integer",
+          "format": "uint16",
+          "default": 51820,
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "mode": {
+          "description": "Kernel interface or in-process stack. `kernel` unless the config\nsays otherwise; see [`WireguardMode`].",
+          "$ref": "#/$defs/WireguardMode",
+          "default": "kernel"
+        },
+        "mtu": {
+          "description": "The interface MTU. 1420 by default, not 1500: WireGuard's own\noverhead is 60 bytes over IPv4 and 80 over IPv6, and an interface\nleft at the ethernet default fragments every full-size packet.",
+          "type": "integer",
+          "format": "uint16",
+          "default": 1420,
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "peers": {
+          "description": "The peers. May be empty: a deployment that learns its peers at\nruntime adds them over `reply_queue`.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WireguardPeer"
+          }
+        },
+        "private_key": {
+          "description": "This peer's private key, base64, inline. The same three knobs as\nevery other secret in this config, resolved file, then env, then\ninline; one is required, since a device without a key has no\nidentity and can complete no handshake.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private_key_env": {
+          "description": "This peer's private key, base64, from the named environment\nvariable, read once at startup.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private_key_file": {
+          "description": "This peer's private key, base64, from a file -- `wg genkey`'s own\noutput, one trailing newline trimmed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "queue": {
+          "description": "Where the device's reports land on the root program inside\n`drt start`: a peer snapshot on the timer below, and an endpoint\nchange as it happens.",
+          "type": "string",
+          "default": "wg_in"
+        },
+        "reply_queue": {
+          "description": "Where the device reads commands, which is what makes a punch\npossible from inside a program: `endpoint` to point a peer at an\naddress the rendezvous just learned, `keepalive` to hold the hole\nopen. **Empty means the device takes no commands**, and that is the\ndefault: a config that does not ask to be steered is not steerable.",
+          "type": "string",
+          "default": ""
+        },
+        "report_ms": {
+          "description": "How often the peer snapshot is reported. An endpoint change is\nreported as it happens whatever this says: a peer that roamed\nbetween two snapshots is the event a punch is waiting for.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 10000,
+          "minimum": 0
+        },
+        "stun": {
+          "description": "STUN servers to measure this device's own mapping with, **on\n`listen_port`, immediately before the device binds it**.\n\nThis is the one piece that makes a punch measurable rather than\nhoped for. `netcheck --udp-port` cannot do it once a deployment is\nrunning -- the device already holds the port, so the measurement\nwould refuse to bind, and measuring a *different* port measures a\ndifferent mapping. Measuring here, microseconds before the same\nlocal port is bound for real, is as close as a userspace program\ngets to asking about the socket it is going to use.\n\nTwo servers minimum on separate addresses, because one server can\nreport an address and only two can say whether it *changed* --\nwhich is the fact that decides whether a punch can work at all.\nEmpty means do not measure.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "turn_fallback": {
+          "description": "Whether this device may be asked, at run time, to send through a\nTURN allocation — the fallback for a NAT `stun` says cannot be\npunched.\n\nOff by default, and the cost of turning it on is a real one: a\ndevice that may relay gives up gotatun's batched `recvmmsg` read,\nbecause a batch parked on the direct socket would starve the relayed\npath. A device that will never relay should not pay for the option.\n\nNo credential here: `crypto/turn_credential` mints one under a\nsecret the guest cannot read, and the program hands it over on\n[`WireguardConfig::reply_queue`] when the mapping comes back\n`punchable: false`. So the decision is the program's, and the\n`wireguard` block never holds a TURN secret.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "WireguardExpose": {
+      "description": "An address inside the tunnel that reaches a local port, in\n`mode = \"userspace\"`: what a peer dials to reach this machine's sshd.\nThe device half; without it nothing listens inside a userspace stack,\nwhere in kernel mode the kernel would deliver to the box's own sshd.\n`tunnel --park --to`'s shape: dialed lazily, on the first connection.",
+      "type": "object",
+      "properties": {
+        "to": {
+          "description": "The local `host:port` each inbound connection is dialed to,\n`127.0.0.1:22` in front of an sshd.",
+          "type": "string"
+        },
+        "tunnel": {
+          "description": "The `ip:port` a peer dials. The address is the block's own\n`address`, because the stack answers on that and nothing else.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "tunnel",
+        "to"
+      ]
+    },
+    "WireguardForward": {
+      "description": "A local port that reaches an address inside the tunnel, in\n`mode = \"userspace\"`: `ssh -p 2222 127.0.0.1` with nothing configured on\nthe client. The caller half; `tunnel`'s `bind` is the same shape.",
+      "type": "object",
+      "properties": {
+        "bind": {
+          "description": "The local `ip:port` to listen on. Port `0` takes an ephemeral one,\nand the `wireguard_forward` report is how a program learns which.",
+          "type": "string"
+        },
+        "to": {
+          "description": "The `ip:port` inside the tunnel that each accepted connection dials,\nfrom the stack's own address. An address, not a name: there is no\nresolver inside a tunnel.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "bind",
+        "to"
+      ]
+    },
+    "WireguardMode": {
+      "description": "Which stack terminates the tunnel's IP side.\n\n`kernel`: an interface this process creates, which needs\n`CAP_NET_ADMIN` (root on macOS, `wintun.dll` on Windows) and is reached\nby address like any other. `userspace`: a TCP/IP stack inside this\nprocess, needing no privilege at all and reached only through\n[`WireguardConfig::forward`] and [`WireguardConfig::expose`]. Explicit\nand never inferred from a missing privilege, by this repository's rule\nthat a config which did not ask is not steered.",
+      "type": "string",
+      "enum": [
+        "kernel",
+        "userspace"
+      ]
+    },
+    "WireguardPeer": {
+      "description": "A WireGuard peer, as the `wireguard` block names it.\n\nThe fields are `wg-quick`'s, deliberately: an operator who has written a\n`[Peer]` stanza should be able to write this without learning anything,\nand a key pasted from one should work in the other. Keys are base64, the\ntool's own encoding, not hex.",
+      "type": "object",
+      "properties": {
+        "allowed_ips": {
+          "description": "What may be routed to and accepted from this peer, as CIDR. Both\ndirections at once, which is WireGuard's cryptokey routing: a packet\narriving from this peer with a source outside these networks is\ndropped, not merely unroutable.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "endpoint": {
+          "description": "Where to send to, before the peer has been heard from. Optional\nbecause a punched peer has no endpoint until the rendezvous supplies\none, which is what the `endpoint` command on the reply queue is for.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "keepalive": {
+          "description": "Seconds between keepalives, or none. This is the field a punched\nhole depends on: a NAT mapping with no traffic through it closes in\ntens of seconds, and 25 is the interval the tooling settled on.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "preshared_key_env": {
+          "description": "An optional symmetric key mixed into the handshake, base64, from an\nenvironment variable. Post-quantum belt and braces, and per peer.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "public_key": {
+          "description": "The peer's public key, base64. Its identity: there is no other name\nfor a peer in this protocol.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "public_key"
+      ]
+    }
+  }
+}

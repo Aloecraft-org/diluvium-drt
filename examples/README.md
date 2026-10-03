@@ -1,14 +1,14 @@
 # DRT examples
 
 A run-through for someone who has a `drt` binary and has never run anything
-with it. Twenty-six sittings — twenty-seven directories, because `05` has a
+with it. Thirty-two sittings — thirty-three directories, because `05` has a
 live twin — meant in order: one idea each, a command block you can paste, and
 an `expected.txt` that is the real output of running it rather than a
 transcription of what it ought to say. A **drt app** is a config plus a
 program; the first two examples are that sentence taken apart, and most of the
 rest are one program run under two or three configs, so every difference
 between the outputs is the config's doing and not the program's. This is not a
-reference. Everything here is v0.6.0.
+reference. Everything here is v0.8.0.
 
 | directory | what it teaches | the command |
 |---|---|---|
@@ -39,6 +39,12 @@ reference. Everything here is v0.6.0.
 | [`23-reading-parquet`](23-reading-parquet) | The `data` connector: parquet columns cross as raw bytes and text crosses dictionary-encoded, so a million-row column is a million bytes rather than a million Lua values. | `drt run --config app.json` |
 | [`24-wireguard-userspace`](24-wireguard-userspace) | `mode = "userspace"` puts a TCP/IP stack in the process instead of an interface on the machine, so two peers cross a real tunnel with no `CAP_NET_ADMIN`, no sudo and no wintun.dll. | `./demo.sh` |
 | [`25-modules`](25-modules) | A program in more than one file. Every `.dlua` beside the entry is a module the host compiled before the program started, so `require` reads no filesystem and costs no capability. | `drt run app.dlua` |
+| [`26-arrays`](26-arrays) | The `array` library: a typed buffer the core owns rather than a Lua table, elementwise arithmetic with a scalar broadcast, and why the contents print as IEEE bits and never as decimals. | `drt run app.dlua` |
+| [`27-reductions-and-grouping`](27-reductions-and-grouping) | The three rules that make a reduction answer the same thing on every target: a canonical summation order, one total ordering with NaN last, and first-appearance group ids. | `drt run app.dlua` |
+| [`28-fft`](28-fft) | `rfft` on a real signal, printed as `real:imag` bit patterns. The example where a compiler flag that failed to reach one target shows up as a differing hex digit. | `drt run app.dlua` |
+| [`29-browser-access`](29-browser-access) | Signalling is a program: the host answers `doc/DRT-Signalling.md`'s caller request with its own record, and the browser then reaches the host's scope directly over WebRTC. | `./demo.sh` |
+| [`30-signaling-room`](30-signaling-room) | The reference server for `doc/DRT-Signalling.md`: a caller's request is held until an answerer that cannot take requests, such as a page, reads it by cursor and answers. Its event stream says when to read. | `./demo.sh` |
+| [`31-streaming-responses`](31-streaming-responses) | Server-Sent Events from a program: a reply with `stream = true` sends the head at once, the body follows in pieces, and a client that leaves is reported back. | `./demo.sh` |
 
 `drt run` executes one program to completion and exits — no swarm, no
 listeners, no second instance — and it is what `01`–`07`, `10`, `12`, `16`,
@@ -67,9 +73,10 @@ cd examples && ./run-all.sh                       # all, skipping the networked 
 cd examples && ./run-all.sh --net                 # all
 ```
 
-Against a build rather than an installed `drt`, use `--all-features`. A bare
+Against a build rather than an installed `drt`, use `--features full -p drt`
+(`--all-features` adds `plugins`, which is a `custom` profile to the gate). A bare
 `cargo build` is a **slim** binary — no `sql`, `ssh`, `rest`, `netcheck`,
-`tunnel` or `relay` — and eight of these need those, so they are skipped and
+`tunnel` or `relay` — and seventeen of these need those, so they are skipped and
 named rather than run:
 
 ```
@@ -123,13 +130,14 @@ output.
 Named rather than omitted, so you are not left looking for them.
 
 - **`crypto`.** In every build's connector list, and the family `01` uses to
-  show you a `denied` — and no example wires it, because in v0.4.0 the crypto
+  show you a `denied` — and no example wires it, because the crypto
   scope demands a signing key even for the keyless calls. That conflict is
   unresolved, and it is why `crypto/random` is not answered with no config.
-- **`drt repl`** works and has no line editor — no history, no arrow keys, no
-  editing a line you have typed. Not a first day's tool.
-- **`drt ps`** is a stub: it prints `drt ps: not built yet`, and reaching a
-  running deployment over the control endpoint lands with sshd.
+- **`drt repl`** has a line editor (history, arrows, Tab on guest names) and
+  is the subject of no example, because every example is a program.
+- **`drt ps`** asks a deployment running under `drt start` with an `ssh`
+  listener (SPEC.md §13a). No numbered example runs one, because it wants a
+  second process holding a key.
 - **The relay's control plane.** `11` and `19` are the tunnel and the relay
   themselves.
   The half only `drt start` has — the supervisor, the admit question asked

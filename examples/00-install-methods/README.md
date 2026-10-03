@@ -15,13 +15,15 @@ drt buildinfo
 ## What you should see
 
 ```
-version: 0.4.0
+version: 0.8.0
 profile: full
-dv_abi: 1
-dv_abi_expected: 1
-diluvium: f137b308c4dce917b24c71ab41add61606945e58
-connectors: time,fs,crypto,sql,ssh,rest,ssmtp,exec,listen
-verbs: buildinfo,commit,deploy,key,netcheck,ps,repl,rm,run,start,tunnel,wg
+dv_abi: 2
+dv_abi_expected: 2
+diluvium: 97bb9f9d28974e3b4124a2a015e5b06da54a0c98
+diluvium_version: 0.17.2
+features: regex,json,msgpack,snapshot,numeric
+connectors: time,fs,crypto,sql,ssh,rest,ssmtp,exec,data,socket,ws,listen
+verbs: buildinfo,commit,deploy,key,netcheck,p2p,ps,repl,rm,run,ssh,start,tunnel,wg
 ```
 
 Another build answers with its own numbers. `drt buildinfo --json` is the

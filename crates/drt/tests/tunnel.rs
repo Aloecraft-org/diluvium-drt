@@ -700,7 +700,10 @@ fn a_key_from_another_mode_is_refused_rather_than_ignored() {
     })
     .unwrap_err();
     assert!(err.contains("`tunnel.to` in the config"), "{err}");
-    assert!(err.contains("belongs with `park` or `listen`"), "{err}");
+    assert!(
+        err.contains("belongs with `park`, `listen` or an `rtc:` claim"),
+        "{err}"
+    );
 
     // `bind` beside a park, typed as the flag.
     let err = drt::tunnel::resolve(

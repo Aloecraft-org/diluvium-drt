@@ -10,6 +10,34 @@
 //! reply:    {conn, status?, body?, content_type?, headers?} <- `reply_queue`
 //! ```
 //!
+//! A listener with `streaming` set takes three more reply shapes, which
+//! are DRT's own (the C host has no streaming):
+//!
+//! ```text
+//! head:     {conn, stream = true, status?, content_type?, headers?, body?}
+//! chunk:    {conn, chunk, done?}
+//! end:      {conn, done = true}
+//! closed:   {conn, event = "closed", reason}   -> the `queue`
+//! ```
+//!
+//! The head goes out at once with `Transfer-Encoding: chunked`, and each
+//! chunk is written as it arrives, so an event stream or a long download
+//! reaches the client while the program is still producing it. `done`
+//! writes the terminating chunk and closes. A stream that ends any other
+//! way closes **without** the terminating chunk, so the client can tell a
+//! cut stream from a finished one, and the program is told on its request
+//! queue with `event = "closed"` and a [`Closed`] reason: the client went
+//! away, the stream went `stream_idle_ms` without a chunk, or the program
+//! wrote faster than the client read for [`STREAM_BACKLOG`] bytes. After
+//! that the token names nothing, and further chunks are consumed unread,
+//! as a late reply is. A `chunk` sent before any head is answered 500; a
+//! `stream = true` on a listener without `streaming` is answered 500 and
+//! names the setting.
+//!
+//! An edge that buffers responses holds every chunk until the stream
+//! ends: nginx does unless its location sets `proxy_buffering off`, or the
+//! program sends `x-accel-buffering: no` (which `resp_headers` must name).
+//!
 //! `path` is the whole request-target — query string included; parsing
 //! `?format=` is the program's business. `headers` is present only when the
 //! listener's allowlist is non-empty, and carries only allowlisted names
@@ -21,9 +49,11 @@
 //!
 //! - One request per connection, `Connection: close`, no keep-alive. The
 //!   edge (nginx) holds the client connections; this side is the LB's side.
-//! - `Transfer-Encoding` is refused outright: a parser that disagrees with
-//!   the LB about where a body ends is the request-smuggling primitive, so
-//!   chunked bodies are not spoken here — the LB buffers.
+//! - `Transfer-Encoding` on a request is refused outright: a parser that
+//!   disagrees with the LB about where a body ends is the request-smuggling
+//!   primitive, so chunked request bodies are not spoken here — the LB
+//!   buffers. A streamed *response* is chunked; that is the other
+//!   direction, and the LB's parser is the one reading it.
 //! - `Content-Length` is parsed strictly — digits only, no duplicates —
 //!   for the same reason.
 //! - Reply headers and `content_type` are dropped whole (never truncated,
@@ -72,6 +102,10 @@
 //!   request can spend — for the program, and for its queue to exist.
 //! - [`HDR_ROOM`], [`HDR_VALUE_MAX`], [`MAX_HEADERS`]: the C's bounds.
 //! - [`POLL_TICK`]: how often the polled acceptor looks while idle.
+//! - [`STREAM_PROBE`], [`STREAM_BACKLOG`]: how soon a streamed response
+//!   notices its client has gone, and how far a program may write ahead
+//!   of a client that reads slowly.
+//! - [`Closed`]: the three ways a streamed response ends without `done`.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -88,6 +122,36 @@ pub const MAX_HEADERS: usize = 32;
 /// between looks waits at most this long, which is the drive loop's own
 /// idle tick.
 pub const POLL_TICK: Duration = Duration::from_millis(1);
+/// How often a streamed response with nothing to write checks whether its
+/// client is still there. A client that leaves is noticed within this, or
+/// at the next write, whichever is sooner.
+pub const STREAM_PROBE: Duration = Duration::from_millis(250);
+/// Bytes a streamed response may hold unwritten. A client reading slower
+/// than the program writes would otherwise grow the host's memory without
+/// bound; past this the response is closed with [`Closed::Backlog`].
+pub const STREAM_BACKLOG: usize = 1 << 20;
+
+/// Why a streamed response ended without `done`: the `reason` of the
+/// `event = "closed"` message the program gets on its request queue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Closed {
+    /// The client closed its connection, or a write to it failed.
+    Client,
+    /// No chunk arrived within the listener's `stream_idle_ms`.
+    Idle,
+    /// The program wrote [`STREAM_BACKLOG`] bytes ahead of the client.
+    Backlog,
+}
+
+impl Closed {
+    pub fn reason(self) -> &'static str {
+        match self {
+            Closed::Client => "client",
+            Closed::Idle => "idle",
+            Closed::Backlog => "backlog",
+        }
+    }
+}
 
 #[cfg(not(target_os = "wasi"))]
 pub type Bound = threaded::Bound;
@@ -138,6 +202,16 @@ pub enum Outcome {
     },
     /// The host refused on the program's behalf, with the C's texts.
     Refused { status: u16, text: &'static str },
+    /// The program opened a streamed response: its head, and `body` as
+    /// the first chunk.
+    Stream {
+        status: u16,
+        content_type: String,
+        headers: Vec<(String, String)>,
+        body: Vec<u8>,
+    },
+    /// More of a streamed response; `last` ends it.
+    Chunk { bytes: Vec<u8>, last: bool },
 }
 
 impl Outcome {
@@ -159,14 +233,17 @@ pub struct ListenerRt {
     deadline: Duration,
     max_conns: usize,
     admit: Duration,
+    streaming: bool,
+    /// `None` is no limit (`stream_idle_ms = 0`).
+    stream_idle: Option<Duration>,
 }
 
 impl ListenerRt {
     fn new(idx: usize, cfg: &Listener) -> Result<Self, String> {
         if cfg.scheme != "http" {
             return Err(format!(
-                "listener {idx} speaks '{}', and only 'http' is served today \
-                 ('ssh' lands with the control endpoint)",
+                "listener {idx} speaks '{}'; a listener is 'http' (this queue \
+                 bridge) or 'ssh' (the REPL over SSH)",
                 cfg.scheme
             ));
         }
@@ -186,6 +263,9 @@ impl ListenerRt {
             deadline: Duration::from_millis(cfg.conn_deadline_ms),
             max_conns: cfg.max_conns,
             admit: Duration::from_millis(cfg.admit_timeout_ms),
+            streaming: cfg.streaming,
+            stream_idle: (cfg.stream_idle_ms > 0)
+                .then(|| Duration::from_millis(cfg.stream_idle_ms)),
         })
     }
 
@@ -201,6 +281,11 @@ impl ListenerRt {
     /// the deployment can answer.
     pub fn admit(&self) -> Duration {
         self.admit
+    }
+
+    /// Whether a reply may open a streamed response.
+    pub fn streaming(&self) -> bool {
+        self.streaming
     }
 }
 
@@ -234,6 +319,7 @@ fn parse_request(
     buf: &[u8],
     rt: &ListenerRt,
     mint: &mut dyn FnMut() -> u32,
+    peer: Option<SocketAddr>,
 ) -> Result<Parsed, (u16, &'static str)> {
     // Parsed from scratch each pass — httparse borrows from the buffer,
     // so headers cannot outlive the read that may reallocate it.
@@ -334,6 +420,12 @@ fn parse_request(
         ("path".into(), rmpv::Value::from(path)),
         ("body".into(), rmpv::Value::Binary(body.to_vec())),
     ];
+    // Who connected, as `ip:port`, when the socket can say: a program
+    // admitting by address (a signalling server's `DRT-Accept`) or logging
+    // who called reads it here. Absent behind a proxy's own connection.
+    if let Some(peer) = peer {
+        map.push(("peer".into(), rmpv::Value::from(peer.to_string())));
+    }
     if !rt.hdr_allow.is_empty() {
         map.push((
             "headers".into(),
@@ -393,8 +485,23 @@ pub fn reply_token(raw: &[u8]) -> u32 {
 /// permissive reads are the C's: a missing or ill-typed field takes its
 /// default, because the reply already left the program and refusing it
 /// answers nobody.
+///
+/// A reply carrying `chunk` or `done` continues a stream; one carrying
+/// `stream = true` opens one; anything else is a whole response.
 pub fn parse_reply(raw: &[u8], owner: &ListenerRt) -> Outcome {
     let value = rmpv::decode::read_value(&mut &raw[..]).unwrap_or(rmpv::Value::Nil);
+    let chunk = field(&value, "chunk").and_then(str_bytes);
+    let done = field(&value, "done").and_then(|v| v.as_bool()) == Some(true);
+    if chunk.is_some() || done {
+        return Outcome::Chunk {
+            bytes: chunk.map(|b| b.to_vec()).unwrap_or_default(),
+            last: done,
+        };
+    }
+    let stream = field(&value, "stream").and_then(|v| v.as_bool()) == Some(true);
+    if stream && !owner.streaming {
+        return Outcome::refused(500, NOT_STREAMING_TEXT);
+    }
     let status = field(&value, "status")
         .and_then(|v| v.as_i64())
         .filter(|s| (100..=599).contains(s))
@@ -444,6 +551,14 @@ pub fn parse_reply(raw: &[u8], owner: &ListenerRt) -> Outcome {
                 .map(|v| (name.clone(), v))
         })
         .collect();
+    if stream {
+        return Outcome::Stream {
+            status,
+            content_type,
+            headers,
+            body,
+        };
+    }
     Outcome::Reply {
         status,
         content_type,
@@ -472,12 +587,9 @@ fn reason_for(status: u16) -> &'static str {
     }
 }
 
-fn response_bytes(
-    status: u16,
-    content_type: &str,
-    headers: &[(String, String)],
-    body: &[u8],
-) -> Vec<u8> {
+/// The status line, `Content-Type` and the allowlisted headers; the
+/// caller adds the framing header and the blank line.
+fn head_start(status: u16, content_type: &str, headers: &[(String, String)]) -> String {
     let mut head = format!(
         "HTTP/1.1 {status} {}\r\nContent-Type: {content_type}\r\n",
         reason_for(status)
@@ -488,12 +600,67 @@ fn response_bytes(
         head.push_str(value);
         head.push_str("\r\n");
     }
+    head
+}
+
+fn response_bytes(
+    status: u16,
+    content_type: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+) -> Vec<u8> {
+    let mut head = head_start(status, content_type, headers);
     head.push_str(&format!(
         "Content-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     ));
     let mut out = head.into_bytes();
     out.extend_from_slice(body);
+    out
+}
+
+/// A streamed response's head, and `body` as its first chunk. Chunked
+/// rather than delimited by the close, so that a stream cut short is
+/// visible to the client as one: only `done` writes the terminating chunk.
+fn stream_head_bytes(
+    status: u16,
+    content_type: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+) -> Vec<u8> {
+    let mut head = head_start(status, content_type, headers);
+    head.push_str("Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
+    let mut out = head.into_bytes();
+    out.extend_from_slice(&chunk_bytes(body, false));
+    out
+}
+
+/// One chunk on the wire. An empty one is nothing, since a zero-length
+/// chunk is the terminator; `last` appends the terminator.
+fn chunk_bytes(bytes: &[u8], last: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len() + 16);
+    if !bytes.is_empty() {
+        out.extend_from_slice(format!("{:x}\r\n", bytes.len()).as_bytes());
+        out.extend_from_slice(bytes);
+        out.extend_from_slice(b"\r\n");
+    }
+    if last {
+        out.extend_from_slice(b"0\r\n\r\n");
+    }
+    out
+}
+
+/// The message a program gets when its streamed response ends without
+/// `done`: on the request queue, naming the token it streamed to.
+pub fn closed_message(token: u32, why: Closed) -> Vec<u8> {
+    let map = rmpv::Value::Map(vec![
+        ("conn".into(), rmpv::Value::from(token as u64)),
+        ("event".into(), rmpv::Value::from("closed")),
+        ("reason".into(), rmpv::Value::from(why.reason())),
+    ]);
+    let mut out = Vec::new();
+    // Writing a small map to a Vec cannot fail.
+    let _ = rmpv::encode::write_value(&mut out, &map);
     out
 }
 
@@ -510,6 +677,15 @@ fn outcome_bytes(outcome: &Outcome) -> Vec<u8> {
             body,
         } => response_bytes(*status, content_type, headers, body),
         Outcome::Refused { status, text } => refusal_bytes(*status, text),
+        Outcome::Stream {
+            status,
+            content_type,
+            headers,
+            body,
+        } => stream_head_bytes(*status, content_type, headers, body),
+        // A chunk for a connection still waiting for its head: the program
+        // skipped `stream = true`, and the client is owed an answer.
+        Outcome::Chunk { .. } => refusal_bytes(500, EARLY_CHUNK_TEXT),
     }
 }
 
@@ -525,13 +701,48 @@ pub mod threaded {
     use std::collections::HashMap;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
-    use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-    use std::sync::mpsc::{Receiver, Sender, SyncSender};
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+    use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
     use std::sync::Mutex;
+    use std::time::Instant;
 
     struct Waiting {
-        tx: SyncSender<Outcome>,
+        tx: Sender<Outcome>,
         listener: usize,
+        backlog: Arc<Backlog>,
+    }
+
+    /// A streamed response's unwritten bytes, shared between [`Bound::answer`]
+    /// and the connection's thread.
+    struct Backlog {
+        /// Chunk bytes sent to the thread and not yet written, against
+        /// [`STREAM_BACKLOG`].
+        pending: AtomicUsize,
+        /// Set when `pending` went past the bound: the reason the thread
+        /// reports, whatever error it then sees.
+        over: AtomicBool,
+        /// The connection, to shut when `over` is set. The thread may be
+        /// blocked writing to a client that is not reading, and a shut
+        /// socket fails that write now rather than at the deadline.
+        socket: Option<TcpStream>,
+    }
+
+    impl Backlog {
+        fn overflow(&self) {
+            self.over.store(true, Ordering::SeqCst);
+            if let Some(socket) = &self.socket {
+                let _ = socket.shutdown(std::net::Shutdown::Both);
+            }
+        }
+
+        /// What a failed write or a closed channel means.
+        fn ended(&self) -> Closed {
+            if self.over.load(Ordering::SeqCst) {
+                Closed::Backlog
+            } else {
+                Closed::Client
+            }
+        }
     }
 
     pub struct Bound {
@@ -601,13 +812,34 @@ pub mod threaded {
             self.ingress.recv_timeout(timeout).ok()
         }
 
+        /// A head or a chunk that is not the last keeps the token: more
+        /// of the response is coming. Anything else ends it. A chunk that
+        /// would take the connection past [`STREAM_BACKLOG`] drops the
+        /// token instead, and the connection's thread, finding its channel
+        /// closed, ends the stream as [`Closed::Backlog`].
         fn answer(&mut self, token: u32, outcome: Outcome) {
-            let waiting = {
-                let mut map = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
-                map.remove(&token)
+            let mut map = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
+            let keep = matches!(
+                outcome,
+                Outcome::Stream { .. } | Outcome::Chunk { last: false, .. }
+            );
+            if let Outcome::Chunk { bytes, .. } = &outcome {
+                let Some(w) = map.get(&token) else { return };
+                let held = w.backlog.pending.fetch_add(bytes.len(), Ordering::SeqCst);
+                if held + bytes.len() > STREAM_BACKLOG {
+                    w.backlog.overflow();
+                    map.remove(&token);
+                    return;
+                }
+            }
+            let tx = if keep {
+                map.get(&token).map(|w| w.tx.clone())
+            } else {
+                map.remove(&token).map(|w| w.tx)
             };
-            if let Some(w) = waiting {
-                let _ = w.tx.try_send(outcome);
+            drop(map);
+            if let Some(tx) = tx {
+                let _ = tx.send(outcome);
             }
         }
 
@@ -673,7 +905,12 @@ pub mod threaded {
 
         // Register before sending: the reply must find someone waiting
         // even if it arrives before this thread reaches recv.
-        let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        let backlog = Arc::new(Backlog {
+            pending: AtomicUsize::new(0),
+            over: AtomicBool::new(false),
+            socket: stream.try_clone().ok(),
+        });
         {
             let mut map = waiting.lock().unwrap_or_else(|e| e.into_inner());
             map.insert(
@@ -681,6 +918,7 @@ pub mod threaded {
                 Waiting {
                     tx: reply_tx,
                     listener: idx,
+                    backlog: backlog.clone(),
                 },
             );
         }
@@ -701,7 +939,30 @@ pub mod threaded {
             return;
         }
         match reply_rx.recv_timeout(rt.deadline) {
-            Ok(outcome) => respond(stream, &outcome_bytes(&outcome)),
+            Ok(head @ Outcome::Stream { .. }) => {
+                let end = stream_body(stream, rt, &head, &reply_rx, &backlog);
+                // Deregister before telling the program, so a chunk it
+                // sends in answer to the notice finds nobody.
+                waiting
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&token);
+                if let Some(why) = end {
+                    let _ = tx.send(Ingress {
+                        listener: idx,
+                        token,
+                        message: closed_message(token, why),
+                    });
+                }
+            }
+            Ok(outcome) => {
+                // A chunk before any head left the token registered.
+                waiting
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&token);
+                respond(stream, &outcome_bytes(&outcome))
+            }
             Err(_) => {
                 // Deregister so a late reply is consumed without a reader
                 // — the C's exact behavior at its deadline.
@@ -710,6 +971,69 @@ pub mod threaded {
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&token);
                 respond(stream, &refusal_bytes(504, LATE_TEXT));
+            }
+        }
+    }
+
+    /// Write a streamed response until it ends: `None` when the program
+    /// ended it, the reason otherwise. Waits on the channel in
+    /// [`STREAM_PROBE`] steps, and between chunks checks the client is
+    /// still there; a write to a client that has gone fails, which is the
+    /// same answer sooner.
+    fn stream_body(
+        mut stream: &TcpStream,
+        rt: &ListenerRt,
+        head: &Outcome,
+        reply_rx: &Receiver<Outcome>,
+        backlog: &Backlog,
+    ) -> Option<Closed> {
+        // A write that cannot finish within the deadline is a client that
+        // stopped reading; a read that times out at once is the probe.
+        let _ = stream.set_write_timeout(Some(rt.deadline));
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(1)));
+        if stream.write_all(&outcome_bytes(head)).is_err() {
+            return Some(backlog.ended());
+        }
+        let mut last_chunk = Instant::now();
+        let mut scratch = [0u8; 512];
+        loop {
+            match reply_rx.recv_timeout(STREAM_PROBE) {
+                Ok(Outcome::Chunk { bytes, last }) => {
+                    backlog.pending.fetch_sub(bytes.len(), Ordering::SeqCst);
+                    if stream.write_all(&chunk_bytes(&bytes, last)).is_err() {
+                        return Some(backlog.ended());
+                    }
+                    if last {
+                        let _ = stream.flush();
+                        return None;
+                    }
+                    last_chunk = Instant::now();
+                    continue;
+                }
+                // A second head changes nothing the client has seen.
+                Ok(Outcome::Stream { .. }) => continue,
+                // A whole reply to a stream already under way: the program
+                // has ended it, without the terminating chunk.
+                Ok(_) => return None,
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return Some(backlog.ended()),
+            }
+            match stream.read(&mut scratch) {
+                Ok(0) => return Some(backlog.ended()),
+                // Bytes after the request are not spoken here; discarded.
+                Ok(_) => {}
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) => {}
+                Err(_) => return Some(backlog.ended()),
+            }
+            if rt
+                .stream_idle
+                .is_some_and(|idle| last_chunk.elapsed() >= idle)
+            {
+                return Some(Closed::Idle);
             }
         }
     }
@@ -723,8 +1047,9 @@ pub mod threaded {
         let mut buf = Vec::with_capacity(2048);
         let mut chunk = [0u8; 2048];
         let mut mint = || tokens.fetch_add(1, Ordering::Relaxed);
+        let peer = stream.peer_addr().ok();
         loop {
-            let headers_done = match parse_request(&buf, rt, &mut mint)? {
+            let headers_done = match parse_request(&buf, rt, &mut mint, peer)? {
                 Parsed::Complete { token, message } => return Ok((token, message)),
                 Parsed::Incomplete { headers_done } => headers_done,
             };
@@ -744,6 +1069,9 @@ pub mod threaded {
 const CAP_TEXT: &str = "the listener is at its connection cap\n";
 const DOWN_TEXT: &str = "the deployment is shutting down\n";
 const LATE_TEXT: &str = "the program did not answer within the deadline\n";
+const NOT_STREAMING_TEXT: &str =
+    "the program sent a streamed response; this listener does not set 'streaming'\n";
+const EARLY_CHUNK_TEXT: &str = "the program sent a chunk before a streamed response's head\n";
 
 // ---------------------------------------------------------------------------
 // depth: the polled acceptor — wasi, and natively under test
@@ -780,9 +1108,28 @@ pub mod polled {
     }
 
     enum State {
-        Reading { buf: Vec<u8>, headers_done: bool },
-        Waiting { token: u32 },
-        Writing { out: Vec<u8>, off: usize },
+        Reading {
+            buf: Vec<u8>,
+            headers_done: bool,
+        },
+        Waiting {
+            token: u32,
+        },
+        Writing {
+            out: Vec<u8>,
+            off: usize,
+        },
+        /// A streamed response: `out[off..]` is owed, more may follow
+        /// until `ending`, after which the connection closes once `out` is
+        /// written. `since` is when the last byte was written, so the
+        /// deadline measures a client that stopped reading.
+        Streaming {
+            token: u32,
+            out: Vec<u8>,
+            off: usize,
+            last_chunk: Instant,
+            ending: bool,
+        },
     }
 
     impl Bound {
@@ -887,7 +1234,8 @@ pub mod polled {
                                 Err(e) if e.kind() == ErrorKind::WouldBlock => break,
                                 Err(_) => return false,
                             }
-                            match parse_request(buf, rt, &mut mint) {
+                            let peer = conn.stream.peer_addr().ok();
+                            match parse_request(buf, rt, &mut mint, peer) {
                                 Ok(Parsed::Complete { token, message }) => {
                                     ready.push_back(Ingress {
                                         listener: conn.listener,
@@ -917,6 +1265,62 @@ pub mod polled {
                         }
                         true
                     }
+                    State::Streaming {
+                        token,
+                        out,
+                        off,
+                        last_chunk,
+                        ending,
+                    } => {
+                        let token = *token;
+                        let mut closed = |why: Closed| {
+                            ready.push_back(Ingress {
+                                listener: conn.listener,
+                                token,
+                                message: closed_message(token, why),
+                            });
+                            false
+                        };
+                        while *off < out.len() {
+                            match conn.stream.write(&out[*off..]) {
+                                Ok(0) => return closed(Closed::Client),
+                                Ok(n) => {
+                                    *off += n;
+                                    conn.since = now;
+                                }
+                                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                                Err(_) => return closed(Closed::Client),
+                            }
+                        }
+                        if *off == out.len() {
+                            out.clear();
+                            *off = 0;
+                            if *ending {
+                                let _ = conn.stream.flush();
+                                return false;
+                            }
+                        } else if now.duration_since(conn.since) > rt.deadline {
+                            // Owed bytes and no progress for a deadline:
+                            // a client that stopped reading.
+                            return closed(Closed::Client);
+                        }
+                        match conn.stream.read(&mut chunk) {
+                            Ok(0) => return closed(Closed::Client),
+                            // Bytes after the request are not spoken
+                            // here; discarded.
+                            Ok(_) => {}
+                            Err(e) if e.kind() == ErrorKind::WouldBlock => {}
+                            Err(_) => return closed(Closed::Client),
+                        }
+                        if !*ending
+                            && rt
+                                .stream_idle
+                                .is_some_and(|idle| now.duration_since(*last_chunk) >= idle)
+                        {
+                            return closed(Closed::Idle);
+                        }
+                        true
+                    }
                     State::Writing { out, off } => {
                         if late {
                             return false;
@@ -938,6 +1342,18 @@ pub mod polled {
     }
 
     impl Conn {
+        /// Whether `token` names this connection and it still takes
+        /// replies: waiting for one, or streaming and not yet ending.
+        fn holds(&self, token: u32) -> bool {
+            match self.state {
+                State::Waiting { token: t } => t == token,
+                State::Streaming {
+                    token: t, ending, ..
+                } => t == token && !ending,
+                _ => false,
+            }
+        }
+
         fn turn(&mut self, state: State) {
             self.state = state;
             self.since = Instant::now();
@@ -981,19 +1397,61 @@ pub mod polled {
         }
 
         fn answer(&mut self, token: u32, outcome: Outcome) {
-            let waiting = self
-                .conns
-                .iter_mut()
-                .find(|c| matches!(c.state, State::Waiting { token: t } if t == token));
-            if let Some(conn) = waiting {
-                conn.turn(writing(outcome_bytes(&outcome)));
+            let Some(conn) = self.conns.iter_mut().find(|c| c.holds(token)) else {
+                return;
+            };
+            match (&mut conn.state, outcome) {
+                (State::Waiting { .. }, head @ Outcome::Stream { .. }) => {
+                    let now = Instant::now();
+                    conn.turn(State::Streaming {
+                        token,
+                        out: outcome_bytes(&head),
+                        off: 0,
+                        last_chunk: now,
+                        ending: false,
+                    });
+                }
+                (State::Waiting { .. }, outcome) => conn.turn(writing(outcome_bytes(&outcome))),
+                (
+                    State::Streaming {
+                        out,
+                        off,
+                        last_chunk,
+                        ending,
+                        ..
+                    },
+                    outcome,
+                ) => match outcome {
+                    Outcome::Chunk { bytes, last } => {
+                        if out.len() - *off + bytes.len() > STREAM_BACKLOG {
+                            // Closed at once, unwritten bytes and all: the
+                            // client is not reading them.
+                            self.ready.push_back(Ingress {
+                                listener: conn.listener,
+                                token,
+                                message: closed_message(token, Closed::Backlog),
+                            });
+                            conn.turn(writing(Vec::new()));
+                            return;
+                        }
+                        out.extend_from_slice(&chunk_bytes(&bytes, last));
+                        *last_chunk = Instant::now();
+                        *ending = last;
+                    }
+                    // A second head changes nothing the client has seen.
+                    Outcome::Stream { .. } => {}
+                    // A whole reply to a stream already under way: the
+                    // program has ended it, without the terminating chunk.
+                    Outcome::Reply { .. } | Outcome::Refused { .. } => *ending = true,
+                },
+                _ => {}
             }
         }
 
         fn owner_of(&self, token: u32) -> Option<usize> {
             self.conns
                 .iter()
-                .find(|c| matches!(c.state, State::Waiting { token: t } if t == token))
+                .find(|c| c.holds(token))
                 .map(|c| c.listener)
         }
     }

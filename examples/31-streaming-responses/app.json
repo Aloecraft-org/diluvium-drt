@@ -1,0 +1,12 @@
+{
+  "_comment": "streaming lets a reply open a response that the program writes in pieces. stream_idle_ms closes a stream the program has stopped writing to.",
+  "program": { "path": "app.dlua" },
+  "listeners": [
+    {
+      "scheme": "http",
+      "address": "127.0.0.1:18496",
+      "streaming": true,
+      "stream_idle_ms": 5000
+    }
+  ]
+}

@@ -22,14 +22,23 @@
 //!   - [`scope`]: what a `CONNECT` may reach, before and after resolution.
 //!   - [`identity`]: the credentials and certificate kept across restarts.
 //!   - [`host`]: the socket, the sessions, the Wisp server, the splice.
+//!   - [`caller`]: the caller's side, natively (§10.1): a record, a
+//!     connection to an answerer, and Wisp streams it opens.
+//!   - [`cidr`]: an address range, for who may connect (`doc/P2P.md` §6).
 
+pub mod caller;
+pub mod cidr;
 pub mod host;
 pub mod identity;
 pub mod record;
 pub mod scope;
 pub mod wisp;
 
-pub use host::{Command, Event, Host, HostConfig, SessionState, StreamState};
+pub use cidr::Cidr;
+pub use host::{
+    Command, Event, Forward, Host, HostConfig, PortSet, Relay, Report, Sender, Service,
+    SessionState, Sink, StreamState, Window,
+};
 pub use identity::Identity;
 pub use record::Record;
 pub use scope::{Entry, Scope};

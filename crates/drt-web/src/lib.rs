@@ -27,6 +27,12 @@
 //!   xterm.js object.
 //! - `swarm`: the instances table -- `dvs.c`'s sixteen, over a
 //!   `Deployment`.
+//! - `ws`: a byte stream over the page's socket, for protocols that want
+//!   one. The page keeps the socket; this keeps channel ends, which is
+//!   what makes the stream `Send`.
+//! - `ssh`: `drt-sshd`, the SSH server over that stream -- pubkey only,
+//!   keys named in advance -- handing out a shell's two ends. The same one
+//!   the native REPL server runs.
 //! - `wasi_shim` (browser only): wasi-libc's seventeen syscalls.
 
 pub mod term;
@@ -35,7 +41,12 @@ pub mod term;
 pub mod bindings;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod editor;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod raw;
+/// The SSH server, `drt-sshd`, under the name this crate has always used.
+pub use drt_sshd as ssh;
 pub mod swarm;
+pub mod ws;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod wasi_shim;

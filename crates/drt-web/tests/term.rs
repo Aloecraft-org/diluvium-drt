@@ -151,7 +151,10 @@ fn the_repl_asks_for_lines_and_answers_them() {
     assert_eq!(session.tick(), Step::Input { continuing: false });
     assert_eq!(text(&seen, Fd::Stdout), "22\n");
     let err = text(&seen, Fd::Stderr);
-    assert!(err.starts_with("drt repl — ^D to leave\n"), "{err}");
+    assert!(
+        err.starts_with("drt repl — :help lists the colon commands, ^D leaves\n"),
+        "{err}"
+    );
     assert!(err.contains("nil value"), "{err}");
     assert!(!session.is_over());
     uninstall_sink();

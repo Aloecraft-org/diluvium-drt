@@ -26,9 +26,9 @@ hostcall encoding (moved here from diluvium).
 | [`crates/drt-platform`](crates/drt-platform) | The leaf adapters: clock, entropy, the fs backend (a disk, or a page's memory) and stdio, `cfg`-gated per target so nothing above them is. See [`doc/Wasm.md`](doc/Wasm.md). |
 | [`crates/drt-connector`](crates/drt-connector) | The `Connector` trait, registry, capability gating, and the dispatcher that guarantees every drained request is answered. Mocks implement the same trait; guests cannot tell. |
 | [`crates/drt-swarm`](crates/drt-swarm) | The swarm: `dvs.c` semantics ported over the `Engine` seam (instance table, attenuated caps with provenance, lifecycle drain, budgets, hibernation + `wake_on_message`); the snapshot store; endpoint refs. |
-| [`crates/drt`](crates/drt) | The binary: `run` \| `start` \| `repl` \| `relay` \| `tunnel` \| `ps` — see SPEC.md §13a. |
+| [`crates/drt`](crates/drt) | The binary: `run` \| `start` \| `repl` \| `p2p` \| `ssh` \| `ps` — see SPEC.md §13a. |
 | [`crates/drt-web`](crates/drt-web) | The browser tier: the same `drt`, C core linked in, behind a terminal contract a page attaches xterm.js to. See [`doc/Browser.md`](doc/Browser.md). |
-| [`connectors/`](connectors) | Connector implementations, each feature-gated: `time`, `crypto`, `fs`, `sql` and `data` (each a granted directory), `rest` and `ssmtp` (each an allowlist), `ssh` (client, `host:ssh/exec`) and `exec` (local, `host:exec/run`, wired only by name and announced when it is). |
+| [`connectors/`](connectors) | Connector implementations, each feature-gated: `time`, `crypto`, `fs`, `sql` and `data` (each a granted directory), `rest` and `ssmtp` (each an allowlist), `ssh` (client, `host:ssh/exec` and the interactive `host:ssh/shell`), `exec` (local, `host:exec/run`, wired only by name and announced when it is), `socket` and `ws` (each an allowlist; `ws` is what `stdlib:browser-access` signals over), and `listen`, the inbound half. |
 
 ## Building
 
@@ -82,7 +82,8 @@ Or take the binary yourself. The names are `doc/ALIGNMENT.md` §4's —
 
 ```sh
 # also drt_linux_arm64_musl, drt_darwin_arm64, drt_darwin_x86_64,
-# drt_windows_x86_64.exe, and each of those with _slim
+# drt_windows_x86_64.exe, and each with _slim before the extension:
+# drt_linux_x86_64_musl_slim, drt_windows_x86_64_slim.exe
 BASE=https://github.com/Aloecraft-org/diluvium-drt/releases/latest/download
 curl -fLO $BASE/drt_linux_x86_64_musl
 curl -fLO $BASE/SHA256SUMS.txt
@@ -124,10 +125,12 @@ drt repl                             # a REPL, which is an instance
 drt repl --unsafe                    # ... with os, io and require in scope
 drt --config app.json start          # the deployment: swarm + listeners + relay
 drt --config rv.json start           # the rendezvous relay, on its own
-drt tunnel --park wss://…/park/xps?k=… --to 127.0.0.1:22   # the device half
-ssh -o ProxyCommand="drt tunnel wss://…/s/xps?k=…" user@xps # the caller half
-drt tunnel wss://…/s/xps?k=… --local 127.0.0.1:2222       # the caller half, for a program
-drt --config tn.json tunnel          # either half, with the key in a 0600 file
+drt p2p --listen 5000                # serve the REPL on a UDP port; prints the record that calls it
+ssh -o ProxyCommand="drt p2p drt://signal.example/v1/xps" me@xps   # call a peer, direct
+drt p2p drt://signal.example/v1/xps -p 8080:80            # or map a port to it
+drt p2p --park drt://signal.example/v1/xps --H auth=…     # answer calls for a name
+drt p2p --match 8443                 # be the signalling server
+drt --config p2p.json p2p            # any role, with the token in a 0600 file
 drt --config nc.json netcheck        # what can this network do, with the evidence
 drt --config st.json start           # a STUN server: what address did that come from
 drt --config tn.json start           # a TURN relay, for what cannot be punched
@@ -149,6 +152,11 @@ names its own program instead, which is what `examples/rendezvous` is.
 including the control plane a supervisor uses for presence, metering and
 arbitration.
 
+The device half can also be a browser tab: a page that parks a leg runs an
+SSH server, and the caller line above is unchanged — same client, same
+`ProxyCommand`, a terminal inside a page.
+[`doc/Browser.md`](doc/Browser.md) is the recipe.
+
 **Reaching a machine that has no address** is a ladder, and every rung is
 above: `netcheck` says what the network can do, `stun` measures the NAT
 mapping that decides it, the relay carries what cannot be reached directly,
@@ -158,8 +166,10 @@ plumbing, because it is just an IP address.
 [`doc/WireGuard.md`](doc/WireGuard.md) sizes that last rung honestly,
 including what is and is not proven about hole punching.
 
-`drt ps` and REPL *attach* are still ahead: both reach a deployment running
-in another process, which is the control endpoint's job and lands with sshd.
+`drt ps` reaches a deployment running in another process over its `ssh`
+listener (SPEC.md §13a), and the same questions are `:ps` and friends in a
+REPL the deployment serves. REPL *attach*, a REPL wired into a running
+instance's state, is still ahead.
 
 A seams-only build (`--no-default-features`) compiles the traits without the
 C core. The wasm targets link the C core in — `drt` itself builds for

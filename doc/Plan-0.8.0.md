@@ -474,3 +474,79 @@ Each of these edits code `doc/Plan-2026-09.md` §0.2 froze:
   - Not covered: Windows, macOS and arm64, which CI builds but only the
     release's Windows smoke runs; and release native builds are musl
     where this machine's `slim` is glibc.
+- 2026-09-29, **SSH over browser access, and direct mode**, after the
+  0.8.0 dev builds merged to `main` (#39). The target is
+  `doc/ssh-transport-matrix.md`; this delivers its row 5.
+  - `Ssh.connect` takes a `{readable, writable}` pair as well as a URL,
+    so the page runs SSH over a browser access stream to an sshd in a
+    `webrtc` block's scope. A refused stream fails the connect with the
+    host's CLOSE byte as its `code`.
+  - Direct mode, `doc/BrowserAccess.md` §3.4: `"direct": true` in the
+    block, and a browser holding the record needs no signaling. It chooses
+    one 32-character ICE value as ufrag and password; the host builds the
+    session from the first binding request addressed to it and keeps it
+    only when integrity verifies against the host's password. The
+    browser's certificate goes unchecked by design, and SSH authenticates
+    the ends. `drt_browser_access.js` has `direct()`, and `ssh.html`
+    follows `#rtc=<record>&user=…`.
+  - Verified: `tests/host.rs` 10 of 10 (four new: a session from the
+    record alone; nothing without `direct`, with a wrong password, or with
+    a short ufrag); the client's `test.mjs` 15 of 15 and its Chromium gate
+    against both hosts; `e2e.mjs` 13 of 13, among them the stock sshd over
+    WebRTC signaled through the mock, and in direct mode through the
+    shipped page with its CSP. Chromium keeps ICE credentials the page
+    chose, which direct mode rests on.
+  - Not proven: anything across a NAT, as before. Direct mode's intended
+    host is one the browser can reach (a VPS, a LAN), where that is moot.
+- 2026-09-29, **SSH into a page, re-applied** from
+  `claude/drt-wasm-port-planning-4ua6qk` (four commits of 2026-09-07,
+  never merged). `doc/SshInBrowser.md` §8 is what changed on the way: one
+  russh, the fork, workspace-wide; the relay as `drt start`; and the size
+  measured again, +465 KB gzipped on `drt_web_bg.wasm`. Rows 6 to 8 of
+  the transport matrix still need the page's server on WebRTC and a native
+  WebRTC caller (`drt tunnel rtc:`); row 7, through a relay, is done.
+- 2026-09-29, **Option A, by the owner's decision: symmetric, with named
+  services** (`doc/BrowserAccess.md` §10). Stage 1 is the wire and both
+  libraries: either peer serves, odd and even stream ids, `hello` from
+  whichever side serves, named services (`CONNECT` with port 0), and a page
+  answering a session. Stage 2 is row 8: the page's SSH server as the
+  service `ssh`, reached from another page's `ssh.html` module over
+  WebRTC, gated in the browser suite. Stage 3, the native caller
+  (`drt tunnel rtc:`, rows 3 and 6), is next.
+- 2026-09-29, **stage 3a: `drt tunnel rtc:`** (row 3). `drt_rtc::caller`
+  is the caller natively, and `drt tunnel` takes `rtc:` with a record, a
+  file or an `http(s)://` endpoint. Stock `ssh` reaches a stock sshd
+  through it, in direct mode and through `examples/29-browser-access`.
+  Stage 3b is row 6: a page answering a native caller needs signaling a
+  page can take part in, since a page cannot host the endpoint.
+- 2026-09-29, **stage 3b: row 6**, stock `ssh` to a page over WebRTC.
+  `examples/30-signaling-room` holds a caller's `POST` until the page,
+  polling, answers it, so `drt tunnel rtc:http://…/call` needs no change;
+  the browser suite's `ssh-rtc-into-a-page` runs it. With this, every row
+  of the transport matrix has a gated path: 1 and 7 through the relay, 2
+  over WireGuard as before, and 3, 5, 6 and 8 over WebRTC with no relay.
+  Row 4's WebSocket bridge is `websocat` or a relay, and untested here.
+- Two process notes from this stage. The stage 1 to 3a pushes went red in
+  CI's `test` job: the loader corpus snapshot for `examples/29` gained
+  `services: {}` with the block, and a `sed` edit left a line rustfmt
+  rewraps. Both are fixed together, and CI's `test` job is now run in
+  full before a push.
+
+- 2026-10-02, **after stage 3b, what 0.8.0 ships beyond this plan.** The
+  record above stops at stage 3b; the release carries more, and some of
+  §0 and §5 is overturned by it. `drt p2p` and its four roles (call,
+  listen, park, match) with `--relay` and `--fallback` as carriers, which
+  is the "WebRTC as a tunnel carrier" §5 deferred to 0.9, with
+  `doc/DRT-Signalling.md` as the server a page or a `drt` parks at, and
+  pairing (§6.2 there) on both told sides. `drt ssh` and `:ssh`, which §0.1
+  said had nothing to add; the `ssh` listener and the `drt-sshd` crate;
+  the control endpoint (`drt ps`, SPEC.md §13a). Half-close on the wire,
+  `caps` and `granted` in the hello, the streaming `http` listener, the
+  launcher pack (schema, npm package, `--show`). The pin moved to 0.17.2
+  for diluvium-sys's Windows build script; the runtime is 0.17.1's. Of
+  §3.3's milestones M3 is row 5 and M4 is `stdlib:browser-access`; M1
+  (policy hook) and M2 (presence refresh) carry to 0.8.x. §0's "stock
+  WireGuard interop in CI" did not land; it carries too. Of §6: presence
+  shapes are decided (discofetch 36ad148), the SSH page inlines the client,
+  services are named (§10.3), and session caps are `max_sessions` with
+  `DRT-Accept`; the block's name is still the placeholder.

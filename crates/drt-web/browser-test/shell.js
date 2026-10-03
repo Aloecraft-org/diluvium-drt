@@ -20,6 +20,7 @@
 //            abandon a line on ^C -- both the guest's business, asked
 //            between lines (doc/Wasm.md §5). stop() polled
 //            between ticks: true ends the command with status 130 (^C).
+//            ssh(argv) -> Promise<status>, optional: what `drt ssh` runs.
 //   ECHO, DRT: the two commands; everything else is not found.
 
 const ECHO = 'echo';
@@ -49,6 +50,13 @@ export function makeShell({ term, write, sleep = wait }) {
         write(1, args.join(' ') + '\n');
         return 0;
       case DRT:
+        // `drt ssh` is the page's own (ssh-command.js, by way of
+        // drt-term.js): the runtime here has no socket for the native one.
+        if (args[0] === 'ssh') {
+          if (io.ssh) return io.ssh(args.slice(1));
+          write(2, 'drt ssh: this page has no SSH client\n');
+          return 1;
+        }
         return drt(args, io);
       default:
         write(2, `sh: ${name}: command not found\n`);

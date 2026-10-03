@@ -200,3 +200,45 @@ fn highlighting_colours_the_things_it_claims_to() {
         std::borrow::Cow::Borrowed(_)
     ));
 }
+
+/// Ctrl+Backspace deletes a word on a native tty. Terminals send BS for
+/// it, and crossterm hands BS over as Ctrl+H; the editor reached through
+/// `repl::Keys`, as `drt repl` reaches it, reads that as Ctrl+Backspace.
+/// Before, the word stayed and the line read `x foo`.
+#[test]
+fn ctrl_backspace_deletes_a_word_on_a_native_tty() {
+    use ego_cli::{KeyCode, KeyPress, Mods};
+    let seen: Captured = Arc::new(Mutex::new(Vec::new()));
+    let log = seen.clone();
+    drt_platform::stdio::install_sink(Box::new(move |fd, bytes| {
+        log.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((fd, bytes.to_vec()))
+    }));
+    let mut repl = Repl::new(
+        Arc::new(Dispatcher::new(Registry::new())),
+        Vec::<Grant>::new(),
+        drt_config::Budget::default(),
+    )
+    .expect("the repl program starts");
+    let mut terminal = MemTerminal::raw(Size::new(80, 24));
+    terminal.push_input("x = 40\rx foo");
+    terminal.push_key(KeyPress::new(KeyCode::Char('h'), Mods::CTRL));
+    terminal.push_input("\r");
+    let mut editor = drt::repl::editor(&repl, drt::repl::Keys(terminal));
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(drt::repl::edit(&mut repl, &mut editor))
+        .expect("the session ends cleanly");
+    drt_platform::stdio::uninstall_sink();
+    let printed: String = seen
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .map(|(_, b)| String::from_utf8_lossy(b).to_string())
+        .collect();
+    assert!(printed.contains("40"), "the line was not `x`: {printed:?}");
+    assert!(!printed.contains("syntax error"), "{printed:?}");
+}

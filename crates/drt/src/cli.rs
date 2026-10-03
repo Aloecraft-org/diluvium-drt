@@ -75,8 +75,10 @@ const PROFILE_FULL: &[&str] = &[
     "listen",
     "netcheck",
     "numeric",
+    "p2p",
     "relay",
     "runtime",
+    "sshd",
     "stun",
     "tunnel",
     "turn",
@@ -101,7 +103,7 @@ const PROFILE_FULL: &[&str] = &[
 /// finds nothing, which is the right failure: the alternative was printing
 /// `14` for a build that is not build 14.
 ///
-/// Hard-coded, because the core still does not say: 0.17.1 answers
+/// Hard-coded, because the core still does not say: 0.17.2 answers
 /// `dv_features()` -- which is why `features` is now read off the core --
 /// but has no `dv_version()`, and its `dv_build()` returns a constant that
 /// upstream lists as a known issue. So this is written down once, here, and
@@ -109,7 +111,7 @@ const PROFILE_FULL: &[&str] = &[
 /// what stops it going stale when the pin moves: the changelog records the
 /// pin, the pin is checked against `Cargo.lock` by `script/changelog.py
 /// check`, and this is checked against the changelog.
-const DILUVIUM_VERSION: &str = "0.17.1";
+const DILUVIUM_VERSION: &str = "0.17.2";
 
 /// What `drt wg` does. All three are diagnostics or key handling, and the
 /// serving that used to sit beside them is `drt start` now.
@@ -190,7 +192,8 @@ pub struct Cli {
     /// and run the no-root path without saying so.
     #[arg(long, global = true, value_name = "PATH")]
     pub root: Option<PathBuf>,
-    /// Accept a **first** consent acceptance without asking.
+    /// Answer yes to a consent prompt instead of asking (a first run's, a
+    /// new deployment's).
     ///
     /// Deliberately not enough for a ceiling that has widened. A `-y` that
     /// also accepted a widening would mean every unit file and CI job carried
@@ -300,8 +303,12 @@ pub enum Command {
         #[command(subcommand)]
         action: KeyAction,
     },
-    /// The introspection surface: instances, caps, budgets, usage, health.
-    Ps,
+    /// Ask a running deployment over its ssh listener (SPEC.md §13a):
+    /// the instance table, or --status, --caps, --pause, --resume, --stop.
+    /// Inside a project, the endpoint `drt start` wrote is found with
+    /// nothing said; the same questions are :ps and friends in a REPL the
+    /// deployment serves.
+    Ps(crate::control::PsArgs),
     /// What this binary is and what it carries: version, the dv ABI it
     /// speaks, its feature profile, and the connectors compiled into it.
     ///
@@ -331,24 +338,43 @@ pub enum Command {
         #[command(subcommand)]
         action: WgAction,
     },
-    /// SSH over WSS, as a dumb pipe. With a URL: bridge this process's
-    /// stdio to it — the OpenSSH ProxyCommand contract, so
+    /// An interactive shell on another host, on this terminal.
+    ///
+    /// `drt ssh [user@]host[:port]` over TCP, trusting OpenSSH's
+    /// ~/.ssh/known_hosts (asking about a host it has not seen) and signing
+    /// in with the agent, ~/.ssh's keys, then a password. `--via` reaches
+    /// the host through a relay claim, a record or a signalling URL, as
+    /// `drt p2p` does. `~.` at the start of a line disconnects. The REPL's `:ssh`
+    /// takes the same arguments.
+    #[cfg(feature = "connector-ssh")]
+    Ssh(crate::ssh::SshArgs),
+    /// Peer-to-peer sessions (doc/P2P.md): call a peer, park at a
+    /// signalling server, listen on a UDP port, or be the signalling
+    /// server. With no --relay and no --fallback, no machine other than
+    /// the two ends carries a byte of the session; when no such path
+    /// exists, this fails and says so. Every flag is also a key of the
+    /// `p2p` block in --config.
+    #[cfg(feature = "p2p")]
+    P2p(crate::p2p::Args),
+    /// Alias of `drt p2p` for one release: a call or a park prints the
+    /// `drt p2p` form of what it was given and runs as that. SSH over WSS,
+    /// as a dumb pipe. With a URL: bridge this process's stdio to it, the
+    /// OpenSSH ProxyCommand contract, so
     /// `ssh -o ProxyCommand="drt tunnel wss://gate/fp" user@fp` (and rsync,
     /// sftp, -L/-R through it) works like normal SSH over the WebSocket
     /// carrier. With a URL and --local: serve a local port instead, one
-    /// fresh leg per accepted connection, which is how a program reaches
-    /// a parked device. With --listen/--to: accept WebSocket connections
-    /// and bridge each to a TCP target, in front of any sshd. With
-    /// --park/--to: the device side of the relay.
+    /// fresh leg per accepted connection. With --listen/--to: accept
+    /// WebSocket connections and bridge each to a TCP target, in front of
+    /// any sshd; this mode is not a peer and stays here until the `relay`
+    /// block takes it. With --park/--to: the device side of the relay.
+    /// With `rtc:` in place of the URL: `drt p2p <peer> -p :<to>`.
     ///
-    /// Every flag is also a key of the `tunnel` block in --config, under
-    /// the block's name (the URL is `claim`, --local is `bind`), so the
-    /// credential in a park or claim URL can live in a 0600 file. Flags
-    /// win per key; a flag naming a different mode than the file is
-    /// refused as the conflict it is.
+    /// Every flag is also a key of the `tunnel` block in --config, read as
+    /// the `p2p` block for one release with a warning per key.
     #[cfg(feature = "tunnel")]
     Tunnel {
-        /// The wss:// or ws:// URL to bridge stdio to.
+        /// The wss:// or ws:// URL to bridge stdio to, or `rtc:` and a
+        /// record, a file holding one, or an http(s):// signaling endpoint.
         url: Option<String>,
         /// With a URL: bind this local address instead of using stdio,
         /// and give each accepted connection its own fresh leg to the URL
@@ -585,8 +611,14 @@ pub fn buildinfo(json: bool) -> String {
     if cfg!(feature = "netcheck") {
         verbs.push("netcheck");
     }
+    if cfg!(feature = "connector-ssh") {
+        verbs.push("ssh");
+    }
     if cfg!(feature = "tunnel") {
         verbs.push("tunnel");
+    }
+    if cfg!(feature = "p2p") {
+        verbs.push("p2p");
     }
     // `relay`, `stun` and `turn` were verbs here and are not any more: each
     // is a config block plus `stdlib:<name>` under `start`. `wg` stays,
@@ -712,6 +744,7 @@ fn enabled_features() -> Vec<&'static str> {
     feature!("listen");
     feature!("netcheck");
     feature!("numeric");
+    feature!("p2p");
     // Probed and reportable, and in no named profile yet: the plugin
     // channel is built and reachable from a config, and the segments that
     // make it worth shipping (`doc/Plan-0.7.0.md` §7) are not all in. A
@@ -720,6 +753,7 @@ fn enabled_features() -> Vec<&'static str> {
     feature!("plugins");
     feature!("relay");
     feature!("runtime");
+    feature!("sshd");
     feature!("stun");
     feature!("tunnel");
     feature!("turn");
@@ -918,6 +952,7 @@ pub fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
 /// depended on the features compiled in, a config that worked on `slim`
 /// would start shadowing a builtin the day it ran on `full`, which is the
 /// quiet kind of wrong.
+#[cfg(feature = "plugins")]
 const BUILTIN_FAMILIES: &[&str] = &[
     "time", "fs", "sql", "crypto", "data", "ssh", "rest", "ssmtp", "exec", "socket", "ws",
 ];
@@ -928,6 +963,7 @@ const BUILTIN_FAMILIES: &[&str] = &[
 /// a whole, and checking it inside the wiring loop would let the *other*
 /// loop's refusal answer first. An operator who wrote one mistake should
 /// be told about that mistake.
+#[cfg(feature = "plugins")]
 fn check_plugin_names(config: &RootConfig) -> Result<(), String> {
     for family in config.plugins.keys() {
         // A plugin may not shadow a builtin. A config that could would
@@ -1455,6 +1491,10 @@ fn rm_verb(cli: &Cli) -> ExitCode {
     let (inputs, _) = root.read(drt_config::resolve::Requested::Default, Vec::new());
     let project = inputs.root.as_ref().and_then(|r| r.project.as_ref());
     let name = crate::deploy::deployment_name(&root, project);
+    if !drt_platform::fs::is_dir(root.live().join(&name)) {
+        eprintln!("drt rm: nothing is deployed as '{name}' here; live/ holds no such deployment");
+        return ExitCode::FAILURE;
+    }
     match crate::deploy::remove(&root, &name) {
         Ok(()) => {
             eprintln!("removed {name} from live/");
@@ -1601,6 +1641,12 @@ pub fn main(cli: Cli) -> ExitCode {
     // core's `print` and this file's `eprintln!` on the same line ending.
     // A no-op everywhere else.
     drt_platform::stdio::bytes_as_written();
+    // `--root` naming no root is refused before any verb reads it as the
+    // no-root path.
+    if let Err(e) = crate::drt_root::check_named(cli.root.as_deref()) {
+        eprintln!("drt: {e}");
+        return ExitCode::FAILURE;
+    }
     // `start` assembles its own, before anything else here runs. A rooted
     // deployment's config is the *resolved profile's* and not `--config`'s, so
     // going through `assemble` first would wire one set of connectors to throw
@@ -1858,6 +1904,26 @@ pub fn main(cli: Cli) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+            // `drt tunnel` is `drt p2p` now (doc/P2P.md §9): every mode but
+            // the WebSocket to TCP bridge prints its `drt p2p` form and runs
+            // as that.
+            #[cfg(feature = "p2p")]
+            if let Some((form, args)) = crate::p2p::from_tunnel(&resolved.mode, &resolved) {
+                eprintln!("drt tunnel: this is `{form}` now; `drt tunnel` goes away in a release");
+                return match crate::p2p::run(&args, &config) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        eprintln!("drt p2p: {e}");
+                        ExitCode::FAILURE
+                    }
+                };
+            }
+            if matches!(resolved.mode, crate::tunnel::Mode::Listen { .. }) {
+                eprintln!(
+                    "drt tunnel: the WebSocket to TCP bridge is a server-side shim; it moves to \
+                     the `relay` block and `drt tunnel --listen` goes away in a release"
+                );
+            }
             let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
             let outcome =
                 runtime.block_on(crate::tunnel::run(resolved.mode, &roots, &resolved.headers));
@@ -1879,6 +1945,23 @@ pub fn main(cli: Cli) -> ExitCode {
                 }
             }
         }
+        #[cfg(feature = "p2p")]
+        Command::P2p(ref args) => match crate::p2p::run(args, &config) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("drt p2p: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        #[cfg(feature = "connector-ssh")]
+        Command::Ssh(ref args) => match crate::ssh::run(args) {
+            // The remote shell's status is this command's, as with `ssh`.
+            Ok(status) => ExitCode::from(status.map_or(0, |s| s.min(255) as u8)),
+            Err(e) => {
+                eprintln!("drt ssh: {e}");
+                ExitCode::from(255)
+            }
+        },
         Command::Buildinfo { json } => {
             print!("{}", buildinfo(json));
             ExitCode::SUCCESS
@@ -1967,15 +2050,14 @@ pub fn main(cli: Cli) -> ExitCode {
             ExitCode::SUCCESS
         }
         Command::Key { ref action } => key_verb(&cli, action),
-        Command::Ps => {
-            // Unlike the REPL, `ps` has nothing it can do standalone: its
-            // whole subject is a deployment already running in another
-            // process, which is the control endpoint's to reach.
-            eprintln!(
-                "drt ps: not built yet — it reaches a running deployment over the \
-                 control endpoint, which lands with sshd (SPEC.md §13a)"
-            );
-            ExitCode::FAILURE
-        }
+        Command::Ps(ref args) => match crate::control::run(args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                if !e.is_empty() {
+                    eprintln!("drt ps: {e}");
+                }
+                ExitCode::FAILURE
+            }
+        },
     }
 }

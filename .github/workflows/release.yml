@@ -36,6 +36,11 @@ on:
         type: boolean
         required: false
         default: false
+      full:
+        description: 'Build every target. A dev build is the Linux leg alone otherwise; a release always builds every target.'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -55,6 +60,11 @@ jobs:
       # The suffix decides (doc/ALIGNMENT.md §7): `v*-dev.*` builds one
       # platform, needs no changelog entry, and is always a prerelease.
       dev: ${{ steps.check.outputs.dev }}
+      # Which legs run: every one for a release, or for a dev build
+      # dispatched with `full`; the Linux leg alone for any other dev
+      # build. The three cross-target jobs, the matrix, the publish
+      # condition and the BUILDINFO check all read this one answer.
+      all_legs: ${{ steps.check.outputs.all_legs }}
       # Derived, since a tag push carries none and a dispatch may name a
       # commit (doc/ALIGNMENT.md §5); BUILDINFO records what was found.
       branch: ${{ steps.check.outputs.branch }}
@@ -75,6 +85,7 @@ jobs:
           IN_REF: ${{ inputs.ref }}
           IN_TAG: ${{ inputs.tag }}
           IN_PUBLISH: ${{ inputs.publish }}
+          IN_FULL: ${{ inputs.full }}
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -eu
@@ -117,6 +128,14 @@ jobs:
             v*-dev.*) DEV=true ;;
             *)        DEV=false ;;
           esac
+          # A release builds every target whatever the input says; a dev
+          # build does only when asked, since the fast path is the point
+          # of one (doc/ALIGNMENT.md §7).
+          if [ "$DEV" = true ] && [ "${IN_FULL:-false}" != true ]; then
+            ALL_LEGS=false
+          else
+            ALL_LEGS=true
+          fi
           # The branch, recorded as found rather than guessed: a dispatch
           # that names a branch is authoritative; a blank dispatch ran on
           # the selected branch; a tag push, or a dispatch naming a commit,
@@ -139,6 +158,7 @@ jobs:
           echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "dev=$DEV" >> "$GITHUB_OUTPUT"
+          echo "all_legs=$ALL_LEGS" >> "$GITHUB_OUTPUT"
           echo "branch=${BRANCH:-(detached)}" >> "$GITHUB_OUTPUT"
       # The build matrix, declared here so a dev build can be the Linux leg
       # alone: `strategy.matrix` cannot read a job output, but it can be a
@@ -146,7 +166,7 @@ jobs:
       # used to hold, comments included.
       - id: matrix
         env:
-          DEV: ${{ steps.check.outputs.dev }}
+          ALL_LEGS: ${{ steps.check.outputs.all_legs }}
         run: |
           python3 - <<'EOF' >> "$GITHUB_OUTPUT"
           import json, os
@@ -205,8 +225,9 @@ jobs:
           # below -- `full` and `slim`, the same two every leg here
           # ships -- and then run on a real Windows runner by
           # `smoke-windows`, which is the smoke step these legs do inline.
-          # A dev build is the x86_64 leg alone.
-          include = [linux] if os.environ["DEV"] == "true" else [linux, arm64] + darwin
+          # A dev build is the x86_64 leg alone, unless dispatched with
+          # `full`.
+          include = [linux, arm64] + darwin if os.environ["ALL_LEGS"] == "true" else [linux]
           print("matrix=" + json.dumps({"include": include}))
           EOF
       # The changelog is a release gate, not a formality: CHANGELOG.yaml is
@@ -336,7 +357,7 @@ jobs:
     # this matrix's smoke step exists to prevent (doc/Release.md).
     name: Build (wasip2)
     needs: [preflight, test]
-    if: needs.preflight.outputs.dev != 'true'
+    if: needs.preflight.outputs.all_legs == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -413,7 +434,12 @@ jobs:
     # browser suite -- the examples gate through the in-page shell, in
     # Chromium, plus the REPL parity check -- runs before the artifact is
     # uploaded. Ships as one tarball, because a page needs all of it: the
-    # module, wasm-bindgen's glue, and drt-term.js with shell.js behind it.
+    # module, wasm-bindgen's glue, drt-term.js with shell.js behind it, and
+    # ssh-terminal.js and relay-leg.js, which are what make an SSH session
+    # into the terminal object drt-term.js already takes and what parks the
+    # page on a rendezvous relay (doc/SshInBrowser.md), and ssh-command.js
+    # with ssh.html's client module, which are `drt ssh` and `:ssh` in a
+    # page.
     # `buildinfo` is read off the module inside Chromium (run.mjs writes
     # it out) so publish can put the profile in BUILDINFO the same way it
     # does for every other leg: from the bytes, not from YAML.
@@ -470,8 +496,28 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: crates/drt-web/browser-test/package-lock.json
+      # The whole-chain check runs this as the relay and as `ssh`'s
+      # ProxyCommand. A release that ships the browser module without
+      # exercising its headline path is the `strip` gap again.
+      - name: A native drt, for the relay and the tunnel
+        run: cargo build -p drt --no-default-features --features full
       - name: Build the web profile
         run: DRT_WEB_PROFILE=release-small script/drt-web.sh
+      # ssh.html's client as its own module: what `drt ssh` and `:ssh` in a
+      # page hand to ssh-command.js, and what the browser suite's
+      # drt-ssh-in-the-page check needs. The step CI's browser job runs.
+      - name: Build the SSH client
+        run: script/drt-ssh-page.sh
+      # drt-ssh-in-the-page signs in to a real sshd as root through
+      # `sudo -n`, as CI's browser job does, and a root sshd needs its
+      # privilege separation directory, which only the service creates.
+      # Without it the check reports "sshd never listened" (run 92).
+      - name: A stock OpenSSH sshd
+        run: |
+          set -eu
+          sudo apt-get install -y --no-install-recommends openssh-server
+          sudo mkdir -p /run/sshd
+          /usr/sbin/sshd -V 2>&1 || true
       - name: The browser suite, in Chromium
         working-directory: crates/drt-web/browser-test
         run: |
@@ -480,19 +526,24 @@ jobs:
           npx playwright install --with-deps chromium
           DRT_WEB_BUILDINFO="$GITHUB_WORKSPACE/drt_web.buildinfo.txt" npm test
           grep -q '^profile: web$' "$GITHUB_WORKSPACE/drt_web.buildinfo.txt"
+      # One directory that is also the npm package `drt-browser`
+      # (crates/drt-web/npm): the web build, the browser access client, the
+      # SSH client module and the config schema. Tarred as before, and
+      # packed as npm takes it.
       - name: Package
         run: |
           set -eu
-          mkdir drt_web
-          pkg=crates/drt-web/browser-test
-          cp "$pkg/pkg/drt_web.js" "$pkg/pkg/drt_web_bg.wasm" "$pkg/pkg/drt_web.d.ts" \
-             "$pkg/pkg/drt_web_bg.wasm.d.ts" "$pkg/drt-term.js" "$pkg/shell.js" drt_web/
+          # A rehearsal (no tag) packages under a version that says so.
+          script/drt-web-package.sh drt_web "${DRT_RELEASE_TAG:-v0.0.0-rehearsal}"
           tar -czf drt_web.tar.gz drt_web
+          (cd drt_web && npm pack --pack-destination ..)
+          ls drt-browser-*.tgz
       - uses: actions/upload-artifact@v4
         with:
           name: drt-web
           path: |
             drt_web.tar.gz
+            drt-browser-*.tgz
             drt_web.buildinfo.txt
           if-no-files-found: error
           retention-days: 30
@@ -631,7 +682,7 @@ jobs:
     # then run for real in `smoke-windows`, on a Windows runner.
     name: Build (windows_x86_64)
     needs: [preflight, test]
-    if: needs.preflight.outputs.dev != 'true'
+    if: needs.preflight.outputs.all_legs == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -693,7 +744,7 @@ jobs:
     # wintun.dll as well.
     name: Smoke (windows_x86_64)
     needs: [preflight, build-windows]
-    if: needs.preflight.outputs.dev != 'true'
+    if: needs.preflight.outputs.all_legs == 'true'
     runs-on: windows-latest
     timeout-minutes: 30
     defaults:
@@ -755,12 +806,13 @@ jobs:
   publish:
     name: Publish release
     needs: [preflight, test, build, build-wasip2, build-web, build-client, build-ssh-page, build-windows, smoke-windows]
-    # A dev build skips the three cross-target legs (wasip2 and the two
-    # Windows jobs), and a job whose `needs` were skipped is skipped itself
-    # unless it says otherwise. So this says otherwise, and checks by hand
-    # what the default would have: nothing was cancelled, the suite, the
-    # Linux leg, the web leg, the client and the SSH page passed, and
-    # either this is a dev build or every other leg passed too.
+    # A dev build not dispatched with `full` skips the three cross-target
+    # legs (wasip2 and the two Windows jobs), and a job whose `needs` were
+    # skipped is skipped itself unless it says otherwise. So this says
+    # otherwise, and checks by hand what the default would have: nothing
+    # was cancelled, the suite, the Linux leg, the web leg, the client and
+    # the SSH page passed, and either those legs were skipped or every one
+    # of them passed too.
     if: >-
       !cancelled()
       && needs.preflight.outputs.publish == 'true'
@@ -769,7 +821,7 @@ jobs:
       && needs.build-web.result == 'success'
       && needs.build-client.result == 'success'
       && needs.build-ssh-page.result == 'success'
-      && (needs.preflight.outputs.dev == 'true'
+      && (needs.preflight.outputs.all_legs != 'true'
           || (needs.build-wasip2.result == 'success'
               && needs.build-windows.result == 'success'
               && needs.smoke-windows.result == 'success'))
@@ -780,11 +832,86 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.preflight.outputs.sha }}
+          # The whole history and every tag: a dev build's notes list the
+          # commits since the dev build before it.
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           pattern: drt-*
           path: release_dist
           merge-multiple: true
+      # The release body and NOTES.md are rendered from the changelog
+      # (doc/Release.md); a dev build's from the newest entry and git.
+      - name: Release notes
+        env:
+          TAG: ${{ needs.preflight.outputs.tag }}
+          SHA: ${{ needs.preflight.outputs.sha }}
+          BRANCH: ${{ needs.preflight.outputs.branch }}
+          DEV: ${{ needs.preflight.outputs.dev }}
+          ALL_LEGS: ${{ needs.preflight.outputs.all_legs }}
+          MIRROR: https://software.aloecraft.org/releases/diluvium-drt
+          # A release page folds a long body, so what matters is above
+          # the fold: the overview, then where the whole of it is.
+          SINCE_SHOWN: 25
+        run: |
+          set -eu
+          pip install --quiet pyyaml
+          asset="https://github.com/${{ github.repository }}/releases/download/$TAG/NOTES.md"
+          if [ "$DEV" != true ]; then
+            ./script/changelog.py render md --tag "$TAG" > release_dist/NOTES.md
+            {
+              ./script/changelog.py render md --tag "$TAG" --part overview
+              echo
+              echo "**Full notes:** [on the mirror]($MIRROR/$TAG/NOTES.md), once it carries this release, and [NOTES.md]($asset) with the assets."
+              echo
+              ./script/changelog.py render md --tag "$TAG" --part sections
+            } > release_notes.md
+          else
+            # The dev build before this one, by number; the commits since
+            # it are what changed for whoever pins this one over it.
+            prev=$(git tag --list 'v*-dev.*' | grep -vx "$TAG" \
+              | sed -n 's/.*-dev\.\([0-9][0-9]*\)$/\1 &/p' | sort -n | tail -1 | cut -d' ' -f2)
+            if [ -n "$prev" ]; then
+              range="$prev..$SHA"; since="Since \`$prev\`"
+            else
+              range="$SHA"; since="The newest commits"
+            fi
+            git log --no-merges --format='- %h %s' "$range" > since.txt
+            n=$(wc -l < since.txt)
+            {
+              echo "# DRT $TAG, a dev build"
+              echo
+              if [ "$ALL_LEGS" = true ]; then
+                legs="every target a release builds"
+              else
+                legs="the Linux build"
+              fi
+              echo "Commit \`$SHA\` on \`$BRANCH\`: the suite, $legs, the web build (\`drt_web.tar.gz\`), the browser access client (\`drt_browser_access.js\`) and the SSH page (\`ssh.html\`). Not a release: \`BUILDINFO.txt\` says what is inside, the ten newest dev builds are kept, and the newest changelog entry below describes the tree this is cut from, not this build."
+              echo
+              echo "## $since ($n commit(s))"
+              echo
+              cat since.txt
+              echo
+              echo "## The tree"
+              echo
+              ./script/changelog.py render md --newest
+            } > release_dist/NOTES.md
+            {
+              echo "A dev build (doc/ALIGNMENT.md §7): commit \`$SHA\` on \`$BRANCH\`, no changelog entry of its own. Below, the newest entry's overview, which is the tree this was cut from, and what changed since the dev build before it."
+              echo
+              ./script/changelog.py render md --newest --part overview
+              echo
+              echo "**Full notes:** [NOTES.md]($asset) with the assets: every commit since \`${prev:-the start}\` and the whole entry."
+              echo
+              echo "### $since ($n commit(s))"
+              echo
+              head -n "$SINCE_SHOWN" since.txt
+              if [ "$n" -gt "$SINCE_SHOWN" ]; then echo "- … and $((n - SINCE_SHOWN)) more, in NOTES.md"; fi
+              echo
+              echo "Not a release. \`BUILDINFO.txt\` says what is inside. Pin a candidate or a release for anything that has to keep working; the ten newest dev builds are kept and older ones are pruned."
+            } > release_notes.md
+          fi
+          cat release_notes.md
       # The wasip2 artifact answers `buildinfo` too, from inside wasmtime,
       # so its connector set is read off the bytes like the native ones'.
       - name: wasmtime, to ask the wasip2 artifact what it carries
@@ -912,8 +1039,10 @@ jobs:
             # `drt_wasi.wasm`: run it with
             #   wasmtime run -W exceptions=y --dir . drt_wasi.wasm run app.dlua
             echo "profile.wasi.connectors: ${WASI_CONNECTORS:-unknown}"
-            # `drt_web.tar.gz`: drt_web_bg.wasm, drt_web.js, drt-term.js and
-            # shell.js -- attach it to a terminal per doc/Browser.md.
+            # `drt_web.tar.gz`: drt_web_bg.wasm, drt_web.js, drt-term.js,
+            # shell.js, the browser access client and the config schema;
+            # `drt-browser-<version>.tgz` is the same as an npm package.
+            # Attach it to a terminal per doc/Browser.md.
             echo "profile.web.connectors: ${WEB_CONNECTORS:-unknown}"
             # And what the core inside each of those carries. A package
             # declaring `requires.features` -- `numeric`, when it lands --
@@ -925,37 +1054,31 @@ jobs:
             echo "profile.wasi.features: ${WASI_FEATURES:-unknown}"
             echo "profile.web.features: ${WEB_FEATURES:-unknown}"
           } > BUILDINFO.txt
+          # What the artifacts carry against what the entry says they carry
+          # (doc/Release.md: the connector set is why a version number is
+          # honest). A dev build is held to the newest entry, and only a
+          # dev build that skipped legs may carry `unknown` lines.
+          pip install --quiet pyyaml
+          if [ "${{ needs.preflight.outputs.dev }}" = true ]; then
+            allow=""
+            [ "${{ needs.preflight.outputs.all_legs }}" = true ] || allow="--allow-unknown"
+            ../script/changelog.py buildinfo-check --newest $allow --file BUILDINFO.txt
+          else
+            ../script/changelog.py buildinfo-check --tag '${{ needs.preflight.outputs.tag }}' --file BUILDINFO.txt
+          fi
           # Every other asset, install.sh and the web buildinfo included
           # (doc/ALIGNMENT.md §6): the mirror verifies each file it carries
           # against this, and a file it cannot find here is one it cannot
           # vouch for. Generated last, so it does not list itself.
           sha256sum -- * > SHA256SUMS.txt
           cat BUILDINFO.txt SHA256SUMS.txt
-      # The release body is the changelog's, not GitHub's autogenerated
-      # commit list. CHANGELOG.yaml is the source of truth for release
-      # notes (doc/Release.md), and a body derived from commit subjects
-      # says what changed in the repository rather than what changed for
-      # the person installing it.
-      - name: Release notes, from the changelog
-        if: needs.preflight.outputs.dev != 'true'
-        run: |
-          set -eu
-          pip install --quiet pyyaml
-          ./script/changelog.py render md --tag '${{ needs.preflight.outputs.tag }}' \
-            > release_notes.md
-          cat release_notes.md
-      # A dev build's body says what it is and where its facts are; there
-      # is no entry to render.
-      - name: Release notes for a dev build
-        if: needs.preflight.outputs.dev == 'true'
-        run: |
-          set -eu
-          {
-            echo "A dev build (doc/ALIGNMENT.md §7): commit \`${{ needs.preflight.outputs.sha }}\` on \`${{ needs.preflight.outputs.branch }}\`, the suite, the Linux build, the web build (\`drt_web.tar.gz\`) the browser access client (\`drt_browser_access.js\`) and the SSH page (\`ssh.html\`), no changelog entry."
-            echo
-            echo "Not a release. \`BUILDINFO.txt\` says what is inside. Pin a candidate or a release for anything that has to keep working; the ten newest dev builds are kept and older ones are pruned."
-          } > release_notes.md
-          cat release_notes.md
+      # The body was rendered above, before the checksums, so NOTES.md is
+      # an asset the mirror can vouch for. It is the changelog's, not
+      # GitHub's autogenerated commit list: CHANGELOG.yaml is the source of
+      # truth for release notes (doc/Release.md). A dev build, which has no
+      # entry, is the one place a commit list is the right notes: whoever
+      # pins it over the dev build before it is asking what changed in the
+      # repository.
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:

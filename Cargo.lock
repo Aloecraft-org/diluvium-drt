@@ -1171,7 +1171,7 @@ dependencies = [
 [[package]]
 name = "diluvium"
 version = "0.1.0"
-source = "git+https://github.com/Aloecraft-org/diluvium?tag=v0.17.1#d8497b0dd917548c3e2bfa88ed539a6f527ba369"
+source = "git+https://github.com/Aloecraft-org/diluvium?tag=v0.17.2#97bb9f9d28974e3b4124a2a015e5b06da54a0c98"
 dependencies = [
  "diluvium-sys",
  "rmp-serde",
@@ -1181,7 +1181,7 @@ dependencies = [
 [[package]]
 name = "diluvium-sys"
 version = "0.1.0"
-source = "git+https://github.com/Aloecraft-org/diluvium?tag=v0.17.1#d8497b0dd917548c3e2bfa88ed539a6f527ba369"
+source = "git+https://github.com/Aloecraft-org/diluvium?tag=v0.17.2#97bb9f9d28974e3b4124a2a015e5b06da54a0c98"
 
 [[package]]
 name = "dimpl"
@@ -1265,6 +1265,7 @@ dependencies = [
  "drt-platform",
  "drt-plugin",
  "drt-rtc",
+ "drt-sshd",
  "drt-swarm",
  "ego_cli",
  "ego_transport",
@@ -1274,6 +1275,7 @@ dependencies = [
  "hmac 0.12.1",
  "httparse",
  "ipnetwork",
+ "libc",
  "pollster",
  "rcgen 0.13.2",
  "rmpv",
@@ -1311,6 +1313,7 @@ name = "drt-caps"
 version = "0.8.0"
 dependencies = [
  "rmpv",
+ "schemars",
  "serde",
  "thiserror 2.0.20",
 ]
@@ -1324,6 +1327,7 @@ dependencies = [
  "ed25519-dalek",
  "rmp-serde",
  "rmpv",
+ "schemars",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -1466,12 +1470,15 @@ dependencies = [
  "drt-hostcall",
  "ego_transport",
  "getrandom 0.3.4",
+ "libc",
  "pollster",
  "rmpv",
+ "russh",
  "serde",
  "ssh-key",
  "tempfile",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1585,6 +1592,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "drt-sshd"
+version = "0.8.0"
+dependencies = [
+ "rand 0.10.2",
+ "russh",
+ "tokio",
+]
+
+[[package]]
 name = "drt-swarm"
 version = "0.8.0"
 dependencies = [
@@ -1612,10 +1628,13 @@ dependencies = [
  "drt-config",
  "drt-connector",
  "drt-platform",
+ "drt-sshd",
  "drt-swarm",
  "ego_cli",
  "js-sys",
+ "ring",
  "serde_json",
+ "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
 ]
@@ -1667,6 +1686,12 @@ name = "duplicate"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8e92f10a49176cbffacaedabfaa11d51db1ea0f80a83c26e1873b43cd1742c24"
+
+[[package]]
+name = "dyn-clone"
+version = "1.0.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "ecdsa"
@@ -2602,18 +2627,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "internal-russh-num-bigint"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae8e22120c32fb4d19ec55fba35015f57095cd95a2e3b732e44457f5915b2ee8"
-dependencies = [
- "num-integer",
- "num-traits",
- "rand 0.10.2",
- "rand_core 0.10.1",
-]
-
-[[package]]
 name = "ip_network"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3012,6 +3025,8 @@ checksum = "93e7820bc0a80a0238e650327316f929ba18d5be054b647490a3a6a339f3e7c0"
 dependencies = [
  "num-integer",
  "num-traits",
+ "rand 0.10.2",
+ "rand_core 0.10.1",
 ]
 
 [[package]]
@@ -3142,9 +3157,8 @@ dependencies = [
 
 [[package]]
 name = "pageant"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3adadc44070da6f464b0918655a12f5792c156e088d8c4082d13e27d94c3e791"
+version = "0.2.3"
+source = "git+https://github.com/Aloecraft-org/russh?branch=main#e14951dff750eb2f8ce5e71bd5d862035e0fc873"
 dependencies = [
  "base16ct 1.0.0",
  "byteorder",
@@ -3661,6 +3675,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ref-cast"
+version = "1.0.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e440fb4e4b4147295338efb76001ab9e4efc0e5839df2c47fc5ac2381d365c3"
+dependencies = [
+ "ref-cast-impl",
+]
+
+[[package]]
+name = "ref-cast-impl"
+version = "1.0.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92ecd8964f8453721699a1ed72037b0db49ce2f5a5138486ee89bed6f67cdf3a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.4",
+]
+
+[[package]]
 name = "regex"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3864,9 +3898,8 @@ dependencies = [
 
 [[package]]
 name = "russh"
-version = "0.63.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35bab1b87d915817d5d9cc352637cd40d5f0b298a48c6309af9156a4addc3031"
+version = "0.63.2"
+source = "git+https://github.com/Aloecraft-org/russh?branch=main#e14951dff750eb2f8ce5e71bd5d862035e0fc873"
 dependencies = [
  "aes 0.9.2",
  "bitflags 2.13.1",
@@ -3894,13 +3927,12 @@ dependencies = [
  "hex-literal",
  "hmac 0.13.0",
  "inout 0.2.2",
- "internal-russh-num-bigint",
  "keccak",
  "log",
  "md5",
  "ml-kem",
  "module-lattice",
- "num-bigint 0.4.8",
+ "num-bigint 0.5.1",
  "p256 0.14.0",
  "p384 0.14.0",
  "p521",
@@ -3937,8 +3969,7 @@ dependencies = [
 [[package]]
 name = "russh-cryptovec"
 version = "0.62.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3aec6cb630dbe85d72ffd7bcd95f07e1bd69f9f270ee8adfa1afe443a6331438"
+source = "git+https://github.com/Aloecraft-org/russh?branch=main#e14951dff750eb2f8ce5e71bd5d862035e0fc873"
 dependencies = [
  "log",
  "nix 0.31.3",
@@ -3949,10 +3980,10 @@ dependencies = [
 [[package]]
 name = "russh-util"
 version = "0.52.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "668424a5dde0bcb45b55ba7de8476b93831b4aa2fa6947e145f3b053e22c60b6"
+source = "git+https://github.com/Aloecraft-org/russh?branch=main#e14951dff750eb2f8ce5e71bd5d862035e0fc873"
 dependencies = [
  "chrono",
+ "thiserror 2.0.20",
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -4043,6 +4074,31 @@ checksum = "2f874456e72520ff1375a06c588eaf074b0f01f9e9e1aada45bd9b7954a6e42c"
 dependencies = [
  "cfg-if",
  "cipher 0.5.2",
+]
+
+[[package]]
+name = "schemars"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "687274d293b6cdc6e73e0fee520bf2049650090d7164f87672d212a3c530cf4a"
+dependencies = [
+ "dyn-clone",
+ "ref-cast",
+ "schemars_derive",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "schemars_derive"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d98c67716b46af2f0b8cf752abc930f6f9aecfbf671ecfb531db8a31dbe4e2ba"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_derive_internals",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -4164,6 +4220,17 @@ name = "serde_derive"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.4",
+]
+
+[[package]]
+name = "serde_derive_internals"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f852137cce035d6a4df67ccce505ff6b3e9fd3a10e3e52b24dc71e650bb1a9bd"
 dependencies = [
  "proc-macro2",
  "quote",

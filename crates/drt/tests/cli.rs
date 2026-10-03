@@ -406,7 +406,7 @@ fn every_profile_name_is_a_feature_the_binary_probes() {
 #[test]
 fn profile_matches_its_manifest() {
     const PROFILES: [&str; 4] = ["full", "slim", "wasi", "web"];
-    const LEAVES: [&str; 24] = [
+    const LEAVES: [&str; 26] = [
         "cli",
         "connector-crypto",
         "connector-data",
@@ -422,6 +422,7 @@ fn profile_matches_its_manifest() {
         "listen",
         "netcheck",
         "numeric",
+        "p2p",
         "plugins",
         // A test dependency expressed as a feature: dev-dependencies cannot be
         // optional, and a shipping feature must not carry crates only its tests
@@ -430,6 +431,7 @@ fn profile_matches_its_manifest() {
         "turn-client",
         "relay",
         "runtime",
+        "sshd",
         "stun",
         "tunnel",
         "turn",
@@ -521,9 +523,11 @@ fn profile_matches_its_manifest() {
     feature!("listen");
     feature!("netcheck");
     feature!("numeric");
+    feature!("p2p");
     feature!("plugins");
     feature!("relay");
     feature!("runtime");
+    feature!("sshd");
     feature!("stun");
     feature!("tunnel");
     feature!("turn");

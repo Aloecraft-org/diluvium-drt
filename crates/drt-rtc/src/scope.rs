@@ -18,6 +18,16 @@ use std::net::IpAddr;
 /// gives none.
 pub const SCHEMES: &[(&str, u16)] = &[("http", 80), ("https", 443), ("ssh", 22)];
 
+/// Whether `name` can name a service (`doc/BrowserAccess.md` §10.3): 1 to
+/// 32 of `a-z`, `0-9` and `-`, starting with a letter or digit.
+pub fn is_service_name(name: &str) -> bool {
+    let b = name.as_bytes();
+    (1..=32).contains(&b.len())
+        && b[0] != b'-'
+        && b.iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
+}
+
 /// One reachable target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {

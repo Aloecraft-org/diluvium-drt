@@ -26,6 +26,9 @@
 //!   history, word motions, undo, Tab); through a pipe it is [`piped`],
 //!   whose prompts go to stderr so a redirect stays clean.
 //! - [`PROGRAM`], [`IN`], [`OUT`]: the guest and the two queues.
+//! - Fan-out: [`meta`], the lines the host answers instead of the guest:
+//!   `:ssh` (the config's `host:ssh/shell`) and `:ssh <target> …`
+//!   (`drt ssh`, on this terminal).
 
 use std::io::{BufRead, Write};
 use std::sync::{Arc, Mutex};
@@ -57,6 +60,15 @@ pub struct Repl {
     names_stale: bool,
     /// What [`Repl::banner`] says, and what the lines evaluate under.
     unsafe_stdlib: bool,
+    /// `:quit` was typed: the loop that owns the terminal returns.
+    quit: bool,
+    /// Served to someone else's terminal (SSH): `print` comes back with the
+    /// answers, and nothing reaches for this process's own terminal.
+    served: bool,
+    /// Whether `:pause`, `:resume` and `:stop` are this terminal's to
+    /// give: the process's own REPL, or a served one whose key holds the
+    /// ceiling (`crate::control`).
+    may_order: bool,
 }
 
 impl Repl {
@@ -123,7 +135,49 @@ impl Repl {
             names: Arc::new(Mutex::new(Vec::new())),
             names_stale: true,
             unsafe_stdlib,
+            quit: false,
+            served: false,
+            may_order: true,
         })
+    }
+
+    /// Whether the control endpoint's orders may be given from here.
+    pub fn allow_orders(&mut self, may: bool) {
+        self.may_order = may;
+    }
+
+    /// A sealed REPL for a terminal that is not this process's: an SSH
+    /// session (`drt-sshd`, `crate::sshd`). `print` is collected and
+    /// printed with each answer, because the core's own `print` writes to
+    /// this process's stdout, and `:ssh` is refused, because it would take
+    /// over this process's terminal rather than the session's.
+    pub fn served(
+        dispatcher: Arc<Dispatcher>,
+        caps: Vec<Grant>,
+        budget: drt_config::Budget,
+    ) -> Result<Self, String> {
+        let mut repl = Self::build(dispatcher, caps, budget, false)?;
+        repl.served = true;
+        // The guest declares its queues on its first slice; until then
+        // there is nowhere to say it is served.
+        for _ in 0..8 {
+            if repl.solo.queue(IN).is_some() {
+                break;
+            }
+            let _ = repl.solo.tick(Some(IN));
+        }
+        let input = repl
+            .solo
+            .queue(IN)
+            .ok_or("the repl program never declared its input queue")?;
+        let served = rmpv::Value::Map(vec![(
+            rmpv::Value::from("served"),
+            rmpv::Value::Boolean(true),
+        )]);
+        let mut msg = Vec::new();
+        rmpv::encode::write_value(&mut msg, &served).map_err(|e| e.to_string())?;
+        repl.solo.push(input, &msg)?;
+        Ok(repl)
     }
 
     /// What to print before the first prompt.
@@ -134,9 +188,9 @@ impl Repl {
     /// the tty and the page -- and they must not drift.
     pub fn banner(&self) -> &'static str {
         if self.unsafe_stdlib {
-            "drt repl — unsafe stdlib: os, io, require — ^D to leave"
+            "drt repl — unsafe stdlib: os, io, require — :help lists the colon commands, ^D leaves"
         } else {
-            "drt repl — ^D to leave"
+            "drt repl — :help lists the colon commands, ^D leaves"
         }
     }
 
@@ -317,6 +371,12 @@ fn piped(mut repl: Repl) -> Result<(), String> {
                     eprintln!();
                     return Ok(());
                 };
+                if !repl.continuing() && meta(&mut repl, &line)? {
+                    if repl.quit {
+                        return Ok(());
+                    }
+                    continue;
+                }
                 repl.feed(&line)?;
             }
             Next::Done(_) => return Ok(()),
@@ -326,6 +386,163 @@ fn piped(mut repl: Repl) -> Result<(), String> {
             }
         }
     }
+}
+
+// depth: commands the host answers itself
+
+/// A line the terminal's side answers rather than the guest: `:ssh`. True
+/// when it was one. A Diluvium line never starts with `:`, so nothing a
+/// program could say is taken.
+///
+/// `:ssh` alone is the config's `host:ssh/shell`, evaluated as a guest
+/// line, so the grant and the scope decide it exactly as they would for a
+/// program. `:ssh <target> …` is `drt ssh <target> …`: the person at this
+/// terminal naming a host, trusted through known_hosts. Either way the
+/// editor is not reading while the session runs, so the terminal is the
+/// session's, and the prompt comes back when it ends.
+/// How long the guest waits on `:ssh`'s `host:ssh/shell` reply.
+const SESSION_WAIT_MS: u32 = i32::MAX as u32;
+
+/// Every colon command, for `:help`: one line each, in the order a person
+/// meets them.
+const META_HELP: &str = "\
+:help                this list
+:quit, :q            leave (so does ^D)
+:ssh [args]          an SSH session on this terminal; alone, the config's host:ssh/shell
+:ps                  a running deployment's instances (SPEC.md §13a)
+:status              its state
+:caps <id>           what instance <id> holds
+:pause <id>          hibernate <id> if it is parked
+:resume <id>         wake <id>
+:stop                hibernate what is parked and end the deployment";
+
+fn meta(repl: &mut Repl, line: &str) -> Result<bool, String> {
+    let trimmed = line.trim_start();
+    match trimmed.trim_end() {
+        ":help" | ":h" | ":?" => {
+            let _ = writeln!(stdio::stderr(), "{META_HELP}");
+            return Ok(true);
+        }
+        ":quit" | ":q" | ":exit" => {
+            repl.quit = true;
+            return Ok(true);
+        }
+        _ => {}
+    }
+    if control_meta(repl, trimmed) {
+        return Ok(true);
+    }
+    let Some(rest) = trimmed.strip_prefix(":ssh") else {
+        return Ok(false);
+    };
+    if !(rest.is_empty() || rest.starts_with(char::is_whitespace)) {
+        return Ok(false);
+    }
+    if repl.served {
+        let _ = writeln!(
+            stdio::stderr(),
+            ":ssh is not available in a REPL reached over SSH: the session it \
+             would open is this server's terminal, not yours"
+        );
+        return Ok(true);
+    }
+    if rest.trim().is_empty() {
+        // The reply deadline is the session's length, and a person decides
+        // that: `host.call`'s default ten seconds would have the guest give
+        // up while the shell still has the terminal. The longest wait a
+        // queue takes, which is ~24 days.
+        repl.feed(&format!(
+            "return host.call('ssh/shell', nil, {SESSION_WAIT_MS})"
+        ))?;
+        return Ok(true);
+    }
+    ssh_to(rest);
+    Ok(true)
+}
+
+/// `:ps`, `:status`, `:caps <id>`, `:pause <id>`, `:resume <id>`,
+/// `:stop`: the control endpoint (SPEC.md §13a), from inside a REPL in a
+/// `drt start` process. Elsewhere they say where a deployment would be.
+fn control_meta(repl: &Repl, trimmed: &str) -> bool {
+    use crate::control;
+    let Some(rest) = trimmed.strip_prefix(':') else {
+        return false;
+    };
+    let words: Vec<&str> = rest.split_whitespace().collect();
+    if !matches!(
+        words.first().copied(),
+        Some("ps" | "status" | "caps" | "pause" | "resume" | "stop")
+    ) {
+        return false;
+    }
+    let ask = match control::parse(&words) {
+        Ok(ask) => ask,
+        Err(e) => {
+            let _ = writeln!(stdio::stderr(), ":{}: {e}", words[0]);
+            return true;
+        }
+    };
+    let Some(handle) = control::handle() else {
+        let _ = writeln!(
+            stdio::stderr(),
+            ":{}: no deployment is running in this process; these reach a `drt start`, \
+             from a REPL it serves or with `drt ps ssh://host:port`",
+            ask.verb()
+        );
+        return true;
+    };
+    if ask.is_order() && !repl.may_order {
+        let _ = writeln!(
+            stdio::stderr(),
+            ":{}: needs a key holding host:*, the deployment's ceiling",
+            ask.verb()
+        );
+        return true;
+    }
+    match handle.ask(ask.clone()) {
+        Ok((answer, _delivered)) => {
+            let text = control::render(&ask, &answer);
+            let _ = write!(stdio::stdout(), "{text}");
+        }
+        Err(e) => {
+            let _ = writeln!(stdio::stderr(), ":{}: {e}", ask.verb());
+        }
+    }
+    true
+}
+
+#[cfg(feature = "connector-ssh")]
+fn ssh_to(rest: &str) {
+    let args = match crate::ssh::from_line(rest) {
+        Ok(a) => a,
+        Err(e) => {
+            let _ = writeln!(stdio::stderr(), "{e}");
+            return;
+        }
+    };
+    match crate::ssh::run(&args) {
+        Ok(Some(status)) => {
+            let _ = writeln!(
+                stdio::stderr(),
+                "ssh: {} closed, exit {status}",
+                args.target
+            );
+        }
+        Ok(None) => {
+            let _ = writeln!(stdio::stderr(), "ssh: {} closed", args.target);
+        }
+        Err(e) => {
+            let _ = writeln!(stdio::stderr(), "ssh: {e}");
+        }
+    }
+}
+
+#[cfg(not(feature = "connector-ssh"))]
+fn ssh_to(_rest: &str) {
+    let _ = writeln!(
+        stdio::stderr(),
+        "ssh: this build has no ssh client (it is in `full`)"
+    );
 }
 
 // depth: the edited path
@@ -545,6 +762,12 @@ pub async fn edit<T: ego_cli::term::Terminal>(
                 session.set_prompt(if repl.continuing() { ">> " } else { "dv> " });
                 match session.read_line().await {
                     Ok(ReadOutcome::Line(line)) => {
+                        if !repl.continuing() && meta(repl, &line)? {
+                            if repl.quit {
+                                return Ok(());
+                            }
+                            continue;
+                        }
                         repl.feed(&line)?;
                     }
                     // ^C: the line is gone, and so is anything it was
@@ -575,7 +798,7 @@ pub async fn edit<T: ego_cli::term::Terminal>(
     not(all(target_arch = "wasm32", target_os = "unknown"))
 ))]
 fn edited(mut repl: Repl) -> Result<(), String> {
-    let terminal = ego_cli::term::platform().map_err(|e| format!("no terminal: {e}"))?;
+    let terminal = Keys(ego_cli::term::platform().map_err(|e| format!("no terminal: {e}"))?);
     let mut session = editor(&repl, terminal);
 
     // `block_on` and nothing else: with ego-cli's `runtime` feature off,
@@ -585,6 +808,60 @@ fn edited(mut repl: Repl) -> Result<(), String> {
     // tokio teardown bug `cli.rs` still works around for the relay.
     eprintln!("{}", repl.banner());
     futures_executor::block_on(edit(&mut repl, &mut session))
+}
+
+/// The native tty, with Ctrl+Backspace read the way the page reads it.
+///
+/// Most terminals send BS (0x08) for Ctrl+Backspace and DEL for a plain
+/// Backspace. crossterm, which `ego_cli` reads a native tty through, turns
+/// BS into Ctrl+H, which nothing binds, so Ctrl+Backspace deleted nothing
+/// while Ctrl+arrows (escape sequences crossterm does name) moved by
+/// words. `ego_cli`'s own byte decoder, the page's, already reads BS as
+/// Ctrl+Backspace, and so does this. It belongs in `ego_cli`'s crossterm
+/// mapping; until it is there, it is here.
+#[cfg(all(
+    feature = "cli",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
+pub struct Keys<T>(pub T);
+
+#[cfg(all(
+    feature = "cli",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
+impl<T: ego_cli::term::Terminal> ego_cli::term::Terminal for Keys<T> {
+    fn capabilities(&self) -> ego_cli::term::Capabilities {
+        self.0.capabilities()
+    }
+
+    fn size(&self) -> ego_cli::term::Size {
+        self.0.size()
+    }
+
+    fn set_raw(&mut self, enabled: bool) -> ego_cli::Result<()> {
+        self.0.set_raw(enabled)
+    }
+
+    async fn next_event(&mut self) -> ego_cli::Result<ego_cli::term::Event> {
+        use ego_cli::{KeyCode, KeyPress, Mods};
+        Ok(match self.0.next_event().await? {
+            ego_cli::term::Event::Key(KeyPress {
+                code: KeyCode::Char('h'),
+                mods,
+            }) if mods == Mods::CTRL => {
+                ego_cli::term::Event::Key(KeyPress::new(KeyCode::Backspace, Mods::CTRL))
+            }
+            other => other,
+        })
+    }
+
+    async fn write(&mut self, text: &str) -> ego_cli::Result<()> {
+        self.0.write(text).await
+    }
+
+    async fn flush(&mut self) -> ego_cli::Result<()> {
+        self.0.flush().await
+    }
 }
 
 /// What came back on `repl/out`: something to show, or the names Tab
@@ -617,6 +894,10 @@ impl Answer {
                     .filter_map(|v| v.as_str().map(str::to_string))
                     .collect(),
             );
+        }
+        // What a served REPL's line printed, before its answer.
+        if let Some(printed) = get("printed").and_then(|v| v.as_str().map(str::to_string)) {
+            let _ = write!(stdio::stdout(), "{printed}");
         }
         let text = get("text").and_then(|v| v.as_str().map(str::to_string));
         if get("more").and_then(|v| v.as_bool()).unwrap_or(false) {

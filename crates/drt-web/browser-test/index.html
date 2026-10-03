@@ -31,11 +31,22 @@
   // moves the cursor, redraws a line, clears to the end -- so a <pre> that
   // appends characters would now be a third terminal emulator to get
   // wrong, which is the thing D8 exists to avoid.
-  import init, { DrtTerm, DrtEditor, DrtSwarm, buildInfo, abiVersion, setPanicHook } from './pkg/drt_web.js';
+  import init, { DrtTerm, DrtEditor, DrtSwarm, DrtSocket, DrtSshServer, buildInfo, abiVersion, setPanicHook } from './pkg/drt_web.js';
   import { makeShell } from './shell.js';
   import { attach } from './drt-term.js';
+  import { terminalFor } from './ssh-terminal.js';
+  import { park } from './relay-leg.js';
+  import { splice } from './stream-leg.js';
 
   const decode = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  // The other direction, for the SSH bridge: Playwright's exposed
+  // functions carry JSON, so bytes travel as base64 either way.
+  const b64 = (bytes) => btoa(String.fromCharCode(...bytes));
+  const sshSockets = new Map();
+  const sshShells = new Map();
+  const sshParked = new Map();
+  const sshAnswered = [];
+  const sshListening = [];
 
   let term = null;
   let shell = null;
@@ -57,6 +68,46 @@
     }),
     buildInfo: (json) => buildInfo(json),
     abiVersion: () => abiVersion(),
+    // The REPL as bytes (doc/P2P.md §5.2): a DrtTerm's `repl`, driven the
+    // way a launcher drives a root's attach stream -- keystrokes in,
+    // bytes out, a resize, then ^D. Answers what came out, in order, and
+    // the status `closed` was called with.
+    async replBytes(lines) {
+      const term = new DrtTerm(() => {});
+      const decoder = new TextDecoder();
+      let out = '';
+      let status = null;
+      const repl = term.repl(80, 24, (bytes) => { out += decoder.decode(bytes, { stream: true }); }, (s) => { status = s; });
+      const until = async (pred) => {
+        const deadline = Date.now() + 10000;
+        while (!pred() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+        return pred();
+      };
+      const encoder = new TextEncoder();
+      const prompts = [];
+      for (const line of lines) {
+        if (!(await until(() => /dv> $/.test(out)))) break;
+        prompts.push(out.length);
+        repl.input(encoder.encode(`${line}\r`));
+        await until(() => out.length > prompts[prompts.length - 1] && /(dv> |>> )$/.test(out));
+      }
+      repl.resize(100, 30);
+      repl.input(encoder.encode('\x04'));
+      const closed = await until(() => status !== null);
+      // A second session may start once the first ended: the one-at-a-time
+      // rule is about the runtime's output, not a lock that outlives it.
+      let again = null;
+      if (closed) {
+        try {
+          const r2 = term.repl(80, 24, () => {}, () => {});
+          again = true;
+          r2.close();
+        } catch (e) {
+          again = String(e);
+        }
+      }
+      return { out, status, closed, again, prompts: prompts.length };
+    },
     // The swarm table, driven the way the Lab's Instances panel drives
     // it: root a program, step until it settles, and read the roster and
     // its capability answers back. What this proves is that the exports
@@ -84,6 +135,171 @@
         sw.free();
       }
       return out;
+    },
+    // The transport (doc/SshInBrowser.md): a byte stream whose socket
+    // stays in the page. This is the page's whole side of it -- deliver
+    // what arrives, pump what Rust wants written, close when the wire
+    // does -- and the loop below is the one from `ws.rs`'s header with a
+    // WebSocket swapped for the caller's strings. `startEcho` stands in
+    // for the SSH session: what is under test is the stream, not what
+    // reads it.
+    async socketEcho(messages) {
+      const socket = new DrtSocket();
+      socket.startEcho();
+      const back = [];
+      const pump = (async () => {
+        for (;;) {
+          const out = await socket.nextOutgoing();
+          if (out === undefined) break;
+          back.push(out);
+        }
+      })();
+
+      const encoder = new TextEncoder();
+      const want = messages.join('').length;
+      const size = () => back.reduce((n, b) => n + b.length, 0);
+      const sent = messages.every((m) => socket.deliver(encoder.encode(m)));
+      const deadline = Date.now() + 5000;
+      while (size() < want && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 0));
+      }
+
+      // Closing must end both halves: Rust reads end of input, the task
+      // above it stops and drops the stream, and that is what the page's
+      // pump loop sees.
+      socket.close();
+      const afterClose = socket.deliver(encoder.encode('too late'));
+      const ended = await Promise.race([
+        pump.then(() => true),
+        new Promise((r) => setTimeout(() => r(false), 5000)),
+      ]);
+      socket.free();
+
+      const joined = new Uint8Array(size());
+      let at = 0;
+      for (const chunk of back) {
+        joined.set(chunk, at);
+        at += chunk.length;
+      }
+      return { sent, afterClose, ended, chunks: back.length, echoed: new TextDecoder().decode(joined) };
+    },
+    // SSH into the page (doc/SshInBrowser.md). The suite drives this
+    // with a real `ssh` client: run.mjs listens on a TCP port, shuttles
+    // bytes between that socket and the one below, and points `ssh` at
+    // it. So what is under test is the product's claim -- a standard
+    // client gets a terminal into a page -- rather than two things we
+    // wrote agreeing with each other.
+    //
+    // The shell behind the session is the page's own: `terminalFor` makes
+    // the SSH channel into the object `attach` takes, and everything
+    // after that is M8's editor and shell.js, unchanged.
+    sshHostKey: () => DrtSshServer.generateHostKey(),
+    sshServe(id, hostKey, authorizedKeys) {
+      const server = new DrtSshServer(hostKey, authorizedKeys);
+      const socket = server.serve((shell) => {
+        const terminal = terminalFor(shell);
+        const bound = attach(DrtTerm, terminal, { DrtEditor, banner: 'drt in a page' });
+        bound.term.putFile('/hello.dlua', new TextEncoder().encode(
+          'print("hello over ssh")\n'));
+        bound.term.setCwd('/');
+        sshShells.set(id, { terminal, bound });
+      });
+      sshSockets.set(id, socket);
+      (async () => {
+        for (;;) {
+          const out = await socket.nextOutgoing();
+          if (out === undefined) break;
+          await window.sshOutgoing(id, b64(out));
+        }
+        await window.sshClosed(id);
+      })();
+      return { fingerprint: server.fingerprint, authorized: server.authorized };
+    },
+    // The whole chain (doc/SshInBrowser.md): the page parks a leg on a
+    // real `drt relay`, and `ssh -o ProxyCommand="drt tunnel ..."` claims
+    // it. Nothing is bridged by the suite here -- the bytes go over the
+    // relay the way they will in production, and the only thing this adds
+    // is the label and the keys.
+    sshPark(url, hostKey, authorizedKeys) {
+      const server = new DrtSshServer(hostKey, authorizedKeys);
+      const events = [];
+      const leg = park(
+        url,
+        () =>
+          server.serve((shell) => {
+            const terminal = terminalFor(shell);
+            const bound = attach(DrtTerm, terminal, { DrtEditor, banner: 'drt over a relay' });
+            bound.term.putFile('/hello.dlua', new TextEncoder().encode(
+              'print("hello through a tunnel")\n'));
+            bound.term.setCwd('/');
+          }),
+        { onEvent: (name) => events.push(name) },
+      );
+      sshParked.set(1, { leg, events });
+      return true;
+    },
+    // Row 8 of doc/ssh-transport-matrix.md: this page answers a session
+    // from another browser (doc/BrowserAccess.md §10.4) and serves `ssh`
+    // on it. The suite carries the two records; that is all signaling is.
+    async sshAnswer(hostKey, authorizedKeys, callerRecord) {
+      const { answer } = await import('/drt_browser_access.js');
+      const server = new DrtSshServer(hostKey, authorizedKeys);
+      const ssh = (stream) =>
+        splice(stream, server.serve((shell) => {
+          const terminal = terminalFor(shell);
+          const bound = attach(DrtTerm, terminal, { DrtEditor, banner: 'drt in a page, over WebRTC' });
+          bound.term.putFile('/hello.dlua', new TextEncoder().encode('print("hello over webrtc")\n'));
+          bound.term.setCwd('/');
+        }));
+      const answering = await answer(callerRecord, { services: { ssh }, label: 'drt in a page' });
+      sshAnswered.push(answering);
+      return { record: answering.recordText, fingerprint: server.fingerprint };
+    },
+    // Row 6: the same, for callers that arrive through a signalling server
+    // (doc/DRT-Signalling.md; examples/30-signaling-room) rather than
+    // through the suite. The client library's `listen` holds the call
+    // notification stream, polls, and answers each call;
+    // `drt tunnel rtc:<server>/v1/<name>/calls` is the caller.
+    async sshListen(hostKey, authorizedKeys, base, token) {
+      const { listen } = await import('/drt_browser_access.js');
+      const server = new DrtSshServer(hostKey, authorizedKeys);
+      const ssh = (stream) =>
+        splice(stream, server.serve((shell) => {
+          const terminal = terminalFor(shell);
+          const bound = attach(DrtTerm, terminal, { DrtEditor, banner: 'drt in a page, called natively' });
+          bound.term.putFile('/hello.dlua', new TextEncoder().encode('print("hello from a page, over webrtc")\n'));
+          bound.term.setCwd('/');
+        }));
+      const listening = listen(base, { token, services: { ssh }, label: 'drt in a page' });
+      // Present (§4.2) before the suite starts a caller.
+      await new Promise((resolve) => {
+        const start = Date.now();
+        const check = () => (listening.streaming || Date.now() - start > 5000 ? resolve() : setTimeout(check, 20));
+        check();
+      });
+      sshListening.push(listening);
+      return { fingerprint: server.fingerprint };
+    },
+    sshStopListening() {
+      for (const l of sshListening) l.close();
+    },
+    sshParkEvents: () => (sshParked.get(1) ? sshParked.get(1).events : []),
+    sshUnpark() {
+      const held = sshParked.get(1);
+      if (held) held.leg.close();
+      sshParked.delete(1);
+    },
+    sshDeliver(id, data) {
+      const socket = sshSockets.get(id);
+      return socket ? socket.deliver(decode(data)) : false;
+    },
+    sshClose(id) {
+      const held = sshShells.get(id);
+      if (held) held.bound.dispose();
+      const socket = sshSockets.get(id);
+      if (socket) socket.close();
+      sshShells.delete(id);
+      sshSockets.delete(id);
     },
     seed({ cwd, files, dirs = [] }) {
       fresh();
@@ -130,7 +346,63 @@
       term = null;
       return rendered.join('\n').replace(/\n+$/, '') + '\n';
     },
+    // `drt ssh` and `:ssh` at a real terminal: ssh.html's client
+    // (drt-ssh-web, a classic script defining `wasm_bindgen`) handed to
+    // `attach`, the page's key in its store. One terminal per call; the
+    // suite types with `sshType` and reads with `sshScreen`.
+    async sshTerminal(privateOpenssh) {
+      // A top-level `let` in a classic script: a global binding, and not a
+      // property of `window`, so it is named, not looked up.
+      if (typeof wasm_bindgen === 'undefined') {
+        await new Promise((ok, fail) => {
+          const tag = document.createElement('script');
+          tag.src = '/drt_ssh_web.js';
+          tag.onload = ok;
+          tag.onerror = () => fail(new Error('/drt_ssh_web.js did not load'));
+          document.head.append(tag);
+        });
+        // eslint-disable-next-line no-undef
+        await wasm_bindgen({ module_or_path: '/drt_ssh_web_bg.wasm' });
+      }
+      const access = await import('/drt_browser_access.js');
+      const store = new Map([['key', { privateOpenssh }]]);
+      const terminal = new Terminal({ cols: 100, rows: 30, convertEol: false, scrollback: 2000 });
+      terminal.open(document.getElementById('offscreen'));
+      const bound = attach(DrtTerm, terminal, {
+        DrtEditor,
+        ssh: {
+          // eslint-disable-next-line no-undef
+          Ssh: wasm_bindgen.Ssh,
+          access,
+          store: { get: async (k) => store.get(k), set: async (k, v) => void store.set(k, v) },
+        },
+      });
+      bound.term.setCwd('/');
+      sshTerminals.push({ terminal, bound });
+      return sshTerminals.length - 1;
+    },
+    sshType(i, text) {
+      sshTerminals[i].terminal.input(text, true);
+    },
+    sshResize(i, cols, rows) {
+      sshTerminals[i].terminal.resize(cols, rows);
+    },
+    sshScreen(i) {
+      const buf = sshTerminals[i].terminal.buffer.active;
+      const lines = [];
+      for (let n = 0; n < buf.length; n++) lines.push(buf.getLine(n).translateToString(true));
+      return lines.join('\n');
+    },
+    sshIdle: (i) => sshTerminals[i].bound.whenIdle(),
+    sshDispose(i) {
+      const t = sshTerminals[i];
+      if (!t) return;
+      t.bound.dispose();
+      t.terminal.dispose();
+      sshTerminals[i] = null;
+    },
   };
+  const sshTerminals = [];
   window.drtBrowserTest = harness;
 
   // depth: the person's terminal, a <pre> with a keyboard.
