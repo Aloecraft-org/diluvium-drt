@@ -4,7 +4,7 @@ Written 2026-10-02, when the piecemeal Claude Code sessions ended and the
 work moved to a Claude Code Project. The previous handoff, from
 2026-08-30, is `doc/Handoff-2026-08-30.md`; nothing in it is current.
 
-Read `CLAUDE.md` first for how the repository works. This file says
+Read `.claude/CLAUDE.md` first for how the repository works. This file says
 where the work stands and what is next.
 
 ---

@@ -27,5 +27,8 @@
     ]
   },
   "TECHNO_INIT_DIRS": [".nogit", ".dump", "script"],
-  "TECHNO_COPYRIGHT": "Copyright Michael Godfrey [2026] | aloecraft.org [michael@aloecraft.org]"
+  "TECHNO_COPYRIGHT": "Copyright Michael Godfrey [2026] | aloecraft.org [michael@aloecraft.org]",
+  "TECHNO_LOCKSTEP": {
+    "surfaces": ["README.md", "examples/"]
+  }
 }
