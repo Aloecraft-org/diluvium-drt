@@ -52,6 +52,15 @@ pub async fn connect(
     dial: &Dial,
     roots: &[CertificateDer<'static>],
 ) -> Result<Connected, String> {
+    reach(peer, dial, roots).await.map_err(|f| f.why)
+}
+
+/// [`connect`], saying which kind of failure it was.
+async fn reach(
+    peer: &Peer,
+    dial: &Dial,
+    roots: &[CertificateDer<'static>],
+) -> Result<Connected, Failed> {
     let any = "0.0.0.0:0".parse().expect("a literal");
     let (caller, answerer) = match &peer.how {
         How::Record(record) => (Caller::direct(any).await?, record.clone()),
@@ -73,7 +82,7 @@ pub async fn connect(
                 .map_err(|e| format!("this caller's record: {e}"))?;
             let reply = http::request("POST", &url, &dial.headers, Some(&mine), roots).await?;
             if let Some(why) = reply.refusal(&url) {
-                return Err(why);
+                return Err(why.into());
             }
             let record = Record::decode(reply.text().trim()).map_err(|e| {
                 format!(
@@ -83,7 +92,11 @@ pub async fn connect(
             })?;
             (caller, record)
         }
-        How::Ws(_) => return Err("a WebSocket relay carries bytes, not a session".into()),
+        How::Ws(_) => {
+            return Err(Failed::from(
+                "a WebSocket relay carries bytes, not a session".to_string(),
+            ))
+        }
     };
     if let Some(want) = dial.fingerprint {
         if want != answerer.fingerprint {
@@ -92,10 +105,14 @@ pub async fn connect(
                  answered with another peer's record would look exactly like this",
                 fingerprint_text(&answerer.fingerprint),
                 fingerprint_text(&want)
-            ));
+            )
+            .into());
         }
     }
-    let call = caller.connect(&answerer, CONNECT_TIMEOUT).await?;
+    let call = caller
+        .connect(&answerer, CONNECT_TIMEOUT)
+        .await
+        .map_err(|why| Failed { why, no_path: true })?;
     let forwarding = serde_json::from_str::<serde_json::Value>(call.hello())
         .map(|h| h["forwarding"] == true)
         .unwrap_or(false);
@@ -247,8 +264,57 @@ pub async fn session(
                 through(fallback, role, roots).await
             }
         },
-        (None, None) => connect(&role.peer, &role.dial, roots).await,
+        (None, None) => match reach(&role.peer, &role.dial, roots).await {
+            Ok(c) => Ok(c),
+            // Measured only here: with a carrier asked for, the failure is
+            // not the end of the attempt and a STUN round trip would only
+            // delay the fallback.
+            Err(Failed { why, no_path: true }) => {
+                Err(format!("{why}; {}", network(&role.dial.stun).await))
+            }
+            Err(Failed { why, .. }) => Err(why),
+        },
     }
+}
+
+/// Why [`reach`] failed, and whether it was the session itself (no path,
+/// or the handshake) rather than the signalling round trip or a check
+/// before it. Only the first is a question about the network.
+struct Failed {
+    why: String,
+    no_path: bool,
+}
+
+impl From<String> for Failed {
+    fn from(why: String) -> Failed {
+        Failed {
+            why,
+            no_path: false,
+        }
+    }
+}
+
+// depth: this side's network, for a failure (doc/P2P.md §1)
+
+/// `drt netcheck`'s verdict for the network this side runs on, measured
+/// against the call's own `--stun` servers, as the clause a failure ends
+/// with. Its UDP half only: that is the decisive measurement, and it is
+/// the one the call's flags already name the servers for.
+#[cfg(feature = "stun")]
+async fn network(stun: &[String]) -> String {
+    if stun.is_empty() {
+        return "this side's network: not measured (no --stun server named; two measure it)"
+            .to_string();
+    }
+    let servers: Vec<&str> = stun.iter().map(String::as_str).collect();
+    let mut m = crate::netcheck::Measurements::default();
+    crate::netcheck::gather::local_and_udp(&mut m, &servers, None).await;
+    crate::netcheck::failure_note(&m)
+}
+
+#[cfg(not(feature = "stun"))]
+async fn network(_stun: &[String]) -> String {
+    "this side's network: not measured (this build has no STUN client)".to_string()
 }
 
 /// `--relay <peer>` (§4.1): call the relay as any peer, name the destination

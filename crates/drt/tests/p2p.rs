@@ -279,6 +279,32 @@ fn a_fingerprint_that_differs_refuses_the_record_before_any_session() {
     );
     let (out, err) = call(&l.record, &["--fingerp", wrong], b"x\n");
     assert!(out.is_empty() && err.contains("not the"), "{err}");
+    assert!(
+        !err.contains("this side's network"),
+        "a refusal before any session is not a question about the network: {err}"
+    );
+}
+
+/// No path, and the failure ends with what this side's network is
+/// (doc/P2P.md §1). With no --stun named there is nothing to measure it
+/// against, and the clause says that rather than guessing.
+#[test]
+fn a_call_with_no_path_says_what_this_sides_network_is() {
+    let record = {
+        let l = Listening::start(Some("127.0.0.1:9"), false);
+        l.record.clone()
+    };
+    let (out, err) = call(&record, &[], b"x\n");
+    assert!(out.is_empty(), "{out}");
+    assert!(err.contains("no session within"), "{err}");
+    // `slim,p2p` (the Windows row) has no STUN client and says that
+    // instead; either way the clause is there and claims nothing.
+    let why = if cfg!(feature = "stun") {
+        "this side's network: not measured (no --stun server named"
+    } else {
+        "this side's network: not measured (this build has no STUN client)"
+    };
+    assert!(err.contains(why), "{err}");
 }
 
 #[test]

@@ -424,7 +424,8 @@ pub enum Command {
     /// with the measurements that produced it. Exit 0 on a verdict,
     /// `relay` included: a network that needs a tunnel is a successful
     /// measurement, not an error. Non-zero means nothing could be
-    /// measured.
+    /// measured: `relay` is still printed, as the answer that works on any
+    /// network rather than a finding, and `--json` says `"measured": false`.
     #[cfg(feature = "netcheck")]
     Netcheck {
         /// A STUN server, repeatable. Two on separate addresses are needed
