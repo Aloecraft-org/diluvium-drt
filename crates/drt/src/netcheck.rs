@@ -520,6 +520,35 @@ pub fn decide(m: &Measurements) -> (Verdict, &'static str) {
     UNMEASURED
 }
 
+/// What a `drt p2p` failure says about the network it ran on: the clause
+/// `doc/P2P.md` §1 adds after the path and the reason. Pure, like
+/// [`decide`], so the wording is tested without a network.
+///
+/// It is one side's network, and it says so: the far side's NAT is the
+/// other half of whether a direct path exists, and this side cannot
+/// measure it. A run that measured nothing says that rather than the
+/// [`UNMEASURED`] fallback, because "relay" from ignorance is advice, not
+/// a finding, and a failure message is where a reader looks for findings.
+pub fn failure_note(m: &Measurements) -> String {
+    if !m.probed_anything() {
+        return match &m.udp_why {
+            Some(why) => format!("this side's network: not measured ({why})"),
+            None => "this side's network: not measured".to_string(),
+        };
+    }
+    let (verdict, why) = decide(m);
+    match verdict {
+        Verdict::Relay => format!(
+            "this side's network: relay ({why}); --fallback <relay> or --relay <relay> asks for a \
+             carrier"
+        ),
+        _ => format!(
+            "this side's network: {verdict} ({why}), so the far side's network or the answerer is \
+             the likelier cause"
+        ),
+    }
+}
+
 /// The human rendering: verdict, one sentence of advice, then the evidence.
 ///
 /// Evidence lines are emitted for measurements that were *not* taken too —
@@ -677,6 +706,11 @@ pub fn render_json(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
     };
     let doc = json!({
         "schema": 1,
+        // False when nothing cost a packet: the verdict is then `relay` as
+        // the fallback that works everywhere, not as a finding, and the
+        // verb exits non-zero. The field says so without a script having to
+        // re-derive it from which evidence is null.
+        "measured": m.probed_anything(),
         "verdict": verdict.to_string(),
         "why": why,
         "advice": verdict.advice(),
@@ -1889,6 +1923,67 @@ mod tests {
         };
         assert_eq!(decide(&v6_direct).0, Verdict::V6Direct);
         assert!(v6_direct.probed_anything());
+    }
+
+    /// A p2p failure's clause: unmeasured says so and gives no verdict;
+    /// relay names the carriers; anything better points away from this
+    /// side.
+    #[test]
+    fn a_failure_note_is_a_finding_or_says_it_is_not_one() {
+        let nothing = Measurements {
+            udp_why: Some("no STUN response".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            failure_note(&nothing),
+            "this side's network: not measured (no STUN response)"
+        );
+        assert_eq!(
+            failure_note(&Measurements::default()),
+            "this side's network: not measured"
+        );
+
+        let symmetric = Measurements {
+            udp_mapping: Some(UdpMapping::Symmetric),
+            ..Default::default()
+        };
+        let note = failure_note(&symmetric);
+        assert!(note.starts_with("this side's network: relay ("), "{note}");
+        assert!(
+            note.contains("--fallback <relay> or --relay <relay>"),
+            "{note}"
+        );
+
+        let punchable = Measurements {
+            udp_mapping: Some(UdpMapping::Independent),
+            ..Default::default()
+        };
+        let note = failure_note(&punchable);
+        assert!(
+            note.starts_with("this side's network: punchable ("),
+            "{note}"
+        );
+        assert!(note.contains("the far side's network"), "{note}");
+    }
+
+    /// `--json` says whether anything was measured, so a script can tell
+    /// the relay fallback from a relay finding.
+    #[test]
+    fn json_says_whether_the_verdict_rests_on_a_measurement() {
+        let nothing = Measurements::default();
+        let (v, why) = decide(&nothing);
+        let doc: serde_json::Value = serde_json::from_str(&render_json(&nothing, v, why)).unwrap();
+        assert_eq!(doc["measured"], false);
+        assert_eq!(doc["verdict"], "relay");
+
+        let symmetric = Measurements {
+            udp_mapping: Some(UdpMapping::Symmetric),
+            ..Default::default()
+        };
+        let (v, why) = decide(&symmetric);
+        let doc: serde_json::Value =
+            serde_json::from_str(&render_json(&symmetric, v, why)).unwrap();
+        assert_eq!(doc["measured"], true);
     }
 
     /// A failed decisive probe says why. Four different problems with four

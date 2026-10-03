@@ -98,9 +98,9 @@ cleared, `pre: null`, and the stamps back to `0.8.0`.
 The open list from the end of the 0.8.0 work, with where each item
 stands on the branch. Ordered by what I would do first.
 
-1. **Fold `drt netcheck`'s verdict into a p2p failure.** Not built;
-   `doc/P2P.md` says so beside the promise. Small, and it closes a gap
-   the transport matrix asks for.
+1. **Fold `drt netcheck`'s verdict into a p2p failure.** Built
+   2026-10-03: a call with no carrier and no path ends with this side's
+   verdict, measured against its `--stun` servers (`doc/P2P.md` §1).
 2. **An answerer that parks several names at once.** Not built:
    `--park` takes one name. The `--pair` consent rule already accepts a
    glob across names at one server. Discofetch's rooms need this.
@@ -153,7 +153,8 @@ rather than correct a fact, so they wait for a decision.
   examples 11 and 14 still present `tunnel` as current. Worth fixing
   before rc.1, since 0.8.0 deprecates the verb.
 - **`netcheck` with nothing measured** prints a `relay` verdict and
-  exits 1, which contradicts its help.
+  exits 1. Fixed 2026-10-03 by saying so: the help names the fallback,
+  and `--json` carries `"measured": false`.
 - **`drt run stdlib:wg`** gives the generic "parked" message rather than
   pointing at `drt start`, as the native stdlib programs do.
 - **A broken sibling `.dlua`** fails every run in its directory, names

@@ -26,7 +26,7 @@ A connection is direct, or it fails and says so (`doc/P2P.md` §1). Nothing
 falls back on its own: `drt p2p --fallback <relay>` tries direct first and
 goes through the relay only when no path reached the peer, and `--relay
 <relay>` goes through it always. A failure carries `drt netcheck`'s verdict
-for the network it ran on. TURN is not used by these rows: browser access
+for this side's network, measured against the call's `--stun` servers. TURN is not used by these rows: browser access
 v1 drops relay candidates from records.
 
 ## The pieces

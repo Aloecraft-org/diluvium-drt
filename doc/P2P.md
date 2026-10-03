@@ -47,8 +47,11 @@ serves it.
   row N" whenever a relay URL is configured): falling back is something an
   invocation asks for, never something a config implies.
 - **A failure says why.** It names the path that failed and the reason.
-  Not yet built: carrying `drt netcheck`'s verdict for the network it ran
-  on, as the matrix asks.
+  A call with no carrier whose session does not come up also says what
+  this side's network is: `drt netcheck`'s verdict, measured against the
+  call's own `--stun` servers (two are needed, and with fewer the clause
+  says so). Only this side's: the far side's NAT is the other half of the
+  answer, and nothing here can measure it.
 - **The promise is per side.** Each side's flags govern its own path. A
   caller with no `--relay` may reach a parked side that chose one; the
   caller's path is then direct to that relay. The relay says so in its

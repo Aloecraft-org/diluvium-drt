@@ -528,9 +528,27 @@ Underneath it the embedded core moves from 0.15.1 to
   The config's `numeric` bounds now reach the core
   (`dv_numeric_set_max_elements`, `dv_numeric_set_max_tier`), and the
   fast-tier audit flag is the core's own reading.
+- **A `drt p2p` call with no path says what this side's network is**
+  (`doc/P2P.md` §1). When the session does not come up, the failure
+  ends with `drt netcheck`'s verdict for the caller's network,
+  measured against the call's own `--stun` servers: `relay` names
+  `--fallback` and `--relay`, a better verdict points at the far side,
+  and a network that could not be measured says why (two `--stun`
+  servers are needed). Only a call with no carrier measures; a refusal
+  before the session, such as a fingerprint that differs, does not.
 
 ### Changed
 
+- **`drt netcheck --json` says whether anything was measured.**
+  `"measured": false` when no probe cost a packet: the verdict is then
+  `relay` as the fallback that works on any network, not as a
+  finding, and the verb exits non-zero, as its help now says. The
+  text output is unchanged.
+- **Plugins are wired, and have been since 0.7.0.** Behind the
+  non-default `plugins` feature, `drt start` takes a `plugins` block
+  and runs each family through `drt-plugin`, refusing a plugin that
+  would shadow a builtin family. 0.7.0's notes did not say so;
+  0.7.0-rc.2's "built as a crate and not wired" was true when written.
 - **diluvium 0.15.1 -> 0.17.2, dv ABI 1 -> 2.** The pin names the
   tag, `v0.17.2`, rather than following diluvium's default branch,
   where ABI 3 lands when 0.18.0 ships. 0.17.2 is 0.17.1's runtime
