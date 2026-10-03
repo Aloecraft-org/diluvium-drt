@@ -1,0 +1,67 @@
+# owner-paths: the required check that keeps auto-merge to code.
+#
+# Entry point: every pull request event below runs the one job.
+# Configurable: OWNER_PATHS, the paths only the owner merges. An entry
+#   ending in / is a directory; any other entry is one file.
+# Fan-out: a pull request that touches none of them passes, and with CI
+#   green may merge on its own. One that touches any of them fails here
+#   until the owner adds the `owner-ok` label, so it waits for the owner.
+name: owner-paths
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+env:
+  OWNER_PATHS: |
+    doc/lockstep/
+    .claude/CLAUDE.md
+    .claude/rules/
+    .github/
+    .technoproj
+    GUARANTEES.md
+
+jobs:
+  owner-paths:
+    runs-on: ubuntu-latest
+    steps:
+      # pull_request_target runs this file as main has it, so a pull
+      # request cannot edit the list it is checked against. Nothing from
+      # the pull request runs: it is only diffed.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      # depth: compare the changed paths with the list
+      - name: Changed paths against the owner's list
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          OWNER_OK: ${{ contains(github.event.pull_request.labels.*.name, 'owner-ok') }}
+        run: |
+          set -eu
+          hits=""
+          while IFS= read -r f; do
+            while IFS= read -r p; do
+              [ -n "$p" ] || continue
+              case "$p" in
+                */) case "$f" in "$p"*) hits="$hits$f"$'\n';; esac ;;
+                *)  [ "$f" = "$p" ] && hits="$hits$f"$'\n' ;;
+              esac
+            done <<< "$OWNER_PATHS"
+          done < <(git diff --name-only "$BASE...$HEAD")
+          if [ -z "$hits" ]; then
+            echo "No owner path changed; this pull request may merge on green CI."
+            exit 0
+          fi
+          printf 'Owner paths changed:\n%s' "$hits"
+          if [ "$OWNER_OK" = "true" ]; then
+            echo "Labelled owner-ok by the owner; passing."
+            exit 0
+          fi
+          echo "::error::This pull request changes paths only the owner merges. It waits for the owner, who adds the owner-ok label or merges it."
+          exit 1
