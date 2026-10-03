@@ -1,8 +1,17 @@
-# CLAUDE.md
+# DRT
 
-Orientation for an agent working in this repository. Read
-`doc/Handoff.md` next: it says where the work stands, which branch
-holds it, and what is next. This file says how the repository works.
+Orientation for an agent working in this repository. The owner is
+Michael (`@aloecraft`). The operating protocol is
+`.claude/rules/operating.md`; it and every other file in
+`.claude/rules/` apply to every run, and what the owner and operator
+have agreed lives in `doc/lockstep/`. Read `doc/Handoff.md` next: it
+says where the work stands, which branch holds it, and what is next.
+This file says how the repository works.
+
+**This repository is public.** So are `.claude/log.md`, everything
+else under `.claude/`, and `doc/lockstep/` (goal, queue, ledger). The
+owner accepts that; write them knowing anyone can read them, and keep
+anything private to the DiRT launcher or other private repos out.
 
 ## What this is
 
@@ -86,9 +95,13 @@ pass, unless `DRT_TEST_REQUIRE_SSH=1` is set, which CI sets.
   "not built" beside it. When code changes a fact, fix every doc that
   states the fact in the same commit. The release QA on 2026-10-02 found
   a dozen docs describing things that had changed under them.
-- **Human surfaces.** `.claude/rules/human-surfaces.md` governs
-  `examples/` and `README.md`: one screen, omissions marked
-  `# example: omits ...`. Everything else is maintainer-grade.
+- **Human surfaces.** `.claude/rules/human-surfaces.md` (shared,
+  placed by technoproj) governs them. The declared surfaces are
+  `README.md` and `examples/`, set in `.technoproj`; every prose file
+  outside `.claude/` counts as documentation under that rule.
+- **Pull requests.** Changes reach `main` through pull requests, never
+  a direct push outside the self-merge lane in
+  `doc/lockstep/authority.yaml`.
 - **Release machinery.** `doc/Release.md` is the procedure. Dev builds
   are `v<version>-dev.<n>`, allocated by `script/dev-tag.sh`, never
   reused. `release.yml` takes `full` to build every target for a dev
