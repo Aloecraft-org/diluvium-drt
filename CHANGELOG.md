@@ -536,6 +536,12 @@ Underneath it the embedded core moves from 0.15.1 to
   and a network that could not be measured says why (two `--stun`
   servers are needed). Only a call with no carrier measures; a refusal
   before the session, such as a fingerprint that differs, does not.
+- **One `drt p2p --park` answers for several names** (`doc/P2P.md`
+  §2.2). `--park` repeats, and the config's `park` takes a list. One
+  host and one `--forward` serve every name; each name polls its own
+  server and is sent the same `--H` headers. A name its server
+  refuses for good stops being answered while the others carry on. A
+  `wss://` leg still parks alone.
 
 ### Changed
 

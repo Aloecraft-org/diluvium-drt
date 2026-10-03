@@ -28,7 +28,9 @@ RootConfig {
             relay: None,
             fallback: None,
             park: Some(
-                "ws://127.0.0.1:18490/park/fp?k=park-key-for-the-example-only",
+                One(
+                    "ws://127.0.0.1:18490/park/fp?k=park-key-for-the-example-only",
+                ),
             ),
             listen: None,
             match_port: None,

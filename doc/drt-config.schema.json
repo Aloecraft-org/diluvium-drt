@@ -479,6 +479,20 @@
       },
       "additionalProperties": false
     },
+    "OneOrMany": {
+      "description": "A key that takes one value or a list of them: `\"park\": \"drt://…\"` or\n`\"park\": [\"drt://…/v1/a\", \"drt://…/v1/b\"]`.",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
     "P2pConfig": {
       "description": "`drt p2p`, from a file: `drt --config mypc.json p2p` (`doc/P2P.md` §8).\n\nEvery flag of the verb is a key here under the flag's name (`-p` is\n`ports`, `-P` is `forward_ports`, `-A` is `all_ports`, `--H` is the\n`headers` map), so a credential -- a signalling token in `headers`, a\ncaller token -- lives in a 0600 file and not in `ps` or a paste. Which\nrole this is (call, park, listen, match) is told by which keys are\npresent, exactly as the flags tell it, and two roles in one block are\nrefused by name. Flags merge over the file per key: a flag naming a key\nthe file also names replaces it, and a flag naming a different role than\nthe file is the conflict two flags would be.\n\nOne key has no flag: `identity_file`, the ICE credentials and DTLS\ncertificate a listening or parked peer keeps so its record and\nfingerprint survive a restart (`~/.drt/p2p/identity.json` when absent).\n`authorized_keys` is also the `--authorized-keys` flag.\n\n`tunnel` is read as an alias of this block for one release, each of its\nkeys mapped to its replacement here with a warning naming both.",
       "type": "object",
@@ -594,10 +608,14 @@
           ]
         },
         "park": {
-          "description": "`--park`: the signalling server to answer calls at, by name.",
-          "type": [
-            "string",
-            "null"
+          "description": "`--park`, repeatable: the signalling server to answer calls at, by\nname; a list for several names served by one answerer.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OneOrMany"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "peer": {

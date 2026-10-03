@@ -101,9 +101,9 @@ stands on the branch. Ordered by what I would do first.
 1. **Fold `drt netcheck`'s verdict into a p2p failure.** Built
    2026-10-03: a call with no carrier and no path ends with this side's
    verdict, measured against its `--stun` servers (`doc/P2P.md` §1).
-2. **An answerer that parks several names at once.** Not built:
-   `--park` takes one name. The `--pair` consent rule already accepts a
-   glob across names at one server. Discofetch's rooms need this.
+2. **An answerer that parks several names at once.** Built
+   2026-10-03: `--park` repeats, one host behind every name
+   (`doc/P2P.md` §2.2).
 3. **A seat token as the caller token.** Not built. DRT-Signalling
    leaves how a server is asked to the server; a room server would hand
    a seat token where `DRT-Caller-Token` goes.

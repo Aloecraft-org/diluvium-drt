@@ -1028,6 +1028,26 @@ pub struct TunnelConfig {
     pub headers: BTreeMap<String, String>,
 }
 
+/// A key that takes one value or a list of them: `"park": "drt://…"` or
+/// `"park": ["drt://…/v1/a", "drt://…/v1/b"]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(untagged)]
+pub enum OneOrMany {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl OneOrMany {
+    /// The values, in the order written.
+    pub fn to_vec(&self) -> Vec<String> {
+        match self {
+            OneOrMany::One(v) => vec![v.clone()],
+            OneOrMany::Many(vs) => vs.clone(),
+        }
+    }
+}
+
 /// `drt p2p`, from a file: `drt --config mypc.json p2p` (`doc/P2P.md` §8).
 ///
 /// Every flag of the verb is a key here under the flag's name (`-p` is
@@ -1063,9 +1083,10 @@ pub struct P2pConfig {
     /// `--fallback`: `relay`, tried only when no direct path exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback: Option<String>,
-    /// `--park`: the signalling server to answer calls at, by name.
+    /// `--park`, repeatable: the signalling server to answer calls at, by
+    /// name; a list for several names served by one answerer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub park: Option<String>,
+    pub park: Option<OneOrMany>,
     /// `--listen`: the UDP port to serve on, with a fixed record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listen: Option<u16>,

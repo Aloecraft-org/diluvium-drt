@@ -630,6 +630,58 @@ impl Drop for Parked {
     }
 }
 
+/// One answerer parks several names (`doc/P2P.md` §2.2): each is answered
+/// by the same host, at once, and a name the server refuses stops being
+/// answered while the others carry on.
+#[test]
+fn one_answerer_parks_several_names_and_loses_only_the_refused_one() {
+    let server = Match::start(4);
+    // Another answerer token holds `taken` first.
+    assert_eq!(server.get("/v1/taken/calls?k=other").0, 200);
+    let second = format!("{}/v1/room-2", server.base);
+    let taken = format!("{}/v1/taken", server.base);
+    let mut parked = Parked::start(
+        &server,
+        "room-1",
+        &["--park", &second, "--park", &taken, "--H", "auth=t"],
+    );
+    let lines = parked.until("no longer parked at ");
+    assert!(lines.contains("/v1/taken"), "{lines}");
+    // Both names at once: their calls may share an id at the server, and
+    // the host keeps the two sessions apart.
+    let calls: Vec<_> = ["room-1", "room-2"]
+        .into_iter()
+        .map(|name| {
+            let peer = format!("{}/v1/{name}", server.base);
+            std::thread::spawn(move || (name, call(&peer, &[], name.as_bytes())))
+        })
+        .collect();
+    for handle in calls {
+        let (name, (out, errs)) = handle.join().unwrap();
+        assert_eq!(out, name, "{errs}");
+    }
+}
+
+/// Several `--park` are names at signalling servers: a name twice, or a
+/// `wss://` leg beside a name, is refused by name before anything is served.
+#[test]
+fn several_parks_are_distinct_names_at_signalling_servers() {
+    let refused = |parks: &[&str]| {
+        let mut cmd = drt();
+        cmd.arg("p2p");
+        for p in parks {
+            cmd.arg("--park").arg(p);
+        }
+        let out = cmd.stdin(Stdio::null()).output().unwrap();
+        assert!(!out.status.success());
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+    let err = refused(&["drt://127.0.0.1:1/v1/a", "drt://127.0.0.1:1/v1/a"]);
+    assert!(err.contains("127.0.0.1:1/v1/a twice"), "{err}");
+    let err = refused(&["wss://127.0.0.1:1/park/x?k=y", "drt://127.0.0.1:1/v1/a"]);
+    assert!(err.contains("parks alone"), "{err}");
+}
+
 /// Pairing (doc/DRT-Signalling.md §6.2): a parked peer asks the server for
 /// a call from another parked peer; the server tells that peer, which
 /// calls with the asker's caller token and keeps serving, and reports the

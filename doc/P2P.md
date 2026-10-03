@@ -110,6 +110,7 @@ else: the stream is refused, and nothing more is said.
 ```
 drt p2p --park drt://signal.example/v1/mypc --H auth=<answerer token>
 drt p2p --park drt://signal.example/v1/mypc --H auth=… --accept 203.0.113.0/24 --forward ssh://127.0.0.1:22
+drt p2p --park drt://signal.example/v1/room-1 --park drt://signal.example/v1/room-2 --H auth=…
 ```
 
 The parked side is the answerer of `doc/DRT-Signalling.md`: it holds the
@@ -126,6 +127,14 @@ the remote address of the selected ICE pair itself, so the rule holds
 against a server that ignores it. The two addresses are usually the same
 NAT, but not always: a caller behind an HTTP proxy signals from one
 address and connects from another.
+
+`--park` repeats: one answerer for several names, at one server or
+several, with one record and one `--forward` behind them all. Each name
+is its own answerer to its server, with its own poll and stream, and
+every name is sent the same `--H` headers, so names at one server share
+an answerer token. A name its server refuses for good (401 or 403) stops
+being answered and the rest carry on; the park ends when none is left.
+In a config, `park` is a string or a list. A `wss://` leg parks alone.
 
 `--fingerprint` does not apply: a parked side takes calls from many
 callers, so there is no one fingerprint to hold it to.
