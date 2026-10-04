@@ -3,7 +3,7 @@
     "major": 0,
     "minor": 8,
     "patch": 0,
-    "pre": null
+    "pre": { "kind": "rc", "n": 1 }
   },
   "TECHNO_CHANGELOG": {
     "project": "DRT",
