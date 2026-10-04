@@ -43,6 +43,7 @@ RootConfig {
             all_ports: false,
             forward_ports: None,
             signal: None,
+            turn: None,
             stun: [],
             fingerprint: None,
             headers: {},

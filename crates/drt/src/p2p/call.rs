@@ -35,6 +35,8 @@ pub struct Dial {
     pub headers: Vec<(String, String)>,
     /// The answerer's DTLS fingerprint, when it must match (`--fingerprint`).
     pub fingerprint: Option<[u8; 32]>,
+    /// A TURN server whose allocation is one more candidate (`--turn`).
+    pub turn: Option<super::turn::TurnUri>,
 }
 
 /// A session, and what the answerer said of itself.
@@ -63,10 +65,15 @@ async fn reach(
 ) -> Result<Connected, Failed> {
     let any = "0.0.0.0:0".parse().expect("a literal");
     let (caller, answerer) = match &peer.how {
-        How::Record(record) => (Caller::direct(any).await?, record.clone()),
+        How::Record(record) => {
+            let mut caller = Caller::direct(any).await?;
+            relay(&mut caller, dial).await;
+            (caller, record.clone())
+        }
         How::Signal { .. } => {
             let url = peer.calls_url().expect("a signalling peer has a URL");
             let mut caller = Caller::new(any).await?;
+            relay(&mut caller, dial).await;
             if !dial.stun.is_empty() {
                 let found = caller.gather(&dial.stun).await;
                 if found.is_empty() {
@@ -123,6 +130,19 @@ async fn reach(
     })
 }
 
+/// `--turn`: add the allocation as a candidate. One that cannot be had is
+/// said and gone on without: the direct candidates still stand.
+async fn relay(caller: &mut Caller, dial: &Dial) {
+    let Some(uri) = &dial.turn else { return };
+    match super::turn::allocate(uri)
+        .await
+        .and_then(|r| caller.relay(r))
+    {
+        Ok(()) => {}
+        Err(e) => eprintln!("drt p2p: {e}; calling without a TURN relay"),
+    }
+}
+
 /// The role: connect, then stdio and the mapped ports until the session
 /// ends. Returns when stdio ends; with ports alone, never.
 pub async fn run(role: &CallRole, roots: &[CertificateDer<'static>]) -> Result<(), String> {
@@ -140,6 +160,9 @@ pub async fn run(role: &CallRole, roots: &[CertificateDer<'static>]) -> Result<(
     }
     let connected = session(role, roots).await?;
     let interactive = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    if connected.call.via_turn() {
+        eprintln!("drt p2p: via TURN");
+    }
     if connected.forwarding {
         eprintln!("drt p2p: via relay");
     }

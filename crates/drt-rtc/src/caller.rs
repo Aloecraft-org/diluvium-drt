@@ -19,7 +19,8 @@
 //! ## surface block
 //!
 //! - Entry points: [`Caller::new`] (and [`Caller::direct`] for direct mode,
-//!   §3.4), [`Caller::gather`], [`Caller::record`], [`Caller::connect`],
+//!   §3.4), [`Caller::gather`], [`Caller::relay`], [`Caller::record`],
+//!   [`Caller::connect`],
 //!   [`Call::open`], [`Call::hello`], [`Call::control`] and
 //!   [`Call::next_control`] (the `control` channel after `hello`), and
 //!   [`Call::raw`], the Wisp channel as packets, for a relay that mirrors
@@ -37,15 +38,14 @@ use std::time::Duration;
 use str0m::channel::{ChannelConfig, ChannelId, Reliability};
 use str0m::config::Fingerprint;
 use str0m::net::{Protocol, Receive};
-use str0m::{
-    Candidate, CandidateKind, Event as RtcEvent, IceConnectionState, IceCreds, Input, Output, Rtc,
-};
+use str0m::{Candidate, Event as RtcEvent, IceConnectionState, IceCreds, Input, Output, Rtc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
 use crate::record::Record;
+use crate::relayed::{self, Datagram, Relayed};
 use crate::wisp::{self, reason, Packet};
 
 /// The in-memory pipe between a stream and whoever holds its end, each way.
@@ -146,6 +146,7 @@ pub struct Caller {
     socket: UdpSocket,
     local: SocketAddr,
     record: Record,
+    relay: Option<Relayed>,
 }
 
 impl Caller {
@@ -193,12 +194,14 @@ impl Caller {
             pwd: creds.pass,
             fingerprint,
             candidates: vec![candidate.to_sdp_string()],
+            relays: Vec::new(),
         };
         Ok(Caller {
             rtc,
             socket,
             local,
             record,
+            relay: None,
         })
     }
 
@@ -264,6 +267,17 @@ impl Caller {
         found
     }
 
+    /// Add a relayed address (a TURN allocation) as one more candidate,
+    /// published in the record. It ranks below the direct ones, so ICE
+    /// uses it only when nothing direct works (`doc/P2P.md` §2.6).
+    pub fn relay(&mut self, relay: Relayed) -> Result<(), String> {
+        let (candidate, line) = relay.candidate()?;
+        self.rtc.add_local_candidate(candidate);
+        self.record.relays.push(line);
+        self.relay = Some(relay);
+        Ok(())
+    }
+
     /// Connect to the answerer whose record this is. Resolves once both
     /// channels are open and its `hello` and initial credit have arrived.
     pub async fn connect(self, answerer: &Record, timeout: Duration) -> Result<Call, String> {
@@ -271,6 +285,7 @@ impl Caller {
             mut rtc,
             socket,
             local,
+            relay,
             ..
         } = self;
         let mut api = rtc.direct_api();
@@ -294,9 +309,9 @@ impl Caller {
         };
         let control = api.create_data_channel(channel("control", CONTROL_ID));
         let wisp = api.create_data_channel(channel("wisp", WISP_ID));
-        for line in &answerer.candidates {
+        for line in answerer.candidates.iter().chain(&answerer.relays) {
             if let Ok(c) = Candidate::from_sdp_string(line) {
-                if c.proto() == Protocol::Udp && c.kind() != CandidateKind::Relayed {
+                if c.proto() == Protocol::Udp {
                     rtc.add_remote_candidate(c);
                 }
             }
@@ -304,10 +319,26 @@ impl Caller {
         let (orders, order_rx) = mpsc::unbounded_channel();
         let (ready_tx, ready) = oneshot::channel();
         let (control_out, control_in) = mpsc::unbounded_channel();
+        // Where the far side's allocation is, to tell a session that
+        // crosses it.
+        let remote_relays = answerer
+            .relays
+            .iter()
+            .filter_map(|l| Candidate::from_sdp_string(l).ok())
+            .map(|c| c.addr())
+            .collect();
+        let turn = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (relay_out, relay_in) = match relay {
+            Some(r) => (Some((r.address, r.outbound)), Some(r.inbound)),
+            None => (None, None),
+        };
         let driver = Driver {
             rtc,
             socket,
             local,
+            relay_out,
+            remote_relays,
+            turn: turn.clone(),
             control,
             wisp,
             open: [false; 2],
@@ -322,11 +353,12 @@ impl Caller {
             raw: None,
             peer_half_close: false,
         };
-        tokio::spawn(driver.run(order_rx, orders.downgrade()));
+        tokio::spawn(driver.run(order_rx, orders.downgrade(), relay_in));
         match tokio::time::timeout(timeout, ready).await {
             Ok(Ok(Ok(hello))) => Ok(Call {
                 orders,
                 hello,
+                turn,
                 control: tokio::sync::Mutex::new(control_in),
             }),
             Ok(Ok(Err(why))) => Err(why),
@@ -343,6 +375,8 @@ impl Caller {
 pub struct Call {
     orders: mpsc::UnboundedSender<Order>,
     hello: String,
+    /// The session's bytes cross a TURN relay, either side's.
+    turn: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// `control` messages after `hello`, oldest first.
     control: tokio::sync::Mutex<mpsc::UnboundedReceiver<String>>,
 }
@@ -355,6 +389,13 @@ pub struct Raw {
 }
 
 impl Call {
+    /// Whether the session crosses a TURN relay: this side's `--turn`, or
+    /// the far side's, which a caller that named none still learns this
+    /// way (`doc/P2P.md` §1, the promise is per side).
+    pub fn via_turn(&self) -> bool {
+        self.turn.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// The answerer's `hello` (§5), as it sent it.
     pub fn hello(&self) -> &str {
         &self.hello
@@ -456,6 +497,13 @@ struct Driver {
     rtc: Rtc,
     socket: UdpSocket,
     local: SocketAddr,
+    /// The relayed address, and where datagrams sent from it go.
+    relay_out: Option<(SocketAddr, mpsc::UnboundedSender<Datagram>)>,
+    /// The far side's relayed addresses, from its record's `r`.
+    remote_relays: Vec<SocketAddr>,
+    /// Set by the path the session's DTLS and SCTP take: through this
+    /// side's allocation or to the far side's.
+    turn: std::sync::Arc<std::sync::atomic::AtomicBool>,
     control: ChannelId,
     wisp: ChannelId,
     open: [bool; 2],
@@ -481,6 +529,7 @@ impl Driver {
         mut self,
         mut orders: mpsc::UnboundedReceiver<Order>,
         own: mpsc::WeakUnboundedSender<Order>,
+        mut relay_in: Option<mpsc::UnboundedReceiver<Datagram>>,
     ) {
         let mut buf = vec![0u8; RECV_MTU];
         loop {
@@ -502,15 +551,13 @@ impl Driver {
             tokio::select! {
                 r = self.socket.recv_from(&mut buf) => {
                     if let Ok((n, source)) = r {
-                        if let Ok(contents) = buf[..n].try_into() {
-                            let input = Input::Receive(
-                                Instant::now().into_std(),
-                                Receive { proto: Protocol::Udp, source, destination: self.local, contents },
-                            );
-                            if let Err(e) = self.rtc.handle_input(input) {
-                                self.ended = Some(format!("rtc: {e}"));
-                            }
-                        }
+                        self.receive(&buf[..n], source, self.local);
+                    }
+                }
+                (data, source) = relayed::next(&mut relay_in) => {
+                    if let Some((relayed, _)) = &self.relay_out {
+                        let relayed = *relayed;
+                        self.receive(&data, source, relayed);
                     }
                 }
                 o = orders.recv() => match o {
@@ -527,6 +574,26 @@ impl Driver {
         }
     }
 
+    /// A datagram from `source`, arriving at `destination`: the socket's
+    /// address, or the relayed one when it came through the relay.
+    fn receive(&mut self, buf: &[u8], source: SocketAddr, destination: SocketAddr) {
+        let Ok(contents) = buf.try_into() else {
+            return;
+        };
+        let input = Input::Receive(
+            Instant::now().into_std(),
+            Receive {
+                proto: Protocol::Udp,
+                source,
+                destination,
+                contents,
+            },
+        );
+        if let Err(e) = self.rtc.handle_input(input) {
+            self.ended = Some(format!("rtc: {e}"));
+        }
+    }
+
     /// Run str0m until it only wants to be woken later; say when.
     fn drain(&mut self) -> Instant {
         loop {
@@ -536,7 +603,25 @@ impl Driver {
                     return Instant::from_std(t);
                 }
                 Ok(Output::Transmit(t)) => {
-                    let _ = self.socket.try_send_to(&t.contents, t.destination);
+                    let ours = self
+                        .relay_out
+                        .as_ref()
+                        .is_some_and(|(relayed, _)| *relayed == t.source);
+                    // DTLS, and SCTP inside it, goes only on the selected
+                    // pair (RFC 7983: a first byte of 20 to 63); ICE's
+                    // checks try every pair and say nothing.
+                    if t.contents.first().is_some_and(|b| (20..=63).contains(b)) {
+                        let turn = ours || self.remote_relays.contains(&t.destination);
+                        self.turn.store(turn, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    match &self.relay_out {
+                        Some((_, out)) if ours => {
+                            let _ = out.send((t.contents.to_vec(), t.destination));
+                        }
+                        _ => {
+                            let _ = self.socket.try_send_to(&t.contents, t.destination);
+                        }
+                    }
                 }
                 Ok(Output::Event(e)) => self.on_event(e),
                 Err(e) => {

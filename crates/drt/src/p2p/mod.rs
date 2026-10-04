@@ -1,7 +1,7 @@
 //! `drt p2p`: one verb for peer-to-peer sessions (`doc/P2P.md`).
 //!
-//! > With no `--relay` and no `--fallback`, no machine other than the two
-//! > ends carries a byte of the session. When no such path exists,
+//! > With no `--relay`, `--fallback` or `--turn`, no machine other than
+//! > the two ends carries a byte of the session. When no such path exists,
 //! > `drt p2p` fails and says so.
 //!
 //! The bare command is direct, and every way a third machine can enter
@@ -20,7 +20,8 @@
 //!   the modules: [`peer`] (peer addresses, port maps, forward targets),
 //!   [`http`] (the profile's requests), [`call`], [`serve`] (the host
 //!   behind listen and park, and listen itself), [`park`], [`signal`] (a
-//!   listening peer's own signalling port).
+//!   listening peer's own signalling port), [`turn`] (`--turn`'s
+//!   allocation).
 
 pub mod call;
 pub mod http;
@@ -29,6 +30,7 @@ pub mod park;
 pub mod peer;
 pub mod serve;
 pub mod signal;
+pub mod turn;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -124,6 +126,13 @@ pub struct Args {
     /// access-control-allow-origin: *.
     #[arg(long, value_name = "PORT", num_args = 0..=1, default_missing_value = "0")]
     pub signal: Option<u16>,
+    /// A TURN server, turn://<user>:<password>@host[:port], whose
+    /// allocation is one more candidate: used only when nothing direct
+    /// works, as when both sides are behind a symmetric NAT. The relay
+    /// then carries every byte. A credential: keep it in the config's
+    /// `p2p.turn`, not on a command line.
+    #[arg(long, value_name = "URI")]
+    pub turn: Option<String>,
     /// A STUN server (host:port) asked for this side's public address, so
     /// a peer behind another NAT has one to reach. Repeatable.
     #[arg(long, value_name = "HOST:PORT")]
@@ -158,6 +167,8 @@ pub struct ServeSettings {
     /// For a `drt://` forward: how the forwarder calls.
     pub stun: Vec<String>,
     pub headers: Vec<(String, String)>,
+    /// `--turn`: the host's allocation, and the forwarder's.
+    pub turn: Option<turn::TurnUri>,
 }
 
 #[derive(Debug)]
@@ -309,6 +320,15 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
         flags.stun.clone()
     };
     let fingerprint = pick(flags.fingerprint.as_ref(), f.fingerprint.as_ref());
+    let turn = pick(flags.turn.as_ref(), f.turn.as_ref())
+        .map(|(t, from)| {
+            turn::TurnUri::parse(&t)
+                .map(|u| (u, from))
+                .map_err(|e| format!("--turn {e}"))
+        })
+        .transpose()?;
+    let turn_from = turn.as_ref().map(|(_, from)| *from);
+    let turn = turn.map(|(u, _)| u);
     let capacity = pick(flags.capacity.as_ref(), f.capacity.as_ref());
     let authorized_keys = pick(flags.authorized_keys.as_ref(), f.authorized_keys.as_ref());
     let (extra_roots, extra_roots_key) = if !flags.extra_root.is_empty() {
@@ -356,6 +376,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
         identity_file: f.identity_file.clone(),
         stun: stun.clone(),
         headers: headers.clone(),
+        turn: turn.clone(),
     };
     let serving_only = |role: &str| -> Result<(), String> {
         belongs("ports", "a call", ports.as_ref().map(|(_, s)| *s))?;
@@ -413,6 +434,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
                     fingerprint: fingerprint
                         .map(|(f, _)| peer::fingerprint(&f))
                         .transpose()?,
+                    turn,
                 },
                 relay,
                 fallback,
@@ -422,6 +444,8 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
             // A wss:// relay's label names the destination (§9): a call with
             // no positional.
             belongs("fallback", "a call to a peer", from(&fallback))?;
+            // A WebSocket relay carries bytes over TCP: no ICE to add to.
+            belongs("turn", "a call to a peer, a park or a listen", turn_from)?;
             let (relay, _) = relay.expect("checked");
             let relay = Peer::parse(&relay).map_err(|e| format!("--relay {e}"))?;
             if !matches!(relay.how, peer::How::Ws(_)) {
@@ -443,6 +467,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
                     stun,
                     headers,
                     fingerprint: None,
+                    turn: None,
                 },
                 relay: Some(relay),
                 fallback: None,
@@ -515,6 +540,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
         }
         (None, None, None, Some((port, _))) => {
             serving_only("a match")?;
+            belongs("turn", "a call, a park or a listen", turn_from)?;
             belongs("accept", "a park", accept.as_ref().map(|(_, s)| *s))?;
             belongs("pair", "a park", from(&pair))?;
             belongs("signal", "a listen", signal.as_ref().map(|(_, s)| *s))?;
@@ -850,6 +876,52 @@ mod tests {
             e.contains("`p2p.listen` in the config") && e.contains("the peer on the command line"),
             "{e}"
         );
+    }
+
+    #[test]
+    fn turn_is_a_key_of_the_roles_that_make_a_webrtc_session() {
+        let none = cfg("{}");
+        let Ok(Role::Call(c)) = role(
+            &cfg(r#"{"p2p":{"peer":"drt://s.example/v1/a","turn":"turn://u:p@t.example"}}"#),
+            Args::default(),
+        ) else {
+            panic!()
+        };
+        assert_eq!(c.dial.turn.unwrap().server, "t.example:3478");
+        let Ok(Role::Listen(l)) = role(
+            &none,
+            Args {
+                listen: Some(5000),
+                turn: Some("turn://u:p@t.example:3479".into()),
+                ..Args::default()
+            },
+        ) else {
+            panic!()
+        };
+        assert_eq!(l.settings.turn.unwrap().server, "t.example:3479");
+        let e = role(
+            &none,
+            Args {
+                match_port: Some(8443),
+                turn: Some("turn://u:p@t.example".into()),
+                ..Args::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            e.contains("`--turn`") && e.contains("a call, a park or a listen"),
+            "{e}"
+        );
+        let e = role(
+            &none,
+            Args {
+                peer: Some("drt://s.example/v1/a".into()),
+                turn: Some("t.example".into()),
+                ..Args::default()
+            },
+        )
+        .unwrap_err();
+        assert!(e.starts_with("--turn "), "{e}");
     }
 
     #[test]

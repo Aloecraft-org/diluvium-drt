@@ -548,6 +548,16 @@ curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.8.0-rc.1/inst
   server and is sent the same `--H` headers. A name its server
   refuses for good stops being answered while the others carry on. A
   `wss://` leg still parks alone.
+- **`drt p2p --turn`: a TURN relay as the last resort** (`doc/P2P.md`
+  §2.6). `--turn turn://<user>:<password>@host[:port]`, or the config's
+  `p2p.turn`, allocates on `drt turn` or coturn and offers the
+  allocation as one more candidate on call, park and listen. ICE uses
+  it only when nothing direct works, so two symmetric NATs now
+  connect, and only one side needs a TURN server. A caller prints
+  `via TURN` when its session crosses either side's allocation. The
+  relayed line travels in a new record key, `r`, which pages ignore;
+  pages still use no TURN. In `full`; other builds refuse `--turn` by
+  name.
 
 ### Changed
 

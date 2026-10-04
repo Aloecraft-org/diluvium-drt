@@ -108,6 +108,7 @@ impl Client {
             pwd: creds.pass,
             fingerprint,
             candidates: vec![local.to_sdp_string()],
+            relays: vec![],
         };
         let client = Client {
             rtc,

@@ -227,7 +227,8 @@ export function recordFromSdp(sdp) {
 /**
  * Whether v1 can use a candidate line (§2.1): it reads as RFC 8839 §5.1
  * through `typ <type>`, over UDP, of type host, srflx or prflx (never
- * relay: v1 has no TURN), at an address that is not an mDNS `.local`
+ * relay: a native side's TURN line travels in `r`, which a page ignores),
+ * at an address that is not an mDNS `.local`
  * name. Trailing extensions are allowed. The same rule as
  * crates/drt-rtc/src/record.rs's `usable_candidate`.
  */
@@ -363,7 +364,7 @@ export function decodeWisp(bytes) {
  * The returned record goes to the host through signaling; `accept` takes
  * the host's record back.
  *
- * Options: `iceServers` (STUN only is useful: v1 has no relay),
+ * Options: `iceServers` (STUN only is useful: a page uses no relay),
  * `gatherTimeoutMs`, and `RTCPeerConnection` for a runtime without a
  * global one.
  */

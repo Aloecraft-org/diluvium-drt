@@ -183,6 +183,7 @@ mod tests {
             pwd: id.pwd.clone(),
             fingerprint: id.fingerprint(),
             candidates: vec![],
+            relays: vec![],
         };
         r.encode()
             .expect("str0m's credentials are ice-chars within the record's bounds");

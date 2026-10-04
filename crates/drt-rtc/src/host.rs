@@ -32,7 +32,9 @@
 //! ## surface block
 //!
 //! - Entry points: [`Host::start`] (bind, then serve on the host's own
-//!   thread), [`Host::send`], [`Host::try_event`], [`Host::next_event`].
+//!   thread), [`Host::start_relayed`] (the same, with a TURN allocation
+//!   beside the socket), [`Host::send`], [`Host::try_event`],
+//!   [`Host::next_event`].
 //! - Configurable: [`WISP_BUFFER`], [`HIGH_WATER`], [`LOW_WATER`],
 //!   [`SETUP_DEADLINE`], [`STUN_RETRY`], [`TICK`],
 //!   [`HOST_STACK`], [`DIRECT_UFRAG_LEN`], and everything in
@@ -54,9 +56,7 @@ use std::time::Duration;
 use str0m::channel::{ChannelConfig, ChannelId, Reliability};
 use str0m::config::Fingerprint;
 use str0m::net::{Protocol, Receive};
-use str0m::{
-    Candidate, CandidateKind, Event as RtcEvent, IceConnectionState, IceCreds, Input, Output, Rtc,
-};
+use str0m::{Candidate, Event as RtcEvent, IceConnectionState, IceCreds, Input, Output, Rtc};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::{mpsc, watch};
@@ -66,6 +66,7 @@ use tokio::time::Instant;
 use crate::cidr::Cidr;
 use crate::identity::Identity;
 use crate::record::Record;
+use crate::relayed::{self, Datagram, RelayPolicy, Relayed};
 use crate::scope::{self, Entry, Scope};
 use crate::wisp::{self, reason, Packet};
 
@@ -456,6 +457,20 @@ impl Host {
     /// has. Commands and reports cross over channels that care about
     /// neither.
     pub fn start(cfg: HostConfig) -> Result<Host, String> {
+        Host::launch(cfg, None)
+    }
+
+    /// [`Host::start`], with a relayed address beside the socket: one more
+    /// local candidate, published in the record, used as `policy` says.
+    pub fn start_relayed(
+        cfg: HostConfig,
+        relay: Relayed,
+        policy: RelayPolicy,
+    ) -> Result<Host, String> {
+        Host::launch(cfg, Some((relay, policy)))
+    }
+
+    fn launch(cfg: HostConfig, relay: Option<(Relayed, RelayPolicy)>) -> Result<Host, String> {
         let socket = std::net::UdpSocket::bind(cfg.bind)
             .map_err(|e| format!("webrtc cannot bind {}: {e}", cfg.bind))?;
         socket
@@ -465,6 +480,22 @@ impl Host {
         let base = SocketAddr::new(candidate_ip(bound)?, bound.port());
         let host_candidate = Candidate::host(base, "udp")
             .map_err(|e| format!("webrtc: {base} cannot be a host candidate: {e}"))?;
+        let (relay, relay_in) = match relay {
+            Some((r, policy)) => {
+                let (candidate, line) = r.candidate()?;
+                let local = LocalRelay {
+                    candidate,
+                    line,
+                    only: policy == RelayPolicy::Only,
+                };
+                (Some((local, (r.address, r.outbound))), Some(r.inbound))
+            }
+            None => (None, None),
+        };
+        let (relay, relay_out) = match relay {
+            Some((local, out)) => (Some(local), Some(out)),
+            None => (None, None),
+        };
 
         let (commands, command_rx) = mpsc::unbounded_channel();
         let (event_tx, events) = mpsc::unbounded_channel();
@@ -510,8 +541,10 @@ impl Host {
                             base,
                             events: event_tx,
                             internal: internal_tx,
+                            relay: relay_out,
                         },
                         host_candidate,
+                        relay,
                         sessions: Vec::new(),
                         next_key: 0,
                         stun_servers: Vec::new(),
@@ -523,7 +556,7 @@ impl Host {
                     };
                     state.publish_record();
                     let _ = ready_tx.send(Ok(()));
-                    state.run(command_rx, internal_rx).await;
+                    state.run(command_rx, internal_rx, relay_in).await;
                 });
             })
             .map_err(|e| format!("webrtc: cannot start the host thread: {e}"))?;
@@ -678,17 +711,43 @@ struct Ctx {
     base: SocketAddr,
     events: mpsc::UnboundedSender<Event>,
     internal: mpsc::UnboundedSender<Internal>,
+    /// The relayed address, and where datagrams sent from it go.
+    relay: Option<(SocketAddr, mpsc::UnboundedSender<Datagram>)>,
 }
 
 impl Ctx {
+    /// Send a datagram str0m wants sent: through the relay when it is
+    /// from the relayed address, on the socket otherwise. A full send
+    /// buffer drops it, as the network might have; ICE, DTLS and SCTP
+    /// retransmit.
+    fn transmit(&self, from: SocketAddr, to: SocketAddr, contents: &[u8]) {
+        match &self.relay {
+            Some((relayed, out)) if *relayed == from => {
+                let _ = out.send((contents.to_vec(), to));
+            }
+            _ => {
+                let _ = self.socket.try_send_to(contents, to);
+            }
+        }
+    }
+
     fn report(&self, e: Event) {
         let _ = self.events.send(e);
     }
 }
 
+/// The relayed address as the loop holds it.
+struct LocalRelay {
+    candidate: Candidate,
+    line: String,
+    /// [`RelayPolicy::Only`]: nothing else is published or used.
+    only: bool,
+}
+
 struct Loop {
     ctx: Ctx,
     host_candidate: Candidate,
+    relay: Option<LocalRelay>,
     sessions: Vec<Session>,
     next_key: u64,
     stun_servers: Vec<SocketAddr>,
@@ -705,8 +764,10 @@ impl Loop {
         &mut self,
         mut commands: mpsc::UnboundedReceiver<Command>,
         mut internal: mpsc::UnboundedReceiver<Internal>,
+        mut relay_in: Option<mpsc::UnboundedReceiver<Datagram>>,
     ) {
         let socket = self.ctx.socket.clone();
+        let relayed = self.relay.as_ref().map(|r| r.candidate.addr());
         let mut buf = vec![0u8; RECV_MTU];
         loop {
             for s in &mut self.sessions {
@@ -723,7 +784,12 @@ impl Loop {
             tokio::select! {
                 r = socket.recv_from(&mut buf) => {
                     if let Ok((n, source)) = r {
-                        self.on_datagram(&buf[..n], source);
+                        self.on_datagram(&buf[..n], source, self.ctx.base);
+                    }
+                }
+                (data, source) = relayed::next(&mut relay_in) => {
+                    if let Some(relayed) = relayed {
+                        self.on_datagram(&data, source, relayed);
                     }
                 }
                 c = commands.recv() => match c {
@@ -811,7 +877,7 @@ impl Loop {
             self.next_key,
             peer.clone(),
             &record,
-            &self.host_candidate,
+            &self.locals(),
             Roles {
                 verify_fingerprint: true,
                 calling,
@@ -822,8 +888,10 @@ impl Loop {
         }
     }
 
-    fn on_datagram(&mut self, buf: &[u8], source: SocketAddr) {
-        if self.stun_answer(buf) {
+    /// A datagram from `source`, arriving at `destination`: the socket's
+    /// address, or the relayed one when it came through the relay.
+    fn on_datagram(&mut self, buf: &[u8], source: SocketAddr, destination: SocketAddr) {
+        if destination == self.ctx.base && self.stun_answer(buf) {
             return;
         }
         let Ok(contents) = buf.try_into() else {
@@ -834,7 +902,7 @@ impl Loop {
             Receive {
                 proto: Protocol::Udp,
                 source,
-                destination: self.ctx.base,
+                destination,
                 contents,
             },
         );
@@ -876,13 +944,14 @@ impl Loop {
             pwd: remote.clone(),
             fingerprint: [0; 32],
             candidates: Vec::new(),
+            relays: Vec::new(),
         };
         let Ok(mut s) = Session::new(
             &self.ctx,
             self.next_key + 1,
             format!("direct:{remote}"),
             &record,
-            &self.host_candidate,
+            &self.locals(),
             Roles {
                 verify_fingerprint: false,
                 calling: false,
@@ -983,15 +1052,27 @@ impl Loop {
         true
     }
 
+    /// The local candidates a session pairs: the host candidate, and the
+    /// relayed one when there is one; the relayed one alone under
+    /// [`RelayPolicy::Only`].
+    fn locals(&self) -> Vec<Candidate> {
+        match &self.relay {
+            Some(r) if r.only => vec![r.candidate.clone()],
+            Some(r) => vec![self.host_candidate.clone(), r.candidate.clone()],
+            None => vec![self.host_candidate.clone()],
+        }
+    }
+
     /// Report the record when it differs from the last one reported.
     fn publish_record(&mut self) {
         let id = &self.ctx.cfg.identity;
         let mut candidates = Vec::new();
-        if self.ctx.cfg.publish_host_candidates {
+        let only = self.relay.as_ref().is_some_and(|r| r.only);
+        if self.ctx.cfg.publish_host_candidates && !only {
             candidates.push(self.host_candidate.to_sdp_string());
         }
         let mut seen = Vec::new();
-        for addr in self.mapped.values() {
+        for addr in self.mapped.values().filter(|_| !only) {
             if *addr == self.ctx.base || seen.contains(addr) {
                 continue;
             }
@@ -1006,6 +1087,7 @@ impl Loop {
             pwd: id.pwd.clone(),
             fingerprint: id.fingerprint(),
             candidates,
+            relays: self.relay.iter().map(|r| r.line.clone()).collect(),
         };
         let Ok(rtc) = record.encode() else { return };
         if self.last_record.as_deref() != Some(rtc.as_str()) {
@@ -1141,7 +1223,7 @@ impl Session {
         key: u64,
         peer: String,
         record: &Record,
-        host_candidate: &Candidate,
+        locals: &[Candidate],
         roles: Roles,
     ) -> Result<Session, String> {
         let id = &ctx.cfg.identity;
@@ -1155,7 +1237,9 @@ impl Session {
             .set_ice_lite(false)
             .set_fingerprint_verification(roles.verify_fingerprint)
             .build(now.into_std());
-        rtc.add_local_candidate(host_candidate.clone());
+        for c in locals {
+            rtc.add_local_candidate(c.clone());
+        }
         let mut api = rtc.direct_api();
         api.set_ice_controlling(roles.calling);
         api.set_remote_ice_credentials(IceCreds {
@@ -1178,14 +1262,12 @@ impl Session {
         };
         let control = api.create_data_channel(channel("control", CONTROL_ID));
         let wisp = api.create_data_channel(channel("wisp", WISP_ID));
-        for line in &record.candidates {
-            // A line str0m cannot read -- an mDNS name, a TCP or relay
-            // candidate -- is skipped, not refused (§2.1). The browser's
-            // checks teach the host its address anyway.
+        for line in record.candidates.iter().chain(&record.relays) {
+            // A line str0m cannot read -- an mDNS name, a TCP candidate --
+            // is skipped, not refused (§2.1). The browser's checks teach
+            // the host its address anyway.
             match Candidate::from_sdp_string(line) {
-                Ok(c) if c.proto() == Protocol::Udp && c.kind() != CandidateKind::Relayed => {
-                    rtc.add_remote_candidate(c)
-                }
+                Ok(c) if c.proto() == Protocol::Udp => rtc.add_remote_candidate(c),
                 _ => {}
             }
         }
@@ -1235,11 +1317,7 @@ impl Session {
                         self.timeout = Instant::from_std(t);
                         break;
                     }
-                    Ok(Output::Transmit(t)) => {
-                        // A full send buffer drops the datagram, as the
-                        // network might have; ICE, DTLS and SCTP retransmit.
-                        let _ = ctx.socket.try_send_to(&t.contents, t.destination);
-                    }
+                    Ok(Output::Transmit(t)) => ctx.transmit(t.source, t.destination, &t.contents),
                     Ok(Output::Event(e)) => events.push(e),
                     Err(e) => {
                         self.end(&format!("rtc: {e}"));

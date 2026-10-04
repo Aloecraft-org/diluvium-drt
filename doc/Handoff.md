@@ -107,13 +107,9 @@ stands on the branch. Ordered by what I would do first.
 3. **A seat token as the caller token.** Not built. DRT-Signalling
    leaves how a server is asked to the server; a room server would hand
    a seat token where `DRT-Caller-Token` goes.
-4. **TURN as a last-resort candidate.** Not built: p2p drops relay
-   candidates and uses no TURN. Today both ends behind symmetric NAT
-   fail and say so unless the caller names `--relay` or `--fallback`.
-   A TURN candidate, tried only when direct fails, keeps the rule that
-   no third machine carries bytes unless asked, provided a flag still
-   asks. It changes Browser Access v1's wire (`doc/BrowserAccess.md`
-   §2.1 drops relay candidates), so it is a design note first.
+4. **TURN as a last-resort candidate.** Built 2026-10-04 for native
+   `drt p2p`: `--turn` (`doc/P2P.md` §2.6). Pages use none. Not built:
+   a credential the signalling server mints and hands over.
 5. **Plugins.** The `drt-plugin` crate works and `drt start` wires a
    `plugins` config block through it, behind the non-default `plugins`
    feature, with a check that a plugin cannot shadow a builtin family.

@@ -1118,6 +1118,12 @@ pub struct P2pConfig {
     /// system chooses, as the bare flag does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signal: Option<u16>,
+    /// `--turn`: `turn://<user>:<password>@host[:port]`, a TURN server
+    /// whose allocation is one more candidate, used only when nothing
+    /// direct works (`doc/P2P.md` §2.6). A credential: keep it here, in a
+    /// 0600 file, and not on a command line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<String>,
     /// `--stun`, repeatable: `host:port` servers asked for a public address.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stun: Vec<String>,
