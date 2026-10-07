@@ -12,9 +12,9 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
-## [0.8.0-rc.1] - 2026-10-03 (prerelease)
+## [0.8.0] - unreleased
 
-`v0.8.0-rc.1` &middot; dv ABI 2 &middot; diluvium `97bb9f9d2897` (v0.17.2)
+`v0.8.0` &middot; dv ABI 2 &middot; diluvium `97bb9f9d2897` (v0.17.2)
 
 **A browser reaches a DRT host directly, two machines reach each
 other with nothing in between, and the core is diluvium 0.17.2.**
@@ -30,12 +30,6 @@ Underneath it the embedded core moves from 0.15.1 to
 `buildinfo` reading the core's features off the core. The plan is
 `doc/Plan-0.8.0.md`; the wires are `doc/BrowserAccess.md`,
 `doc/P2P.md` and `doc/DRT-Signalling.md`.
-
-### Install
-
-```sh
-curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.8.0-rc.1/install.sh | sh
-```
 
 ### Connectors
 
@@ -542,6 +536,12 @@ curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.8.0-rc.1/inst
   and a network that could not be measured says why (two `--stun`
   servers are needed). Only a call with no carrier measures; a refusal
   before the session, such as a fingerprint that differs, does not.
+- **One `drt p2p --park` answers for several names** (`doc/P2P.md`
+  §2.2). `--park` repeats, and the config's `park` takes a list. One
+  host and one `--forward` serve every name; each name polls its own
+  server and is sent the same `--H` headers. A name its server
+  refuses for good stops being answered while the others carry on. A
+  `wss://` leg still parks alone.
 
 ### Changed
 

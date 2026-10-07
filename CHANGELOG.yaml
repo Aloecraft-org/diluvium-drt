@@ -81,12 +81,11 @@ schema: 1
 repo: Aloecraft-org/diluvium-drt
 
 releases:
-  - version: 0.8.0-rc.1
-    tag: v0.8.0-rc.1
-    date: 2026-10-03
-    status: released
-    stable: false
-    mirror: true
+  - version: 0.8.0
+    tag: v0.8.0
+    status: unreleased
+    stable: true
+    mirror: false
     dv_abi: 2
     diluvium: 97bb9f9d28974e3b4124a2a015e5b06da54a0c98
     diluvium_version: "0.17.2"
@@ -628,6 +627,13 @@ releases:
         and a network that could not be measured says why (two `--stun`
         servers are needed). Only a call with no carrier measures; a refusal
         before the session, such as a fingerprint that differs, does not.
+      - |
+        **One `drt p2p --park` answers for several names** (`doc/P2P.md`
+        §2.2). `--park` repeats, and the config's `park` takes a list. One
+        host and one `--forward` serve every name; each name polls its own
+        server and is sent the same `--H` headers. A name its server
+        refuses for good stops being answered while the others carry on. A
+        `wss://` leg still parks alone.
     changed:
       - |
         **`drt netcheck --json` says whether anything was measured.**

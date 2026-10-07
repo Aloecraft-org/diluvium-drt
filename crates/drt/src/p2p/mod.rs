@@ -71,9 +71,10 @@ pub struct Args {
     pub fallback: Option<String>,
     /// Answer calls for a name at this signalling server
     /// (drt://host/v1/<name>), serving --forward; or hold a leg at a wss://
-    /// relay's /park URL.
+    /// relay's /park URL. Repeatable: one answerer for several names, each
+    /// sent the same --H headers.
     #[arg(long, value_name = "SIGNALLING")]
-    pub park: Option<String>,
+    pub park: Vec<String>,
     /// Serve --forward on this UDP port with a fixed record, which is
     /// printed with the command that calls it. No signalling unless
     /// --signal.
@@ -172,7 +173,9 @@ pub struct CallRole {
 
 #[derive(Debug)]
 pub struct ParkRole {
-    pub signalling: Peer,
+    /// Where to answer: one `wss://` leg, or one or more names at
+    /// signalling servers, all served by one host (`doc/P2P.md` §2.2).
+    pub names: Vec<Peer>,
     pub forward: ForwardSpec,
     pub accept: Vec<Cidr>,
     /// Whom the server may tell this side to call; `None` declines all.
@@ -278,7 +281,11 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
     };
     let relay = pick(flags.relay.as_ref(), f.relay.as_ref());
     let fallback = pick(flags.fallback.as_ref(), f.fallback.as_ref());
-    let park = pick(flags.park.as_ref(), f.park.as_ref());
+    let park = if flags.park.is_empty() {
+        f.park.as_ref().map(|p| (p.to_vec(), From::File))
+    } else {
+        Some((flags.park.clone(), From::Flag))
+    };
     let listen = pick(flags.listen.as_ref(), f.listen.as_ref());
     let matching = pick(flags.match_port.as_ref(), f.match_port.as_ref());
     let host = pick(flags.host.as_ref(), f.host.as_ref());
@@ -449,7 +456,10 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
             if relay.is_some() {
                 return Err("--relay beside --park (\"answer for me\") is not built yet; a park that cannot use UDP holds a wss:// leg instead (--park wss://…)".into());
             }
-            let signalling = Peer::parse(&park).map_err(|e| format!("--park {e}"))?;
+            let names = park
+                .iter()
+                .map(|p| Peer::parse(p).map_err(|e| format!("--park {e}")))
+                .collect::<Result<Vec<_>, _>>()?;
             let forward = ForwardSpec::parse(
                 forward.as_ref().map(|(f, _)| f.as_str()),
                 forward_ports.as_ref().map(|(p, _)| p.as_str()),
@@ -467,7 +477,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
                 .map(|(allow, _)| park::PairRule::parse(&allow).map_err(|e| format!("--pair {e}")))
                 .transpose()?;
             Role::Park(ParkRole {
-                signalling,
+                names,
                 forward,
                 accept,
                 pair,
@@ -654,7 +664,7 @@ pub fn from_tunnel_block(t: &TunnelConfig) -> Result<(P2pConfig, Vec<String>), S
     }
     if let Some(park) = &t.park {
         warnings.push("`tunnel.park` is `p2p.park`, and `tunnel.to` is `p2p.forward`".into());
-        block.park = Some(park.clone());
+        block.park = Some(drt_config::OneOrMany::One(park.clone()));
         block.forward = t.to.clone();
     }
     if t.listen.is_some() {
@@ -703,7 +713,7 @@ pub fn from_tunnel(
             ]);
         }
         Mode::Park { park, to } => {
-            args.park = Some(park.clone());
+            args.park = vec![park.clone()];
             args.forward = Some(to.clone());
             words.extend([
                 "--park".to_string(),
@@ -774,7 +784,7 @@ mod tests {
             role(
                 &none,
                 Args {
-                    park: Some("drt://s.example/v1/a".into()),
+                    park: vec!["drt://s.example/v1/a".into()],
                     ..Args::default()
                 }
             ),
@@ -804,7 +814,7 @@ mod tests {
             &none,
             Args {
                 listen: Some(5000),
-                park: Some("drt://x/v1/a".into()),
+                park: vec!["drt://x/v1/a".into()],
                 ..Args::default()
             },
         )
@@ -843,12 +853,38 @@ mod tests {
     }
 
     #[test]
+    fn park_is_one_name_or_a_list_and_the_flag_repeats() {
+        let one = cfg(r#"{"p2p":{"park":"drt://s.example/v1/a"}}"#);
+        let Ok(Role::Park(p)) = role(&one, Args::default()) else {
+            panic!()
+        };
+        assert_eq!(p.names.len(), 1);
+        let list = cfg(r#"{"p2p":{"park":["drt://s.example/v1/a","drt://t.example/v1/b"]}}"#);
+        let Ok(Role::Park(p)) = role(&list, Args::default()) else {
+            panic!()
+        };
+        assert_eq!(p.names.len(), 2);
+        // The flags replace the file's list as a whole.
+        let Ok(Role::Park(p)) = role(
+            &list,
+            Args {
+                park: vec!["drt://u.example/v1/c".into()],
+                ..Args::default()
+            },
+        ) else {
+            panic!()
+        };
+        assert_eq!(p.names.len(), 1);
+        assert!(p.names[0].shown().contains("u.example/v1/c"));
+    }
+
+    #[test]
     fn pair_is_a_parks_key_and_parses_to_its_rule() {
         let none = cfg("{}");
         let Ok(Role::Park(p)) = role(
             &none,
             Args {
-                park: Some("drt://s.example/v1/a".into()),
+                park: vec!["drt://s.example/v1/a".into()],
                 pair: Some("*".into()),
                 ..Args::default()
             },
@@ -949,7 +985,7 @@ mod tests {
         let Ok(Role::Park(p)) = role(&park, Args::default()) else {
             panic!()
         };
-        assert!(matches!(p.signalling.how, peer::How::Ws(_)));
+        assert!(matches!(p.names[0].how, peer::How::Ws(_)));
         assert_eq!(p.forward.describe(), "127.0.0.1:22");
         let claim =
             cfg(r#"{"tunnel":{"claim":"ws://127.0.0.1:1/s/fp?k=x","bind":"127.0.0.1:2222"}}"#);

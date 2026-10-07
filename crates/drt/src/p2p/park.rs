@@ -2,8 +2,10 @@
 //! `doc/DRT-Signalling.md`, natively. It polls the server by cursor, holds
 //! the call notification stream when the server offers one, and answers
 //! each call with its record; the host behind it serves the `--forward`.
-//! A `wss://` park is today's `drt tunnel --park` under this verb (§4.3):
-//! one WebSocket leg held at the relay, carrying one target's bytes.
+//! Several names may be parked at once, each its own answerer to its
+//! server and every one served by the same host. A `wss://` park is today's
+//! `drt tunnel --park` under this verb (§4.3): one WebSocket leg held at
+//! the relay, carrying one target's bytes, and it parks alone.
 //!
 //! Pairing (`doc/DRT-Signalling.md` §6.2): a `pair` entry in the poll
 //! tells this side whom to call; [`PairRule`] is the consent `--pair`
@@ -16,7 +18,8 @@
 //!   `pair` entry carried out.
 //! - Configurable: [`POLL`], [`BACKOFF_MAX`], [`ACCEPT_HEADER`],
 //!   [`PAIR_CONNECT`], [`PAIR_MARGIN`].
-//! - Fan-out: the match on [`How`] in `run`; what the WebSocket park can
+//! - Fan-out: the match on [`How`] in `run`; one presence per parked
+//!   name, in `park_signal`; what the WebSocket park can
 //!   carry, in [`ws_sink`]; the two forms of [`PairRule`]; the four
 //!   [`Outcome`]s.
 
@@ -152,27 +155,45 @@ impl Outcome {
 }
 
 /// The role: serve the forward, and answer calls at the signalling server
-/// until stopped.
+/// until stopped. A `wss://` leg parks alone; names at signalling servers
+/// may be several, every one answered by the same host.
 pub async fn run(
     role: &ParkRole,
     config: &RootConfig,
     roots: &[CertificateDer<'static>],
 ) -> Result<(), String> {
-    match &role.signalling.how {
-        How::Ws(url) => park_ws(url, role, config, roots).await,
-        How::Signal { name: None, .. } => Err(format!(
-            "--park {} names no answerer: drt://host[:port]/v1/<name>",
-            role.signalling.shown()
-        )),
-        How::Record(_) => Err("--park takes a signalling server, not a record".into()),
-        How::Signal { base, .. } => park_signal(base, role, config, roots).await,
+    let several = role.names.len() > 1;
+    let mut seen = std::collections::HashSet::new();
+    for name in &role.names {
+        match &name.how {
+            How::Ws(url) if !several => return park_ws(url, role, config, roots).await,
+            How::Ws(_) => {
+                return Err(format!(
+                    "--park {} is a wss:// leg, which parks alone; several --park are names at \
+                     signalling servers (drt://host[:port]/v1/<name>)",
+                    name.shown()
+                ))
+            }
+            How::Signal { name: None, .. } => {
+                return Err(format!(
+                    "--park {} names no answerer: drt://host[:port]/v1/<name>",
+                    name.shown()
+                ))
+            }
+            How::Record(_) => return Err("--park takes a signalling server, not a record".into()),
+            How::Signal { .. } => {
+                if !seen.insert(name.canonical()) {
+                    return Err(format!("--park names {} twice", name.shown()));
+                }
+            }
+        }
     }
+    park_signal(role, config, roots).await
 }
 
 // depth: the profile's answerer
 
 async fn park_signal(
-    base: &str,
     role: &ParkRole,
     config: &RootConfig,
     roots: &[CertificateDer<'static>],
@@ -194,24 +215,69 @@ async fn park_signal(
         let ranges: Vec<String> = role.accept.iter().map(|c| c.to_string()).collect();
         headers.push((ACCEPT_HEADER.to_string(), ranges.join(", ")));
     }
-    let calls_url = role.signalling.url("/calls");
-    let events_url = role.signalling.url("/events");
-    eprintln!(
-        "drt p2p: parked at {}, serving {}",
-        crate::tunnel::shown(base),
-        role.forward.describe()
-    );
     let serving = std::sync::Arc::new(serving);
-    let pairing = std::sync::Arc::new(Pairing {
-        signalling: role.signalling.clone(),
-        headers: headers.clone(),
-        rule: role.pair.clone(),
-    });
+    // Each name is its own answerer to its server: its own poll, stream
+    // and cursor. A name refused for good (401, 403) stops being answered;
+    // the park ends when no name is left.
+    let several = role.names.len() > 1;
+    let mut presences = tokio::task::JoinSet::new();
+    for name in &role.names {
+        let How::Signal { base, .. } = &name.how else {
+            unreachable!("run admits only names at signalling servers here");
+        };
+        eprintln!(
+            "drt p2p: parked at {}, serving {}",
+            crate::tunnel::shown(base),
+            role.forward.describe()
+        );
+        let pairing = Pairing {
+            signalling: name.clone(),
+            headers: headers.clone(),
+            rule: role.pair.clone(),
+        };
+        // A call's session is keyed by its id, which is unique only at
+        // one name; with several, the name keeps two apart.
+        let key = several.then(|| name.shown());
+        let (base, serving, roots) = (base.clone(), serving.clone(), roots.to_vec());
+        presences.spawn(async move {
+            let ended = present(&base, key, pairing, serving, &roots).await;
+            (base, ended)
+        });
+    }
+    let mut last = Ok(());
+    while let Some(done) = presences.join_next().await {
+        let (base, ended) = done.map_err(|e| e.to_string())?;
+        if let Err(why) = &ended {
+            if several {
+                eprintln!(
+                    "drt p2p: no longer parked at {}: {why}",
+                    crate::tunnel::shown(&base)
+                );
+            }
+        }
+        last = ended;
+    }
+    last
+}
+
+/// One name, answered until its server refuses it for good: the call
+/// notification stream when the server has one, and the poll it wakes.
+async fn present(
+    base: &str,
+    key: Option<String>,
+    pairing: Pairing,
+    serving: std::sync::Arc<Serving>,
+    roots: &[CertificateDer<'static>],
+) -> Result<(), String> {
+    let headers = pairing.headers.clone();
+    let calls_url = pairing.signalling.url("/calls");
+    let events_url = pairing.signalling.url("/events");
+    let pairing = std::sync::Arc::new(pairing);
 
     // The call notification stream, when the server has one: each event
     // wakes the poll below. A stream that will not open is polling alone.
     let (wake_tx, mut wake) = tokio::sync::mpsc::unbounded_channel::<()>();
-    {
+    let stream = {
         let (url, headers, roots) = (events_url.clone(), headers.clone(), roots.to_vec());
         tokio::spawn(async move {
             let mut backoff = Duration::from_secs(1);
@@ -241,9 +307,23 @@ async fn park_signal(
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(BACKOFF_MAX);
             }
-        });
-    }
+        })
+    };
+    let ended = poll(base, key, &calls_url, &pairing, &serving, &mut wake, roots).await;
+    stream.abort();
+    ended
+}
 
+async fn poll(
+    base: &str,
+    key: Option<String>,
+    calls_url: &str,
+    pairing: &std::sync::Arc<Pairing>,
+    serving: &std::sync::Arc<Serving>,
+    wake: &mut tokio::sync::mpsc::UnboundedReceiver<()>,
+    roots: &[CertificateDer<'static>],
+) -> Result<(), String> {
+    let headers = &pairing.headers;
     let mut cursor: Option<String> = None;
     let mut backoff = Duration::from_secs(1);
     let mut said = false;
@@ -251,9 +331,9 @@ async fn park_signal(
         let url = match &cursor {
             Some(c) if calls_url.contains('?') => format!("{calls_url}&since={c}"),
             Some(c) => format!("{calls_url}?since={c}"),
-            None => calls_url.clone(),
+            None => calls_url.to_string(),
         };
-        match http::request("GET", &url, &headers, None, roots).await {
+        match http::request("GET", &url, headers, None, roots).await {
             Ok(reply) if reply.status == 200 => {
                 backoff = Duration::from_secs(1);
                 if !said {
@@ -270,22 +350,26 @@ async fn park_signal(
                     else {
                         continue;
                     };
+                    let peer = match &key {
+                        Some(name) => format!("{name} {id}"),
+                        None => id.to_string(),
+                    };
                     serving.sender.send(Command::Open {
-                        peer: id.to_string(),
+                        peer: peer.clone(),
                         rtc: record.to_string(),
                     });
-                    let answer = role.signalling.url(&format!("/calls/{id}/answer"));
+                    let answer = pairing.signalling.url(&format!("/calls/{id}/answer"));
                     let mine = serving.record.borrow().clone();
-                    match http::request("POST", &answer, &headers, Some(&mine), roots).await {
+                    match http::request("POST", &answer, headers, Some(&mine), roots).await {
                         Ok(r) if r.status == 204 || r.status == 200 => {
-                            eprintln!("drt p2p: answered {id}")
+                            eprintln!("drt p2p: answered {peer}")
                         }
                         Ok(r) => eprintln!(
-                            "drt p2p: {id}: {}",
+                            "drt p2p: {peer}: {}",
                             r.refusal(&answer)
                                 .unwrap_or_else(|| format!("answered {}", r.status))
                         ),
-                        Err(e) => eprintln!("drt p2p: {id}: {e}"),
+                        Err(e) => eprintln!("drt p2p: {peer}: {e}"),
                     }
                 }
                 for entry in page["pair"].as_array().into_iter().flatten() {
