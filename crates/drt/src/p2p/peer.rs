@@ -85,6 +85,12 @@ impl Peer {
                 service: None,
             }),
             other => match other.strip_prefix("drt+") {
+                Some(service) if super::reflect::RESERVED_SERVICES.contains(&service) => {
+                    Err(format!(
+                        "'{s}' names a reflect server, which is asked and not called: \
+                     `drt p2p {s}` alone"
+                    ))
+                }
                 Some(service) if drt_rtc::scope::is_service_name(service) => Ok(Peer {
                     how: signal(rest, None)?,
                     service: Some(service.to_string()),
@@ -313,6 +319,11 @@ impl ForwardSpec {
                     ForwardSpec::Peer(Peer::parse(forward).map_err(|e| format!("--forward {e}"))?);
                 only_a_host(&spec)?;
                 return Ok(spec);
+            }
+            if super::reflect::RESERVED_SERVICES.contains(&scheme.as_str()) {
+                return Err(format!(
+                    "--forward {forward}: `{scheme}` is reserved for reflect servers, and names no service"
+                ));
             }
             let entry = Entry::parse(forward).map_err(|e| format!("--forward: {e}"))?;
             let spec = ForwardSpec::One(entry);

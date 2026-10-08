@@ -59,8 +59,18 @@ Underneath it the embedded core moves from 0.15.1 to
   port, never an address. Requests between the gates are signed with
   HMAC-SHA256 and refused when stale or replayed, and
   `--reflect-rate` (30 a minute) limits each source. Every result and
-  failure has a stable code, documented in one table. The client
-  side is not built yet.
+  failure has a stable code, documented in one table.
+- **`drt p2p drt+stun://<host>` and `drt+reflect://<host>` ask a
+  reflect server (`doc/Reflect.md`).** Dispatched on the scheme
+  before any signalling, they print what the gates answered and no
+  verdict: the UDP mapped address, the mapping read from the same
+  socket against OTHER-ADDRESS, RFC 5780 filtering, and with
+  `drt+reflect://` the TCP observed address and a cross request per
+  `--port` (or one the system picks), on which this side listens so
+  `connected` means reachable and the token says who reached it.
+  `--json` prints one object; every check carries a code, and one the
+  server does not offer says why. `stun` and `reflect` are reserved:
+  no service, `webrtc.services` entry or `--relay` may name them.
 - **`drt p2p`: one verb for peer-to-peer sessions (`doc/P2P.md`).**
   With no `--relay` and no `--fallback`, no machine other than the
   two ends carries a byte of the session; when no such path exists it
