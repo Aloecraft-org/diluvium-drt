@@ -1,10 +1,12 @@
 {
   "name": "09-netcheck",
-  "teaches": "drt netcheck answers with one of four verdicts and the evidence that produced it. The decisive measurement is the UDP mapping across two STUN servers, so with none given \u2014 or with one, which is not a comparison \u2014 it reports 'not measured', falls back to relay, and exits non-zero.",
-  "cmd": "echo '$ drt netcheck'; drt netcheck; echo \"exit $?\"; echo; echo '$ drt netcheck --stun stun.l.google.com:19302'; drt netcheck --stun stun.l.google.com:19302; echo \"exit $?\"",
+  "teaches": "drt netcheck <location> asks a reflect server, and the gate beside it, what they see of this machine: the address over UDP and TCP, how the NAT maps and filters, and whether a port is reachable. It prints the answers, each with a code, and no verdict.",
+  "cmd": "./demo.sh",
   "needs_network": false,
   "needs_build": "full",
   "normalise": [
-    "s|^  v6         .*|  v6         <v6, this machine's>|"
+    "s|127\\.0\\.0\\.1:[0-9][0-9]*|127.0.0.1:<port>|g",
+    "s|port [0-9][0-9]* |port <port> |",
+    "s| [0-9][0-9]* ms| <n> ms|"
   ]
 }

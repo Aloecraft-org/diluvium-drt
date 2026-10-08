@@ -127,10 +127,11 @@ pub enum Code {
     UdpBlocked,
     TcpBlocked,
     Unresolved,
+    SameAddress,
 }
 
 impl Code {
-    pub const ALL: [Code; 16] = [
+    pub const ALL: [Code; 17] = [
         Code::Ok,
         Code::Connected,
         Code::Refused,
@@ -147,6 +148,7 @@ impl Code {
         Code::UdpBlocked,
         Code::TcpBlocked,
         Code::Unresolved,
+        Code::SameAddress,
     ];
 
     pub fn name(self) -> &'static str {
@@ -167,6 +169,7 @@ impl Code {
             Code::UdpBlocked => "udp_blocked",
             Code::TcpBlocked => "tcp_blocked",
             Code::Unresolved => "unresolved",
+            Code::SameAddress => "same_address",
         }
     }
 
@@ -190,6 +193,9 @@ impl Code {
             Code::UdpBlocked => "no answer over UDP: the server is down, or UDP does not get out",
             Code::TcpBlocked => "no answer over TCP: the server is down, or TCP to its port does not get out",
             Code::Unresolved => "the location names no address",
+            Code::SameAddress => {
+                "the change request's answer came from the server's own address, as with two gates on one address, so it says nothing about filtering"
+            }
         }
     }
 

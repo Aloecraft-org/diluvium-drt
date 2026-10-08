@@ -499,8 +499,8 @@ pub async fn filtering(socket: &UdpSocket, server: SocketAddr) -> Check<Filterin
             return Check::ok(answer);
         }
         // An answer from the address asked is a server that ignored the
-        // change: no evidence about filtering either way.
-        Ok(_) => return Check::not(Code::NotOffered),
+        // change, or a pair on one address: no evidence either way.
+        Ok(_) => return Check::not(Code::SameAddress),
         Err(Code::Timeout) => {}
         Err(code) => return Check::not(code),
     }
@@ -509,7 +509,7 @@ pub async fn filtering(socket: &UdpSocket, server: SocketAddr) -> Check<Filterin
             answer.change_port_reply = Some(reply.from);
             "address_dependent"
         }
-        Ok(_) => return Check::not(Code::NotOffered),
+        Ok(_) => return Check::not(Code::SameAddress),
         Err(Code::Timeout) => "address_and_port_dependent",
         Err(Code::NotOffered) => "address_dependent_or_stricter",
         Err(code) => return Check::not(code),

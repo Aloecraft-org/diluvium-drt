@@ -1,5 +1,10 @@
 //! `drt netcheck`: what can this network do, and what should you do about it.
 //!
+//! **Deprecated.** The verdict here, and the flags and block keys that
+//! produce it, leave after this release. `drt netcheck <location>` asks a
+//! reflect server instead (`crate::p2p::reflect::ask`, `doc/Reflect.md`),
+//! and the UDP mapping WireGuard needs lives in `crate::mapping`.
+//!
 //! Implements discofetch's `doc/NETCHECK-SPEC.md`. The design constraint
 //! from that spec governs everything here: **the output is a verdict, not a
 //! report.** A tool that prints observations makes the user the expert. So
@@ -86,21 +91,7 @@ impl fmt::Display for Verdict {
     }
 }
 
-/// How a NAT assigns UDP mappings, as observed across two STUN servers.
-///
-/// Mirrors `ego_transport::stun::NatMapping` rather than re-using it so
-/// that this module — and every fixture in the tests — stays compilable
-/// without the `stun` feature. [`gather`] converts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UdpMapping {
-    /// No NAT in the path: the socket's own address is what the world sees.
-    Open,
-    /// One mapping reused for every destination. Punchable.
-    Independent,
-    /// A fresh mapping per destination ("symmetric"). What a STUN server
-    /// reports says nothing about what a peer would see.
-    Symmetric,
-}
+pub use crate::mapping::UdpMapping;
 
 /// The result of asking an edge to connect back to the caller's own
 /// observed address.
@@ -769,86 +760,13 @@ pub fn render_json(m: &Measurements, verdict: Verdict, why: &'static str) -> Str
 /// running only the STUN server would pick -- fail to compile at all.
 #[cfg(feature = "stun")]
 pub mod gather {
+    use super::Measurements;
     #[cfg(feature = "netcheck")]
     use super::{EdgeView, Inbound, MAX_PROBE_PORTS};
-    use super::{Measurements, UdpMapping};
-    use ego_transport::stun::{detect_mapping, NatMapping, ProbeConfig};
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
-    /// Ask two or more STUN servers what they see of **one** socket, and
-    /// classify the mapping.
-    ///
-    /// One socket for every probe is the whole point: two sockets would
-    /// have different mappings under any NAT and the comparison would mean
-    /// nothing. `detect_mapping` owns that discipline, and refuses below two
-    /// servers rather than guessing — so a caller that supplies one gets an
-    /// error here and "not measured" in the evidence, never a confident
-    /// wrong answer.
-    /// The reflexive address every probe agreed on, or `None`.
-    ///
-    /// STUN's entire job is telling a caller the address the world sees, and
-    /// this was being thrown away: only `.port()` was kept, `observed_address`
-    /// stayed `None`, and the evidence line said "no reflect edge answered"
-    /// while a STUN server had just answered exactly that question.
-    ///
-    /// That mattered far more than a missing line. [`Measurements::is_cgnat`]
-    /// reads `observed_address`, and the CGNAT rule is the one that outranks
-    /// every other — so in the only configuration this build supports, the
-    /// highest-priority rule in the table could never fire, and a machine
-    /// behind a carrier NAT was told `punchable`.
-    ///
-    /// **Only when every probe agrees.** Two servers reporting different
-    /// addresses means different egress paths, and picking one would be a
-    /// guess about which. This module does not guess.
-    fn agreed_address(report: &ego_transport::stun::MappingReport) -> Option<IpAddr> {
-        let mut seen = report.probes.iter().map(|p| p.reflexive.ip());
-        let first = seen.next()?;
-        seen.all(|a| a == first).then_some(first)
-    }
-
-    /// `udp_port` binds the probe socket to a chosen local port. A mapping
-    /// is a fact about one flow: measured from an ephemeral port, the
-    /// mapped port reported is not the one `udp/51820` will get, and on any
-    /// NAT that is not port-preserving the verdict is right about the
-    /// network and wrong about the flow that matters (discofetch
-    /// `DRT_ASKS.md` §2). A port that cannot be bound is a refusal naming
-    /// it, never a silent fall back to ephemeral -- that would be the same
-    /// wrong answer with a confident face.
-    pub async fn udp_mapping(
-        servers: &[&str],
-        udp_port: Option<u16>,
-    ) -> Result<(UdpMapping, Vec<(String, u16)>, Option<IpAddr>), String> {
-        if servers.len() < 2 {
-            return Err(format!(
-                "classifying a NAT mapping needs two servers on separate addresses; {} given",
-                servers.len()
-            ));
-        }
-        let config = ProbeConfig {
-            bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), udp_port.unwrap_or(0)),
-            ..ProbeConfig::default()
-        };
-        let report = detect_mapping(servers, &config)
-            .await
-            .map_err(|e| match udp_port {
-                Some(port) => format!("--udp-port {port}: {e}"),
-                None => e.to_string(),
-            })?;
-        let mapping = match report.mapping {
-            NatMapping::Open => UdpMapping::Open,
-            NatMapping::EndpointIndependent => UdpMapping::Independent,
-            NatMapping::EndpointDependent => UdpMapping::Symmetric,
-        };
-        // Pair each server with the port it reported, in the order supplied,
-        // because the evidence line names them and an unlabelled pair of
-        // numbers settles no argument.
-        let ports = servers
-            .iter()
-            .zip(report.probes.iter())
-            .map(|(s, p)| ((*s).to_string(), p.reflexive.port()))
-            .collect();
-        Ok((mapping, ports, agreed_address(&report)))
-    }
+    use crate::mapping::source_toward;
+    pub use crate::mapping::{local_addresses, udp_mapping};
+    #[cfg(feature = "netcheck")]
+    use std::net::IpAddr;
 
     /// A routable IPv6 address on a local interface, if there is one.
     ///
@@ -876,54 +794,6 @@ pub mod gather {
             }
             _ => None,
         }
-    }
-
-    /// The source address the routing table would pick toward `dest`.
-    ///
-    /// A connected UDP socket sends nothing; `connect()` only makes the
-    /// kernel choose, so this is a local operation and not a probe.
-    /// `dest` decides the family. `None` when there is no route at all,
-    /// which an offline machine answers honestly rather than with
-    /// loopback.
-    fn source_toward(dest: std::net::IpAddr) -> Option<std::net::IpAddr> {
-        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
-        let unspecified: IpAddr = match dest {
-            IpAddr::V4(_) => Ipv4Addr::UNSPECIFIED.into(),
-            IpAddr::V6(_) => Ipv6Addr::UNSPECIFIED.into(),
-        };
-        let sock = UdpSocket::bind(SocketAddr::new(unspecified, 0)).ok()?;
-        // 8.8.8.8 and 2001:4860:4860::8888 are well-known public
-        // destinations. Nothing is sent to either.
-        sock.connect(SocketAddr::new(dest, 53)).ok()?;
-        let local = sock.local_addr().ok()?.ip();
-        (!local.is_loopback() && !local.is_unspecified()).then_some(local)
-    }
-
-    /// This machine's own addresses, one per family, as a peer on the same
-    /// network would reach them (issue #25).
-    ///
-    /// The one candidate a mapping report could not carry. `wireguard_mapping`
-    /// publishes the server-reflexive address -- what a STUN server saw --
-    /// and two machines behind one router then have to hairpin through it,
-    /// which plenty of routers refuse; so two machines on one LAN could not
-    /// punch to each other from the report alone. A host candidate is what
-    /// ICE uses for exactly that, and a guest cannot learn one on its own:
-    /// no sockets, no `net`, an `fs` scope of one directory.
-    ///
-    /// Two addresses and not a list, on purpose. The address the routing
-    /// table picks toward the internet *is* the one a same-LAN peer reaches,
-    /// so the primary per family covers the case that was filed, and a
-    /// dual-stack home roughly doubles the coverage for no interface
-    /// enumeration and no new dependency. Multi-homed machines would want
-    /// `getifaddrs`; that arrives with evidence they are common, not before.
-    /// Raw: private, link-scoped, whatever the table answers. Whether to
-    /// publish a LAN address at all is a program's decision, since it
-    /// discloses topology.
-    pub fn local_addresses() -> Vec<std::net::IpAddr> {
-        ["8.8.8.8", "2001:4860:4860::8888"]
-            .iter()
-            .filter_map(|d| source_toward(d.parse().ok()?))
-            .collect()
     }
 
     /// Fill in the measurements this build can take without an edge:
@@ -1454,12 +1324,19 @@ pub async fn run(
 /// crossing a boundary that carries values instead of text.
 #[cfg(feature = "netcheck")]
 fn encode_verdict(m: &Measurements, verdict: Verdict, why: &'static str) -> Vec<u8> {
-    let text = render_json(m, verdict, why);
-    let value = match serde_json::from_str::<serde_json::Value>(&text) {
+    encode_json(&render_json(m, verdict, why))
+}
+
+/// A JSON object as the msgpack value a queue carries, so a program indexes
+/// it rather than parsing text.
+#[cfg(feature = "netcheck")]
+fn encode_json(text: &str) -> Vec<u8> {
+    let value = match serde_json::from_str::<serde_json::Value>(text) {
         Ok(value) => drt_config::canon::to_msgpack(&value),
-        // `render_json` emits JSON by construction, so this is unreachable; a
-        // string is a worse answer than a table and a better one than nothing.
-        Err(_) => rmpv::Value::from(text.as_str()),
+        // Every caller renders JSON by construction, so this is unreachable;
+        // a string is a worse answer than a table and a better one than
+        // nothing.
+        Err(_) => rmpv::Value::from(text),
     };
     let mut bytes = Vec::new();
     let _ = rmpv::encode::write_value(&mut bytes, &value);
@@ -1495,6 +1372,13 @@ impl NetcheckBridge {
     /// deployment that asked for a diagnostic and got an empty one would read
     /// the empty one as an answer.
     pub fn start(config: &drt_config::NetcheckConfig) -> Result<NetcheckBridge, String> {
+        if let Some(location) = &config.location {
+            return NetcheckBridge::ask(config, location);
+        }
+        eprintln!(
+            "drt start: the `netcheck` block without `location` is deprecated and leaves after \
+             this release, with the verdict it reports; `location` asks a reflect server"
+        );
         if config.stun.is_empty() && config.reflect.is_empty() {
             return Err(
                 "the `netcheck` block names nothing to measure against: `reflect` supplies the \
@@ -1554,6 +1438,76 @@ impl NetcheckBridge {
         })
     }
 
+    /// `location`: ask a reflect server, and push its answers as they came,
+    /// the object `drt netcheck <location> --json` prints.
+    fn ask(config: &drt_config::NetcheckConfig, location: &str) -> Result<NetcheckBridge, String> {
+        let deprecated = [
+            ("stun", !config.stun.is_empty()),
+            ("reflect", !config.reflect.is_empty()),
+            ("reflect_at", !config.reflect_at.is_empty()),
+            ("probe_at", config.probe_at.is_some()),
+            ("pin_source_port", config.pin_source_port),
+            ("udp_port", config.udp_port.is_some()),
+        ];
+        if let Some((key, _)) = deprecated.iter().find(|(_, on)| *on) {
+            return Err(format!(
+                "`netcheck.{key}` belongs to the deprecated verdict; with `location` the block asks \
+                 a reflect server, and takes `port`"
+            ));
+        }
+        #[cfg(feature = "p2p")]
+        {
+            use crate::p2p::reflect::ask;
+            let parsed = ask::Location::parse(location)
+                .unwrap_or_else(|| {
+                    ask::Location::parse(&format!("drt+reflect://{location}")).expect("the scheme")
+                })
+                .map_err(|e| format!("`netcheck.location` {e}"))?;
+            let ports = config.port.clone();
+            if ports.len() > ask::MAX_PORTS {
+                return Err(format!(
+                    "`netcheck.port` names more than {} ports",
+                    ask::MAX_PORTS
+                ));
+            }
+            let every = config.report_ms;
+            let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
+            let rt = tokio::runtime::Runtime::new()
+                .map_err(|e| format!("netcheck needs a runtime: {e}"))?;
+            let runtime = std::thread::spawn(move || {
+                loop {
+                    let text = match rt.block_on(ask::ask(&parsed, &ports)) {
+                        Ok(report) => ask::render_json(&report),
+                        Err(e) => {
+                            serde_json::json!({"location": parsed.shown(), "error": e}).to_string()
+                        }
+                    };
+                    if tx.send(encode_json(&text)).is_err() {
+                        break;
+                    }
+                    if every == 0 {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(every));
+                }
+                // FM-1, as above.
+                std::mem::forget(rt);
+            });
+            Ok(NetcheckBridge {
+                rx,
+                queue: config.queue.clone(),
+                _runtime: runtime,
+            })
+        }
+        #[cfg(not(feature = "p2p"))]
+        {
+            Err(format!(
+                "`netcheck.location` {location}: asking a reflect server is `drt p2p`'s, and this \
+                 build has no `p2p`"
+            ))
+        }
+    }
+
     /// Push whatever the measurement has produced. Non-blocking, and silent
     /// when there is nothing: the drive loop must not wait on a network.
     ///
@@ -1590,6 +1544,66 @@ mod block {
             e.contains("reflect") && e.contains("stun"),
             "it names both ways out: {e}"
         );
+    }
+
+    /// `location` with a key of the deprecated verdict is refused by name.
+    #[test]
+    fn a_location_beside_a_verdict_key_is_refused() {
+        let config: drt_config::NetcheckConfig =
+            serde_json::from_str(r#"{"location":"127.0.0.1:1","stun":["a:3478"]}"#).unwrap();
+        let Err(e) = NetcheckBridge::start(&config) else {
+            panic!("the two shapes do not mix")
+        };
+        assert!(
+            e.contains("`netcheck.stun` belongs to the deprecated verdict"),
+            "{e}"
+        );
+    }
+
+    /// `location` pushes the reflect answers, the object `--json` prints, as
+    /// a table a program indexes.
+    #[cfg(feature = "p2p")]
+    #[test]
+    fn a_location_pushes_the_reflect_answers() {
+        use crate::p2p::peer::HostSpec;
+        use crate::p2p::reflect::{serve::Gate, ReflectRole};
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let gate = Gate::bind(&ReflectRole {
+                    port: 0,
+                    hosts: vec![HostSpec::parse("127.0.0.1").unwrap()],
+                    peers: vec![],
+                    key: None,
+                    rate: 30,
+                })
+                .await
+                .unwrap();
+                tx.send(gate.addrs()[0]).unwrap();
+                let _ = gate.serve().await;
+            });
+        });
+        let at = rx.recv().unwrap();
+        let config: drt_config::NetcheckConfig =
+            serde_json::from_str(&format!(r#"{{"location":"{at}"}}"#)).unwrap();
+        let Ok(mut bridge) = NetcheckBridge::start(&config) else {
+            panic!("a location is enough")
+        };
+        let mut pushed = Vec::new();
+        let start = std::time::Instant::now();
+        while pushed.is_empty() && start.elapsed() < std::time::Duration::from_secs(20) {
+            bridge.report(&mut |queue, bytes| {
+                pushed.push((queue.to_string(), bytes.to_vec()));
+                true
+            });
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let (queue, bytes) = pushed.pop().expect("one report");
+        assert_eq!(queue, "netcheck");
+        let value = rmpv::decode::read_value(&mut &bytes[..]).unwrap();
+        let udp = value["udp"]["code"].as_str().map(str::to_string);
+        assert_eq!(udp.as_deref(), Some("ok"), "{value}");
     }
 
     /// The block's keys are the verb's flags, so a runbook written for one reads
