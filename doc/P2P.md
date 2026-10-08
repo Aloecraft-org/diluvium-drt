@@ -16,14 +16,16 @@ the path is a flag the user typed.
 
 ## surface
 
-- Entry points: four roles. **Call**, `drt p2p <peer>`. **Park**,
+- Entry points: five roles. **Call**, `drt p2p <peer>`. **Park**,
   `drt p2p --park <signalling>`. **Listen**, `drt p2p --listen <port>`.
-  **Match**, `drt p2p --match <port>`. Two carriers, on call and park:
+  **Match**, `drt p2p --match <port>`. **Reflect**,
+  `drt p2p --reflect [port]`. Two carriers, on call and park:
   `--relay <peer>` and `--fallback <peer>`.
 - Configurable: `-p` (call), `--host` (default `127.0.0.1`), `--accept`,
   `--pair`, `--forward`, `-A`, `-P`, `--signal`, `--stun`, `--turn`,
   `--fingerprint` (`--fingerp`), `--H` (`auth=` for a bearer token),
-  `--authorized-keys`, `--capacity`, `--extra-root`, `--config`; `--show`
+  `--authorized-keys`, `--capacity`, `--reflect-peer`, `--reflect-key`,
+  `--reflect-rate`, `--extra-root`, `--config`; `--show`
   prints a peer's canonical form. Every flag is also a key of the `p2p`
   block (§8).
 - Fan-out: the role table (§2), the peer address forms (§3), the forward
@@ -67,6 +69,7 @@ serves it.
 | park | `drt p2p --park <signalling>` | a signalling server, by name | `--forward`, or the REPL |
 | listen | `drt p2p --listen <port>` | its record; with `--signal`, its own signalling port | `--forward`, or the REPL |
 | match | `drt p2p --match <port>` | it is the signalling server | nothing |
+| reflect | `drt p2p --reflect [port]` | it is a STUN server, UDP and TCP | nothing |
 
 ### 2.1 Call
 
@@ -249,6 +252,20 @@ The relayed candidate travels in the record's `r` key
 (`doc/BrowserAccess.md` §2.1), which a page ignores: pages use no TURN
 (`doc/Plan-0.8.0.md` §0.1). The `turn-client` feature carries it, in
 `full`; a build without it refuses `--turn` by name.
+
+### 2.7 Reflect
+
+```
+drt p2p --reflect --host 0.0.0.0 --reflect-peer reflect2.example --reflect-key env:REFLECT_KEY
+```
+
+A STUN server on one port (3478 by default), UDP and TCP, that tells an
+asker the address and port its packet or connection came from. With
+`--reflect-peer` and a shared `--reflect-key`, the other gate answers
+what one address cannot: filtering (RFC 5780) and whether a port of the
+asker is reachable. `--host` is repeatable here, each one bound on its
+own. It carries no session, so the session keys are refused with it.
+The requests, the wire and the result codes are `doc/Reflect.md`.
 
 ## 3. Peer addresses
 
