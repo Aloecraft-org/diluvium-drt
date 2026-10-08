@@ -81,12 +81,11 @@ schema: 1
 repo: Aloecraft-org/diluvium-drt
 
 releases:
-  - version: 0.8.0-rc.1
-    tag: v0.8.0-rc.1
-    date: 2026-10-03
-    status: released
-    stable: false
-    mirror: true
+  - version: 0.8.0
+    tag: v0.8.0
+    status: unreleased
+    stable: true
+    mirror: false
     dv_abi: 2
     diluvium: 97bb9f9d28974e3b4124a2a015e5b06da54a0c98
     diluvium_version: "0.17.2"
@@ -768,6 +767,13 @@ releases:
         Terminals send BS for it, and crossterm reported BS as Ctrl+H, which
         nothing binds, so the word stayed while Ctrl+arrows moved by words.
         The REPL now reads it as the page always has.
+      - |
+        **`drt netcheck --probe-at` refuses a vantage this run already
+        contacted, for v6 too.** The guard compared text, so a v6 address,
+        which a view writes as `[addr]:443`, never matched, and the check
+        that keeps a probe from reporting a false `connected` was off for
+        v6. The same prefix test refused `10.0.0.1` when `10.0.0.12` had
+        been contacted. It now compares parsed addresses.
       - |
         **Browser access readers skip the candidate lines §2.1 says they
         skip** (issue #38). `Record::decode` and the client library's
