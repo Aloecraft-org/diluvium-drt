@@ -71,6 +71,13 @@ Underneath it the embedded core moves from 0.15.1 to
   `--json` prints one object; every check carries a code, and one the
   server does not offer says why. `stun` and `reflect` are reserved:
   no service, `webrtc.services` entry or `--relay` may name them.
+- **`drt netcheck <location>` asks a reflect server.** It is `drt p2p
+  drt+reflect://<location>`, with `--port` and `--json`. A `netcheck`
+  block with `location` pushes the same object to its queue, and
+  `stdlib:netcheck` prints either shape. Example 09 runs a reflect
+  pair on loopback and asks it. The UDP mapping `wireguard_mapping`
+  measures moves to a module of its own, so it stays when the
+  verdict tree goes.
 - **`drt p2p`: one verb for peer-to-peer sessions (`doc/P2P.md`).**
   With no `--relay` and no `--fallback`, no machine other than the
   two ends carries a byte of the session; when no such path exists it
@@ -625,6 +632,15 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Deprecated
 
+- **`drt netcheck`'s flags, and the verdict they produce, go after
+  this release.** `--stun`, `--reflect`, `--reflect-at`,
+  `--probe-at`, `--pin-source-port`, `--udp-port`, `--extra-root`,
+  and `--port` without a location, still print one of the four
+  verdicts, with a warning on stderr; so does a `netcheck` block
+  without `location`, warned at start. The verdict tree, its advice,
+  discofetch's `measure` block and probe host shape leave drt with
+  them. `drt netcheck` with nothing named is refused and asks for a
+  location. Example 13 keeps the `--stun` form until then.
 - **`drt tunnel` is `drt p2p` now, and goes away in a release.** A
   call (`drt tunnel wss://…`, `--local`) or a park (`--park … --to`)
   prints the `drt p2p` form of what it was given on stderr and runs

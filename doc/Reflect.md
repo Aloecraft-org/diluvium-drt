@@ -2,8 +2,7 @@
 
 `drt p2p --reflect` is the server and `drt p2p drt+reflect://` the
 client (`crates/drt/src/p2p/reflect/`). The role is `doc/P2P.md` §2.7.
-Not built yet: the `drt netcheck <location>` alias and the browser
-reader.
+Not built yet: the browser reader.
 
 ## Serving
 
@@ -65,6 +64,13 @@ No verdict is attached.
   arrived (`received`, `not_received`, or `not_listening` when the port
   was taken here, as by a real service).
 
+`drt netcheck <location>` is `drt p2p drt+reflect://<location>`, and
+`--port` and `--json` work as they do there. A `netcheck` block in
+`drt start` with `location` (and `port`) pushes the same object to its
+queue on every `report_ms`. Every other netcheck flag and key is
+deprecated: it still produces the old verdict this release, with a
+warning, and leaves with it.
+
 A check the server does not offer reports why (`no_peer`,
 `not_offered`) and never fails silently. The run fails only when
 nothing answered over UDP or TCP. `--port` and `--json` are flags only,
@@ -112,3 +118,4 @@ reason of a STUN error, the client's on each check's line and in
 | `udp_blocked` | no answer over UDP: the server is down, or UDP does not get out |
 | `tcp_blocked` | no answer over TCP: the server is down, or TCP to its port does not get out |
 | `unresolved` | the location names no address |
+| `same_address` | the change request's answer came from the server's own address, as with two gates on one address, so it says nothing about filtering |

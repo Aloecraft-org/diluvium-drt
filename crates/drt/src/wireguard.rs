@@ -1073,18 +1073,18 @@ pub struct Mapping {
 pub async fn measure(config: &WireguardConfig) -> Result<Mapping, String> {
     let servers: Vec<&str> = config.stun.iter().map(String::as_str).collect();
     let (mapping, ports, address) =
-        crate::netcheck::gather::udp_mapping(&servers, Some(config.listen_port)).await?;
+        crate::mapping::udp_mapping(&servers, Some(config.listen_port)).await?;
     let seen: Vec<String> = ports
         .iter()
         .map(|(server, port)| format!("{server} saw :{port}"))
         .collect();
     let (kind, punchable, why) = match mapping {
-        crate::netcheck::UdpMapping::Open => (
+        crate::mapping::UdpMapping::Open => (
             "open",
             true,
             format!("no NAT in the path ({})", seen.join(", ")),
         ),
-        crate::netcheck::UdpMapping::Independent => (
+        crate::mapping::UdpMapping::Independent => (
             "independent",
             true,
             format!(
@@ -1092,7 +1092,7 @@ pub async fn measure(config: &WireguardConfig) -> Result<Mapping, String> {
                 seen.join(", ")
             ),
         ),
-        crate::netcheck::UdpMapping::Symmetric => (
+        crate::mapping::UdpMapping::Symmetric => (
             "symmetric",
             false,
             format!(
@@ -1115,7 +1115,7 @@ pub async fn measure(config: &WireguardConfig) -> Result<Mapping, String> {
         punchable,
         address,
         why,
-        local: crate::netcheck::gather::local_addresses(),
+        local: crate::mapping::local_addresses(),
     })
 }
 

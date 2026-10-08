@@ -386,14 +386,21 @@
       ]
     },
     "NetcheckConfig": {
-      "description": "The root object the process merges file + flags + env into. The root\n*instance* config is embedded flat — the same shape at depth zero — and\nthe process-level rest is what only the OS process can own: connector\nwiring, listeners, identity, principals.\n`netcheck`: the NAT diagnostic, inside a deployment.\n\nThe verb's flags as keys, plus the two every other reporting block here has.\nA diagnostic a program can read is worth more than one a human reads once: a\nrendezvous program deciding whether to offer a direct path or a relay is\nasking exactly the question `netcheck` answers, and asking it from inside the\ndeployment means asking it about the deployment's own network rather than\nabout whatever shell ran the verb.",
+      "description": "The root object the process merges file + flags + env into. The root\n*instance* config is embedded flat — the same shape at depth zero — and\nthe process-level rest is what only the OS process can own: connector\nwiring, listeners, identity, principals.\n`netcheck`: the NAT diagnostic, inside a deployment.\n\nThe verb's flags as keys, plus the two every other reporting block here has.\nWith `location`, it asks a reflect server as `drt netcheck <location>` does\nand reports the raw answers (`doc/Reflect.md`); every key but `port`,\n`queue` and `report_ms` belongs to the deprecated verdict, which leaves\nafter this release.\nA diagnostic a program can read is worth more than one a human reads once: a\nrendezvous program deciding whether to offer a direct path or a relay is\nasking exactly the question `netcheck` answers, and asking it from inside the\ndeployment means asking it about the deployment's own network rather than\nabout whatever shell ran the verb.",
       "type": "object",
       "properties": {
+        "location": {
+          "description": "The reflect server to ask, `host[:port]` or a `drt+reflect://` or\n`drt+stun://` location. Its answers are reported as they came, with no\nverdict.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "pin_source_port": {
           "type": "boolean"
         },
         "port": {
-          "description": "Ports an inbound probe should try. Needs a `reflect` edge to derive the\nprobe host from.",
+          "description": "With `location`: ports the peer gate connects to. Without it: ports an\ninbound probe should try, which needs a `reflect` edge to derive the\nprobe host from.",
           "type": "array",
           "items": {
             "type": "integer",
@@ -434,7 +441,7 @@
           "minimum": 0
         },
         "stun": {
-          "description": "STUN servers, `host:port`. The decisive measurement is the UDP mapping,\nso two of these answer more than any number of anything else.",
+          "description": "Deprecated, as every key from here to `udp_port`. STUN servers,\n`host:port`. The decisive measurement is the UDP mapping,\nso two of these answer more than any number of anything else.",
           "type": "array",
           "items": {
             "type": "string"

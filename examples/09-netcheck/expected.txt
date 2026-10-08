@@ -1,24 +1,9 @@
-$ drt netcheck
-relay — the UDP mapping could not be measured, and relay is the answer that works on every network
-  use: use a tunnel
-
-evidence
-  config     nothing named to measure against: --reflect <url> supplies the rest, or --stun twice
-  address    not measured (no STUN server or reflect edge answered)
-  v6         <v6, this machine's>
-  udp map    not measured (classifying a NAT mapping needs two servers on separate addresses; 0 given)
-  tcp map    not measured
-  inbound    not measured (no --port given)
-exit 1
-
-$ drt netcheck --stun stun.l.google.com:19302
-relay — the UDP mapping could not be measured, and relay is the answer that works on every network
-  use: use a tunnel
-
-evidence
-  address    not measured (no STUN server or reflect edge answered)
-  v6         <v6, this machine's>
-  udp map    not measured (classifying a NAT mapping needs two servers on separate addresses; 1 given)
-  tcp map    not measured
-  inbound    not measured (no --port given)
-exit 1
+location   drt+reflect://127.0.0.1:34790
+server     127.0.0.1:34790
+offers     udp,tcp,peer,filtering,cross
+other      127.0.0.1:34791
+udp        ok mapped 127.0.0.1:40434 local 127.0.0.1:40434 0 ms
+mapping    ok none (other gate saw 127.0.0.1:40434)
+filtering  same_address
+tcp        ok mapped 127.0.0.1:60690 local 127.0.0.1:60690 0 ms
+cross      port 44975 connected token received
