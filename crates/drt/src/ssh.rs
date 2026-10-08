@@ -254,6 +254,7 @@ async fn peer_stream(peer: &str, args: &SshArgs) -> Result<Stream, String> {
             stun: Vec::new(),
             headers,
             fingerprint: None,
+            turn: None,
         },
         relay: args.relay.as_deref().map(Peer::parse).transpose()?,
         fallback: args.fallback.as_deref().map(Peer::parse).transpose()?,
@@ -356,6 +357,7 @@ async fn rtc_stream(
         stun: Vec::new(),
         headers: headers.to_vec(),
         fingerprint: None,
+        turn: None,
     };
     let connected = crate::p2p::call::connect(&peer, &dial, roots).await?;
     let target = match &peer.service {

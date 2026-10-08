@@ -539,8 +539,8 @@ pub fn failure_note(m: &Measurements) -> String {
     let (verdict, why) = decide(m);
     match verdict {
         Verdict::Relay => format!(
-            "this side's network: relay ({why}); --fallback <relay> or --relay <relay> asks for a \
-             carrier"
+            "this side's network: relay ({why}); --turn <turn://…> offers a TURN relay, and \
+             --fallback <relay> or --relay <relay> asks for a carrier"
         ),
         _ => format!(
             "this side's network: {verdict} ({why}), so the far side's network or the answerer is \
@@ -1950,7 +1950,8 @@ mod tests {
         let note = failure_note(&symmetric);
         assert!(note.starts_with("this side's network: relay ("), "{note}");
         assert!(
-            note.contains("--fallback <relay> or --relay <relay>"),
+            note.contains("--turn <turn://…>")
+                && note.contains("--fallback <relay> or --relay <relay>"),
             "{note}"
         );
 

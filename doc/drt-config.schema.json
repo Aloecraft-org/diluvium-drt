@@ -567,10 +567,14 @@
           }
         },
         "host": {
-          "description": "`--host`: an address to bind, `0.0.0.0`, or a CIDR to admit.",
-          "type": [
-            "string",
-            "null"
+          "description": "`--host`: an address to bind, `0.0.0.0`, or a CIDR to admit. A\nlist only for `reflect`, which binds each one.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OneOrMany"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "identity_file": {
@@ -632,6 +636,39 @@
             "type": "string"
           }
         },
+        "reflect": {
+          "description": "`--reflect`: the port to be a STUN server on, UDP and TCP\n(`doc/P2P.md` §11).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "reflect_key": {
+          "description": "`--reflect-key`: the key that signs requests between the gates, or\n`env:NAME` for the variable holding it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reflect_peer": {
+          "description": "`--reflect-peer`, repeatable: the other gate, `host[:port]`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reflect_rate": {
+          "description": "`--reflect-rate`: cross requests a minute per source address.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
         "relay": {
           "description": "`--relay`: a peer that carries the session, by request.",
           "type": [
@@ -655,6 +692,13 @@
           "items": {
             "type": "string"
           }
+        },
+        "turn": {
+          "description": "`--turn`: `turn://<user>:<password>@host[:port]`, a TURN server\nwhose allocation is one more candidate, used only when nothing\ndirect works (`doc/P2P.md` §2.6). A credential: keep it here, in a\n0600 file, and not on a command line.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false

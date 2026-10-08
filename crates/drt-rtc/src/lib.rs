@@ -25,12 +25,15 @@
 //!   - [`caller`]: the caller's side, natively (§10.1): a record, a
 //!     connection to an answerer, and Wisp streams it opens.
 //!   - [`cidr`]: an address range, for who may connect (`doc/P2P.md` §6).
+//!   - [`relayed`]: a TURN allocation the program made, as one more local
+//!     candidate (`doc/P2P.md` §2.6).
 
 pub mod caller;
 pub mod cidr;
 pub mod host;
 pub mod identity;
 pub mod record;
+pub mod relayed;
 pub mod scope;
 pub mod wisp;
 
@@ -41,4 +44,5 @@ pub use host::{
 };
 pub use identity::Identity;
 pub use record::Record;
+pub use relayed::{RelayPolicy, Relayed};
 pub use scope::{Entry, Scope};

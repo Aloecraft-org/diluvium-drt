@@ -89,6 +89,7 @@ that text field by field, never by re-encoding the whole object (§7.1).
 | `p` | string | ICE password: 22 to 64 `ice-char`s. |
 | `f` | string | SHA-256 of the peer's DTLS certificate: standard base64 (RFC 4648 §4), padded, so exactly 44 characters decoding to 32 bytes. |
 | `c` | array of strings | 0 to 8 candidate lines (§2.1). |
+| `r` | array of strings | Optional: 0 to 2 relayed candidate lines (§2.1). |
 
 - **At most 512 bytes**, measured as the UTF-8 length of the record's
   JSON text: the string, or an object's compact encoding.
@@ -108,7 +109,11 @@ Exactly the string `RTCIceCandidate.candidate` yields: it starts with
 
 - **UDP only.** TCP candidates are omitted by the writer and skipped by
   the reader.
-- **`typ host`, `srflx` or `prflx`.** No `relay`: there is no TURN in v1.
+- **`typ host`, `srflx` or `prflx` in `c`.** No `relay` there. A native
+  side with a TURN allocation (`doc/P2P.md` §2.6) writes its relayed line
+  in `r` instead, held to the same rule with `relay` the one type, and
+  native readers pair it. `r` is a key a page's reader ignores: pages
+  use no TURN. A bad line in `r` is dropped, never refused.
 - **No trailing extensions.** A browser strips everything after
   `typ <type>` and, when present, `raddr <addr> rport <port>`:
   `generation`, `ufrag`, `network-id`, `network-cost`. They are what

@@ -116,6 +116,21 @@ releases:
       `doc/P2P.md` and `doc/DRT-Signalling.md`.
     added:
       - |
+        **`drt p2p --reflect`: a STUN server on UDP and TCP, and a pair of
+        them (`doc/Reflect.md`).** One port, 3478 by default, answers STUN
+        over UDP and STUN over TCP, and every answer lists what the server
+        offers. `--host` admits as p2p's does and may be given more than
+        once. With `--reflect-peer` and a shared `--reflect-key`, the other
+        gate answers RFC 5780 change-IP requests, so a client can measure
+        filtering, and carries out a cross request: it connects to the
+        asker's observed address on the port it names and reports
+        `connected`, `refused`, `timeout` or `unreachable`. A client names a
+        port, never an address. Requests between the gates are signed with
+        HMAC-SHA256 and refused when stale or replayed, and
+        `--reflect-rate` (30 a minute) limits each source. Every result and
+        failure has a stable code, documented in one table. The client
+        side is not built yet.
+      - |
         **`drt p2p`: one verb for peer-to-peer sessions (`doc/P2P.md`).**
         With no `--relay` and no `--fallback`, no machine other than the
         two ends carries a byte of the session; when no such path exists it
@@ -634,6 +649,17 @@ releases:
         server and is sent the same `--H` headers. A name its server
         refuses for good stops being answered while the others carry on. A
         `wss://` leg still parks alone.
+      - |
+        **`drt p2p --turn`: a TURN relay as the last resort** (`doc/P2P.md`
+        §2.6). `--turn turn://<user>:<password>@host[:port]`, or the config's
+        `p2p.turn`, allocates on `drt turn` or coturn and offers the
+        allocation as one more candidate on call, park and listen. ICE uses
+        it only when nothing direct works, so two symmetric NATs now
+        connect, and only one side needs a TURN server. A caller prints
+        `via TURN` when its session crosses either side's allocation. The
+        relayed line travels in a new record key, `r`, which pages ignore;
+        pages still use no TURN. In `full`; other builds refuse `--turn` by
+        name.
     changed:
       - |
         **`drt netcheck --json` says whether anything was measured.**

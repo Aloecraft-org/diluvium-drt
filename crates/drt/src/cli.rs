@@ -350,12 +350,12 @@ pub enum Command {
     Ssh(crate::ssh::SshArgs),
     /// Peer-to-peer sessions (doc/P2P.md): call a peer, park at a
     /// signalling server, listen on a UDP port, or be the signalling
-    /// server. With no --relay and no --fallback, no machine other than
-    /// the two ends carries a byte of the session; when no such path
+    /// server. With no --relay, --fallback or --turn, no machine other
+    /// than the two ends carries a byte of the session; when no such path
     /// exists, this fails and says so. Every flag is also a key of the
     /// `p2p` block in --config.
     #[cfg(feature = "p2p")]
-    P2p(crate::p2p::Args),
+    P2p(Box<crate::p2p::Args>),
     /// Alias of `drt p2p` for one release: a call or a park prints the
     /// `drt p2p` form of what it was given and runs as that. SSH over WSS,
     /// as a dumb pipe. With a URL: bridge this process's stdio to it, the

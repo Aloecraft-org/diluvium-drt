@@ -1093,9 +1093,24 @@ pub struct P2pConfig {
     /// `--match`: the TCP port to be a signalling server on.
     #[serde(default, rename = "match", skip_serializing_if = "Option::is_none")]
     pub match_port: Option<u16>,
-    /// `--host`: an address to bind, `0.0.0.0`, or a CIDR to admit.
+    /// `--host`: an address to bind, `0.0.0.0`, or a CIDR to admit. A
+    /// list only for `reflect`, which binds each one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub host: Option<String>,
+    pub host: Option<OneOrMany>,
+    /// `--reflect`: the port to be a STUN server on, UDP and TCP
+    /// (`doc/P2P.md` §11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reflect: Option<u16>,
+    /// `--reflect-peer`, repeatable: the other gate, `host[:port]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reflect_peer: Vec<String>,
+    /// `--reflect-key`: the key that signs requests between the gates, or
+    /// `env:NAME` for the variable holding it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reflect_key: Option<String>,
+    /// `--reflect-rate`: cross requests a minute per source address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reflect_rate: Option<u32>,
     /// `--accept`, repeatable: the caller ranges a parked peer admits.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accept: Vec<String>,
@@ -1118,6 +1133,12 @@ pub struct P2pConfig {
     /// system chooses, as the bare flag does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signal: Option<u16>,
+    /// `--turn`: `turn://<user>:<password>@host[:port]`, a TURN server
+    /// whose allocation is one more candidate, used only when nothing
+    /// direct works (`doc/P2P.md` §2.6). A credential: keep it here, in a
+    /// 0600 file, and not on a command line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<String>,
     /// `--stun`, repeatable: `host:port` servers asked for a public address.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stun: Vec<String>,

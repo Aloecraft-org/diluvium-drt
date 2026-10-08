@@ -1792,7 +1792,7 @@ dependencies = [
 [[package]]
 name = "ego_transport"
 version = "0.1.4"
-source = "git+https://github.com/Aloecraft-org/ego-transport#9fe0159e9067910fa7858e9cd957936a29e81ae2"
+source = "git+https://github.com/Aloecraft-org/ego-transport#4a57c51ac7fff8e4f651252a75c443890f88d66f"
 dependencies = [
  "async-trait",
  "base64",
