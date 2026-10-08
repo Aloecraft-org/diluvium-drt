@@ -768,6 +768,13 @@ releases:
         nothing binds, so the word stayed while Ctrl+arrows moved by words.
         The REPL now reads it as the page always has.
       - |
+        **`drt netcheck --probe-at` refuses a vantage this run already
+        contacted, for v6 too.** The guard compared text, so a v6 address,
+        which a view writes as `[addr]:443`, never matched, and the check
+        that keeps a probe from reporting a false `connected` was off for
+        v6. The same prefix test refused `10.0.0.1` when `10.0.0.12` had
+        been contacted. It now compares parsed addresses.
+      - |
         **Browser access readers skip the candidate lines §2.1 says they
         skip** (issue #38). `Record::decode` and the client library's
         `parseRecord` kept every `candidate:` line, so a TCP or relay line
