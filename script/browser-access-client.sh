@@ -40,6 +40,8 @@ if [ -n "$DRT" ]; then
     # A page as the told side of pairing (doc/DRT-Signalling.md §6.2),
     # against `drt p2p --match` and a parked `drt p2p`.
     (cd crates/drt-rtc/browser-check && node pairing.mjs)
+    # A page asking two `drt p2p --reflect` gates (doc/Reflect.md).
+    (cd crates/drt-rtc/browser-check && node reflect.mjs)
 fi
 
 if [ -n "$OUT" ]; then

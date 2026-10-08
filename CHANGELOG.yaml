@@ -150,6 +150,13 @@ releases:
         measures moves to a module of its own, so it stays when the
         verdict tree goes.
       - |
+        **A page asks reflect servers: `reflect` in the browser access
+        library (`doc/Reflect.md`, In a page).** Through WebRTC, a page
+        learns its server-reflexive addresses, whether UDP gets out, and its
+        UDP mapping from two servers; `session.path()` reads the path a
+        session formed and its round trip from `getStats()`. Chromium
+        checks it against two `drt p2p --reflect` gates.
+      - |
         **`drt p2p`: one verb for peer-to-peer sessions (`doc/P2P.md`).**
         With no `--relay` and no `--fallback`, no machine other than the
         two ends carries a byte of the session; when no such path exists it

@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   parseRecord, recordFromSdp, answerSdp, fingerprintHex, fingerprintText, canonicalPeer, isUsableCandidate, encodeWisp, decodeWisp,
-  RecordError, StreamClosed, WISP, DATA_MAX,
+  RecordError, StreamClosed, WISP, DATA_MAX, reflect,
 } from './drt_browser_access.js';
 
 const vectors = JSON.parse(readFileSync(new URL('../vectors/browser-access-v1.json', import.meta.url)));
@@ -1004,4 +1004,51 @@ test('a bad pair rule fails listen() itself, before any poll', async () => {
   const server = fakeServer([]);
   assert.throws(() => listen('https://signal.example/v1/page', { fetch: server.fetch, pair: 'room-*' }), TypeError);
   assert.equal(server.seen.length, 0);
+});
+
+// A peer connection that gathers what `answers` says each server maps it
+// to, dropping an address another server already gave, as Chromium does.
+function fakePeerConnection(answers) {
+  return class {
+    constructor({ iceServers }) {
+      this.urls = iceServers.flatMap((s) => [s.urls].flat());
+      this.iceGatheringState = 'new';
+      this.listeners = [];
+    }
+    addEventListener(_, f) { this.listeners.push(f); }
+    removeEventListener() {}
+    createDataChannel() {}
+    async createOffer() { return {}; }
+    async setLocalDescription() {
+      const seen = new Set();
+      for (const url of this.urls) {
+        for (const [address, port] of answers[url] ?? []) {
+          if (seen.has(`${address} ${port}`)) continue;
+          seen.add(`${address} ${port}`);
+          this.listeners.forEach((f) => f({ candidate: { type: 'srflx', address, port } }));
+        }
+      }
+      this.iceGatheringState = 'complete';
+    }
+    close() {}
+  };
+}
+
+test('reflect asks each server alone, then together for the mapping', async () => {
+  const run = (answers, servers) => reflect(servers, { RTCPeerConnection: fakePeerConnection(answers), gatherTimeoutMs: 50 });
+  const one = [['203.0.113.7', 40000]];
+  const independent = await run({ 'stun:a:3478': one, 'stun:b:3478': one }, ['a', 'drt+reflect://b']);
+  assert.deepEqual(independent.udp, { code: 'ok', mapped: ['203.0.113.7:40000'] });
+  assert.deepEqual(independent.mapping, { code: 'ok', mapping: 'endpoint_independent' });
+  const dependent = await run({ 'stun:a:3478': one, 'stun:b:3479': [['203.0.113.7', 40001]] }, ['stun:a:3478', 'b:3479']);
+  assert.equal(dependent.mapping.mapping, 'endpoint_dependent');
+  assert.deepEqual(dependent.udp.mapped, ['203.0.113.7:40000', '203.0.113.7:40001']);
+  // Two interfaces behind one independent NAT are not a dependent mapping.
+  const two = [['203.0.113.7', 40000], ['203.0.113.7', 40002]];
+  assert.equal((await run({ 'stun:a:3478': two, 'stun:b:3478': two }, ['a', 'b'])).mapping.mapping, 'endpoint_independent');
+  const v6 = await run({ 'stun:[2001:db8::1]:3478': [['2001:db8::7', 5000]] }, ['[2001:db8::1]', 'silent']);
+  assert.deepEqual(v6.servers.map((s) => s.code), ['ok', 'udp_blocked']);
+  assert.deepEqual(v6.udp.mapped, ['[2001:db8::7]:5000']);
+  assert.deepEqual(v6.mapping, { code: 'no_peer' });
+  assert.deepEqual((await run({}, ['a', 'b'])).mapping, { code: 'udp_blocked' });
 });

@@ -48,7 +48,9 @@
 //   §4, §5) and follows a `pair` entry under `options.pair` (§6.2);
 //   `parsePairRule(text)` and `pairAllows(rule, here, server, name)`, the
 //   consent rule, the twin of PairRule in crates/drt/src/p2p/park.rs;
-//   Session.connect(host, port)
+//   `reflect(servers, options)`, what a page can learn from reflect
+//   servers (doc/Reflect.md, In a page), and Session.path(), the path that
+//   formed; Session.connect(host, port)
 //   or Session.connect(service) -> Stream {id, readable, writable, close(),
 //   closed}; `options.services`, name -> (stream, session), for what a page
 //   serves (§10.3). And the pure pieces, for a client that drives its own
@@ -66,7 +68,8 @@
 //   grants each stream and how many it holds open; LISTEN_POLL_MS, how
 //   often `listen` polls while it holds no call notification stream;
 //   PAIR_CONNECT_MS and PAIR_MARGIN_MS, the ceiling on a call `listen` was
-//   told to make and what an entry's hold keeps back for the report. The
+//   told to make and what an entry's hold keeps back for the report;
+//   REFLECT_GATHER_MS, how long `reflect` waits on each gathering. The
 //   wire's own limits -- RECORD_MAX_BYTES, MAX_CANDIDATES, the
 //   ICE lengths, DIRECT_UFRAG_LEN, MESSAGE_MAX -- are constants of v1, not
 //   knobs: changing one is a `v` bump.
@@ -105,6 +108,8 @@ export const PAIR_CONNECT_MS = 20000;
 /** Kept back from an entry's `expires_in`, for the report to travel before the hold ends. */
 export const PAIR_MARGIN_MS = 3000;
 
+/** How long `reflect` waits for each connection's gathering. */
+export const REFLECT_GATHER_MS = 3000;
 export const RECORD_VERSION = 1;
 export const RECORD_MAX_BYTES = 512;
 export const MAX_CANDIDATES = 8;
@@ -493,6 +498,51 @@ export async function answer(callerRecord, options = {}) {
 }
 
 /**
+ * What a page can learn from reflect servers (doc/Reflect.md, In a page):
+ * each one's answer from a peer connection of its own, then, with two or
+ * more answering, the UDP mapping from one connection asking them all.
+ * `servers` are `host[:port]`, `stun:host[:port]`, or a `drt+stun://` or
+ * `drt+reflect://` location; the port is 3478 when absent.
+ *
+ * Resolves to {servers: [{url, code, mapped}], udp: {code, mapped},
+ * mapping: {code, mapping}}, each code one of doc/Reflect.md's: `ok`,
+ * `udp_blocked` when no answer came, `no_peer` for the mapping with fewer
+ * than two servers answering. `mapped` is the server-reflexive addresses,
+ * `ip:port`; `mapping` is `endpoint_independent` or `endpoint_dependent`.
+ * A page cannot learn filtering, TCP, a port's reachability or its local
+ * addresses, so none is reported.
+ *
+ * Options: `gatherTimeoutMs`, `RTCPeerConnection`.
+ */
+export async function reflect(servers, options = {}) {
+  const PC = options.RTCPeerConnection ?? globalThis.RTCPeerConnection;
+  if (!PC) throw new Error('no RTCPeerConnection in this runtime');
+  const capMs = options.gatherTimeoutMs ?? REFLECT_GATHER_MS;
+  const urls = servers.map(stunUrl);
+  const alone = await Promise.all(urls.map((url) => reflexive(PC, [url], capMs)));
+  const report = {
+    servers: urls.map((url, i) => ({ url, code: alone[i].length ? 'ok' : 'udp_blocked', mapped: alone[i] })),
+  };
+  const mapped = [...new Set(alone.flat())];
+  report.udp = mapped.length ? { code: 'ok', mapped } : { code: 'udp_blocked' };
+  const answering = urls.filter((_, i) => alone[i].length);
+  if (answering.length < 2) {
+    report.mapping = { code: answering.length ? 'no_peer' : 'udp_blocked' };
+    return report;
+  }
+  // The browser drops a server-reflexive address one server already gave
+  // for the same socket, so asked together, an independent mapping yields
+  // as many addresses per family as the most any server yields alone, and
+  // a dependent one more.
+  const together = await reflexive(PC, answering, capMs);
+  const family = (a) => (a.startsWith('[') ? 6 : 4);
+  const count = (list, f) => list.filter((a) => family(a) === f).length;
+  const dependent = [4, 6].some((f) => count(together, f) > Math.max(...alone.map((a) => count(a, f))));
+  report.mapping = { code: 'ok', mapping: dependent ? 'endpoint_dependent' : 'endpoint_independent' };
+  return report;
+}
+
+/**
  * The consent `listen` gives a signalling server to pair it (§6.2), as
  * `drt p2p --park --pair` gives it: `*` for any name at the server this
  * side is parked at, or `drt://<server>/v1/<glob>` for names matching
@@ -805,6 +855,31 @@ function gathered(pc, capMs) {
     pc.addEventListener('icegatheringstatechange', check);
     const timer = setTimeout(done, capMs);
   });
+}
+
+/** `server` as a `stun:` URL (`reflect`). */
+function stunUrl(server) {
+  const bare = String(server).replace(/^(drt\+stun|drt\+reflect):\/\//, '').replace(/^stun:/, '').replace(/\/$/, '');
+  return /(^[^:[\]]+|\])$/.test(bare) ? `stun:${bare}:3478` : `stun:${bare}`;
+}
+
+/** The server-reflexive addresses, `ip:port`, a fresh connection gathers from `urls`. */
+async function reflexive(PC, urls, capMs) {
+  const pc = new PC({ iceServers: [{ urls }] });
+  const found = new Set();
+  pc.addEventListener('icecandidate', (e) => {
+    const c = e.candidate;
+    if (c?.type !== 'srflx' || !c.address) return;
+    found.add(c.address.includes(':') ? `[${c.address}]:${c.port}` : `${c.address}:${c.port}`);
+  });
+  try {
+    pc.createDataChannel('reflect');
+    await pc.setLocalDescription(await pc.createOffer());
+    await gathered(pc, capMs);
+  } finally {
+    pc.close();
+  }
+  return [...found];
 }
 
 /**
@@ -1196,6 +1271,30 @@ class Session {
   /** End the session: every stream fails, and the connection closes. */
   close() {
     this.end('the session was closed');
+  }
+
+  /**
+   * The path that formed, from `getStats()`: each side's candidate type
+   * (`host`, `srflx`, `prflx`, `relay`), the protocol, and the round trip
+   * in ms; null before a pair is chosen (doc/Reflect.md, In a page).
+   */
+  async path() {
+    const stats = [...(await this.pc.getStats()).values()];
+    const byId = new Map(stats.map((s) => [s.id, s]));
+    const transport = stats.find((s) => s.type === 'transport' && s.selectedCandidatePairId);
+    const pair = transport
+      ? byId.get(transport.selectedCandidatePairId)
+      : stats.find((s) => s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded');
+    if (!pair) return null;
+    const local = byId.get(pair.localCandidateId);
+    const remote = byId.get(pair.remoteCandidateId);
+    const rtt = pair.currentRoundTripTime;
+    return {
+      local: local?.candidateType ?? null,
+      remote: remote?.candidateType ?? null,
+      protocol: local?.protocol ?? null,
+      rttMs: rtt === undefined ? null : Math.round(rtt * 1000),
+    };
   }
 
   end(why) {

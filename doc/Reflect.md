@@ -1,8 +1,9 @@
 # Reflect: a STUN server on UDP and TCP, and a pair of them
 
 `drt p2p --reflect` is the server and `drt p2p drt+reflect://` the
-client (`crates/drt/src/p2p/reflect/`). The role is `doc/P2P.md` §2.7.
-Not built yet: the browser reader.
+client (`crates/drt/src/p2p/reflect/`); a page asks with `reflect` in
+`crates/drt-rtc/client/drt_browser_access.js`. The role is
+`doc/P2P.md` §2.7.
 
 ## Serving
 
@@ -75,6 +76,27 @@ A check the server does not offer reports why (`no_peer`,
 `not_offered`) and never fails silently. The run fails only when
 nothing answered over UDP or TCP. `--port` and `--json` are flags only,
 not `p2p` keys.
+
+## In a page
+
+A reflect port is a plain STUN server, so a page asks it through
+WebRTC: `reflect(['reflect1.example', 'reflect2.example'])` gathers
+from each server on a connection of its own, then from all of them on
+one.
+
+- **udp**: the server-reflexive addresses, or `udp_blocked` when no
+  server answered; each server's own answer is in `servers`.
+- **mapping**: one address per socket asked together is
+  `endpoint_independent`, more is `endpoint_dependent`; `no_peer` with
+  fewer than two servers answering.
+- **`session.path()`**: on a session to any peer, the path that formed
+  and its round trip, from `getStats()`.
+
+A page cannot learn filtering, TCP, a port's reachability or its local
+addresses (the browser hides them behind mDNS). Its result is a lower
+bound for the native client: a direct path from a page means one
+natively, while nothing from a page says nothing certain, since a proxy,
+a VPN or browser policy may block the page's UDP.
 
 ## Wire
 

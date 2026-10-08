@@ -86,6 +86,15 @@ export interface Pending {
   close(): void;
 }
 
+export interface SessionPath {
+  /** This side's candidate type: 'host', 'srflx', 'prflx' or 'relay'. */
+  local: string | null;
+  remote: string | null;
+  protocol: string | null;
+  /** The current round trip; null until a check has measured one. */
+  rttMs: number | null;
+}
+
 export interface Session {
   /**
    * The peer's hello. Null only on an answered session whose caller serves
@@ -108,6 +117,8 @@ export interface Session {
   resize(stream: Stream | number, cols: number, rows: number): void;
   /** End the session: every stream fails, and the connection closes. */
   close(): void;
+  /** The path that formed, from `getStats()`; null before a pair is chosen. */
+  path(): Promise<SessionPath | null>;
   /** Resolves, with why, when the session ends for any reason. */
   readonly closed: Promise<string>;
 }
@@ -327,3 +338,28 @@ export const MESSAGE_MAX: 16384;
 export const DATA_MAX: 16379;
 export const WISP: { readonly CONNECT: 1; readonly DATA: 2; readonly CONTINUE: 3; readonly CLOSE: 4; readonly END: 5 };
 export const CLOSE_REASON: Readonly<Record<number, string>>;
+
+/** How long `reflect` waits for each connection's gathering. */
+export const REFLECT_GATHER_MS: number;
+
+/** A code of doc/Reflect.md; a page meets only these. */
+export type ReflectCode = 'ok' | 'udp_blocked' | 'no_peer';
+
+export interface ReflectReport {
+  /** Each server, asked from a connection of its own. */
+  servers: { url: string; code: ReflectCode; mapped: string[] }[];
+  /** The server-reflexive addresses, `ip:port`, every server gave. */
+  udp: { code: ReflectCode; mapped?: string[] };
+  /** From one connection asking every server that answered alone. */
+  mapping: { code: ReflectCode; mapping?: 'endpoint_independent' | 'endpoint_dependent' };
+}
+
+/**
+ * What a page can learn from reflect servers (doc/Reflect.md, In a page):
+ * `host[:port]`, `stun:` URLs, or `drt+stun://` and `drt+reflect://`
+ * locations, port 3478 when absent.
+ */
+export function reflect(
+  servers: string[],
+  options?: { gatherTimeoutMs?: number; RTCPeerConnection?: typeof RTCPeerConnection },
+): Promise<ReflectReport>;
