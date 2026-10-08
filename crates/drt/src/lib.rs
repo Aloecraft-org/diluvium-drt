@@ -31,6 +31,9 @@ pub mod gsr;
 pub mod key;
 #[cfg(feature = "listen")]
 pub mod listen;
+/// The UDP mapping of one port against two STUN servers, and this
+/// machine's own addresses: shared by `wireguard_mapping` and `netcheck`.
+pub mod mapping;
 /// `require` for a sealed guest: modules resolved by the host before the
 /// program runs, looked up by the guest, and never a file the guest opens.
 pub mod modules;

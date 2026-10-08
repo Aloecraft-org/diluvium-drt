@@ -1193,6 +1193,10 @@ pub struct SshPrincipal {
 /// `netcheck`: the NAT diagnostic, inside a deployment.
 ///
 /// The verb's flags as keys, plus the two every other reporting block here has.
+/// With `location`, it asks a reflect server as `drt netcheck <location>` does
+/// and reports the raw answers (`doc/Reflect.md`); every key but `port`,
+/// `queue` and `report_ms` belongs to the deprecated verdict, which leaves
+/// after this release.
 /// A diagnostic a program can read is worth more than one a human reads once: a
 /// rendezvous program deciding whether to offer a direct path or a relay is
 /// asking exactly the question `netcheck` answers, and asking it from inside the
@@ -1202,7 +1206,13 @@ pub struct SshPrincipal {
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct NetcheckConfig {
-    /// STUN servers, `host:port`. The decisive measurement is the UDP mapping,
+    /// The reflect server to ask, `host[:port]` or a `drt+reflect://` or
+    /// `drt+stun://` location. Its answers are reported as they came, with no
+    /// verdict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    /// Deprecated, as every key from here to `udp_port`. STUN servers,
+    /// `host:port`. The decisive measurement is the UDP mapping,
     /// so two of these answer more than any number of anything else.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stun: Vec<String>,
@@ -1212,7 +1222,8 @@ pub struct NetcheckConfig {
     pub reflect: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reflect_at: Vec<String>,
-    /// Ports an inbound probe should try. Needs a `reflect` edge to derive the
+    /// With `location`: ports the peer gate connects to. Without it: ports an
+    /// inbound probe should try, which needs a `reflect` edge to derive the
     /// probe host from.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub port: Vec<u16>,

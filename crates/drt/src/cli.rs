@@ -418,16 +418,24 @@ pub enum Command {
         #[arg(long = "header", value_name = "NAME: VALUE")]
         header: Vec<String>,
     },
-    /// What can this network do, and what should you do about it.
+    /// What can this network do: ask a reflect server.
     ///
-    /// Prints one of four verdicts — direct, v6-direct, punchable, relay —
-    /// with the measurements that produced it. Exit 0 on a verdict,
-    /// `relay` included: a network that needs a tunnel is a successful
-    /// measurement, not an error. Non-zero means nothing could be
-    /// measured: `relay` is still printed, as the answer that works on any
-    /// network rather than a finding, and `--json` says `"measured": false`.
+    /// `drt netcheck <location>` is `drt p2p drt+reflect://<location>`: it
+    /// prints what the server and its peer gate answered, every check the
+    /// server offers, with no verdict (doc/Reflect.md). `--port` and
+    /// `--json` work as they do there.
+    ///
+    /// Deprecated, and gone after this release with the verdict they
+    /// produce: every other flag below. Without a location they still
+    /// print one of four verdicts (direct, v6-direct, punchable, relay)
+    /// with the measurements behind it, exit 0 on a verdict and non-zero
+    /// when nothing could be measured.
     #[cfg(feature = "netcheck")]
     Netcheck {
+        /// The reflect server to ask, host[:port] (port 3478 when absent),
+        /// or a drt+reflect:// or drt+stun:// location.
+        #[arg(value_name = "LOCATION")]
+        location: Option<String>,
         /// A STUN server, repeatable. Two on separate addresses are needed
         /// to classify a mapping; `detect_mapping` refuses below two rather
         /// than guessing, so one server yields "not measured" and the
@@ -465,8 +473,10 @@ pub enum Command {
         /// its answer supplies them, and this flag wins when both are given.
         #[arg(long = "reflect-at", value_name = "ADDRESS")]
         reflect_at: Vec<String>,
-        /// Ask a probe edge to connect back to the address it observes,
-        /// and report whether it reached this port.
+        /// With a location: a port the peer gate connects to, as
+        /// `drt p2p --port`. Deprecated without one: ask a probe edge to
+        /// connect back to the address it observes, and report whether it
+        /// reached this port.
         /// Repeatable, asked sequentially and bounded, because the prober
         /// rate-limits per address.
         ///
@@ -528,6 +538,47 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+}
+
+/// `drt netcheck <location>`: `drt p2p drt+reflect://<location>`, or the
+/// location as written when it already names one of the two schemes.
+#[cfg(feature = "netcheck")]
+fn netcheck_location(location: &str, ports: &[u16], json: bool) -> ExitCode {
+    #[cfg(feature = "p2p")]
+    {
+        use crate::p2p::reflect::ask;
+        let parsed = ask::Location::parse(location).unwrap_or_else(|| {
+            ask::Location::parse(&format!("drt+reflect://{location}")).expect("the scheme")
+        });
+        let location = match parsed {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("drt netcheck: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
+        let outcome = runtime.block_on(ask::run(&location, ports, json));
+        // The leak every verb here has: tokio 1.53.1's teardown race
+        // (doc/Failure-Modes.md, FM-1).
+        std::mem::forget(runtime);
+        match outcome {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("drt netcheck: {e}");
+                ExitCode::FAILURE
+            }
+        }
+    }
+    #[cfg(not(feature = "p2p"))]
+    {
+        let _ = (ports, json);
+        eprintln!(
+            "drt netcheck: {location}: asking a reflect server is `drt p2p`'s, and this build \
+             has no `p2p`"
+        );
+        ExitCode::FAILURE
+    }
 }
 
 /// Wire the connectors this build carries against the root config. Off by
@@ -1983,6 +2034,7 @@ pub fn main(cli: Cli) -> ExitCode {
         }
         #[cfg(feature = "netcheck")]
         Command::Netcheck {
+            location,
             stun,
             reflect,
             reflect_at,
@@ -1993,6 +2045,39 @@ pub fn main(cli: Cli) -> ExitCode {
             extra_root,
             json,
         } => {
+            let old = [
+                ("--stun", !stun.is_empty()),
+                ("--reflect", !reflect.is_empty()),
+                ("--reflect-at", !reflect_at.is_empty()),
+                ("--probe-at", probe_at.is_some()),
+                ("--pin-source-port", pin_source_port),
+                ("--udp-port", udp_port.is_some()),
+                ("--extra-root", !extra_root.is_empty()),
+            ];
+            let used: Vec<&str> = old.iter().filter(|(_, on)| *on).map(|(f, _)| *f).collect();
+            if let Some(location) = location {
+                if !used.is_empty() {
+                    eprintln!(
+                        "drt netcheck: {} belong to the old netcheck; with a location it asks a \
+                         reflect server, and takes --port and --json",
+                        used.join(", ")
+                    );
+                    return ExitCode::FAILURE;
+                }
+                return netcheck_location(&location, &port, json);
+            }
+            if used.is_empty() && port.is_empty() {
+                eprintln!(
+                    "drt netcheck: name a reflect server to ask: drt netcheck <host[:port]> \
+                     (doc/Reflect.md)"
+                );
+                return ExitCode::FAILURE;
+            }
+            eprintln!(
+                "drt netcheck: the flags without a location are deprecated and leave after this \
+                 release, with the verdict they produce; `drt netcheck <location>` asks a reflect \
+                 server (doc/Reflect.md)"
+            );
             // Before the runtime and before any measurement: a wrong path
             // should cost nothing and be named, not surface as a TLS error
             // partway through a diagnostic.
