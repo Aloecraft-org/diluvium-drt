@@ -148,6 +148,11 @@ fn host_config(c: &WebrtcConfig, config: &RootConfig) -> Result<HostConfig, Stri
                  starting with a letter or digit"
             ));
         }
+        if drt_rtc::scope::RESERVED_SERVICES.contains(&name.as_str()) {
+            return Err(format!(
+                "webrtc.services: '{name}' is reserved: drt+{name}:// asks a reflect server and opens no service"
+            ));
+        }
         let e = Entry::parse(target).map_err(|e| format!("webrtc.services.{name}: {e}"))?;
         if scope.allows(&e.host, e.port).is_none() {
             return Err(format!(
