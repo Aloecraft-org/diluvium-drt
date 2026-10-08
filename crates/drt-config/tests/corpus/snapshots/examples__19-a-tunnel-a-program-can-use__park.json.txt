@@ -35,6 +35,10 @@ RootConfig {
             listen: None,
             match_port: None,
             host: None,
+            reflect: None,
+            reflect_peer: [],
+            reflect_key: None,
+            reflect_rate: None,
             accept: [],
             pair: None,
             forward: Some(

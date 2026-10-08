@@ -16,18 +16,19 @@
 //!   carried out; [`from_tunnel`], what `drt tunnel` was given, as this
 //!   verb takes it (§9).
 //! - Configurable: nothing here; each module lists its own.
-//! - Fan-out: [`Role`], the four roles, and the one match on it in [`run`];
+//! - Fan-out: [`Role`], the five roles, and the one match on it in [`run`];
 //!   the modules: [`peer`] (peer addresses, port maps, forward targets),
 //!   [`http`] (the profile's requests), [`call`], [`serve`] (the host
 //!   behind listen and park, and listen itself), [`park`], [`signal`] (a
 //!   listening peer's own signalling port), [`turn`] (`--turn`'s
-//!   allocation).
+//!   allocation), [`reflect`] (the STUN server and its peer gate).
 
 pub mod call;
 pub mod http;
 pub mod matchmaker;
 pub mod park;
 pub mod peer;
+pub mod reflect;
 pub mod serve;
 pub mod signal;
 pub mod turn;
@@ -90,11 +91,33 @@ pub struct Args {
     /// front for pages on https:// origins.
     #[arg(long = "match", value_name = "PORT")]
     pub match_port: Option<u16>,
-    /// Who may connect to --listen or --match: an address to bind (default
-    /// 127.0.0.1), 0.0.0.0 for anyone, or a CIDR such as a WireGuard subnet,
-    /// which admits that range and binds this machine's address inside it.
+    /// Who may connect to --listen, --match or --reflect: an address to
+    /// bind (default 127.0.0.1), 0.0.0.0 for anyone, or a CIDR such as a
+    /// WireGuard subnet, which admits that range and binds this machine's
+    /// address inside it. Repeatable with --reflect, which binds each.
     #[arg(long, value_name = "ADDRESS|CIDR")]
-    pub host: Option<String>,
+    pub host: Vec<String>,
+    /// Be a STUN server on this port (default 3478), UDP and TCP: the
+    /// mapped address over UDP, the observed address of the connection
+    /// over TCP. With --reflect-peer, also the checks that need a second
+    /// address: filtering (RFC 5780) and whether a port of the asker is
+    /// reachable (doc/Reflect.md).
+    #[arg(long, value_name = "PORT", num_args = 0..=1, default_missing_value = "3478")]
+    pub reflect: Option<u16>,
+    /// With --reflect: the other gate, host[:port], which answers change
+    /// requests and makes cross connections for this one. Repeatable: tried
+    /// in order. Needs --reflect-key.
+    #[arg(long = "reflect-peer", value_name = "HOST[:PORT]")]
+    pub reflect_peer: Vec<String>,
+    /// With --reflect: the key both gates hold, which signs every request
+    /// between them; env:NAME reads it from that variable. A credential:
+    /// keep it in env: or the config's `p2p.reflect_key`.
+    #[arg(long = "reflect-key", value_name = "KEY|env:NAME")]
+    pub reflect_key: Option<String>,
+    /// With --reflect: cross and change requests a minute from one address
+    /// (default 30).
+    #[arg(long = "reflect-rate", value_name = "N")]
+    pub reflect_rate: Option<u32>,
     /// With --park: admit callers from this range only. Sent to the
     /// signalling server and checked here as well. Repeatable.
     #[arg(long, value_name = "CIDR")]
@@ -214,13 +237,14 @@ pub struct MatchRole {
     pub capacity: usize,
 }
 
-/// The four roles (`doc/P2P.md` §2).
+/// The five roles (`doc/P2P.md` §2).
 #[derive(Debug)]
 pub enum Role {
     Call(CallRole),
     Park(ParkRole),
     Listen(ListenRole),
     Match(MatchRole),
+    Reflect(reflect::ReflectRole),
 }
 
 #[derive(Debug)]
@@ -299,7 +323,19 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
     };
     let listen = pick(flags.listen.as_ref(), f.listen.as_ref());
     let matching = pick(flags.match_port.as_ref(), f.match_port.as_ref());
-    let host = pick(flags.host.as_ref(), f.host.as_ref());
+    let host = if flags.host.is_empty() {
+        f.host.as_ref().map(|h| (h.to_vec(), From::File))
+    } else {
+        Some((flags.host.clone(), From::Flag))
+    };
+    let reflect = pick(flags.reflect.as_ref(), f.reflect.as_ref());
+    let reflect_peer = if flags.reflect_peer.is_empty() {
+        (!f.reflect_peer.is_empty()).then(|| (f.reflect_peer.clone(), From::File))
+    } else {
+        Some((flags.reflect_peer.clone(), From::Flag))
+    };
+    let reflect_key = pick(flags.reflect_key.as_ref(), f.reflect_key.as_ref());
+    let reflect_rate = pick(flags.reflect_rate.as_ref(), f.reflect_rate.as_ref());
     let accept = if flags.accept.is_empty() {
         (!f.accept.is_empty()).then(|| (f.accept.clone(), From::File))
     } else {
@@ -351,13 +387,14 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
         ("park", park.as_ref().map(|(_, s)| *s)),
         ("listen", listen.as_ref().map(|(_, s)| *s)),
         ("match", matching.as_ref().map(|(_, s)| *s)),
+        ("reflect", reflect.as_ref().map(|(_, s)| *s)),
     ]
     .into_iter()
     .filter_map(|(name, from)| from.map(|from| (name, from)))
     .collect();
     if let [(a, sa), (b, sb), ..] = roles[..] {
         return Err(format!(
-            "{} and {} name two roles; a p2p is one call, one park, one listen, or one match",
+            "{} and {} name two roles; a p2p is one call, one park, one listen, one match, or one reflect",
             spelled(a, sa),
             spelled(b, sb)
         ));
@@ -385,9 +422,94 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
         let _ = role;
         Ok(())
     };
+    if reflect.is_none() {
+        belongs(
+            "reflect_peer",
+            "a reflect",
+            reflect_peer.as_ref().map(|(_, s)| *s),
+        )?;
+        belongs("reflect_key", "a reflect", from(&reflect_key))?;
+        belongs(
+            "reflect_rate",
+            "a reflect",
+            reflect_rate.as_ref().map(|(_, s)| *s),
+        )?;
+    }
+    // A listen or a match binds one address; only a reflect binds several.
+    let one_host = |host: Option<(Vec<String>, From)>| -> Result<HostSpec, String> {
+        match host {
+            Some((list, from)) if list.len() > 1 => Err(format!(
+                "{} names {} addresses; a listen or a match binds one, and only a reflect binds several",
+                spelled("host", from),
+                list.len()
+            )),
+            Some((list, _)) => HostSpec::parse(&list[0]),
+            None => Ok(HostSpec::Addr(std::net::Ipv4Addr::LOCALHOST.into())),
+        }
+    };
+    if let Some((port, _)) = reflect {
+        // A STUN server carries no session and calls no one.
+        for (key, present) in [
+            ("ports", ports.as_ref().map(|(_, s)| *s)),
+            ("fingerprint", from(&fingerprint)),
+            ("fallback", from(&fallback)),
+            ("relay", from(&relay)),
+            ("forward", from(&forward)),
+            ("all_ports", all_ports.map(|(_, s)| s)),
+            ("forward_ports", from(&forward_ports)),
+            ("signal", signal.as_ref().map(|(_, s)| *s)),
+            ("accept", accept.as_ref().map(|(_, s)| *s)),
+            ("pair", from(&pair)),
+            ("capacity", capacity.as_ref().map(|(_, s)| *s)),
+            ("turn", turn_from),
+            ("authorized_keys", authorized_keys.as_ref().map(|(_, s)| *s)),
+            ("headers", headers_from),
+        ] {
+            if let Some(from) = present {
+                return Err(format!(
+                    "{} is refused with --reflect: a STUN server carries no session (doc/Reflect.md)",
+                    spelled(key, from)
+                ));
+            }
+        }
+        let hosts = match host {
+            Some((list, _)) => list
+                .iter()
+                .map(|h| HostSpec::parse(h))
+                .collect::<Result<Vec<_>, _>>()?,
+            None => vec![HostSpec::Addr(std::net::Ipv4Addr::LOCALHOST.into())],
+        };
+        let key = reflect_key
+            .map(|(k, _)| reflect::resolve_key(&k))
+            .transpose()?;
+        let peers = reflect_peer.map(|(p, _)| p).unwrap_or_default();
+        if !peers.is_empty() && key.is_none() {
+            return Err(
+                "--reflect-peer needs --reflect-key: every request between the gates is signed"
+                    .into(),
+            );
+        }
+        return Ok(Resolved {
+            role: Role::Reflect(reflect::ReflectRole {
+                port,
+                hosts,
+                peers,
+                key,
+                rate: reflect_rate
+                    .map(|(r, _)| r)
+                    .unwrap_or(reflect::DEFAULT_RATE),
+            }),
+            extra_roots,
+            extra_roots_key,
+        });
+    }
     let role = match (peer, park, listen, matching) {
         (Some((peer, _)), None, None, None) => {
-            belongs("host", "a listen or a match", from(&host))?;
+            belongs(
+                "host",
+                "a listen, a match or a reflect",
+                host.as_ref().map(|(_, s)| *s),
+            )?;
             belongs("accept", "a park", accept.as_ref().map(|(_, s)| *s))?;
             belongs("forward", "a park or a listen", from(&forward))?;
             belongs("all_ports", "a park or a listen", all_ports.map(|(_, s)| s))?;
@@ -475,7 +597,11 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
         }
         (None, Some((park, _)), None, None) => {
             serving_only("a park")?;
-            belongs("host", "a listen or a match", from(&host))?;
+            belongs(
+                "host",
+                "a listen, a match or a reflect",
+                host.as_ref().map(|(_, s)| *s),
+            )?;
             belongs("signal", "a listen", signal.as_ref().map(|(_, s)| *s))?;
             belongs("capacity", "a match", capacity.as_ref().map(|(_, s)| *s))?;
             if relay.is_some() {
@@ -520,10 +646,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
             if let Some(from) = headers_from {
                 return Err(format!("{} belongs with a call, a park or a match's callers; a listen sends no request", spelled("headers", from)));
             }
-            let host = match host {
-                Some((h, _)) => HostSpec::parse(&h)?,
-                None => HostSpec::Addr(std::net::Ipv4Addr::LOCALHOST.into()),
-            };
+            let host = one_host(host)?;
             let forward = ForwardSpec::parse(
                 forward.as_ref().map(|(f, _)| f.as_str()),
                 forward_ports.as_ref().map(|(p, _)| p.as_str()),
@@ -560,10 +683,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
                     return Err(format!("{} is refused with --match: a signalling server carries no session bytes (doc/P2P.md §10)", spelled(key, from)));
                 }
             }
-            let host = match host {
-                Some((h, _)) => HostSpec::parse(&h)?,
-                None => HostSpec::Addr(std::net::Ipv4Addr::LOCALHOST.into()),
-            };
+            let host = one_host(host)?;
             Role::Match(MatchRole {
                 port,
                 host,
@@ -572,7 +692,8 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
         }
         _ => {
             return Err(
-                "name a peer to call, --park <signalling>, --listen <port>, or --match <port>; \
+                "name a peer to call, --park <signalling>, --listen <port>, --match <port>, or \
+                 --reflect [port]; \
                  or `p2p` in the --config file, which takes the same keys (drt p2p --help)"
                     .into(),
             )
@@ -648,6 +769,7 @@ pub fn run(args: &Args, config: &RootConfig) -> Result<(), String> {
             Role::Call(c) => call::run(c, &roots).await,
             Role::Park(p) => park::run(p, config, &roots).await,
             Role::Listen(l) => serve::listen(l, config, &roots).await,
+            Role::Reflect(r) => reflect::serve::run(r).await,
             Role::Match(_) => unreachable!("dispatched above"),
         }
     });
@@ -876,6 +998,64 @@ mod tests {
             e.contains("`p2p.listen` in the config") && e.contains("the peer on the command line"),
             "{e}"
         );
+    }
+
+    #[test]
+    fn reflect_is_a_role_that_binds_each_host_and_takes_no_session_keys() {
+        let file = cfg(
+            r#"{"p2p":{"reflect":3478,"host":["127.0.0.1","10.9.0.0/24"],
+                "reflect_peer":["reflect2.example"],"reflect_key":"k"}}"#,
+        );
+        let Ok(Role::Reflect(r)) = role(&file, Args::default()) else {
+            panic!()
+        };
+        assert_eq!(r.port, 3478);
+        assert_eq!(r.hosts.len(), 2);
+        assert_eq!(r.peers, vec!["reflect2.example".to_string()]);
+        assert_eq!(r.key.as_deref(), Some(&b"k"[..]));
+        assert_eq!(r.rate, reflect::DEFAULT_RATE);
+
+        let none = cfg("{}");
+        let e = role(
+            &none,
+            Args {
+                reflect: Some(3478),
+                reflect_peer: vec!["reflect2.example".into()],
+                ..Args::default()
+            },
+        )
+        .unwrap_err();
+        assert!(e.contains("--reflect-key"), "{e}");
+        let e = role(
+            &none,
+            Args {
+                reflect: Some(3478),
+                forward: Some("127.0.0.1:22".into()),
+                ..Args::default()
+            },
+        )
+        .unwrap_err();
+        assert!(e.contains("`--forward`") && e.contains("--reflect"), "{e}");
+        let e = role(
+            &none,
+            Args {
+                reflect_key: Some("k".into()),
+                listen: Some(5000),
+                ..Args::default()
+            },
+        )
+        .unwrap_err();
+        assert!(e.contains("`--reflect-key` belongs with a reflect"), "{e}");
+        let e = role(
+            &none,
+            Args {
+                listen: Some(5000),
+                host: vec!["127.0.0.1".into(), "10.9.0.1".into()],
+                ..Args::default()
+            },
+        )
+        .unwrap_err();
+        assert!(e.contains("only a reflect binds several"), "{e}");
     }
 
     #[test]
