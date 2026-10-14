@@ -26,6 +26,8 @@ rmpv = { workspace = true }
 # The tunnel: SSH over WSS as a dumb pipe (see src/tunnel.rs). tokio and
 # ego-transport ride the `tunnel` feature, which `full` carries.
 ego_transport = { workspace = true, optional = true }
+hmac = { version = "0.12", optional = true }
+sha2 = { version = "0.10", optional = true }
 gotatun = { workspace = true, optional = true }
 # The WebRTC host (src/webrtc.rs, doc/BrowserAccess.md): str0m and the Wisp
 # server, in their own crate so the protocol pieces test without a deployment.
@@ -252,8 +254,10 @@ tunnel = ["dep:tokio", "dep:tokio-tungstenite", "dep:futures-util", "dep:tokio-r
 # `drt p2p` (doc/P2P.md): one verb for peer-to-peer sessions. The caller and
 # the serving side are `webrtc`'s host and caller; the REPL default is
 # `sshd`'s server; `--relay wss://` and `--park wss://` are `tunnel`'s legs;
-# `--match` runs a deployment, so `listen`. In `full` beside them all.
-p2p = ["webrtc", "sshd", "tunnel", "listen", "dep:base64"]
+# `--match` runs a deployment, so `listen`; `--reflect` is a STUN server,
+# so `stun`, and signs its requests between gates with HMAC-SHA256. In
+# `full` beside them all.
+p2p = ["webrtc", "sshd", "tunnel", "listen", "dep:base64", "stun", "dep:hmac", "dep:sha2"]
 # `drt turn`, and the `turn` block inside `drt start`: the TURN relay for
 # the peers `stun` says cannot punch (src/turn.rs). Beside `stun` in
 # `full`, on ego-transport's server, for `stun`'s reasons and the ssh

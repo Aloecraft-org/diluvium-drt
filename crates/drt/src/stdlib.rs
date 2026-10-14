@@ -42,8 +42,8 @@ use drt_config::resolve::Resolution;
 /// The setup report: what `start` would resolve, printed, with nothing run.
 pub const PREFLIGHT: &str = "preflight";
 
-/// The NAT diagnostic's reader: wait for the verdict the `netcheck` block
-/// measures, print it, stop.
+/// The NAT diagnostic's reader: wait for what the `netcheck` block measures,
+/// print it, stop.
 pub const NETCHECK: &str = "netcheck";
 
 /// The four server-shaped blocks' readers. Each is the program half of a block
@@ -162,18 +162,31 @@ end
 /// Nothing here reimplements anything, and that is why this is a stdlib program
 /// rather than a port.
 ///
+/// It prints either shape the block pushes: the reflect answers' codes, with
+/// `location`, or the deprecated verdict without it.
+///
 /// It waits rather than polling: a measurement takes seconds, and a program that
 /// looped would be a program burning a deployment's instruction budget on an
 /// answer that is not there yet.
 #[cfg(feature = "netcheck")]
 const NETCHECK_SOURCE: &str = r#"
--- Wait for the verdict the `netcheck` block measures, print it, and stop.
+-- Wait for what the `netcheck` block measures, print it, and stop.
 local q = queue.declare("netcheck", { capacity = 1 })
 local _, answer = queue.wait({q})
 
-print("verdict: " .. tostring(answer.verdict))
-if answer.why ~= nil then print("  why: " .. tostring(answer.why)) end
-if answer.advice ~= nil then print("  " .. tostring(answer.advice)) end
+if answer.verdict ~= nil then
+  -- The deprecated verdict, from a block with no `location`.
+  print("verdict: " .. tostring(answer.verdict))
+  if answer.why ~= nil then print("  why: " .. tostring(answer.why)) end
+  if answer.advice ~= nil then print("  " .. tostring(answer.advice)) end
+  return
+end
+print("location: " .. tostring(answer.location))
+if answer.error ~= nil then print("  error: " .. tostring(answer.error)) end
+for _, check in ipairs({"udp", "mapping", "filtering", "tcp"}) do
+  if answer[check] ~= nil then print("  " .. check .. ": " .. tostring(answer[check].code)) end
+end
+for _, c in ipairs(answer.cross or {}) do print("  cross: " .. tostring(c.code)) end
 "#;
 
 /// What a stdlib name resolves to.
@@ -476,8 +489,10 @@ mod tests {
             !source.contains("host.call"),
             "a reader makes no hostcalls: the measurement is the host's"
         );
+        // Two shapes this release, the reflect answers and the deprecated
+        // verdict; back under twelve lines when the verdict goes.
         assert!(
-            source.lines().filter(|l| !l.trim().is_empty()).count() < 12,
+            source.lines().filter(|l| !l.trim().is_empty()).count() < 18,
             "thin enough to read at a glance"
         );
     }

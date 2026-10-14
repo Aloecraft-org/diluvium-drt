@@ -14,9 +14,9 @@ SSH server. DRT supplies the transport, which is one of three things:
   WebRTC (ICE, DTLS, SCTP) or WireGuard. Hole punching is ICE's or
   WireGuard's own handshake. This is the default and the focus.
 - **TURN.** WebRTC's standard relay (RFC 8656), which an ICE agent uses on
-  its own when no direct pair works. It carries every byte. Browser
-  access v1 drops relay candidates from records (`doc/BrowserAccess.md`
-  §2.1), so TURN for these rows is a change to that wire, not a setting.
+  its own when no direct pair works. It carries every byte. Native
+  `drt p2p` offers an allocation with `--turn` (`doc/P2P.md` §2.6);
+  a page uses none.
 - **Relay.** DRT's WebSocket splice (`doc/Relay.md`): two outbound WSS legs
   joined by label. It carries every byte and reads none of it.
 
@@ -26,8 +26,8 @@ A connection is direct, or it fails and says so (`doc/P2P.md` §1). Nothing
 falls back on its own: `drt p2p --fallback <relay>` tries direct first and
 goes through the relay only when no path reached the peer, and `--relay
 <relay>` goes through it always. A failure carries `drt netcheck`'s verdict
-for this side's network, measured against the call's `--stun` servers. TURN is not used by these rows: browser access
-v1 drops relay candidates from records.
+for this side's network, measured against the call's `--stun` servers. TURN is used only with `--turn`, and
+then only when no direct pair works.
 
 ## The pieces
 

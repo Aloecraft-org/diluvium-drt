@@ -101,6 +101,7 @@ async fn a_signaled_caller_reaches_an_address_in_scope() {
         rtc: caller.record().encode().unwrap(),
     });
     let call = caller.connect(&record, LIMIT).await.unwrap();
+    assert!(!call.via_turn(), "a direct session says so");
     assert!(
         call.hello().contains("\"services\":[\"echo\"]"),
         "{}",

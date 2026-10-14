@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use drt_config::RootConfig;
 use drt_rtc::host::{Event, Opening, Report, Service, SessionState, StreamState, Window};
-use drt_rtc::{Cidr, Forward, Host, HostConfig, Identity, Scope, Sender, Sink};
+use drt_rtc::{Cidr, Forward, Host, HostConfig, Identity, RelayPolicy, Scope, Sender, Sink};
 use drt_sshd::HostKey;
 use tokio::sync::{oneshot, watch};
 use tokio_rustls::rustls::pki_types::CertificateDer;
@@ -105,7 +105,22 @@ pub async fn start(
         },
         accept,
     };
-    let mut host = Host::start(cfg)?;
+    // `--turn`: one more candidate. One that cannot be had is said and
+    // gone on without: the direct candidates still stand.
+    let relayed = match &settings.turn {
+        Some(uri) => match super::turn::allocate(uri).await {
+            Ok(r) => Some(r),
+            Err(e) => {
+                eprintln!("drt p2p: {e}; serving without a TURN relay");
+                None
+            }
+        },
+        None => None,
+    };
+    let mut host = match relayed {
+        Some(r) => Host::start_relayed(cfg, r, RelayPolicy::Also)?,
+        None => Host::start(cfg)?,
+    };
     let local = host.local_addr();
     let sender = host.sender();
     let first = match host.next_event().await {
@@ -352,6 +367,7 @@ pub(crate) fn sinks(
                     stun: settings.stun.clone(),
                     headers: settings.headers.clone(),
                     fingerprint: None,
+                    turn: settings.turn.clone(),
                 },
                 roots: roots.to_vec(),
                 call: tokio::sync::Mutex::new(None),
@@ -364,6 +380,7 @@ pub(crate) fn sinks(
                     stun: settings.stun.clone(),
                     headers: settings.headers.clone(),
                     fingerprint: None,
+                    turn: settings.turn.clone(),
                 },
                 roots: roots.to_vec(),
             });

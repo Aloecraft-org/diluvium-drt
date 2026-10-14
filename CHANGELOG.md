@@ -47,6 +47,43 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Added
 
+- **`drt p2p --reflect`: a STUN server on UDP and TCP, and a pair of
+  them (`doc/Reflect.md`).** One port, 3478 by default, answers STUN
+  over UDP and STUN over TCP, and every answer lists what the server
+  offers. `--host` admits as p2p's does and may be given more than
+  once. With `--reflect-peer` and a shared `--reflect-key`, the other
+  gate answers RFC 5780 change-IP requests, so a client can measure
+  filtering, and carries out a cross request: it connects to the
+  asker's observed address on the port it names and reports
+  `connected`, `refused`, `timeout` or `unreachable`. A client names a
+  port, never an address. Requests between the gates are signed with
+  HMAC-SHA256 and refused when stale or replayed, and
+  `--reflect-rate` (30 a minute) limits each source. Every result and
+  failure has a stable code, documented in one table.
+- **`drt p2p drt+stun://<host>` and `drt+reflect://<host>` ask a
+  reflect server (`doc/Reflect.md`).** Dispatched on the scheme
+  before any signalling, they print what the gates answered and no
+  verdict: the UDP mapped address, the mapping read from the same
+  socket against OTHER-ADDRESS, RFC 5780 filtering, and with
+  `drt+reflect://` the TCP observed address and a cross request per
+  `--port` (or one the system picks), on which this side listens so
+  `connected` means reachable and the token says who reached it.
+  `--json` prints one object; every check carries a code, and one the
+  server does not offer says why. `stun` and `reflect` are reserved:
+  no service, `webrtc.services` entry or `--relay` may name them.
+- **`drt netcheck <location>` asks a reflect server.** It is `drt p2p
+  drt+reflect://<location>`, with `--port` and `--json`. A `netcheck`
+  block with `location` pushes the same object to its queue, and
+  `stdlib:netcheck` prints either shape. Example 09 runs a reflect
+  pair on loopback and asks it. The UDP mapping `wireguard_mapping`
+  measures moves to a module of its own, so it stays when the
+  verdict tree goes.
+- **A page asks reflect servers: `reflect` in the browser access
+  library (`doc/Reflect.md`, In a page).** Through WebRTC, a page
+  learns its server-reflexive addresses, whether UDP gets out, and its
+  UDP mapping from two servers; `session.path()` reads the path a
+  session formed and its round trip from `getStats()`. Chromium
+  checks it against two `drt p2p --reflect` gates.
 - **`drt p2p`: one verb for peer-to-peer sessions (`doc/P2P.md`).**
   With no `--relay` and no `--fallback`, no machine other than the
   two ends carries a byte of the session; when no such path exists it
@@ -542,6 +579,16 @@ Underneath it the embedded core moves from 0.15.1 to
   server and is sent the same `--H` headers. A name its server
   refuses for good stops being answered while the others carry on. A
   `wss://` leg still parks alone.
+- **`drt p2p --turn`: a TURN relay as the last resort** (`doc/P2P.md`
+  §2.6). `--turn turn://<user>:<password>@host[:port]`, or the config's
+  `p2p.turn`, allocates on `drt turn` or coturn and offers the
+  allocation as one more candidate on call, park and listen. ICE uses
+  it only when nothing direct works, so two symmetric NATs now
+  connect, and only one side needs a TURN server. A caller prints
+  `via TURN` when its session crosses either side's allocation. The
+  relayed line travels in a new record key, `r`, which pages ignore;
+  pages still use no TURN. In `full`; other builds refuse `--turn` by
+  name.
 
 ### Changed
 
@@ -591,6 +638,15 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Deprecated
 
+- **`drt netcheck`'s flags, and the verdict they produce, go after
+  this release.** `--stun`, `--reflect`, `--reflect-at`,
+  `--probe-at`, `--pin-source-port`, `--udp-port`, `--extra-root`,
+  and `--port` without a location, still print one of the four
+  verdicts, with a warning on stderr; so does a `netcheck` block
+  without `location`, warned at start. The verdict tree, its advice,
+  discofetch's `measure` block and probe host shape leave drt with
+  them. `drt netcheck` with nothing named is refused and asks for a
+  location. Example 13 keeps the `--stun` form until then.
 - **`drt tunnel` is `drt p2p` now, and goes away in a release.** A
   call (`drt tunnel wss://…`, `--local`) or a park (`--park … --to`)
   prints the `drt p2p` form of what it was given on stderr and runs

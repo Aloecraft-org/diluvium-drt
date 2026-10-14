@@ -5,8 +5,8 @@
 //! ## surface block
 //!
 //! - Entry points: [`Record::decode`], [`Record::encode`], [`answer_sdp`],
-//!   [`fingerprint_hex`], [`usable_candidate`].
-//! - Configurable: [`MAX_BYTES`], [`MAX_CANDIDATES`] and the ICE length
+//!   [`fingerprint_hex`], [`usable_candidate`], [`usable_relay`].
+//! - Configurable: [`MAX_BYTES`], [`MAX_CANDIDATES`], [`MAX_RELAYS`] and the ICE length
 //!   bounds below. They are the wire's, so changing one is a `v` bump, not
 //!   a tuning knob.
 //! - Fan-out: [`RecordError`], one variant per rule a record can break.
@@ -19,6 +19,8 @@ use serde::Serialize;
 pub const MAX_BYTES: usize = 512;
 /// Candidate lines a record may carry.
 pub const MAX_CANDIDATES: usize = 8;
+/// Relayed candidate lines a record may carry in `r`.
+pub const MAX_RELAYS: usize = 2;
 /// RFC 8839's floor on a ufrag, and a ceiling that keeps a record in budget.
 pub const UFRAG_LEN: std::ops::RangeInclusive<usize> = 4..=32;
 /// RFC 8839's floor on a password (128 bits of base64-ish), and a ceiling.
@@ -35,6 +37,9 @@ pub struct Record {
     pub fingerprint: [u8; 32],
     /// `candidate:` lines, exactly as RFC 8839 §5.1 spells them.
     pub candidates: Vec<String>,
+    /// `r`: relayed candidates (§2.1), a native side's TURN allocation.
+    /// A key v1 readers ignore, so a page never sees one.
+    pub relays: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +101,8 @@ struct Wire<'a> {
     p: &'a str,
     f: String,
     c: &'a [String],
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    r: &'a [String],
 }
 
 impl Record {
@@ -110,6 +117,7 @@ impl Record {
             p: &self.pwd,
             f: STANDARD.encode(self.fingerprint),
             c: &self.candidates,
+            r: &self.relays,
         })
         .expect("a record serializes");
         if s.len() > MAX_BYTES {
@@ -154,12 +162,25 @@ impl Record {
                     .to_string(),
             );
         }
+        // `r` is a key a v1 reader may ignore, so nothing in it refuses the
+        // record: a line that is not a usable relay is dropped.
+        let relays = obj
+            .get("r")
+            .and_then(|r| r.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|l| l.as_str())
+            .filter(|l| usable_relay(l))
+            .take(MAX_RELAYS)
+            .map(str::to_string)
+            .collect();
         let fingerprint = decode_fingerprint(&f)?;
         let mut record = Record {
             ufrag,
             pwd,
             fingerprint,
             candidates,
+            relays,
         };
         record.check()?;
         record.candidates.retain(|c| usable_candidate(c));
@@ -176,7 +197,10 @@ impl Record {
         if self.candidates.len() > MAX_CANDIDATES {
             return Err(RecordError::TooManyCandidates(self.candidates.len()));
         }
-        for c in &self.candidates {
+        if self.relays.len() > MAX_RELAYS {
+            return Err(RecordError::TooManyCandidates(self.relays.len()));
+        }
+        for c in self.candidates.iter().chain(&self.relays) {
             if !c.starts_with("candidate:") || c.contains(['\r', '\n']) {
                 return Err(RecordError::Candidate(c.clone()));
             }
@@ -187,11 +211,21 @@ impl Record {
 
 /// Whether v1 can use a candidate line (§2.1): it reads as RFC 8839 §5.1
 /// through `typ <type>`, its transport is UDP, its type is `host`, `srflx`
-/// or `prflx` -- never `relay`, since v1 has no TURN -- and its address is
+/// or `prflx` -- never `relay`, which travels in `r` -- and its address is
 /// not an mDNS `.local` name, which the reader could not resolve. Trailing
 /// extensions are allowed here: a writer strips them to stay in budget,
 /// and nothing reads them.
 pub fn usable_candidate(line: &str) -> bool {
+    usable_as(line, &["host", "srflx", "prflx"])
+}
+
+/// Whether a line of `r` is usable: the same rule as
+/// [`usable_candidate`], with `relay` the one type allowed (§2.1).
+pub fn usable_relay(line: &str) -> bool {
+    usable_as(line, &["relay"])
+}
+
+fn usable_as(line: &str, kinds: &[&str]) -> bool {
     let Some(rest) = line.strip_prefix("candidate:") else {
         return false;
     };
@@ -206,9 +240,7 @@ pub fn usable_candidate(line: &str) -> bool {
         && numeric(t[5])
         && t[5].parse::<u16>().is_ok()
         && t[2].eq_ignore_ascii_case("udp")
-        && ["host", "srflx", "prflx"]
-            .iter()
-            .any(|k| t[7].eq_ignore_ascii_case(k))
+        && kinds.iter().any(|k| t[7].eq_ignore_ascii_case(k))
         && !t[4].to_ascii_lowercase().ends_with(".local")
 }
 
@@ -280,6 +312,7 @@ mod tests {
             pwd: "8bqS0lK1vT6YpR2eWm4nHc7J".into(),
             fingerprint: [7; 32],
             candidates: vec!["candidate:1 1 udp 2130706431 192.168.1.20 50212 typ host".into()],
+            relays: Vec::new(),
         }
     }
 
@@ -360,6 +393,29 @@ mod tests {
         for l in no {
             assert!(!usable_candidate(l), "{l}");
         }
+        assert!(usable_relay(
+            "candidate:1 1 udp 41885439 198.51.100.1 3478 typ relay raddr 0.0.0.0 rport 0"
+        ));
+        assert!(!usable_relay(yes[0]));
+    }
+
+    #[test]
+    fn relays_travel_in_r_and_a_bad_line_there_is_dropped_not_refused() {
+        let relay = "candidate:9 1 udp 16777215 198.51.100.1 3478 typ relay raddr 0.0.0.0 rport 0";
+        let mut r = sample();
+        r.relays = vec![relay.into()];
+        let text = r.encode().unwrap();
+        assert!(text.contains(r#""r":["#), "{text}");
+        assert_eq!(Record::decode(&text).unwrap(), r);
+        // Without relays the key is absent: the bytes a v1 writer wrote.
+        assert!(!sample().encode().unwrap().contains(r#""r""#));
+        // `r` is a key v1 readers ignore, so a malformed one costs the
+        // lines, never the record.
+        let host = "candidate:1 1 udp 2130706431 192.0.2.1 5000 typ host";
+        let odd = text.replace(relay, host);
+        assert!(Record::decode(&odd).unwrap().relays.is_empty());
+        let odd = text.replace(&format!(r#"["{relay}"]"#), "7");
+        assert!(Record::decode(&odd).unwrap().relays.is_empty());
     }
 
     #[test]

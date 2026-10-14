@@ -16,14 +16,17 @@ the path is a flag the user typed.
 
 ## surface
 
-- Entry points: four roles. **Call**, `drt p2p <peer>`. **Park**,
+- Entry points: five roles. **Call**, `drt p2p <peer>`. **Park**,
   `drt p2p --park <signalling>`. **Listen**, `drt p2p --listen <port>`.
-  **Match**, `drt p2p --match <port>`. Two carriers, on call and park:
+  **Match**, `drt p2p --match <port>`. **Reflect**,
+  `drt p2p --reflect [port]`. Two carriers, on call and park:
   `--relay <peer>` and `--fallback <peer>`.
 - Configurable: `-p` (call), `--host` (default `127.0.0.1`), `--accept`,
-  `--pair`, `--forward`, `-A`, `-P`, `--signal`, `--stun`,
+  `--pair`, `--forward`, `-A`, `-P`, `--signal`, `--stun`, `--turn`,
   `--fingerprint` (`--fingerp`), `--H` (`auth=` for a bearer token),
-  `--authorized-keys`, `--capacity`, `--extra-root`, `--config`; `--show`
+  `--authorized-keys`, `--capacity`, `--reflect-peer`, `--reflect-key`,
+  `--reflect-rate`, `--port` and `--json` (asking a reflect server),
+  `--extra-root`, `--config`; `--show`
   prints a peer's canonical form. Every flag is also a key of the `p2p`
   block (§8).
 - Fan-out: the role table (§2), the peer address forms (§3), the forward
@@ -32,8 +35,8 @@ the path is a flag the user typed.
 
 ## 1. The promise
 
-> With no `--relay` and no `--fallback`, no machine other than the two
-> ends carries a byte of the session. When no such path exists,
+> With no `--relay`, `--fallback` or `--turn`, no machine other than the
+> two ends carries a byte of the session. When no such path exists,
 > `drt p2p` fails and says so.
 
 This sentence is the first line of the verb's help, and every rule below
@@ -56,7 +59,8 @@ serves it.
   caller with no `--relay` may reach a parked side that chose one; the
   caller's path is then direct to that relay. The relay says so in its
   `hello` (§4.4) and the caller prints it, so a direct-looking command
-  never hides a relayed session.
+  never hides a relayed session. The same holds for a far side's
+  `--turn`: a session that crosses its allocation prints `via TURN`.
 
 ## 2. Roles
 
@@ -66,6 +70,7 @@ serves it.
 | park | `drt p2p --park <signalling>` | a signalling server, by name | `--forward`, or the REPL |
 | listen | `drt p2p --listen <port>` | its record; with `--signal`, its own signalling port | `--forward`, or the REPL |
 | match | `drt p2p --match <port>` | it is the signalling server | nothing |
+| reflect | `drt p2p --reflect [port]` | it is a STUN server, UDP and TCP | nothing |
 
 ### 2.1 Call
 
@@ -231,6 +236,40 @@ admits packets it did not ask for. `--stun` is also the `stun` key of the
 `p2p` block, the same list the `webrtc` block takes, so every role
 gathers the same way.
 
+### 2.6 TURN
+
+`--turn turn://<user>:<password>@host[:port]` (port 3478 when absent)
+makes an allocation on a TURN server, `drt turn` or coturn, and offers
+it as one more candidate, on call, park and listen. ICE ranks it below
+every direct candidate, so it carries the session only when nothing
+direct works, such as two symmetric NATs; the relay then carries every
+byte. Only one side needs it: the other sends to the allocation from its
+own socket. The credential is coturn's `use-auth-secret` pair, as
+`crypto/turn_credential` mints it, with `:` written `%3A`; it belongs in
+the config's `p2p.turn`, not on a command line. An allocation that
+cannot be had is said, and the role goes on without it.
+
+The relayed candidate travels in the record's `r` key
+(`doc/BrowserAccess.md` §2.1), which a page ignores: pages use no TURN
+(`doc/Plan-0.8.0.md` §0.1). The `turn-client` feature carries it, in
+`full`; a build without it refuses `--turn` by name.
+
+### 2.7 Reflect
+
+```
+drt p2p --reflect --host 0.0.0.0 --reflect-peer reflect2.example --reflect-key env:REFLECT_KEY
+```
+
+A STUN server on one port (3478 by default), UDP and TCP, that tells an
+asker the address and port its packet or connection came from. With
+`--reflect-peer` and a shared `--reflect-key`, the other gate answers
+what one address cannot: filtering (RFC 5780) and whether a port of the
+asker is reachable. `--host` is repeatable here, each one bound on its
+own. It carries no session, so the session keys are refused with it.
+`drt p2p drt+stun://<host>` and `drt+reflect://<host>` ask one and print
+what the gates answered. The requests, the wire and the result codes are
+`doc/Reflect.md`.
+
 ## 3. Peer addresses
 
 The positional of a call, the argument of `--relay` and `--fallback`, and a
@@ -240,6 +279,7 @@ The positional of a call, the argument of `--relay` and `--fallback`, and a
 |---|---|
 | `drt://host[:port]/v1/<name>` | the caller's request of `doc/DRT-Signalling.md` §3 at that server, for that name |
 | `drt+<service>://…` | any `drt://` form, then a stream to the far side's named service, such as `drt+ssh://` |
+| `drt+stun://host[:port]`, `drt+reflect://host[:port]` | not a peer: a reflect server, asked and never called (§2.7); `stun` and `reflect` name no service |
 | `drt://host:port` | the same request to a `--listen` peer's `--signal` port |
 | `host…` with no scheme | `drt://`, unless it names a file that exists: then that file holds a record (the row below) |
 | `https://…/v1/<name>/calls` | exactly that request |
@@ -598,4 +638,6 @@ form of what it was given.
   channel, addresses derived from them, and SSH certificates from a key
   registry. Separate proposal.
 - TLS flags for `--match`.
+- A TURN credential minted by the signalling server and handed over with
+  the answer, in place of `--turn`'s fixed one (§2.6).
 - The relay's "answer for me" service (§4.3).

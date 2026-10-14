@@ -57,3 +57,27 @@ Learned: `pkill -f` on a pattern that matches the shell's own command
 line kills the shell; use the job's pid.
 
 Next: item 5, the TURN design note.
+
+## 2026-10-04 TURN as a last resort
+
+Plan: the owner's queued work order, item 5, after they chose "Build it"
+on the design note (`.claude/notes/2026-10-03-drt-turn-last-resort.md`).
+Native only, record v1, a static `--turn` credential. Branch
+`claude/project-thread-qxlh4a-turn`, from #43, one pull request on it.
+
+Done: drt-rtc takes a relayed candidate (`Host::start_relayed`,
+`Caller::relay`) and the record carries it in a new key `r`, because the
+shared vectors pin that a relay line in `c` is dropped; a page ignores
+`r`. `drt p2p --turn turn://user:pass@host` allocates for a call, a park
+and a listen, and the caller prints "via TURN" when the selected path
+crosses a relay. Verified by a loopback test that serves only a relayed
+candidate behind `drt turn`, round-trips 256 KiB through it, and checks
+the server's relayed byte count; and by a forged credential that is
+refused by name without the password.
+
+Learned: `slim,p2p` (the Windows row) has no TURN client, and the new
+`Args` field tipped `large_enum_variant` there; `Command::P2p` boxes its
+args. CI's clippy runs only `--all-features`, so it would not have seen
+that.
+
+Next: item 6 waits on the owner's Plugins.md vs Peers.md decision.

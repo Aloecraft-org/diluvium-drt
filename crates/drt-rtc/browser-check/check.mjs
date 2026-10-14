@@ -7,8 +7,8 @@
 // Several sessions at once, all through one host socket and one host ufrag.
 //
 // Two ways to run it, and both exit 0 only when every session echoed, moved
-// TRANSFER bytes intact through a Wisp stream, and saw an out-of-scope
-// connect refused with 0x48:
+// TRANSFER bytes intact through a Wisp stream, saw an out-of-scope
+// connect refused with 0x48, and read the path that formed:
 //
 //   cargo build -p drt-rtc --example browser_check
 //   PLAYWRIGHT=$(npm root -g)/playwright node check.mjs
@@ -162,8 +162,10 @@ await page.evaluate(async ([src, GATHER_CAP_MS, WAIT_MS]) => {
     // Out of scope: refused by the host with 0x48 before it connects.
     const refused = session.connect('127.0.0.1', port + 1);
     const reason = await refused.closed.then(() => 'closed cleanly', (e) => e.reason);
+    // The path that formed (doc/Reflect.md, In a page).
+    const path = await session.path();
     session.close();
-    return { hello: session.hello, echoed, intact, bytes: n - ping.length, reason };
+    return { hello: session.hello, echoed, intact, bytes: n - ping.length, reason, path };
   };
 }, [library.toString('base64'), GATHER_CAP_MS, WAIT_MS]);
 
@@ -184,8 +186,8 @@ let failed = false;
 results.forEach((r, i) => {
   const v = r.value;
   if (r.status === 'fulfilled' && v.echoed === `ping from session ${i}` && v.hello.t === 'hello'
-      && v.intact && v.bytes === TRANSFER && v.reason === 0x48) {
-    console.log(`session ${i}: ok, echoed "${v.echoed}" and ${v.bytes} bytes intact, out of scope refused 0x48, hello ${JSON.stringify(v.hello)}`);
+      && v.intact && v.bytes === TRANSFER && v.reason === 0x48 && v.path?.local && v.path.remote && v.path.protocol === 'udp') {
+    console.log(`session ${i}: ok, echoed "${v.echoed}" and ${v.bytes} bytes intact, out of scope refused 0x48, path ${JSON.stringify(v.path)}, hello ${JSON.stringify(v.hello)}`);
   } else {
     failed = true;
     console.log(`session ${i}: FAILED`, r.status === 'rejected' ? r.reason.message : JSON.stringify(r.value));

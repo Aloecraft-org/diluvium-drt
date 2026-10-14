@@ -22,7 +22,7 @@ reference. Everything here is v0.8.0.
 | [`06-budgets`](06-budgets) | What a budget bounds (VM instructions, VM memory), what it does not (wall time, spawns), and what running out looks like from outside. | `drt run --config tight.json` |
 | [`07-sql`](07-sql) | `sql/query` reads and `sql/exec` writes; the scope is a directory, and the database is a name the program picks inside it. | `drt run --config readwrite.json` |
 | [`08-spawn-and-hibernation`](08-spawn-and-hibernation) | A program starting another: a child holds a subset of its parent's grants and nothing more, and parks itself when it has nothing to do. | `drt start --config app.json` |
-| [`09-netcheck`](09-netcheck) | One of four verdicts about the network in front of you, and the measurements that produced it. | `drt netcheck` |
+| [`09-netcheck`](09-netcheck) | Ask a reflect server and its peer gate what they see of you: address, mapping, filtering, and whether a port is reachable. The answers, with codes, and no verdict. | `./demo.sh` |
 | [`10-ssh-exec`](10-ssh-exec) | `ssh/exec` leaves the sandbox for another machine, so the scope pins the destination: host, user, key, trust anchor. | `drt run --config deploy.json` |
 | [`11-tunnel-and-relay`](11-tunnel-and-relay) | Two machines that cannot reach each other both dial out to a relay, which splices their legs into one pipe that ssh rides over. | `drt tunnel` |
 | [`12-under-the-hood`](12-under-the-hood) | What every `host.*` call is underneath: the `host/calls` and `host/replies` pair, a token the host echoes back, and a reply of four fields. | `drt run app.dlua` |

@@ -8,7 +8,8 @@
 //!   [`resolved_ok`].
 //! - Configurable: [`SCHEMES`], the schemes an entry may name, with their
 //!   default ports. The scheme is advice to the browser; the host enforces
-//!   host and port only.
+//!   host and port only. [`RESERVED_SERVICES`], the names no service
+//!   takes.
 //! - Fan-out: [`special_purpose`], the address classes refused after
 //!   resolution unless an entry names them outright.
 
@@ -17,6 +18,10 @@ use std::net::IpAddr;
 /// The schemes an entry may name, and the port each implies when the entry
 /// gives none.
 pub const SCHEMES: &[(&str, u16)] = &[("http", 80), ("https", 443), ("ssh", 22)];
+
+/// Names no service may take: `drt+stun://` and `drt+reflect://` ask a
+/// reflect server (`doc/Reflect.md`) and never open a service.
+pub const RESERVED_SERVICES: [&str; 2] = ["stun", "reflect"];
 
 /// Whether `name` can name a service (`doc/BrowserAccess.md` §10.3): 1 to
 /// 32 of `a-z`, `0-9` and `-`, starting with a letter or digit.
