@@ -38,3 +38,28 @@ doc/Handoff.md still says the 0.8.0 branch is unmerged. It merged in
 
 Next: once the owner merges #46 and the rc is tagged, check the landing
 and the rc's install line on a clean machine.
+
+## 2026-10-14 run: skip a `#!` first line in program files
+
+Plan: the owner asked, in the project thread, for drt to ignore a `#!`
+line at the top of a program file the way the `diluvium` executable
+already does. One step on claude/project-thread-f02eo0: skip it where a
+file becomes source (`modules::program_load` and the module walk),
+test it, open a pull request. No changelog entry: the newest entry is
+the released 0.8.0-rc.1, and opening the next one means choosing the
+next version and moving every stamp, which is the owner's call.
+
+Done:
+- `modules::skip_first_line_comment`, applied to the entry and to each
+  module as read. Keeps the newline, so line numbers hold.
+- Unit tests in `modules` (18 passed); fmt and clippy clean for
+  `-p drt --features full`.
+- End to end: a file starting `#!/usr/bin/env -S drt run -f`, run as
+  `./tool`, printed and reported its error at line 3.
+
+Learned: `drt run` takes no trailing arguments, so `./tool a b` is
+refused before the program loads. A bare `#!/usr/bin/env drt` is
+refused too (`unrecognized subcommand`). Both are separate asks.
+
+Next: the owner decides the next changelog version, and whether drt
+should accept a bare path and pass arguments through.

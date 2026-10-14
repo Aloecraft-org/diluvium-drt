@@ -7,7 +7,8 @@
 //! - Entry points: [`program_load`], the whole of it — a path in, the source
 //!   to load and the name to load it under back. [`discover`] and
 //!   [`Modules::bootstrap`] are its two halves, public for the tests that hold
-//!   each separately.
+//!   each separately. [`skip_first_line_comment`] is applied to every file
+//!   either half reads.
 //! - Configurable values: [`MAX_MODULES`], [`MAX_BYTES`], [`BOOTSTRAP_NAME`],
 //!   [`BRACKET_CAP`]. The name rule's own constants are
 //!   `drt_config::modules`', re-exported here.
@@ -145,6 +146,7 @@ pub struct Loaded {
 pub fn program_load(program: &Path) -> Result<Loaded, String> {
     let source = drt_platform::fs::read_to_string(program)
         .map_err(|e| format!("cannot read {}: {e}", program.display()))?;
+    let source = skip_first_line_comment(&source).to_string();
     let name = program
         .file_name()
         .and_then(|n| n.to_str())
@@ -164,6 +166,30 @@ pub fn program_load(program: &Path) -> Result<Loaded, String> {
         name: BOOTSTRAP_NAME.to_string(),
         modules: count,
     })
+}
+
+/// A source file with its first line dropped when that line starts with `#`,
+/// so a program can open with `#!/usr/bin/env drt` and be run directly.
+///
+/// Stock Lua does this in `luaL_loadfilex`, which is how the `diluvium`
+/// executable gets it. drt never reaches that function: it reads the file
+/// itself and compiles the text, through `dv_load` (`luaL_loadbufferx`) for
+/// an entry with nothing beside it and through guest `load` for everything
+/// the bootstrap carries, and neither skips the line. So it is done here, at
+/// the two places a file becomes source, and nowhere a string does: Lua's
+/// `load("#...")` refuses, and so does `drt run -c`.
+///
+/// The newline stays, as Lua keeps it, so line 2 of the file is still line 2
+/// in every traceback. Nothing that compiles today changes meaning: no Lua
+/// chunk can begin with `#`.
+pub fn skip_first_line_comment(source: &str) -> &str {
+    if !source.starts_with('#') {
+        return source;
+    }
+    match source.find('\n') {
+        Some(newline) => &source[newline..],
+        None => "",
+    }
 }
 
 /// Walk the directory `program` sits in and collect every module in it.
@@ -242,6 +268,7 @@ pub fn discover(program: &Path) -> Result<Modules, String> {
             let name = name_for_path(&shown)?;
             let source = drt_platform::fs::read_to_string(&full)
                 .map_err(|e| format!("cannot read {}: {e}", full.display()))?;
+            let source = skip_first_line_comment(&source).to_string();
             bytes += source.len() as u64;
             if found.len() >= MAX_MODULES {
                 return Err(format!(
@@ -561,6 +588,39 @@ mod tests {
         assert_eq!(loaded.modules, 0);
         assert_eq!(loaded.source, "print('hi')\n", "the file's own source");
         assert_eq!(loaded.name, "entry.dlua", "under its own name");
+    }
+
+    #[test]
+    fn a_first_line_starting_with_hash_is_skipped_and_its_newline_kept() {
+        assert_eq!(
+            skip_first_line_comment("#!/usr/bin/env drt\nprint(1)\n"),
+            "\nprint(1)\n"
+        );
+        assert_eq!(skip_first_line_comment("# note\r\nx()"), "\nx()");
+        assert_eq!(skip_first_line_comment("#!/usr/bin/env drt"), "");
+        assert_eq!(skip_first_line_comment("print(#t)\n"), "print(#t)\n");
+        assert_eq!(
+            skip_first_line_comment(" #!x\n"),
+            " #!x\n",
+            "only at byte 0"
+        );
+        assert_eq!(skip_first_line_comment("x()\n#!y\n"), "x()\n#!y\n");
+    }
+
+    #[test]
+    fn an_entry_and_a_module_both_lose_their_shebang() {
+        let (_fs, entry) = node(&[
+            ("/r/n/entry.dlua", "#!/usr/bin/env drt\nprint('hi')\n"),
+            ("/r/n/enc.dlua", "#!/usr/bin/env drt\nreturn {}\n"),
+        ]);
+        let loaded = program_load(&entry).unwrap();
+        assert!(!loaded.source.contains("#!"), "{}", loaded.source);
+    }
+
+    #[test]
+    fn an_entry_alone_loses_its_shebang_and_keeps_its_line_numbers() {
+        let (_fs, entry) = node(&[("/r/n/entry.dlua", "#!/usr/bin/env drt\nprint('hi')\n")]);
+        assert_eq!(program_load(&entry).unwrap().source, "\nprint('hi')\n");
     }
 
     /// `.lua` is guest source everywhere else in the format -- `RepoFormat.md`
