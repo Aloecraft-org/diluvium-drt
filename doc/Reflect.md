@@ -1,9 +1,9 @@
 # Reflect: a STUN server on UDP and TCP, and a pair of them
 
-`drt p2p --reflect` is the server (`crates/drt/src/p2p/reflect/`). The
-role is `doc/P2P.md` §2.7. Not built yet: the native client
-(`drt+stun://`, `drt+reflect://`), the `drt netcheck <location>` alias,
-and the browser reader.
+`drt p2p --reflect` is the server and `drt p2p drt+reflect://` the
+client (`crates/drt/src/p2p/reflect/`); a page asks with `reflect` in
+`crates/drt-rtc/client/drt_browser_access.js`. The role is
+`doc/P2P.md` §2.7.
 
 ## Serving
 
@@ -39,6 +39,65 @@ drt p2p --reflect [port] [--host <addr|cidr>]... [--reflect-peer <host[:port]>].
 Every answer carries the server's capabilities: `udp`, `tcp`, and with a
 peer `peer`, `filtering` and `cross`.
 
+## Asking
+
+```
+drt p2p drt+stun://reflect.example       # the UDP checks; port 3478 when absent
+drt p2p drt+reflect://reflect.example    # every check the server offers
+drt p2p drt+reflect://reflect.example --port 22 --json
+```
+
+Both are dispatched on the scheme, before any signalling, and `stun` and
+`reflect` are names no service may take. The output is what the gates
+answered, one line per check, each with a code below and the answer
+beside it, local addresses included; `--json` is the same as one object.
+No verdict is attached.
+
+- **udp** and **tcp**: the mapped and the observed address. `drt+stun://`
+  runs no TCP.
+- **mapping**: the same socket asks OTHER-ADDRESS; one mapped port for
+  both is `endpoint_independent`, two are `endpoint_dependent`.
+- **filtering**: RFC 5780 from the same socket: `endpoint_independent`,
+  or `address_dependent_or_stricter` when no answer gets in, since the
+  server has no alternate port to tell the two stricter kinds apart.
+- **cross**, per `--port` (up to 4, or one the system picks): this side
+  listens on the port, and reports the code and whether the token
+  arrived (`received`, `not_received`, or `not_listening` when the port
+  was taken here, as by a real service).
+
+`drt netcheck <location>` is `drt p2p drt+reflect://<location>`, and
+`--port` and `--json` work as they do there. A `netcheck` block in
+`drt start` with `location` (and `port`) pushes the same object to its
+queue on every `report_ms`. Every other netcheck flag and key is
+deprecated: it still produces the old verdict this release, with a
+warning, and leaves with it.
+
+A check the server does not offer reports why (`no_peer`,
+`not_offered`) and never fails silently. The run fails only when
+nothing answered over UDP or TCP. `--port` and `--json` are flags only,
+not `p2p` keys.
+
+## In a page
+
+A reflect port is a plain STUN server, so a page asks it through
+WebRTC: `reflect(['reflect1.example', 'reflect2.example'])` gathers
+from each server on a connection of its own, then from all of them on
+one.
+
+- **udp**: the server-reflexive addresses, or `udp_blocked` when no
+  server answered; each server's own answer is in `servers`.
+- **mapping**: one address per socket asked together is
+  `endpoint_independent`, more is `endpoint_dependent`; `no_peer` with
+  fewer than two servers answering.
+- **`session.path()`**: on a session to any peer, the path that formed
+  and its round trip, from `getStats()`.
+
+A page cannot learn filtering, TCP, a port's reachability or its local
+addresses (the browser hides them behind mDNS). Its result is a lower
+bound for the native client: a direct path from a page means one
+natively, while nothing from a page says nothing certain, since a proxy,
+a VPN or browser policy may block the page's UDP.
+
 ## Wire
 
 Attributes after the binding message's own, comprehension-optional so a
@@ -59,11 +118,13 @@ is more than 30 seconds off, or whose nonce it has seen.
 
 ## Codes
 
-Every result and failure carries one, in RESULT and as the reason of a
-STUN error. They are stable.
+Every result and failure carries one: the server's in RESULT and as the
+reason of a STUN error, the client's on each check's line and in
+`--json`. They are stable.
 
 | Code | Means |
 |---|---|
+| `ok` | the check ran; its answer is beside the code |
 | `connected` | the other gate's connection to the port was accepted |
 | `refused` | the other gate's connection to the port was refused |
 | `timeout` | the other gate's connection to the port got no answer |
@@ -76,3 +137,7 @@ STUN error. They are stable.
 | `peer_refused` | the peer gate refused the signed request: another key, a clock too far off, or a nonce it has seen |
 | `bad_request` | the request was malformed, or named port 0 |
 | `not_offered` | the server does not offer this check, as its capabilities say |
+| `udp_blocked` | no answer over UDP: the server is down, or UDP does not get out |
+| `tcp_blocked` | no answer over TCP: the server is down, or TCP to its port does not get out |
+| `unresolved` | the location names no address |
+| `same_address` | the change request's answer came from the server's own address, as with two gates on one address, so it says nothing about filtering |

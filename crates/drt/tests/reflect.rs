@@ -806,15 +806,36 @@ fn an_answer_without_a_measure_block_leaves_the_run_to_the_flags() {
     );
 }
 
-/// A bare run names what it is missing, and invents nobody's infrastructure.
+/// A bare run asks for a location, and invents nobody's infrastructure.
 #[test]
-fn a_bare_run_says_it_has_nothing_to_measure_against() {
-    let text = netcheck(&[]);
-    assert!(
-        text.contains(
-            "config     nothing named to measure against: --reflect <url> supplies the rest"
-        ),
-        "{text}"
-    );
-    assert!(!text.contains("discofetch"), "{text}");
+fn a_bare_run_asks_for_a_location() {
+    let out = Command::new(env!("CARGO_BIN_EXE_drt"))
+        .arg("netcheck")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("name a reflect server to ask"), "{err}");
+    assert!(!err.contains("discofetch"), "{err}");
+}
+
+/// The old flags still run the verdict this release, and say they are
+/// going.
+#[test]
+fn the_old_flags_warn_that_they_are_deprecated() {
+    let out = Command::new(env!("CARGO_BIN_EXE_drt"))
+        .args(["netcheck", "--stun", "typed.invalid:3478"])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("deprecated"), "{err}");
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("relay"));
+
+    let out = Command::new(env!("CARGO_BIN_EXE_drt"))
+        .args(["netcheck", "127.0.0.1:1", "--stun", "typed.invalid:3478"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("--stun belong to the old netcheck"), "{err}");
 }

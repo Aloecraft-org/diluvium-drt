@@ -1,96 +1,51 @@
 # 09-netcheck
 
-`drt netcheck` answers one question — what will this network carry — with one
-of four verdicts: `direct`, `v6-direct`, `punchable`, `relay`. Each comes with
-a sentence of advice and the measurements that produced it.
+`drt netcheck <location>` asks a reflect server what it and its peer gate
+see of you, and prints the answers with no verdict. It is
+`drt p2p drt+reflect://<location>`.
 
 ## Run it
 
+Two gates on this machine, then the question:
+
 ```
 cd examples/09-netcheck
-drt netcheck
-drt netcheck --stun stun.l.google.com:19302
+export REFLECT_KEY=demo
+drt p2p --reflect 34790 --reflect-peer 127.0.0.1:34791 --reflect-key env:REFLECT_KEY &
+drt p2p --reflect 34791 --reflect-peer 127.0.0.1:34790 --reflect-key env:REFLECT_KEY &
+drt netcheck 127.0.0.1:34790
+# example: omits --json and stopping the gates; demo.sh does both of the latter.
 ```
 
 ## What you should see
 
-Abridged, because the second run prints what the first did; `expected.txt` is
-the whole of it.
-
 ```
-$ drt netcheck
-relay — the UDP mapping could not be measured, and relay is the answer that works on every network
-  use: use a tunnel
-
-evidence
-  config     nothing named to measure against: --reflect <url> supplies the rest, or --stun twice
-  address    not measured (no STUN server or reflect edge answered)
-  v6         <v6, this machine's>
-  udp map    not measured (classifying a NAT mapping needs two servers on separate addresses; 0 given)
-  tcp map    not measured
-  inbound    not measured (no --port given)
-exit 1
-
-$ drt netcheck --stun stun.l.google.com:19302
-   ... the same nine lines, then exit 1
+location   drt+reflect://127.0.0.1:34790
+server     127.0.0.1:34790
+offers     udp,tcp,peer,filtering,cross
+other      127.0.0.1:34791
+udp        ok mapped 127.0.0.1:40434 local 127.0.0.1:40434 0 ms
+mapping    ok none (other gate saw 127.0.0.1:40434)
+filtering  same_address
+tcp        ok mapped 127.0.0.1:60690 local 127.0.0.1:60690 0 ms
+cross      port 44975 connected token received
 ```
-
-Neither run sent a packet; the second is refused before a STUN socket is
-opened, and both return in milliseconds. The `config` line is the one to act
-on: a reflect edge that describes itself supplies the STUN pair and the
-vantages, so `drt netcheck --reflect <url>` is the whole invocation against
-one that does. The `v6` line is read from your
-routing table rather than from the network, so a machine holding a routable
-IPv6 address prints it here, answers `v6-direct`, and exits 0.
 
 ## What it teaches
 
-**A mapping is a comparison, not a reading.** One socket, asked of two STUN
-servers on separate addresses. The same port at both is endpoint-independent,
-and the address a STUN server sees is then one a peer can reach; a fresh port
-per destination is symmetric, and what a STUN server sees says nothing about
-what a peer would see. One server compares against nothing, so netcheck
-reports `not measured` instead of guessing.
+**One location is enough.** The first answer names the other gate
+(`other`), and the checks that need it go there from the same socket.
 
-**The UDP mapping decides; the TCP line is context.** A NAT can be
-endpoint-independent for TCP and symmetric for UDP, and it is the UDP
-behaviour a hole punch lands on. A verdict built on `tcp map` would be
-confidently wrong on exactly the networks where being right matters.
+**A mapping is a comparison.** One socket asks both gates. The same mapped
+port at both is `endpoint_independent`; a port per destination is
+`endpoint_dependent`. On loopback there is no NAT, so it is `none`.
 
-**`not measured` says why, when it can.** The decisive probe failing is the
-one failure you have to be able to act on, and "the servers are down", "the
-name did not resolve", "UDP is blocked on this path" and "you gave me one
-server" are four problems with four different fixes that used to render
-identically. Compare:
+**Every line has a code.** `filtering` needs the peer gate to answer from
+another address, and here both gates share one, so it says `same_address`
+instead of guessing. A server with no peer says `no_peer`.
 
-```
-udp map    not measured (classifying a NAT mapping needs two servers on separate addresses; 1 given)
-udp map    not measured (could not resolve STUN server address 'stun1.example:3478')
-udp map    not measured (no STUN response from stun1.example:3478 after 3 attempt(s))
-```
+**`cross` is the inbound test.** This side listens on a port, the other gate
+connects to the address the server saw, and the token it writes proves who
+arrived. Behind a NAT that port answers `timeout` or `refused`.
 
-**`not measured` is a finding, so it gets a line.** A silently missing one
-reads as a measurement that passed. `address`, `tcp map` and `inbound` are an
-edge's half of the work and v0.4.0 has no edge to ask, so they say the above
-on every network. There is no flag to change that: an inbound test needs
-an edge to ask, and v0.4.0 has none.
-
-**`relay` is the fallback, and the exit code separates the two.** Taking relay
-on a network that could have punched costs a hop; the opposite mistake costs a
-connection that never forms. A measured verdict exits 0, `relay` included; the
-`exit 1` above is nothing measured at all.
-
-## With servers of your own
-
-```
-drt netcheck --stun stun.l.google.com:19302 --stun stun.cloudflare.com:3478
-# example: omits --json and the case over the verdict a deploy script writes.
-```
-
-A measured run names the port each server reported, labels it `independent`,
-`SYMMETRIC` or `open`, and exits 0. A network that blocks the probes waits a
-few seconds and lands back on the block above: nothing measured, exit 1.
-
-Two names that resolve to one host are one destination, and one destination
-looks endpoint-independent under any NAT — which is why the flag asks for two
-on separate addresses.
+The codes are in `doc/Reflect.md`.

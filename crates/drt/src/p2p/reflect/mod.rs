@@ -17,13 +17,15 @@
 //! ## surface block
 //!
 //! - Entry points: [`serve::run`], the server; [`ReflectRole`], what it is
-//!   given.
+//!   given; [`ask::run`], the asking side, `drt+stun://` and
+//!   `drt+reflect://`.
 //! - Configurable: [`DEFAULT_PORT`], [`DEFAULT_RATE`], and the timeouts in
 //!   [`serve`] and [`wire`].
 //! - Fan-out: [`Capability`], what a server offers; [`Code`], every
 //!   result and failure by its stable code; [`wire`], the attributes and
 //!   the signed request between gates.
 
+pub mod ask;
 pub mod serve;
 pub mod wire;
 
@@ -50,6 +52,21 @@ pub struct ReflectRole {
     /// `--reflect-rate`: cross requests a minute per source address.
     pub rate: u32,
 }
+
+/// `drt p2p drt+stun://…` or `drt+reflect://…`: what to ask, and how to
+/// print it.
+#[derive(Debug, Clone)]
+pub struct AskRole {
+    pub location: ask::Location,
+    /// `--port`, repeatable: ports to ask the other gate to connect to.
+    /// None: one the system picks, which this side listens on.
+    pub ports: Vec<u16>,
+    pub json: bool,
+}
+
+/// The two service names a reflect location takes, which no peer's
+/// service may take.
+pub use drt_rtc::scope::RESERVED_SERVICES;
 
 /// What a server offers, listed on every answer it gives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +111,7 @@ impl Capability {
 /// table in `doc/Reflect.md`, Codes, is [`Code::ALL`] with [`Code::meaning`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Code {
+    Ok,
     Connected,
     Refused,
     Timeout,
@@ -106,10 +124,15 @@ pub enum Code {
     PeerRefused,
     BadRequest,
     NotOffered,
+    UdpBlocked,
+    TcpBlocked,
+    Unresolved,
+    SameAddress,
 }
 
 impl Code {
-    pub const ALL: [Code; 12] = [
+    pub const ALL: [Code; 17] = [
+        Code::Ok,
         Code::Connected,
         Code::Refused,
         Code::Timeout,
@@ -122,10 +145,15 @@ impl Code {
         Code::PeerRefused,
         Code::BadRequest,
         Code::NotOffered,
+        Code::UdpBlocked,
+        Code::TcpBlocked,
+        Code::Unresolved,
+        Code::SameAddress,
     ];
 
     pub fn name(self) -> &'static str {
         match self {
+            Code::Ok => "ok",
             Code::Connected => "connected",
             Code::Refused => "refused",
             Code::Timeout => "timeout",
@@ -138,11 +166,16 @@ impl Code {
             Code::PeerRefused => "peer_refused",
             Code::BadRequest => "bad_request",
             Code::NotOffered => "not_offered",
+            Code::UdpBlocked => "udp_blocked",
+            Code::TcpBlocked => "tcp_blocked",
+            Code::Unresolved => "unresolved",
+            Code::SameAddress => "same_address",
         }
     }
 
     pub fn meaning(self) -> &'static str {
         match self {
+            Code::Ok => "the check ran; its answer is beside the code",
             Code::Connected => "the other gate's connection to the port was accepted",
             Code::Refused => "the other gate's connection to the port was refused",
             Code::Timeout => "the other gate's connection to the port got no answer",
@@ -157,6 +190,12 @@ impl Code {
             }
             Code::BadRequest => "the request was malformed, or named port 0",
             Code::NotOffered => "the server does not offer this check, as its capabilities say",
+            Code::UdpBlocked => "no answer over UDP: the server is down, or UDP does not get out",
+            Code::TcpBlocked => "no answer over TCP: the server is down, or TCP to its port does not get out",
+            Code::Unresolved => "the location names no address",
+            Code::SameAddress => {
+                "the change request's answer came from the server's own address, as with two gates on one address, so it says nothing about filtering"
+            }
         }
     }
 

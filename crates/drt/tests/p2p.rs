@@ -873,3 +873,50 @@ fn a_listener_inside_a_project_writes_its_record_under_live() {
         record.unwrap()
     );
 }
+
+/// `--reflect` on a port the system picks, read off the line that names
+/// it; `drt+reflect://` asks it and prints JSON a script can read.
+#[test]
+fn a_reflect_server_is_asked_by_its_location() {
+    let mut server = drt()
+        .args(["p2p", "--reflect", "0"])
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut err = BufReader::new(server.stderr.take().unwrap());
+    let mut at = None;
+    let start = Instant::now();
+    while at.is_none() && start.elapsed() < WAIT {
+        let mut line = String::new();
+        if err.read_line(&mut line).unwrap() == 0 {
+            break;
+        }
+        if let Some(rest) = line.strip_prefix("drt p2p: reflect on udp and tcp ") {
+            at = rest.split(',').next().map(str::to_string);
+        }
+    }
+    let at = at.expect("the bound address");
+    let out = drt()
+        .args(["p2p", &format!("drt+reflect://{at}"), "--json"])
+        .output()
+        .unwrap();
+    let _ = server.kill();
+    let _ = server.wait();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["udp"]["code"], "ok");
+    assert_eq!(json["tcp"]["code"], "ok");
+    assert_eq!(json["capabilities"], serde_json::json!(["udp", "tcp"]));
+    assert_eq!(json["cross"][0]["code"], "no_peer");
+
+    let out = drt()
+        .args(["p2p", "--relay", "drt+stun://example.com"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("asked and not called"));
+}

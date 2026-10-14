@@ -1,7 +1,9 @@
 # 13-stun-server
 
-Running the thing `09-netcheck` asks questions of. Two STUN binding servers,
-and a client that classifies this machine's NAT from what they answer.
+Two STUN binding servers, and a client that classifies this machine's NAT
+from what they answer. The client is `drt netcheck`'s deprecated `--stun`
+form, which leaves after this release; `09-netcheck` asks a reflect pair
+instead, which needs one location.
 
 ## Run it
 
@@ -23,6 +25,7 @@ drt netcheck --stun 127.0.0.1:34780 --stun 127.0.0.1:34781
 ## What you should see
 
 ```
+drt netcheck: the flags without a location are deprecated and leave after this release, with the verdict they produce; `drt netcheck <location>` asks a reflect server (doc/Reflect.md)
 punchable — the UDP mapping is endpoint-independent, so the address a STUN server sees is the address a peer can reach
   use: use a rendezvous; peers will connect to you directly
 

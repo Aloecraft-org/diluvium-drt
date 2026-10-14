@@ -25,7 +25,8 @@ the path is a flag the user typed.
   `--pair`, `--forward`, `-A`, `-P`, `--signal`, `--stun`, `--turn`,
   `--fingerprint` (`--fingerp`), `--H` (`auth=` for a bearer token),
   `--authorized-keys`, `--capacity`, `--reflect-peer`, `--reflect-key`,
-  `--reflect-rate`, `--extra-root`, `--config`; `--show`
+  `--reflect-rate`, `--port` and `--json` (asking a reflect server),
+  `--extra-root`, `--config`; `--show`
   prints a peer's canonical form. Every flag is also a key of the `p2p`
   block (§8).
 - Fan-out: the role table (§2), the peer address forms (§3), the forward
@@ -265,7 +266,9 @@ asker the address and port its packet or connection came from. With
 what one address cannot: filtering (RFC 5780) and whether a port of the
 asker is reachable. `--host` is repeatable here, each one bound on its
 own. It carries no session, so the session keys are refused with it.
-The requests, the wire and the result codes are `doc/Reflect.md`.
+`drt p2p drt+stun://<host>` and `drt+reflect://<host>` ask one and print
+what the gates answered. The requests, the wire and the result codes are
+`doc/Reflect.md`.
 
 ## 3. Peer addresses
 
@@ -276,6 +279,7 @@ The positional of a call, the argument of `--relay` and `--fallback`, and a
 |---|---|
 | `drt://host[:port]/v1/<name>` | the caller's request of `doc/DRT-Signalling.md` §3 at that server, for that name |
 | `drt+<service>://…` | any `drt://` form, then a stream to the far side's named service, such as `drt+ssh://` |
+| `drt+stun://host[:port]`, `drt+reflect://host[:port]` | not a peer: a reflect server, asked and never called (§2.7); `stun` and `reflect` name no service |
 | `drt://host:port` | the same request to a `--listen` peer's `--signal` port |
 | `host…` with no scheme | `drt://`, unless it names a file that exists: then that file holds a record (the row below) |
 | `https://…/v1/<name>/calls` | exactly that request |

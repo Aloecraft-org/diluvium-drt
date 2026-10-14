@@ -50,8 +50,10 @@ pub struct Args {
     /// The peer to call: drt://host[:port]/v1/<name> at a signalling
     /// server, drt+<service>://… to open one of its named services, a bare
     /// host (drt://), an http(s):// URL as written, a record or a file
-    /// holding one (direct mode: nothing is sent). Absent with --park,
-    /// --listen or --match.
+    /// holding one (direct mode: nothing is sent). Or a reflect server to
+    /// ask, not call: drt+stun://host[:port] for the UDP checks,
+    /// drt+reflect://host[:port] for every check it offers. Absent with
+    /// --park, --listen, --match or --reflect.
     #[arg(value_name = "PEER")]
     pub peer: Option<String>,
     /// Print the canonical form of a peer address and exit: one spelling
@@ -118,6 +120,15 @@ pub struct Args {
     /// (default 30).
     #[arg(long = "reflect-rate", value_name = "N")]
     pub reflect_rate: Option<u32>,
+    /// With drt+reflect://: a port to ask the other gate to connect to, on
+    /// the address the server sees, while this side listens on it.
+    /// Repeatable, up to 4; absent, one the system picks. Not a config key.
+    #[arg(long, value_name = "PORT")]
+    pub port: Vec<u16>,
+    /// With drt+stun:// or drt+reflect://: print the answers as one JSON
+    /// object. Not a config key.
+    #[arg(long)]
+    pub json: bool,
     /// With --park: admit callers from this range only. Sent to the
     /// signalling server and checked here as well. Repeatable.
     #[arg(long, value_name = "CIDR")]
@@ -245,6 +256,9 @@ pub enum Role {
     Listen(ListenRole),
     Match(MatchRole),
     Reflect(reflect::ReflectRole),
+    /// Not a role of its own: a call's positional that names a reflect
+    /// server is asked, never called.
+    Ask(reflect::AskRole),
 }
 
 #[derive(Debug)]
@@ -447,6 +461,53 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
             None => Ok(HostSpec::Addr(std::net::Ipv4Addr::LOCALHOST.into())),
         }
     };
+    let location = peer
+        .as_ref()
+        .and_then(|(p, _)| reflect::ask::Location::parse(p))
+        .transpose()?;
+    if location.is_none() && (!flags.port.is_empty() || flags.json) {
+        return Err("--port and --json go with drt+stun:// or drt+reflect://".into());
+    }
+    if let Some(location) = location {
+        // Asked before any signalling: nothing here is a session.
+        for (key, present) in [
+            ("ports", ports.as_ref().map(|(_, s)| *s)),
+            ("fingerprint", from(&fingerprint)),
+            ("fallback", from(&fallback)),
+            ("relay", from(&relay)),
+            ("forward", from(&forward)),
+            ("all_ports", all_ports.map(|(_, s)| s)),
+            ("forward_ports", from(&forward_ports)),
+            ("signal", signal.as_ref().map(|(_, s)| *s)),
+            ("accept", accept.as_ref().map(|(_, s)| *s)),
+            ("pair", from(&pair)),
+            ("capacity", capacity.as_ref().map(|(_, s)| *s)),
+            ("turn", turn_from),
+            ("authorized_keys", authorized_keys.as_ref().map(|(_, s)| *s)),
+            ("headers", headers_from),
+            ("host", host.as_ref().map(|(_, s)| *s)),
+        ] {
+            if let Some(from) = present {
+                return Err(format!(
+                    "{} goes with a call; {} asks a reflect server, and calls no one",
+                    spelled(key, from),
+                    location.shown()
+                ));
+            }
+        }
+        if location.scheme == reflect::ask::Scheme::Stun && !flags.port.is_empty() {
+            return Err("--port asks for a TCP connection: drt+reflect://, not drt+stun://".into());
+        }
+        return Ok(Resolved {
+            role: Role::Ask(reflect::AskRole {
+                location,
+                ports: flags.port.clone(),
+                json: flags.json,
+            }),
+            extra_roots,
+            extra_roots_key,
+        });
+    }
     if let Some((port, _)) = reflect {
         // A STUN server carries no session and calls no one.
         for (key, present) in [
@@ -770,6 +831,7 @@ pub fn run(args: &Args, config: &RootConfig) -> Result<(), String> {
             Role::Park(p) => park::run(p, config, &roots).await,
             Role::Listen(l) => serve::listen(l, config, &roots).await,
             Role::Reflect(r) => reflect::serve::run(r).await,
+            Role::Ask(a) => reflect::ask::run(&a.location, &a.ports, a.json).await,
             Role::Match(_) => unreachable!("dispatched above"),
         }
     });
