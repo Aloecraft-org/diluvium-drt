@@ -12,9 +12,9 @@ rather than encoding it: each entry names the dv ABI it speaks and
 the diluvium revision it embeds, the same facts `BUILDINFO.txt`
 carries in the release. See `doc/Release.md`.
 
-## [0.8.0-rc.1] - 2026-10-03 (prerelease)
+## [0.8.0] - unreleased
 
-`v0.8.0-rc.1` &middot; dv ABI 2 &middot; diluvium `97bb9f9d2897` (v0.17.2)
+`v0.8.0` &middot; dv ABI 2 &middot; diluvium `97bb9f9d2897` (v0.17.2)
 
 **A browser reaches a DRT host directly, two machines reach each
 other with nothing in between, and the core is diluvium 0.17.2.**
@@ -30,12 +30,6 @@ Underneath it the embedded core moves from 0.15.1 to
 `buildinfo` reading the core's features off the core. The plan is
 `doc/Plan-0.8.0.md`; the wires are `doc/BrowserAccess.md`,
 `doc/P2P.md` and `doc/DRT-Signalling.md`.
-
-### Install
-
-```sh
-curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.8.0-rc.1/install.sh | sh
-```
 
 ### Connectors
 
@@ -611,6 +605,12 @@ curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.8.0-rc.1/inst
   Terminals send BS for it, and crossterm reported BS as Ctrl+H, which
   nothing binds, so the word stayed while Ctrl+arrows moved by words.
   The REPL now reads it as the page always has.
+- **`drt netcheck --probe-at` refuses a vantage this run already
+  contacted, for v6 too.** The guard compared text, so a v6 address,
+  which a view writes as `[addr]:443`, never matched, and the check
+  that keeps a probe from reporting a false `connected` was off for
+  v6. The same prefix test refused `10.0.0.1` when `10.0.0.12` had
+  been contacted. It now compares parsed addresses.
 - **Browser access readers skip the candidate lines §2.1 says they
   skip** (issue #38). `Record::decode` and the client library's
   `parseRecord` kept every `candidate:` line, so a TCP or relay line

@@ -134,6 +134,17 @@ pub struct EdgeView {
     pub dest: String,
 }
 
+/// Whether any reflect view was gathered from `at`, comparing the parsed
+/// address and not the text. `dest` renders a v6 address as `[addr]:port`,
+/// and a text prefix test also takes `10.0.0.1` for `10.0.0.12`.
+pub fn contacted(views: &[EdgeView], at: IpAddr) -> bool {
+    views.iter().any(|v| {
+        v.dest
+            .parse::<std::net::SocketAddr>()
+            .is_ok_and(|dest| dest.ip() == at)
+    })
+}
+
 /// Everything measured, and nothing derived. `decide` reads only this.
 ///
 /// Every field is optional or explicitly-absent-able because a diagnostic
@@ -977,7 +988,11 @@ pub mod gather {
             );
             return;
         };
-        if m.tcp_views.iter().any(|v| v.dest.starts_with(at)) {
+        let Ok(at_ip) = at.parse::<IpAddr>() else {
+            m.inbound_why = Some(format!("'{at}' is not an address"));
+            return;
+        };
+        if super::contacted(&m.tcp_views, at_ip) {
             m.inbound_why = Some(format!(
                 "the probe would come from {at}, which this run already contacted for reflect; \
                  a SYN from there can traverse the mapping our own request made"
@@ -1648,6 +1663,31 @@ mod block {
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
+
+    fn view_at(dest: &str) -> EdgeView {
+        EdgeView {
+            edge: "gate".into(),
+            port: Some(51823),
+            dest: dest.into(),
+        }
+    }
+
+    /// The false-`connected` guard holds for v6, whose `dest` is bracketed.
+    #[test]
+    fn contacted_matches_a_v6_vantage() {
+        let views = [view_at("[2001:db8::1]:443")];
+        assert!(contacted(&views, "2001:db8::1".parse().unwrap()));
+        assert!(!contacted(&views, "2001:db8::2".parse().unwrap()));
+    }
+
+    /// An address is not a prefix: `10.0.0.1` was not contacted when
+    /// `10.0.0.12` was.
+    #[test]
+    fn contacted_is_not_a_text_prefix() {
+        let views = [view_at("10.0.0.12:443")];
+        assert!(!contacted(&views, "10.0.0.1".parse().unwrap()));
+        assert!(contacted(&views, "10.0.0.12".parse().unwrap()));
+    }
 
     fn public_v4() -> Option<IpAddr> {
         Some(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7)))
