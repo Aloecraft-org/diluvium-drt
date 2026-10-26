@@ -117,6 +117,9 @@ read off the artifact rather than inferred from a tag. See
 against whichever answered, so the two commands above differ only in which
 source is tried first. It prints the one it used.
 
+Tab completion for bash: add `source <(drt completions bash)` to
+`~/.bashrc` (`zsh`, `fish`, `elvish` and `powershell` work the same way).
+
 ## What you can do with it today
 
 ```
