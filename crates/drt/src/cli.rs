@@ -532,7 +532,8 @@ pub enum Command {
     ///
     /// Generated from this `Cli`, so it completes exactly the verbs and
     /// flags this build carries. Load it with
-    /// `source <(drt completions bash)` in `~/.bashrc`, or install the
+    /// `eval "$(drt completions bash)"` in `~/.bashrc` (not `source <(...)`,
+    /// which macOS's bash 3.2 reads as empty), or install the
     /// output as `/usr/share/bash-completion/completions/drt`. Completes
     /// verbs, flags and paths; it does not know live values such as a
     /// running deployment's name.

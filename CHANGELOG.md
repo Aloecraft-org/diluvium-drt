@@ -546,8 +546,8 @@ Underneath it the embedded core moves from 0.15.1 to
 - **`drt completions <shell>` prints a tab-completion script.** For
   bash, zsh, fish, elvish and PowerShell, generated from the same
   command definition that parses the command line, so it completes
-  exactly the verbs and flags the build carries. `source <(drt
-  completions bash)` in `~/.bashrc` turns it on. It completes verbs,
+  exactly the verbs and flags the build carries. `eval "$(drt
+  completions bash)"` in `~/.bashrc` turns it on. It completes verbs,
   flags and paths, not live values such as a deployment's name.
 
 ### Changed
