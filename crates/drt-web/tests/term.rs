@@ -152,7 +152,7 @@ fn the_repl_asks_for_lines_and_answers_them() {
     assert_eq!(text(&seen, Fd::Stdout), "22\n");
     let err = text(&seen, Fd::Stderr);
     assert!(
-        err.starts_with("drt repl — :help lists the colon commands, ^D leaves\n"),
+        err.starts_with("drt repl — Show help: <:h+enter>\n"),
         "{err}"
     );
     assert!(err.contains("nil value"), "{err}");

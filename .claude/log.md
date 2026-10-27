@@ -63,3 +63,29 @@ refused too (`unrecognized subcommand`). Both are separate asks.
 
 Next: the owner decides the next changelog version, and whether drt
 should accept a bare path and pass arguments through.
+
+## 2026-10-27 run: `:clear` and a shorter help hint in the REPL
+
+Plan: the owner asked, in the project thread, for exit and clear-screen
+commands in both REPLs and a banner that says `Show help: <:h+enter>`.
+One step on claude/project-thread-ej00ig: add `:clear` beside the
+existing `:quit`, change the banner, fix every place that quotes it,
+test, open a pull request. The diluvium half is its own pull request.
+No changelog entry, for the reason the 2026-10-14 entry gives.
+
+Done:
+- `:clear` in `meta`, listed in `META_HELP`; writes Ctrl+L's bytes,
+  only when stdout is a terminal.
+- Banner changed in `Repl::banner` and in every test, doc and expected
+  file that quoted it.
+- `tests/repl.rs` 15 passed, `drt-web` `term` 7 passed; fmt and clippy
+  clean for `-p drt --features full`. In a pty under a terminal
+  emulator, `:clear` left only the prompt and `:q` exited 0.
+
+Learned: the owner tried this on 0.7.0, which predates the colon
+commands, so `:q` was evaluated as Lua there. Ctrl+L leaving the line
+off screen did not reproduce in two emulators; the bytes are the ones
+bash writes.
+
+Next: colon commands exist only in the native REPL. The page and the
+SSH-served REPL print the same banner but evaluate `:h` as Lua.
