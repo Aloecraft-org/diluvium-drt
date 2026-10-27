@@ -81,12 +81,11 @@ schema: 1
 repo: Aloecraft-org/diluvium-drt
 
 releases:
-  - version: 0.8.0-rc.1
-    tag: v0.8.0-rc.1
-    date: 2026-10-03
-    status: released
-    stable: false
-    mirror: true
+  - version: 0.8.0
+    tag: v0.8.0
+    status: unreleased
+    stable: true
+    mirror: false
     dv_abi: 2
     diluvium: 97bb9f9d28974e3b4124a2a015e5b06da54a0c98
     diluvium_version: "0.17.2"
@@ -628,6 +627,14 @@ releases:
         and a network that could not be measured says why (two `--stun`
         servers are needed). Only a call with no carrier measures; a refusal
         before the session, such as a fingerprint that differs, does not.
+      - |
+        **A program file may open with a `#!` line.** drt skips a first
+        line starting with `#` when it reads a program or module file, as
+        stock Lua's `loadfile` does, so a file that begins
+        `#!/usr/bin/env -S drt run -f` runs as `./tool`. The line break
+        stays, so tracebacks keep the file's own line numbers. Source that
+        never was a file (`drt run -c`, stdin, guest `load`) is unchanged,
+        as in Lua.
     changed:
       - |
         **`drt netcheck --json` says whether anything was measured.**
