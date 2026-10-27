@@ -927,27 +927,35 @@ jobs:
         run: |
           set -eu
           cd release_dist
-          # install.sh ships as a release asset so the curl|sh front door has
-          # a URL that exists without any server-side work:
-          #   $GITHUB/releases/latest/download/install.sh
-          # The mirror stays the preferred front door once it carries the drt
-          # namespace; this is the one that works the day a release lands.
+          # The installer ships as six release assets, so every curl|sh
+          # front door has a URL that exists without any server-side work:
+          #   $GITHUB/releases/latest/download/start-drt.sh
+          # start.sh and start-drt.sh install the latest stable release;
+          # install.sh, install-drt.sh, get.sh and get-drt.sh act on THIS
+          # release. A script piped to sh cannot see the URL it came from,
+          # so each copy is stamped with its release and its mode. A copy
+          # served from `<tag>/install.sh` that installed `latest` would
+          # name one version in its URL and fetch another, which is how
+          # someone ends up with v0.4.2 believing they pinned a candidate.
+          # The grep is the point of the loop: a sed that silently matched
+          # nothing would publish exactly the lying script this replaces.
           # `..` is the checkout root from here, the same way the Cargo.lock
-          # read below reaches it; before the `cd` it was one level ABOVE the
-          # workspace, so this cp failed the step under `set -eu`.
-          cp ../install.sh install.sh
-          # Pin the shipped copy to THIS release. A script served from
-          # `<tag>/install.sh` that installs `latest` names one version in
-          # its URL and fetches another, which is how someone ends up with
-          # v0.4.2 believing they pinned a candidate. The grep is the point
-          # of the step: a sed that silently matched nothing would publish
-          # exactly the lying script this replaces.
+          # read below reaches it.
           STAMP_TAG='${{ needs.preflight.outputs.tag }}'
-          sed -i "s|^STAMPED_VERSION=.*|STAMPED_VERSION=$STAMP_TAG|" install.sh
-          grep -qx "STAMPED_VERSION=$STAMP_TAG" install.sh || {
-            echo "::error::install.sh was not stamped with '$STAMP_TAG'" >&2
-            exit 1
-          }
+          for mode in start install get; do
+            for f in "$mode.sh" "$mode-drt.sh"; do
+              sed -e "s|^STAMPED_VERSION=.*|STAMPED_VERSION=$STAMP_TAG|" \
+                  -e "s|^STAMPED_MODE=.*|STAMPED_MODE=$mode|" ../install.sh > "$f"
+              grep -qx "STAMPED_VERSION=$STAMP_TAG" "$f" && grep -qx "STAMPED_MODE=$mode" "$f" || {
+                echo "::error::$f was not stamped with '$STAMP_TAG' and '$mode'" >&2
+                exit 1
+              }
+              [ "$(sh "$f" --version)" = "$STAMP_TAG" ] || {
+                echo "::error::$f --version does not print '$STAMP_TAG'" >&2
+                exit 1
+              }
+            done
+          done
           # Asked of the artifact rather than guessed in YAML. The linux
           # x86_64 binaries are native here, so they can report the dv ABI
           # they actually speak and the connectors actually compiled in;
@@ -1066,7 +1074,7 @@ jobs:
           else
             ../script/changelog.py buildinfo-check --tag '${{ needs.preflight.outputs.tag }}' --file BUILDINFO.txt
           fi
-          # Every other asset, install.sh and the web buildinfo included
+          # Every other asset, the six installers and the web buildinfo included
           # (doc/ALIGNMENT.md §6): the mirror verifies each file it carries
           # against this, and a file it cannot find here is one it cannot
           # vouch for. Generated last, so it does not list itself.
@@ -1107,3 +1115,48 @@ jobs:
                 echo "pruning $t"
                 gh release delete "$t" --yes --cleanup-tag < /dev/null
               done
+      # The installers' `list-all` and `dev` read this: every published
+      # release, newest first, as tag, channel and date. It lives on its own
+      # branch so a publish never commits to main, and it is rewritten
+      # whole from the Releases page after the prune above, so it names
+      # exactly what GitHub can still serve. Raw GitHub content needs no
+      # API call, so an installer is never rate limited reading it.
+      - name: Release log
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          log="$RUNNER_TEMP/release-log"
+          {
+            echo "# Every published release of $GH_REPO, newest first: tag, channel, date."
+            echo "# Written by release.yml on every publish; do not edit by hand."
+            gh release list --limit 1000 --exclude-drafts --json tagName,isPrerelease,createdAt \
+              --jq 'sort_by(.createdAt) | reverse | .[]
+                    | [.tagName,
+                       (if (.tagName | test("-dev\\.[0-9]+$")) then "dev"
+                        elif .isPrerelease then "rc" else "stable" end),
+                       (.createdAt | .[0:10])] | @tsv'
+          } > "$log"
+          cat "$log"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git fetch -q origin release-log 2>/dev/null; then
+            git checkout -q -B release-log FETCH_HEAD
+          else
+            git checkout -q --orphan release-log
+            git rm -rqf .
+          fi
+          mkdir -p .github
+          cp "$log" .github/release-log
+          git add .github/release-log
+          if git diff --cached --quiet; then
+            echo "release log unchanged"
+          else
+            git commit -qm "release-log: ${{ needs.preflight.outputs.tag }}"
+            # Two publishes at once can race here. The release itself is
+            # already out, and the next publish rewrites the whole log, so
+            # a lost race is a warning, not a failed release.
+            git push -q origin release-log \
+              || echo "::warning::release-log was not pushed; the next publish rewrites it"
+          fi

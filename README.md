@@ -59,31 +59,39 @@ never as a mystifying `denied` at first call.
 
 ## Installing
 
-One static binary, no runtime dependencies. The front door is the release
-mirror, which carries every release, `latest/`, and `install.sh` itself:
+One static binary, no runtime dependencies:
 
 ```sh
-curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/latest/install.sh | sh
+curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/latest/start-drt.sh | sh
 ```
 
-It picks the asset for this platform, verifies it against that release's
-`SHA256SUMS.txt`, and says where it put it and what is inside it. The copy
-published *with* a release installs that release, so pinning one is the
-same line with the version in it rather than a flag:
+That installs the latest stable release, verified against its
+`SHA256SUMS.txt`. Every release also carries the same script as
+`install.sh` and `get.sh`, each pinned to that release: `install` puts it
+on your PATH, `get` drops the verified binary in the current directory.
 
 ```sh
-curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/v0.7.0/install.sh | sh
+sh start-drt.sh --version v0.7.0     # install a release (-r, --release)
+sh start-drt.sh get                  # download only
+sh start-drt.sh list                 # list-all adds candidates and dev builds
+sh start-drt.sh check                # what is installed, and which is in use
+sh start-drt.sh use v0.7.0           # switch between installed releases
+sh start-drt.sh remove v0.7.0        # or every release, with no version
 ```
 
-Every release's notes carry that line, already spelled for it.
+Releases live side by side under `<prefix>/share/drt/versions/`, with
+`<prefix>/bin/drt` linked to the one in use. The prefix is `/usr/local`
+when writable, else `~/.local`; `--prefix` overrides it. `--slim` takes
+the size profile. The script prefers the release mirror and falls back to
+GitHub Releases; `DRT_MIRROR=file:///mnt/xfer/drt` installs from a
+directory you already have.
 
-Or take the binary yourself. The names are `doc/ALIGNMENT.md` §4's —
+Or take the binary yourself. The names are `doc/ALIGNMENT.md` §4's,
 `drt_<os>_<arch>[_<libc>]`, the profile last:
 
 ```sh
 # also drt_linux_arm64_musl, drt_darwin_arm64, drt_darwin_x86_64,
-# drt_windows_x86_64.exe, and each with _slim before the extension:
-# drt_linux_x86_64_musl_slim, drt_windows_x86_64_slim.exe
+# drt_windows_x86_64.exe, and each with _slim before the extension
 BASE=https://github.com/Aloecraft-org/diluvium-drt/releases/latest/download
 curl -fLO $BASE/drt_linux_x86_64_musl
 curl -fLO $BASE/SHA256SUMS.txt
@@ -91,31 +99,11 @@ sha256sum --ignore-missing -c SHA256SUMS.txt      # shasum -a 256 -c on macOS
 chmod +x drt_linux_x86_64_musl && ./drt_linux_x86_64_musl --version
 ```
 
-GitHub Releases is the fallback `install.sh` reaches for when the mirror
-does not answer, and it publishes the script too:
-
-```sh
-curl -fsSL $BASE/install.sh | sh
-```
-
-`DRT_SLIM=1` takes the size profile, `DRT_VERSION=vX.Y.Z` pins a release,
-`DRT_PREFIX=` chooses the directory, and `DRT_MIRROR=` picks a different
-source — including a directory you already have, which is how this installs
-with no network at all:
-
-```sh
-DRT_MIRROR=file:///mnt/xfer/drt DRT_VERSION=v0.3.0 sh install.sh
-```
-
 Every release carries `BUILDINFO.txt` and `SHA256SUMS.txt`. `BUILDINFO`
 names the diluvium revision inside the binary and the dv ABI it speaks —
 `drt buildinfo` asks the binary itself, so "which diluvium is in here" is
 read off the artifact rather than inferred from a tag. See
 [`doc/Release.md`](doc/Release.md).
-
-`install.sh` resolves the mirror before GitHub Releases and verifies
-against whichever answered, so the two commands above differ only in which
-source is tried first. It prints the one it used.
 
 Tab completion: add `eval "$(drt completions bash)"` to `~/.bashrc`, or
 `eval "$(drt completions zsh)"` to `~/.zshrc` after `compinit`. In

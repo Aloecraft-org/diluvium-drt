@@ -554,9 +554,28 @@ Underneath it the embedded core moves from 0.15.1 to
   checks it in bash on Linux, Windows (Git Bash) and macOS (its own
   bash 3.2), in Windows PowerShell 5.1 and pwsh 7, and that zsh loads
   it.
+- **One installer, six release assets: `start`, `install` and `get`.**
+  Each release carries `start.sh`, `install.sh` and `get.sh`, each also
+  as `-drt.sh`. `start` installs the latest stable release; `install`
+  and `get` act on the release that shipped them, `get` saving the
+  verified binary in the current directory instead of installing it.
+  Every copy takes `--version`/`-r`/`--release <version>` (alone, it
+  prints the copy's release), `latest`, `dev`, `list`, `list-all`,
+  `check`, `use <version>` and `remove [version]`. Releases install
+  side by side under `<prefix>/share/drt/versions/`, with `bin/drt`
+  linked to the one in use. When the mirror does not answer, the
+  binaries come from GitHub Releases and `latest` from `changelog.json`
+  on main; dev builds, which the mirror does not carry, are found
+  through the release log, `.github/release-log` on the `release-log`
+  branch, which each publish rewrites (`doc/Release.md`, Installing).
 
 ### Changed
 
+- **`DRT_PREFIX` names the install prefix, not the bin directory.**
+  The binary goes under `$DRT_PREFIX/bin` and `$DRT_PREFIX/share/drt`,
+  and `--prefix` says the same. An install from before this release
+  left a plain file at `bin/drt`; the next install replaces it with
+  the link.
 - **`drt netcheck --json` says whether anything was measured.**
   `"measured": false` when no probe cost a packet: the verdict is then
   `relay` as the fallback that works on any network, not as a
