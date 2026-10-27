@@ -1761,7 +1761,7 @@ dependencies = [
 [[package]]
 name = "ego_cli"
 version = "0.1.0"
-source = "git+https://github.com/Aloecraft-org/ego-cli?branch=main#a48cf47d0c923a2c4b6ec7cdb829df355c9e3f88"
+source = "git+https://github.com/Aloecraft-org/ego-cli?branch=main#c9abec581504183baff75f49a258e1878bdff4ab"
 dependencies = [
  "crossterm",
  "js-sys",
