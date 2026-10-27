@@ -301,7 +301,9 @@ function Download([string]$tag, [string]$dir) {
     $sums = Join-Path $dir '.sums'
     if (-not (Fetch "$source/SHA256SUMS.txt" $sums)) { Remove-Item -LiteralPath $sums -ErrorAction SilentlyContinue }
     Verify (Join-Path $dir $first[0]) $got $sums $source
-    foreach ($extra in ($want | Select-Object -Skip 1)) {
+    # By index: a pipeline that yields one array hands foreach its elements.
+    for ($k = 1; $k -lt $want.Count; $k++) {
+        $extra = $want[$k]
         $out = Join-Path $dir $extra[0]
         $done = $false
         foreach ($asset in $extra[1..($extra.Count - 1)]) {
