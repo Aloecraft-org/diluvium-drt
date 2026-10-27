@@ -10,8 +10,11 @@ $Cases = @(
     # words typed            what must be offered
     @('drt bui', 'buildinfo'),
     @('drt run --fi', '--file'),
-    @('drt completions po', 'powershell')
+    @('drt buildinfo --j', '--json')
 )
+# Not `drt completions po`: clap_complete's PowerShell completer offers
+# verbs and flags but not a positional's values, which bash and zsh do.
+# CI found that on Windows; it is clap_complete's behaviour, not drt's.
 
 "completions-check: PowerShell $($PSVersionTable.PSVersion)"
 & $Drt completions powershell | Out-String | Invoke-Expression
