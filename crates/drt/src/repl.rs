@@ -405,9 +405,11 @@ fn piped(mut repl: Repl) -> Result<(), String> {
 /// How long the guest waits on `:ssh`'s `host:ssh/shell` reply.
 const SESSION_WAIT_MS: u32 = i32::MAX as u32;
 
-/// What `:clear` writes: home, then erase the screen. The same bytes
-/// ego-cli writes for Ctrl+L, so the two clear alike.
-const CLEAR_SCREEN: &str = "\x1b[H\x1b[2J";
+/// What `:clear` writes: home, then erase to the end of the screen. The
+/// same bytes ego-cli writes for Ctrl+L, so the two clear alike. Not
+/// `\x1b[2J`: VS Code's terminal scrolls that into scrollback and leaves
+/// its viewport a row short, hiding the prompt that follows.
+const CLEAR_SCREEN: &str = "\x1b[H\x1b[J";
 
 /// Every colon command, for `:help`: one line each, in the order a person
 /// meets them.
