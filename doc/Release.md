@@ -733,58 +733,57 @@ without the C core, for a host that brings its own engine.
 
 ## Installing
 
-`install.sh` at the repo root, published two ways:
+`install.sh` at the repo root is the one installer. The publish job
+writes it into each release eight times, stamping two lines in each copy:
+`STAMPED_VERSION` with the tag and `STAMPED_MODE` with what the copy does
+when run with no command.
 
-```
-curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/latest/install.sh | sh   # the mirror
-curl -fsSL https://github.com/Aloecraft-org/diluvium-drt/releases/latest/download/install.sh | sh
-```
+| Assets | Mode | No command does |
+| :--- | :--- | :--- |
+| `start.sh`, `start-drt.sh` | `start` | install the latest stable release |
+| `install.sh`, `install-drt.sh` | `install` | install this release |
+| `get.sh`, `get-drt.sh` | `get` | download this release into the current directory |
+| `help.sh`, `help-drt.sh` | `help` | print the usage |
 
-The copy published **with** a release installs **that** release: the
-workflow stamps `STAMPED_VERSION` in the uploaded copy with the tag, and
-the script defaults to it. The checkout's copy says `latest`, and
-`DRT_VERSION` overrides either. Before that stamp existed, a script
-fetched from `<tag>/install.sh` still defaulted to `latest`, so the URL
-named one version and the binary was another with nothing saying so --
-which is why the install command rendered into each release's notes
-passes `DRT_VERSION=` for every release published before the stamp.
+`install.ps1` is the same script for Windows (PowerShell 5.1 and 7) and
+ships the same eight ways as `.ps1`, stamped the same way. It keeps
+releases under `%LOCALAPPDATA%\Programs\Aloecraft\share\drt\versions`,
+copies the one in use into `bin\` (a Windows symlink needs an administrator)
+and adds `bin\` to the user's PATH. Every install and `use` writes tab
+completion from the release's own `drt completions`, under
+`<prefix>/share/` for bash, zsh and fish and as
+`share\drt\completion.ps1` on Windows; a release without the verb gets
+none. `script/test-installer.sh` and
+`script/test-installer.ps1` run both offline against a fake mirror, in CI
+under dash, bash, PowerShell 7 and Windows PowerShell 5.1.
 
-The mirror is the intended front door and the one the script itself
-prefers when resolving binaries. Its layout is `doc/ALIGNMENT.md` §4's,
-`software.aloecraft.org/releases/<repo>/`, which replaced the
-`diluvium.aloecraft.org/release/` namespace this doc first asked for.
-**It carries `diluvium-drt`** — `source: changelog`, so it reads this
-repository's committed `changelog.json` and carries the tags marked
-`mirror: true`; as of 2026-09-12 `latest/` is v0.4.1 and the candidates
-are not there yet, which they will be on its next run now that the newest
-candidate is flagged. For the two weeks before it existed the README's
-headline command was the first thing a newcomer ran and the first thing
-that failed. So `install.sh` now ships as a **release asset**
-too: one line in the publish job, no server-side work, and a URL that
-resolves the day a release lands. The mirror ask below still stands and
-still wins once it is done.
+A copy piped to `sh` cannot see the URL it came from, so the stamp is how
+`<tag>/install.sh` installs `<tag>`. The step fails if either line did not
+take, or if the copy's `--version` does not print the tag. The checkout's
+copy is unstamped and behaves as `start`. Every copy takes every command;
+`--help` (or `help`) lists them; piped from curl, arguments go after
+`sh -s --`. `DRT_VERSION` still pins the default, which is what
+the notes of a release published before v0.7.0 pass, since its
+`install.sh` installed `latest`.
 
-Mirror-first with a GitHub Releases fallback, and **SHA-256-verified on
-both** — the release workflow publishes `SHA256SUMS.txt` beside the
-binaries, so the old "the fallback path has no sums at all" comment
-described a workflow that had already changed. A missing sums file warns
-rather than refuses, so pinning a release older than the sums file still
-works; a *mismatch* always refuses.
+Sources, in order. Binaries come from the mirror's `<tag>/` and then
+GitHub Releases' `download/<tag>/`, verified against the `SHA256SUMS.txt`
+beside whichever answered. A mismatch refuses; a missing sums file or an
+unlisted asset warns, so a release older than the sums file still
+installs. `latest` is the mirror's `releases.json`, then the release log,
+then GitHub's `releases/latest` redirect, then `changelog.json` on main,
+last because it can mark a release released before its assets exist.
 
-Knobs: `DRT_SLIM=1` / `DRT_VERSION=vX.Y.Z` / `DRT_PREFIX=…` / `DRT_MIRROR=…`.
-`DRT_MIRROR` takes a `file://` URL, which is the air-gapped install: point
-it at a directory holding `<version>/drt_<os>_<arch>` and optionally
-`SHA256SUMS.txt`, and nothing reaches the network.
+**The release log** is `.github/release-log` on the `release-log` branch:
+every published release, newest first, as tag, channel (`stable`, `rc`,
+`dev`) and date. The publish job rewrites it whole from the Releases page
+after pruning dev builds, so it lists exactly what GitHub can serve. It
+exists because the mirror carries no dev builds and the GitHub API is rate
+limited; `list-all` and `--version dev` read it over raw GitHub content.
 
-Linux refuses non-x86_64 **by name** rather than downloading the x86_64
-static binary and failing the `--version` guard with "does not run here",
-which was true and unhelpful.
-
-**On DRT as the primary install candidate: yes, staged.** The argument
-for: one binary that runs a script (`drt run`), serves a deployment
-(`drt start`), reads the C host's own configs, and reaches peers (`drt
-p2p`) covers everything a newcomer reaches for plus the runtime story,
-while the `diluvium` interpreter remains the compiler/embedding artifact.
-The staging: keep `/start` pointing at diluvium until discofetch runs on
-DRT in production; flip it after — an install one-liner should hand out
-the thing production has proven, and that proof is days away, not months.
+Releases install side by side under `<prefix>/share/drt/versions/<tag>/`,
+with `<prefix>/bin/drt` linked to the one in use (`use`, `check`,
+`remove`). An older install left a plain file at `bin/drt`; the next
+install replaces it with the link. `DRT_PREFIX` names the prefix, not the
+bin directory as it did before. `DRT_MIRROR` takes a `file://` URL, which
+is the air-gapped install.
