@@ -548,7 +548,10 @@ Underneath it the embedded core moves from 0.15.1 to
   command definition that parses the command line, so it completes
   exactly the verbs and flags the build carries. `eval "$(drt
   completions bash)"` in `~/.bashrc` turns it on. It completes verbs,
-  flags and paths, not live values such as a deployment's name.
+  flags and paths, not live values such as a deployment's name. CI
+  checks it in bash on Linux, Windows (Git Bash) and macOS (its own
+  bash 3.2), in Windows PowerShell 5.1 and pwsh 7, and that zsh loads
+  it.
 
 ### Changed
 

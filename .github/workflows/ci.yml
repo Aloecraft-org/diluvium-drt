@@ -221,6 +221,14 @@ jobs:
           EXAMPLES_DIR=tests/determinism DRT="$GITHUB_WORKSPACE/target/release/drt" examples/run-all.sh
           cargo build --release -p drt --target-dir target/slim
           EXAMPLES_DIR=tests/determinism DRT="$GITHUB_WORKSPACE/target/slim/release/drt" examples/run-all.sh
+      # `drt completions`, loaded the way README.md says and asked what a
+      # partial verb and flag complete to. The `windows` and `macos` jobs
+      # run the same script on those platforms' shells.
+      - name: Tab completion (bash, zsh)
+        run: |
+          set -eu
+          sudo apt-get install -y --no-install-recommends zsh
+          script/completions-check.sh "$GITHUB_WORKSPACE/target/release/drt"
       - name: Build without default features
         run: cargo build --workspace --no-default-features
 
@@ -590,6 +598,40 @@ jobs:
           export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="$CC"
           "$CC" --version | head -1
           cargo test -p drt --no-default-features --features "slim,p2p" --lib p2p --test p2p
+      # `drt completions` on Windows, with the binary the step above built:
+      # Git Bash's bash, then both PowerShells, since Windows PowerShell 5.1
+      # is the one a stock machine opens and pwsh 7 the one people install.
+      - name: Tab completion (Git Bash, PowerShell 5.1 and 7)
+        run: |
+          set -eu
+          drt="$GITHUB_WORKSPACE/target/debug/drt.exe"
+          script/completions-check.sh "$drt"
+          powershell -NoProfile -ExecutionPolicy Bypass -File script/completions-check.ps1 "$drt"
+          pwsh -NoProfile -File script/completions-check.ps1 "$drt"
+
+  macos:
+    # Tab completion on macOS, which no other job here runs on: release.yml
+    # builds the darwin binaries and nothing executes a script on them.
+    # The point is the system's own /bin/bash, 3.2, which is why README.md
+    # says `eval "$(...)"` and not `source <(...)`; and zsh, macOS's
+    # default shell. `slim` is enough: completion is generated from the
+    # command line, and every verb in it is compiled in.
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build drt (slim)
+        run: cargo build -p drt
+      - name: Tab completion (/bin/bash 3.2, zsh)
+        run: |
+          set -eu
+          case $(/bin/bash -c 'echo $BASH_VERSION') in
+            3.*) ;;
+            *) echo "/bin/bash is not 3.x; this job tests nothing it claims to" >&2; exit 1 ;;
+          esac
+          /bin/bash script/completions-check.sh "$GITHUB_WORKSPACE/target/debug/drt"
 
   fidelity:
     # The benchmark's *deterministic* fields, checked against the committed
