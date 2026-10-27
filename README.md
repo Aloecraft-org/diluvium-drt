@@ -100,7 +100,10 @@ Releases live side by side under `<prefix>/share/drt/versions/`, with
 when writable, else `~/.local`; `--prefix` overrides it. `--slim` takes
 the size profile. The script prefers the release mirror and falls back to
 GitHub Releases; `DRT_MIRROR=file:///mnt/xfer/drt` installs from a
-directory you already have.
+directory you already have. An install also sets up tab completion for
+bash (with the bash-completion package), zsh, fish and PowerShell; zsh
+outside `/usr/local` and PowerShell need one line in your profile, which
+the install prints.
 
 Or take the binary yourself. The names are `doc/ALIGNMENT.md` §4's,
 `drt_<os>_<arch>[_<libc>]`, the profile last:

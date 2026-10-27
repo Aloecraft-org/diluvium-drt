@@ -108,6 +108,7 @@ try {
     Step $Script --prefix $P
     Same 'start installs latest' (InUse) 'v1.1.0'
     if (BinIs 'v1.1.0') { Ok 'bin holds the release in use' } else { Bad 'bin holds the release in use' }
+    if (Test-Path (Join-Path $P "share\$Name\completion.ps1")) { Ok 'tab completion, from the binary' } else { Bad 'tab completion, from the binary' }
 
     Step (Stamp 'install' 'v1.0.0') --prefix $P
     Same 'install.ps1 installs its own release' (InUse) 'v1.0.0'

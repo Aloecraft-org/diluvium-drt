@@ -45,6 +45,9 @@ usage: $SELF [command] [--version VERSION] [--prefix DIR] [--slim]
                     (default /usr/local if writable, else ~/.local)
   --slim            the slim profile
 
+An install puts drt in DIR/bin, with tab completion for bash, zsh and
+fish under DIR/share, for releases that have 'drt completions'.
+
 Env: DRT_VERSION, DRT_PREFIX, DRT_SLIM=1, DRT_MIRROR and DRT_RELEASE_LOG
 (file:// URLs work).
 
@@ -68,6 +71,11 @@ RAW="https://raw.githubusercontent.com/$REPO"
 # every publish, so it lists what GitHub can serve and nothing pruned.
 RELEASE_LOG="${DRT_RELEASE_LOG:-$RAW/release-log/.github/release-log}"
 SELFTEST=--version
+# More names in bin for the same binary. DRT has none; Diluvium's is dlua.
+ALIASES=
+# Shells that get tab completion. Each finds its file under the prefix by
+# itself, except zsh outside /usr/local (do_install says so).
+SHELLS="bash zsh fish"
 PREFIX="${DRT_PREFIX:-}"
 SLIM="${DRT_SLIM:-0}"
 
@@ -112,6 +120,22 @@ platform() {
     else
         WANT="drt drt_${os}_${arch}${libc} drt_${old_os}_${arch}"
     fi
+}
+
+# Where a shell looks for the completion of command $3, under prefix $1.
+completion_path() {
+    case "$2" in
+        bash) printf '%s\n' "$1/share/bash-completion/completions/$3" ;;
+        zsh)  printf '%s\n' "$1/share/zsh/site-functions/_$3" ;;
+        fish) printf '%s\n' "$1/share/fish/vendor_completions.d/$3.fish" ;;
+    esac
+}
+
+# Tab completion for shell $1 and command $2, on stdout: the release in use
+# writes its own, so it completes that release's verbs. One from before
+# `drt completions` fails here, and the shell gets no file.
+completion() {
+    "$PREFIX/bin/$NAME" completions "$1"
 }
 
 # ---------------------------------------------------------------- arguments
@@ -342,6 +366,10 @@ link_version() {
         ln -sf "../share/$NAME/versions/$TAG/$b" "$PREFIX/bin/.$b.new"
         mv -f "$PREFIX/bin/.$b.new" "$PREFIX/bin/$b"
     done
+    for a in $ALIASES; do
+        ln -sf "../share/$NAME/versions/$TAG/$NAME" "$PREFIX/bin/.$a.new"
+        mv -f "$PREFIX/bin/.$a.new" "$PREFIX/bin/$a"
+    done
     # A link into another release for a file this one lacks would leave
     # half of the previous release in use.
     for f in "$PREFIX/bin"/*; do
@@ -349,6 +377,29 @@ link_version() {
             */share/$NAME/versions/"$TAG"/*) ;;
             */share/$NAME/versions/*) rm -f "$f" ;;
         esac
+    done
+    write_completions
+}
+
+# Written again on every install and use, so they match the release in use.
+# A shell whose directory cannot be made is skipped.
+write_completions() {
+    for cmd in $NAME $ALIASES; do
+        for sh in $SHELLS; do
+            f=$(completion_path "$PREFIX" "$sh" "$cmd")
+            mkdir -p "$(dirname "$f")" 2>/dev/null || continue
+            if completion "$sh" "$cmd" > "$f.new" 2>/dev/null && [ -s "$f.new" ]; then
+                mv -f "$f.new" "$f"
+            else
+                rm -f "$f.new"
+            fi
+        done
+    done
+}
+
+remove_completions() {  # $1 = prefix
+    for cmd in $NAME $ALIASES; do
+        for sh in $SHELLS; do rm -f "$(completion_path "$1" "$sh" "$cmd")"; done
     done
 }
 
@@ -372,6 +423,10 @@ do_install() {
     # What the binary carries, asked of it rather than read off its name.
     "$PREFIX/bin/$NAME" buildinfo 2>/dev/null | sed 's/^/  /' || true
     case ":$PATH:" in *":$PREFIX/bin:"*) ;; *) say "note: $PREFIX/bin is not on your PATH" ;; esac
+    case "$PREFIX:${SHELL:-}" in
+        /usr/local:*|/usr:*) ;;
+        *zsh) say "note: for tab completion in zsh, put fpath+=($PREFIX/share/zsh/site-functions) before compinit in ~/.zshrc" ;;
+    esac
 }
 
 do_get() {
@@ -449,6 +504,7 @@ do_remove() {
                         */share/$NAME/versions/$TAG/*) rm -f "$f" ;;
                     esac
                 done
+                remove_completions "$p"
                 say "$TAG was in use; '$SELF use VERSION' picks another"
             fi
         else
@@ -458,6 +514,7 @@ do_remove() {
                 esac
             done
             rm -rf "$p/share/$NAME"
+            remove_completions "$p"
             say "removed every $NAME release from $p"
             removed=1
         fi

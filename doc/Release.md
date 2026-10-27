@@ -749,7 +749,11 @@ when run with no command.
 ships the same eight ways as `.ps1`, stamped the same way. It keeps
 releases under `%LOCALAPPDATA%\Programs\Aloecraft\share\drt\versions`,
 copies the one in use into `bin\` (a Windows symlink needs an administrator)
-and adds `bin\` to the user's PATH. `script/test-installer.sh` and
+and adds `bin\` to the user's PATH. Every install and `use` writes tab
+completion from the release's own `drt completions`, under
+`<prefix>/share/` for bash, zsh and fish and as
+`share\drt\completion.ps1` on Windows; a release without the verb gets
+none. `script/test-installer.sh` and
 `script/test-installer.ps1` run both offline against a fake mirror, in CI
 under dash, bash, PowerShell 7 and Windows PowerShell 5.1.
 

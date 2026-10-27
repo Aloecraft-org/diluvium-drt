@@ -570,6 +570,11 @@ Underneath it the embedded core moves from 0.15.1 to
   `changelog.json` on main; dev builds, which the mirror does not carry, are found
   through the release log, `.github/release-log` on the `release-log`
   branch, which each publish rewrites (`doc/Release.md`, Installing).
+  An install also sets up tab completion from the release's own
+  `drt completions`: files under the prefix that bash-completion, zsh
+  and fish find by themselves, and a `completion.ps1` on Windows. zsh
+  outside `/usr/local` and PowerShell read only what a profile names,
+  so the install prints the line to add rather than edit the profile.
 
 ### Changed
 

@@ -25,7 +25,7 @@ mkdir -p "$M"
 release() {  # $1 = tag; writes fake binaries and their sums
     mkdir -p "$M/$1"
     for a in $ASSETS; do
-        printf '#!/bin/sh\necho "%s %s"\n' "$NAME" "${1#v}" > "$M/$1/$a"
+        printf '#!/bin/sh\n[ "${1:-}" != completions ] || { echo "# %s completion for $2"; exit; }\necho "%s %s"\n' "$NAME" "$NAME" "${1#v}" > "$M/$1/$a"
         chmod +x "$M/$1/$a"
     done
     (cd "$M/$1" && sha256sum -- * > SHA256SUMS.txt 2>/dev/null || shasum -a 256 -- * > SHA256SUMS.txt)
@@ -90,6 +90,12 @@ has  "list-all: dev builds too" "$($SH "$SCRIPT" list-all)" "v1.2.0-dev.1"
 $SH "$SCRIPT" --prefix "$P" >/dev/null
 same "start installs latest" "$(in_use)" "v1.1.0"
 same "the link runs" "$("$P/bin/$NAME" --version)" "$NAME 1.1.0"
+completions() {  # every completion file an install writes
+    printf '%s\n' "$P/share/bash-completion/completions/$NAME" "$P/share/zsh/site-functions/_$NAME" "$P/share/fish/vendor_completions.d/$NAME.fish"
+}
+missing=""; for f in $(completions); do [ -s "$f" ] || missing="$missing $f"; done
+same "tab completion for bash, zsh and fish, from the binary" "$missing" ""
+same "each from its own shell" "$(cat "$P/share/zsh/site-functions/_$NAME")" "# $NAME completion for zsh"
 
 $SH "$(stamp install v1.0.0)" --prefix "$P" >/dev/null
 same "install.sh installs its own release" "$(in_use)" "v1.0.0"
@@ -120,6 +126,8 @@ has "the others stay" "$($SH "$SCRIPT" --prefix "$P" check)" "v1.1.0"
 
 $SH "$SCRIPT" --prefix "$P" remove >/dev/null
 [ ! -d "$P/share/$NAME" ] && ok "remove with no version removes all" || bad "remove with no version removes all"
+left=""; for f in $(completions); do [ ! -e "$f" ] || left="$left $f"; done
+same "the completions with it" "$left" ""
 
 mkdir "$T/here"
 (cd "$T/here" && $SH "$(stamp get v1.0.0)" >/dev/null)
