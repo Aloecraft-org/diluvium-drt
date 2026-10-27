@@ -2367,7 +2367,15 @@ fn a_forward_reaches_an_expose_through_two_userspace_stacks() {
             .expect("an unexposed port was refused, not black-holed")
             .unwrap_or(0);
         assert_eq!(n, 0);
-        let why = next_error(&mut reports_a).await;
+        // A may also have reported the refused dial to :8 above, when B's
+        // reset reached it before the handshake finished. That report is
+        // true and not the one under test, so it is passed over.
+        let why = loop {
+            let why = next_error(&mut reports_a).await;
+            if !why.contains("10.9.0.2:8") {
+                break why;
+            }
+        };
         assert!(why.contains("10.9.0.2:9"), "{why}");
         assert!(why.contains("nothing listens there"), "{why}");
     });
