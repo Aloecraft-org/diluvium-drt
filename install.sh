@@ -263,10 +263,12 @@ download() {
     [ -n "$SOURCE" ] || die "no $* for $TAG at $MIRROR/$TAG or $GITHUB/releases/download/$TAG (see '$SELF list-all')"
     fetch "$SOURCE/SHA256SUMS.txt" "$dir/.sums" || : > "$dir/.sums"
     verify "$dir/$want_name" "$got"
-    printf '%s\n' "$WANT" | sed 1d | while read -r extra asset _; do
+    printf '%s\n' "$WANT" | sed 1d | while read -r extra asset alt; do
         [ -n "$extra" ] || continue
         if fetch "$SOURCE/$asset" "$dir/$extra"; then
             verify "$dir/$extra" "$asset"
+        elif [ -n "$alt" ] && fetch "$SOURCE/$alt" "$dir/$extra"; then
+            verify "$dir/$extra" "$alt"
         else
             say "note: $TAG has no $asset"
         fi
