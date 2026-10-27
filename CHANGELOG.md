@@ -564,8 +564,8 @@ Underneath it the embedded core moves from 0.15.1 to
   `check`, `use <version>` and `remove [version]`. Releases install
   side by side under `<prefix>/share/drt/versions/`, with `bin/drt`
   linked to the one in use. When the mirror does not answer, the
-  binaries come from GitHub Releases and `latest` from `changelog.json`
-  on main; dev builds, which the mirror does not carry, are found
+  binaries come from GitHub Releases, and `latest` from GitHub or, last,
+  `changelog.json` on main; dev builds, which the mirror does not carry, are found
   through the release log, `.github/release-log` on the `release-log`
   branch, which each publish rewrites (`doc/Release.md`, Installing).
 

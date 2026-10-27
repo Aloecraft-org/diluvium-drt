@@ -217,16 +217,18 @@ release_log() {
     fetchout "$RELEASE_LOG" | sed '/^#/d;/^[[:space:]]*$/d'
 }
 
-# Every source that can name the newest stable release, ours first.
+# Every source that can name the newest stable release: the mirror, then
+# what GitHub Releases can actually serve, and the changelog on main last,
+# since it can call a release out before its assets are published.
 resolve_latest() {
     tag=$(fetchout "$MIRROR/releases.json" | json_latest || true)
-    [ -n "$tag" ] || tag=$(fetchout "$RAW/main/changelog.json" | json_latest || true)
     [ -n "$tag" ] || tag=$(release_log | awk -F'\t' '$2 == "stable" { print $1; exit }' || true)
     if [ -z "$tag" ] && have curl; then
         # GitHub answers /releases/latest with a redirect to the tag.
         tag=$(curl -fsSI "$GITHUB/releases/latest" 2>/dev/null \
             | sed -n 's|^[Ll]ocation:.*/releases/tag/\([^[:space:]]*\).*|\1|p' | head -1 || true)
     fi
+    [ -n "$tag" ] || tag=$(fetchout "$RAW/main/changelog.json" | json_latest || true)
     [ -n "$tag" ] || die "cannot tell which release is latest: the mirror, GitHub and the release log all failed"
     printf '%s\n' "$tag"
 }
@@ -331,6 +333,14 @@ link_version() {
         ln -sf "../share/$NAME/versions/$TAG/$b" "$PREFIX/bin/.$b.new"
         mv -f "$PREFIX/bin/.$b.new" "$PREFIX/bin/$b"
     done
+    # A link into another release for a file this one lacks would leave
+    # half of the previous release in use.
+    for f in "$PREFIX/bin"/*; do
+        case "$(readlink "$f" 2>/dev/null || true)" in
+            */share/$NAME/versions/"$TAG"/*) ;;
+            */share/$NAME/versions/*) rm -f "$f" ;;
+        esac
+    done
 }
 
 # ---------------------------------------------------------------- depth: the commands
@@ -348,7 +358,7 @@ do_install() {
     mv "$tmp" "$vdir"
     trap - EXIT INT TERM
     link_version
-    say "installed $("$PREFIX/bin/$NAME" $SELFTEST) to $PREFIX/bin/$NAME"
+    say "installed $("$PREFIX/bin/$NAME" $SELFTEST | head -1) to $PREFIX/bin/$NAME"
     say "  source: $SOURCE"
     # What the binary carries, asked of it rather than read off its name.
     "$PREFIX/bin/$NAME" buildinfo 2>/dev/null | sed 's/^/  /' || true
@@ -394,7 +404,7 @@ do_check() {
     [ "$found" = 1 ] || say "no release installed by this script"
     on_path=$(command -v "$NAME" 2>/dev/null || true)
     if [ -n "$on_path" ]; then
-        say "on PATH: $on_path ($("$on_path" $SELFTEST 2>/dev/null || echo "does not run"))"
+        say "on PATH: $on_path ($("$on_path" $SELFTEST 2>/dev/null | head -1 || echo "does not run"))"
         case "$(readlink "$on_path" 2>/dev/null || true)" in
             */share/$NAME/versions/*) ;;
             *) say "  not managed by this script" ;;

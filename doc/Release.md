@@ -756,8 +756,9 @@ Sources, in order. Binaries come from the mirror's `<tag>/` and then
 GitHub Releases' `download/<tag>/`, verified against the `SHA256SUMS.txt`
 beside whichever answered. A mismatch refuses; a missing sums file or an
 unlisted asset warns, so a release older than the sums file still
-installs. `latest` is the mirror's `releases.json`, then `changelog.json`
-on main, then the release log, then GitHub's `releases/latest` redirect.
+installs. `latest` is the mirror's `releases.json`, then the release log,
+then GitHub's `releases/latest` redirect, then `changelog.json` on main,
+last because it can mark a release released before its assets exist.
 
 **The release log** is `.github/release-log` on the `release-log` branch:
 every published release, newest first, as tag, channel (`stable`, `rc`,
