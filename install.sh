@@ -4,8 +4,9 @@
 #   curl -fsSL https://diluvium.aloecraft.org/start-drt | sh
 #   curl -fsSL https://software.aloecraft.org/releases/diluvium-drt/latest/install.sh | sh
 #
-# Every release ships this file six times, as start.sh, start-drt.sh,
-# install.sh, install-drt.sh, get.sh and get-drt.sh. release.yml stamps two
+# Every release ships this file eight times, as start.sh, start-drt.sh,
+# install.sh, install-drt.sh, get.sh, get-drt.sh, help.sh and help-drt.sh.
+# release.yml stamps two
 # lines in each copy: the release that shipped it, and its mode. A script
 # piped to `sh` cannot see the URL it came from, so the stamp is the only
 # way a copy can know what it is. The checkout's copy is an unstamped start
@@ -20,6 +21,7 @@ set -eu
 #   start    install the latest stable release
 #   install  install the release that shipped this copy
 #   get      download and verify that release into the current directory
+#   help     print the usage below
 usage() {
     cat <<EOF
 usage: $SELF [command] [--version VERSION] [--prefix DIR] [--slim]
@@ -37,12 +39,16 @@ usage: $SELF [command] [--version VERSION] [--prefix DIR] [--slim]
   check             what is installed, and which one is in use
   use VERSION       switch to an installed release
   remove [VERSION]  uninstall VERSION, or every release
+  help, --help      this
 
   --prefix DIR      install under DIR/bin and DIR/share/drt
                     (default /usr/local if writable, else ~/.local)
   --slim            the slim profile
 
 Env: DRT_VERSION, DRT_PREFIX, DRT_SLIM=1, DRT_MIRROR (a file:// URL works).
+
+Piped from curl, a command goes after 'sh -s --':
+  curl -fsSL https://diluvium.aloecraft.org/start-drt | sh -s -- list
 EOF
 }
 
@@ -68,6 +74,7 @@ SLIM="${DRT_SLIM:-0}"
 dispatch() {
     case "$ACTION" in
         print)    say "${STAMPED_VERSION:-none (a checkout copy, which installs latest)}" ;;
+        help)     usage ;;
         install)  do_install ;;
         get)      do_get ;;
         list)     do_list stable ;;
@@ -118,13 +125,14 @@ mode_says() {
         start)   echo "install the latest stable release" ;;
         install) echo "install ${STAMPED_VERSION:-latest}, the release this copy came from" ;;
         get)     echo "get ${STAMPED_VERSION:-latest}, the release this copy came from" ;;
+        help)    echo "print this help" ;;
     esac
 }
 
 # A word after --version is its value unless it is an option or a command.
 is_value() {
     case "$1" in
-        -*|install|get|list|list-all|check|use|remove) return 1 ;;
+        -*|install|get|list|list-all|check|use|remove|help) return 1 ;;
     esac
     return 0
 }
@@ -132,7 +140,7 @@ is_value() {
 ACTION=""; TARGET=""; PRINT=0
 while [ $# -gt 0 ]; do
     case "$1" in
-        install|get|list|list-all|check|use|remove)
+        install|get|list|list-all|check|use|remove|help)
             [ -z "$ACTION" ] || die "one command at a time: $ACTION, then $1"
             ACTION="$1" ;;
         --version|-r|--release)
@@ -154,7 +162,7 @@ if [ -z "$ACTION" ]; then
     if [ "$PRINT" = 1 ] && [ -z "$TARGET" ]; then
         ACTION=print
     else
-        case "$STAMPED_MODE" in get) ACTION=get ;; *) ACTION=install ;; esac
+        case "$STAMPED_MODE" in get|help) ACTION="$STAMPED_MODE" ;; *) ACTION=install ;; esac
     fi
 fi
 if [ -z "$TARGET" ]; then

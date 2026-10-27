@@ -734,7 +734,7 @@ without the C core, for a host that brings its own engine.
 ## Installing
 
 `install.sh` at the repo root is the one installer. The publish job
-writes it into each release six times, stamping two lines in each copy:
+writes it into each release eight times, stamping two lines in each copy:
 `STAMPED_VERSION` with the tag and `STAMPED_MODE` with what the copy does
 when run with no command.
 
@@ -743,12 +743,14 @@ when run with no command.
 | `start.sh`, `start-drt.sh` | `start` | install the latest stable release |
 | `install.sh`, `install-drt.sh` | `install` | install this release |
 | `get.sh`, `get-drt.sh` | `get` | download this release into the current directory |
+| `help.sh`, `help-drt.sh` | `help` | print the usage |
 
 A copy piped to `sh` cannot see the URL it came from, so the stamp is how
 `<tag>/install.sh` installs `<tag>`. The step fails if either line did not
 take, or if the copy's `--version` does not print the tag. The checkout's
 copy is unstamped and behaves as `start`. Every copy takes every command;
-`--help` lists them. `DRT_VERSION` still pins the default, which is what
+`--help` (or `help`) lists them; piped from curl, arguments go after
+`sh -s --`. `DRT_VERSION` still pins the default, which is what
 the notes of a release published before v0.7.0 pass, since its
 `install.sh` installed `latest`.
 

@@ -927,12 +927,12 @@ jobs:
         run: |
           set -eu
           cd release_dist
-          # The installer ships as six release assets, so every curl|sh
+          # The installer ships as eight release assets, so every curl|sh
           # front door has a URL that exists without any server-side work:
           #   $GITHUB/releases/latest/download/start-drt.sh
           # start.sh and start-drt.sh install the latest stable release;
           # install.sh, install-drt.sh, get.sh and get-drt.sh act on THIS
-          # release. A script piped to sh cannot see the URL it came from,
+          # release; help.sh and help-drt.sh print the usage. A script piped to sh cannot see the URL it came from,
           # so each copy is stamped with its release and its mode. A copy
           # served from `<tag>/install.sh` that installed `latest` would
           # name one version in its URL and fetch another, which is how
@@ -942,7 +942,7 @@ jobs:
           # `..` is the checkout root from here, the same way the Cargo.lock
           # read below reaches it.
           STAMP_TAG='${{ needs.preflight.outputs.tag }}'
-          for mode in start install get; do
+          for mode in start install get help; do
             for f in "$mode.sh" "$mode-drt.sh"; do
               sed -e "s|^STAMPED_VERSION=.*|STAMPED_VERSION=$STAMP_TAG|" \
                   -e "s|^STAMPED_MODE=.*|STAMPED_MODE=$mode|" ../install.sh > "$f"
@@ -1074,7 +1074,7 @@ jobs:
           else
             ../script/changelog.py buildinfo-check --tag '${{ needs.preflight.outputs.tag }}' --file BUILDINFO.txt
           fi
-          # Every other asset, the six installers and the web buildinfo included
+          # Every other asset, the eight installers and the web buildinfo included
           # (doc/ALIGNMENT.md §6): the mirror verifies each file it carries
           # against this, and a file it cannot find here is one it cannot
           # vouch for. Generated last, so it does not list itself.

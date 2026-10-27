@@ -554,9 +554,9 @@ Underneath it the embedded core moves from 0.15.1 to
   checks it in bash on Linux, Windows (Git Bash) and macOS (its own
   bash 3.2), in Windows PowerShell 5.1 and pwsh 7, and that zsh loads
   it.
-- **One installer, six release assets: `start`, `install` and `get`.**
-  Each release carries `start.sh`, `install.sh` and `get.sh`, each also
-  as `-drt.sh`. `start` installs the latest stable release; `install`
+- **One installer, eight release assets: `start`, `install`, `get` and
+  `help`.** Each release carries `start.sh`, `install.sh`, `get.sh` and
+  `help.sh`, each also as `-drt.sh`; `help` prints the usage. `start` installs the latest stable release; `install`
   and `get` act on the release that shipped them, `get` saving the
   verified binary in the current directory instead of installing it.
   Every copy takes `--version`/`-r`/`--release <version>` (alone, it

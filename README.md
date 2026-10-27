@@ -77,6 +77,7 @@ sh start-drt.sh list                 # list-all adds candidates and dev builds
 sh start-drt.sh check                # what is installed, and which is in use
 sh start-drt.sh use v0.7.0           # switch between installed releases
 sh start-drt.sh remove v0.7.0        # or every release, with no version
+sh start-drt.sh --help               # the rest; piped: curl … | sh -s -- --help
 ```
 
 Releases live side by side under `<prefix>/share/drt/versions/`, with
