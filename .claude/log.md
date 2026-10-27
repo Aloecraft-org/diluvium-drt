@@ -89,3 +89,15 @@ bash writes.
 
 Next: colon commands exist only in the native REPL. The page and the
 SSH-served REPL print the same banner but evaluate `:h` as Lua.
+
+## 2026-10-27 run: Ctrl+L and `:clear` hid the prompt in VS Code
+
+Plan: the owner showed Ctrl+L in VS Code's terminal clearing the screen
+and leaving the redrawn line one row above the viewport; Terminator was
+fine. Change the clear from `ESC[H ESC[2J` to `ESC[H ESC[J` in ego-cli
+(Ctrl+L), diluvium's dline.c, and `:clear` here, then bump the ego-cli
+pin once its pull request merges.
+
+Done: `CLEAR_SCREEN` changed; in a pty `:clear` left only the prompt.
+Learned: in @xterm/headless with scrollOnEraseInDisplay on, ED 2 moves
+the buffer base and ED 0 from home does not.
