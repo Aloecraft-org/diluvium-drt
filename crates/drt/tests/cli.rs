@@ -267,6 +267,26 @@ fn buildinfo_reports_the_embedded_diluvium_revision() {
     );
 }
 
+/// `drt completions bash` prints a script bash can load, naming the verbs
+/// this build carries, and needs no config to do it: a login shell sourcing
+/// it must not fail on a broken `--config`.
+#[test]
+fn completions_print_a_bash_script_that_names_the_verbs() {
+    let out = drt()
+        .args(["--config", "/nonexistent/drt.json", "completions", "bash"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let script = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        script.contains("complete -F _drt"),
+        "a bash completion: {script}"
+    );
+    for verb in ["run", "start", "repl", "ps", "buildinfo", "completions"] {
+        assert!(script.contains(verb), "names `{verb}`");
+    }
+}
+
 /// `drt buildinfo` names the release tag it was built as, when it was one.
 ///
 /// Every candidate under a version prints that version, so `version:

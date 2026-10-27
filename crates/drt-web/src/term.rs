@@ -244,6 +244,14 @@ impl Term {
                 say(Fd::Stdout, &cli::buildinfo(json));
                 Session::exited(0)
             }
+            // The same script the native binary prints, for whoever copies it
+            // out of the page; nothing in a page sources it.
+            Command::Completions { shell } => {
+                let mut script = Vec::new();
+                cli::completions(shell, &mut script);
+                say(Fd::Stdout, &String::from_utf8_lossy(&script));
+                Session::exited(0)
+            }
             Command::Ps(_) => {
                 say(
                     Fd::Stderr,

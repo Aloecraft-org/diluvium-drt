@@ -528,6 +528,19 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Print the tab-completion script for a shell, on stdout.
+    ///
+    /// Generated from this `Cli`, so it completes exactly the verbs and
+    /// flags this build carries. Load it with
+    /// `eval "$(drt completions bash)"` in `~/.bashrc` (not `source <(...)`,
+    /// which macOS's bash 3.2 reads as empty), or install the
+    /// output as `/usr/share/bash-completion/completions/drt`. Completes
+    /// verbs, flags and paths; it does not know live values such as a
+    /// running deployment's name.
+    Completions {
+        /// The shell to write the script for.
+        shell: clap_complete::Shell,
+    },
 }
 
 /// Wire the connectors this build carries against the root config. Off by
@@ -1635,6 +1648,13 @@ fn start_verb(cli: &Cli, profile: Option<&str>, rm: bool, args: &[String]) -> Ex
     }
 }
 
+/// `drt completions <shell>`: the completion script for `shell`, written to
+/// `out`. Public so a test can generate it without spawning the binary.
+pub fn completions(shell: clap_complete::Shell, out: &mut dyn std::io::Write) {
+    use clap::CommandFactory;
+    clap_complete::generate(shell, &mut Cli::command(), "drt", out);
+}
+
 /// The native binary: assemble, then run the verb to completion, sleeping
 /// where the driver says to.
 pub fn main(cli: Cli) -> ExitCode {
@@ -1661,6 +1681,12 @@ pub fn main(cli: Cli) -> ExitCode {
         Command::Deploy => return deploy_verb(&cli),
         Command::Rm => return rm_verb(&cli),
         Command::Commit => return commit_verb(&cli),
+        // Needs no config: the script is a fact about the binary, and a
+        // shell sourcing it at login must not trip over a bad `--config`.
+        Command::Completions { shell } => {
+            completions(shell, &mut std::io::stdout());
+            return ExitCode::SUCCESS;
+        }
         _ => {}
     }
     let (config, dispatcher) = match assemble(&cli) {
@@ -1687,8 +1713,12 @@ pub fn main(cli: Cli) -> ExitCode {
         // arms cannot be reached. Kept as named unreachables rather than
         // deleted, because clap's `Command` must still be exhaustive here and a
         // `_` arm would swallow the next verb somebody adds.
-        Command::Start { .. } | Command::Deploy | Command::Rm | Command::Commit => {
-            unreachable!("the root verbs are dispatched before assemble")
+        Command::Start { .. }
+        | Command::Deploy
+        | Command::Rm
+        | Command::Commit
+        | Command::Completions { .. } => {
+            unreachable!("these verbs are dispatched before assemble")
         }
         #[cfg(feature = "wireguard")]
         Command::Wg {

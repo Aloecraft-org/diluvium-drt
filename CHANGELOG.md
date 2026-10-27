@@ -543,6 +543,17 @@ Underneath it the embedded core moves from 0.15.1 to
   stays, so tracebacks keep the file's own line numbers. Source that
   never was a file (`drt run -c`, stdin, guest `load`) is unchanged,
   as in Lua.
+- **`drt completions <shell>` prints a tab-completion script.** For
+  bash, zsh, fish, elvish and PowerShell, generated from the same
+  command definition that parses the command line, so it completes
+  exactly the verbs and flags the build carries. `eval "$(drt
+  completions bash)"` in `~/.bashrc` turns it on. It completes verbs,
+  flags and paths, not live values such as a deployment's name;
+  PowerShell's completes verbs and flags but not a positional's
+  values, such as the shell `drt completions` takes. CI
+  checks it in bash on Linux, Windows (Git Bash) and macOS (its own
+  bash 3.2), in Windows PowerShell 5.1 and pwsh 7, and that zsh loads
+  it.
 
 ### Changed
 

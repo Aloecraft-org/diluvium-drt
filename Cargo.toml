@@ -74,6 +74,7 @@ rmpv = { version = "1", features = ["with-serde"] }
 thiserror = "2"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 
 # The language, from its own repo — diluvium/diluvium-sys stay there,
 # versioned with the header (SPEC.md §2). The -sys build compiles the

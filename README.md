@@ -117,6 +117,11 @@ read off the artifact rather than inferred from a tag. See
 against whichever answered, so the two commands above differ only in which
 source is tried first. It prints the one it used.
 
+Tab completion: add `eval "$(drt completions bash)"` to `~/.bashrc`, or
+`eval "$(drt completions zsh)"` to `~/.zshrc` after `compinit`. In
+PowerShell, add `drt completions powershell | Out-String | Invoke-Expression`
+to `$PROFILE`. `fish` and `elvish` are there too.
+
 ## What you can do with it today
 
 ```
