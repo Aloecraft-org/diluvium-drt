@@ -1,4 +1,4 @@
-drt repl — :help lists the colon commands, ^D leaves
+drt repl — Show help: <:h+enter>
 dv> dv> >> dv> 22
 dv> 2
 dv> hi	22

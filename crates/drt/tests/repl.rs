@@ -58,6 +58,18 @@ fn answers_are_stdout_and_everything_else_is_stderr() {
     assert!(err.contains("dv>"), "the prompt belongs on stderr: {err}");
 }
 
+/// The colon commands are the terminal's, never the guest's: `:clear`
+/// writes nothing into a redirected answer stream, `:help` lists it, and
+/// `:quit` ends the session before the line after it runs.
+#[test]
+fn colon_commands_are_answered_by_the_terminal() {
+    let (out, err) = repl("1\n:clear\n:help\n2\n:quit\n3\n", &[]);
+    assert_eq!(out.lines().collect::<Vec<_>>(), vec!["1", "2"], "{out}");
+    assert!(!out.contains('\x1b'), "no escape in the answers: {out:?}");
+    assert!(err.contains(":clear"), "{err}");
+    assert!(!err.contains("unexpected symbol"), "{err}");
+}
+
 /// A line that runs off the end of the input is unfinished, not wrong: the
 /// REPL asks for more instead of reporting a syntax error the user has not
 /// finished making.
@@ -128,10 +140,7 @@ fn unsafe_is_the_stdlib_seal_and_not_the_sandbox() {
         vec![r#""nil""#, r#""nil""#],
         "{out}"
     );
-    assert!(
-        err.starts_with("drt repl — :help lists the colon commands, ^D leaves"),
-        "{err}"
-    );
+    assert!(err.starts_with("drt repl — Show help: <:h+enter>"), "{err}");
 
     // Unsealed: there, and the banner says so rather than looking the
     // same as a sealed one, which would be a trap.

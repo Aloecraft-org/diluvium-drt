@@ -27,8 +27,9 @@
 //!   whose prompts go to stderr so a redirect stays clean.
 //! - [`PROGRAM`], [`IN`], [`OUT`]: the guest and the two queues.
 //! - Fan-out: [`meta`], the lines the host answers instead of the guest:
-//!   `:ssh` (the config's `host:ssh/shell`) and `:ssh <target> …`
-//!   (`drt ssh`, on this terminal).
+//!   `:help`, `:quit`, `:clear`, the control endpoint's orders, `:ssh`
+//!   (the config's `host:ssh/shell`) and `:ssh <target> …` (`drt ssh`, on
+//!   this terminal). [`META_HELP`] lists them.
 
 use std::io::{BufRead, Write};
 use std::sync::{Arc, Mutex};
@@ -188,9 +189,9 @@ impl Repl {
     /// the tty and the page -- and they must not drift.
     pub fn banner(&self) -> &'static str {
         if self.unsafe_stdlib {
-            "drt repl — unsafe stdlib: os, io, require — :help lists the colon commands, ^D leaves"
+            "drt repl — unsafe stdlib: os, io, require — Show help: <:h+enter>"
         } else {
-            "drt repl — :help lists the colon commands, ^D leaves"
+            "drt repl — Show help: <:h+enter>"
         }
     }
 
@@ -390,7 +391,8 @@ fn piped(mut repl: Repl) -> Result<(), String> {
 
 // depth: commands the host answers itself
 
-/// A line the terminal's side answers rather than the guest: `:ssh`. True
+/// A line the terminal's side answers rather than the guest: the colon
+/// commands [`META_HELP`] lists. True
 /// when it was one. A Diluvium line never starts with `:`, so nothing a
 /// program could say is taken.
 ///
@@ -403,11 +405,16 @@ fn piped(mut repl: Repl) -> Result<(), String> {
 /// How long the guest waits on `:ssh`'s `host:ssh/shell` reply.
 const SESSION_WAIT_MS: u32 = i32::MAX as u32;
 
+/// What `:clear` writes: home, then erase the screen. The same bytes
+/// ego-cli writes for Ctrl+L, so the two clear alike.
+const CLEAR_SCREEN: &str = "\x1b[H\x1b[2J";
+
 /// Every colon command, for `:help`: one line each, in the order a person
 /// meets them.
 const META_HELP: &str = "\
 :help                this list
 :quit, :q            leave (so does ^D)
+:clear               clear the screen (so does ^L)
 :ssh [args]          an SSH session on this terminal; alone, the config's host:ssh/shell
 :ps                  a running deployment's instances (SPEC.md §13a)
 :status              its state
@@ -425,6 +432,17 @@ fn meta(repl: &mut Repl, line: &str) -> Result<bool, String> {
         }
         ":quit" | ":q" | ":exit" => {
             repl.quit = true;
+            return Ok(true);
+        }
+        ":clear" => {
+            // Only a terminal has a screen. Through a redirect the bytes
+            // would land in the answers, which stay clean.
+            use std::io::IsTerminal;
+            if std::io::stdout().is_terminal() {
+                let mut out = stdio::stdout();
+                let _ = out.write_all(CLEAR_SCREEN.as_bytes());
+                let _ = out.flush();
+            }
             return Ok(true);
         }
         _ => {}
