@@ -1,8 +1,9 @@
 # Tests for install.ps1, offline, on Windows: a fake mirror and release log
 # under a temporary directory, reached through DRT_MIRROR and
-# DRT_RELEASE_LOG as file:// URLs. The binaries are copies of Windows' own
-# curl.exe, which answers --version, each with its tag appended so every
-# release has its own bytes.
+# DRT_RELEASE_LOG as file:// URLs. The binaries are one tiny console
+# program, compiled here by Windows PowerShell's Add-Type, that answers any
+# arguments with exit 0; each copy has its tag and name appended so every
+# file has its own bytes.
 #
 #   pwsh -File script/test-installer.ps1                 under PowerShell 7
 #   pwsh -File script/test-installer.ps1 -Shell powershell   under 5.1
@@ -20,13 +21,19 @@ $T = Join-Path ([IO.Path]::GetTempPath()) ("installer-test-" + [Guid]::NewGuid()
 $M = Join-Path $T 'mirror'
 New-Item -ItemType Directory -Force -Path $M | Out-Null
 
+# PowerShell 7's Add-Type cannot write an executable; 5.1's can.
+$Fake = Join-Path $T 'fake.exe'
+$compile = "Add-Type -OutputType ConsoleApplication -OutputAssembly '$Fake' -TypeDefinition 'class P { static int Main(string[] a) { System.Console.WriteLine(""fake""); return 0; } }'"
+& powershell -NoProfile -EncodedCommand ([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($compile)))
+if (-not (Test-Path $Fake)) { throw 'could not compile the fake binary' }
+
 function Release([string]$tag) {
     $d = Join-Path $M $tag
     New-Item -ItemType Directory -Force -Path $d | Out-Null
     $sums = @()
     foreach ($a in $Assets) {
         $f = Join-Path $d $a
-        Copy-Item "$env:SystemRoot\System32\curl.exe" $f
+        Copy-Item $Fake $f
         [IO.File]::AppendAllText($f, $tag)
         $sums += "$((Get-FileHash -Algorithm SHA256 $f).Hash.ToLowerInvariant())  $a"
     }
@@ -74,6 +81,11 @@ function Ok([string]$n) { Write-Host "ok   $n" }
 function Bad([string]$n, [string]$why) { Write-Host "FAIL $n"; if ($why) { Write-Host "  $why" }; $script:fails++ }
 function Same([string]$n, $got, $want) { if ("$got" -eq "$want") { Ok $n } else { Bad $n "want: $want`n  got:  $got" } }
 function Has([string]$n, $got, $want) { if ("$got".Contains($want)) { Ok $n } else { Bad $n "want it to contain: $want`n  got: $got" } }
+# Runs a step that must succeed, and shows its output when it does not.
+function Step([string]$file) {
+    $out = Run $file @args
+    if ($Code -ne 0) { Bad "step: $(Split-Path -Leaf $file) $($args -join ' ')" $out }
+}
 function FailsWith([string]$n, $got, $want) { if ($Code -ne 0) { Has $n $got $want } else { Bad "$n (it succeeded)" } }
 function InUse { (Get-Content -Raw (Join-Path $P "share\$Name\active")).Trim() }
 function BinIs([string]$tag) {
@@ -93,38 +105,38 @@ try {
     Same 'list: stable only, newest first' ((Run $Script list) -replace "`r?`n", ' ') 'v1.1.0 v1.0.0'
     Has  'list-all: dev builds too' (Run $Script list-all) 'v1.2.0-dev.1'
 
-    Run $Script --prefix $P | Out-Null
+    Step $Script --prefix $P
     Same 'start installs latest' (InUse) 'v1.1.0'
     if (BinIs 'v1.1.0') { Ok 'bin holds the release in use' } else { Bad 'bin holds the release in use' }
 
-    Run (Stamp 'install' 'v1.0.0') --prefix $P | Out-Null
+    Step (Stamp 'install' 'v1.0.0') --prefix $P
     Same 'install.ps1 installs its own release' (InUse) 'v1.0.0'
 
-    Run (Stamp 'get' 'v1.0.0') install latest --prefix $P | Out-Null
+    Step (Stamp 'get' 'v1.0.0') install latest --prefix $P
     Same 'get.ps1 install latest behaves as install' (InUse) 'v1.1.0'
 
-    Run $Script --prefix $P -r 1.2.0-dev.1 | Out-Null
+    Step $Script --prefix $P -r 1.2.0-dev.1
     Same '-r without the v' (InUse) 'v1.2.0-dev.1'
-    Run $Script --prefix $P use 1.0.0 | Out-Null
-    Run $Script --prefix $P install dev | Out-Null
+    Step $Script --prefix $P use 1.0.0
+    Step $Script --prefix $P install dev
     Same 'dev resolves through the release log' (InUse) 'v1.2.0-dev.1'
 
     $check = Run $Script --prefix $P check
     Has 'check lists every release' $check 'v1.0.0'
     Has 'check marks the one in use' $check "v1.2.0-dev.1  $P  (in use)"
 
-    Run $Script --prefix $P use v1.0.0 | Out-Null
+    Step $Script --prefix $P use v1.0.0
     if (BinIs 'v1.0.0') { Ok 'use switches' } else { Bad 'use switches' }
     FailsWith 'use refuses what is not installed' (Run $Script --prefix $P use v9.9.9) 'not installed'
 
     FailsWith 'a checksum mismatch refuses' (Run $Script --prefix $P -r v1.0.1) 'checksum mismatch'
     Same 'a refused install changes nothing' (InUse) 'v1.0.0'
 
-    Run $Script --prefix $P remove v1.0.0 | Out-Null
+    Step $Script --prefix $P remove v1.0.0
     if (-not (Test-Path (Join-Path $P "bin\$Name.exe"))) { Ok 'removing the one in use removes its binary' } else { Bad 'removing the one in use removes its binary' }
     Has 'the others stay' (Run $Script --prefix $P check) 'v1.1.0'
 
-    Run $Script --prefix $P remove | Out-Null
+    Step $Script --prefix $P remove
     if (-not (Test-Path (Join-Path $P "share\$Name"))) { Ok 'remove with no version removes all' } else { Bad 'remove with no version removes all' }
     $user = [Environment]::GetEnvironmentVariable('Path', 'User')
     if (-not $user -or ($user -split ';') -notcontains (Join-Path $P 'bin')) { Ok 'and takes bin off the PATH' } else { Bad 'and takes bin off the PATH' }
@@ -132,7 +144,7 @@ try {
     $here = Join-Path $T 'here'
     New-Item -ItemType Directory -Path $here | Out-Null
     Push-Location $here
-    try { Run (Stamp 'get' 'v1.0.0') | Out-Null } finally { Pop-Location }
+    try { Step (Stamp 'get' 'v1.0.0') } finally { Pop-Location }
     if ((Get-FileHash (Join-Path $here "$Name.exe")).Hash -eq (Get-FileHash (Join-Path $M "v1.0.0\$($Assets[0])")).Hash) { Ok 'get.ps1 saves its release here' } else { Bad 'get.ps1 saves its release here' }
 } finally {
     Remove-Item -Recurse -Force $T -ErrorAction SilentlyContinue
