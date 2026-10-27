@@ -80,6 +80,14 @@ sh start-drt.sh remove v0.7.0        # or every release, with no version
 sh start-drt.sh --help               # the rest; piped: curl … | sh -s -- --help
 ```
 
+Every copy takes every command, so one alias covers all of it:
+
+```sh
+alias get-drt='curl -fsSL https://diluvium.aloecraft.org/get | sh -s --'
+get-drt                    # the latest drt, here
+get-drt install v0.7.0     # or list, check, use, remove
+```
+
 Releases live side by side under `<prefix>/share/drt/versions/`, with
 `<prefix>/bin/drt` linked to the one in use. The prefix is `/usr/local`
 when writable, else `~/.local`; `--prefix` overrides it. `--slim` takes
