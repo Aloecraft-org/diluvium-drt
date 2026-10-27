@@ -745,6 +745,14 @@ when run with no command.
 | `get.sh`, `get-drt.sh` | `get` | download this release into the current directory |
 | `help.sh`, `help-drt.sh` | `help` | print the usage |
 
+`install.ps1` is the same script for Windows (PowerShell 5.1 and 7) and
+ships the same eight ways as `.ps1`, stamped the same way. It keeps
+releases under `%LOCALAPPDATA%\Programs\Aloecraft\share\drt\versions`,
+copies the one in use into `bin\` (a Windows symlink needs an administrator)
+and adds `bin\` to the user's PATH. `script/test-installer.sh` and
+`script/test-installer.ps1` run both offline against a fake mirror, in CI
+under dash, bash, PowerShell 7 and Windows PowerShell 5.1.
+
 A copy piped to `sh` cannot see the URL it came from, so the stamp is how
 `<tag>/install.sh` installs `<tag>`. The step fails if either line did not
 take, or if the copy's `--version` does not print the tag. The checkout's

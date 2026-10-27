@@ -45,7 +45,8 @@ usage: $SELF [command] [--version VERSION] [--prefix DIR] [--slim]
                     (default /usr/local if writable, else ~/.local)
   --slim            the slim profile
 
-Env: DRT_VERSION, DRT_PREFIX, DRT_SLIM=1, DRT_MIRROR (a file:// URL works).
+Env: DRT_VERSION, DRT_PREFIX, DRT_SLIM=1, DRT_MIRROR and DRT_RELEASE_LOG
+(file:// URLs work).
 
 Piped from curl, a command goes after 'sh -s --':
   curl -fsSL https://diluvium.aloecraft.org/start-drt | sh -s -- list
@@ -65,7 +66,7 @@ RAW="https://raw.githubusercontent.com/$REPO"
 # Every published release, dev builds included, one per line: tag, channel
 # (stable, rc or dev), date. release.yml rewrites it on its own branch on
 # every publish, so it lists what GitHub can serve and nothing pruned.
-RELEASE_LOG="$RAW/release-log/.github/release-log"
+RELEASE_LOG="${DRT_RELEASE_LOG:-$RAW/release-log/.github/release-log}"
 SELFTEST=--version
 PREFIX="${DRT_PREFIX:-}"
 SLIM="${DRT_SLIM:-0}"

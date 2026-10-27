@@ -247,6 +247,29 @@ jobs:
       - run: ./script/changelog.py check
       - run: ./script/changelog.py consistency
 
+  installer:
+    # install.sh, offline, against a fake mirror and release log: every
+    # command, under the two shells a curl|sh most often lands in. The
+    # stamped copies the release ships are made the way release.yml makes
+    # them, so this is the script a user runs.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get install -y -qq dash
+      - run: SH=dash script/test-installer.sh
+      - run: SH=bash script/test-installer.sh
+
+  installer-windows:
+    # install.ps1, the same cases, under PowerShell 7 and Windows
+    # PowerShell 5.1, which is what `irm | iex` gets on a stock machine.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - shell: pwsh
+        run: ./script/test-installer.ps1 -Shell pwsh
+      - shell: pwsh
+        run: ./script/test-installer.ps1 -Shell powershell
+
   browser:
     # The browser tier (doc/Wasm.md D3, M4): `drt-web` for
     # wasm32-unknown-unknown with the C core and wasi-libc linked in, the

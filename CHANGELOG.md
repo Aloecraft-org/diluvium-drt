@@ -556,7 +556,9 @@ Underneath it the embedded core moves from 0.15.1 to
   it.
 - **One installer, eight release assets: `start`, `install`, `get` and
   `help`.** Each release carries `start.sh`, `install.sh`, `get.sh` and
-  `help.sh`, each also as `-drt.sh`; `help` prints the usage. `start` installs the latest stable release; `install`
+  `help.sh`, each also as `-drt.sh`; `help` prints the usage.
+  `install.ps1` does the same on Windows, in PowerShell 5.1 and 7,
+  and ships the same eight ways as `.ps1`. `start` installs the latest stable release; `install`
   and `get` act on the release that shipped them, `get` saving the
   verified binary in the current directory instead of installing it.
   Every copy takes `--version`/`-r`/`--release <version>` (alone, it

@@ -88,6 +88,13 @@ get-drt                    # the latest drt, here
 get-drt install v0.7.0     # or list, check, use, remove
 ```
 
+On Windows, the same script in PowerShell, with the same commands:
+
+```powershell
+irm https://software.aloecraft.org/releases/diluvium-drt/latest/start-drt.ps1 | iex
+& ([scriptblock]::Create((irm https://software.aloecraft.org/releases/diluvium-drt/latest/get-drt.ps1))) install v0.7.0
+```
+
 Releases live side by side under `<prefix>/share/drt/versions/`, with
 `<prefix>/bin/drt` linked to the one in use. The prefix is `/usr/local`
 when writable, else `~/.local`; `--prefix` overrides it. `--slim` takes
