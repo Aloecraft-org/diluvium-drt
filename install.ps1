@@ -444,6 +444,10 @@ function DoInstall {
     if ((Test-Path -LiteralPath $comp) -and $PROFILE -and -not ((Test-Path -LiteralPath $PROFILE) -and (Select-String -LiteralPath $PROFILE -SimpleMatch $comp -Quiet))) {
         Say "note: for tab completion, add this line to ${PROFILE}:"
         Say "  if (Test-Path '$comp') { . '$comp' }"
+        if ((Get-ExecutionPolicy) -in 'Restricted', 'AllSigned') {
+            Say "  this machine's execution policy blocks profile scripts; to allow them:"
+            Say "  Set-ExecutionPolicy -Scope CurrentUser RemoteSigned"
+        }
     }
 }
 
