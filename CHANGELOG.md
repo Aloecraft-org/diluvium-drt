@@ -654,6 +654,16 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Fixed
 
+- **A root install runs for every user.** The installer built each
+  version folder with `mktemp -d`, which makes it 0700, so after
+  `curl ... | sudo sh` the bin link pointed into a folder only root
+  could enter: other users got "command not found" and a systemd
+  `DynamicUser` service failed with 203/EXEC. The folder is now 0755.
+  On a machine installed before this, `sudo chmod 755
+  /usr/local/share/drt/versions/*` repairs it.
+- **The Windows installer says when the execution policy blocks the
+  completion line it suggests,** and gives
+  `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
 - **Ctrl+Backspace deletes a word in `drt repl` on a native terminal.**
   Terminals send BS for it, and crossterm reported BS as Ctrl+H, which
   nothing binds, so the word stayed while Ctrl+arrows moved by words.

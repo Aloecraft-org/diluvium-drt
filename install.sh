@@ -412,6 +412,9 @@ do_install() {
         || die "$PREFIX is not writable; pass --prefix \$HOME/.local, or run as root"
     tmp=$(mktemp -d "$PREFIX/share/$NAME/versions/.$TAG.XXXXXX")
     trap 'rm -rf "$tmp"' EXIT INT TERM
+    # mktemp -d makes the folder 0700, and it becomes the version folder the
+    # bin link points into: under a root install no other user could run it.
+    chmod 755 "$tmp"
     download "$tmp"
     "$tmp/$NAME" $SELFTEST >/dev/null 2>&1 || die "the downloaded $NAME does not run here ($SOURCE)"
     rm -rf "$vdir"
