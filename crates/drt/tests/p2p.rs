@@ -245,6 +245,40 @@ fn a_signal_port_takes_the_callers_request_and_a_mapped_port_carries_streams() {
     let _ = child.wait();
 }
 
+/// `-- <cmd>` (doc/P2P.md §2.1): the command runs once the port is bound,
+/// reaches the far side through it, and its exit status is drt's.
+#[cfg(unix)]
+#[test]
+fn a_command_after_the_peer_runs_against_the_bound_port_and_its_status_is_drts() {
+    let port = echo();
+    let l = Listening::start(Some(&format!("127.0.0.1:{port}")), false);
+    let local = free_port();
+    // bash's /dev/tcp: a TCP client every Unix CI runner has.
+    let script = format!(
+        "exec 3<>/dev/tcp/127.0.0.1/{local} && printf 'via the command\\n' >&3 && \
+         head -n1 <&3 && exit 7"
+    );
+    let started = Instant::now();
+    let out = drt()
+        .arg("p2p")
+        .arg(&l.record)
+        .arg("-p")
+        .arg(local.to_string())
+        .arg("--")
+        .args(["bash", "-c", &script])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "via the command\n",
+        "{err}"
+    );
+    assert_eq!(out.status.code(), Some(7), "{err}");
+    assert!(started.elapsed() < WAIT, "{:?}", started.elapsed());
+}
+
 #[test]
 fn the_repl_default_serves_ssh_and_raw_repl_by_name() {
     let l = Listening::start(None, false);

@@ -13,8 +13,9 @@
 //!
 //! - Entry points: [`Args`], the command line; [`resolve`], the file's
 //!   `p2p` block and the flags merged into one [`Role`]; [`run`], that role
-//!   carried out; [`from_tunnel`], what `drt tunnel` was given, as this
-//!   verb takes it (§9).
+//!   carried out, returning the exit status (a call's command's, else 0);
+//!   [`from_tunnel`], what `drt tunnel` was given, as this verb takes it
+//!   (§9).
 //! - Configurable: nothing here; each module lists its own.
 //! - Fan-out: [`Role`], the four roles, and the one match on it in [`run`];
 //!   the modules: [`peer`] (peer addresses, port maps, forward targets),
@@ -41,7 +42,9 @@ use peer::{ForwardSpec, HostSpec, Peer, PortMap};
 
 /// `drt p2p`'s command line. Each flag is one key of the `p2p` block under
 /// its name (`-p` is `ports`, `-P` `forward_ports`, `-A` `all_ports`,
-/// `--H` the `headers` map); [`resolve`] merges them over the file.
+/// `--H` the `headers` map); [`resolve`] merges them over the file. The
+/// command after `--` is the one exception: it is the invocation's, not
+/// the file's.
 #[derive(clap::Args, Debug, Clone, Default, PartialEq, Eq)]
 pub struct Args {
     /// The peer to call: drt://host[:port]/v1/<name> at a signalling
@@ -147,6 +150,14 @@ pub struct Args {
     /// The REPL's authorized_keys file, in place of ~/.ssh/authorized_keys.
     #[arg(long = "authorized-keys", value_name = "FILE")]
     pub authorized_keys: Option<PathBuf>,
+    /// After --: a command to run once the call is up and every -p port is
+    /// bound. drt exits when it does, with its exit status, and the call
+    /// ends with it, as with `ssh -L … host cmd`. For a client with no
+    /// ProxyCommand: drt p2p <peer> -p 13389 -- xfreerdp
+    /// /v:localhost:13389. Needs a -p <local>; the command's stdio is its
+    /// own. Command line only, not a key of the p2p block.
+    #[arg(last = true, value_name = "COMMAND")]
+    pub command: Vec<String>,
 }
 
 /// What the serving side needs beside its forward.
@@ -168,6 +179,9 @@ pub struct CallRole {
     pub dial: Dial,
     pub relay: Option<Peer>,
     pub fallback: Option<Peer>,
+    /// The command after `--`: run once the ports are bound, and its exit
+    /// ends the call. Empty for none.
+    pub command: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -396,6 +410,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
             if relay.is_some() && fallback.is_some() {
                 return Err("--relay and --fallback are one choice: always through the peer, or only when nothing is direct".into());
             }
+            command_needs_a_port(&flags.command, &maps)?;
             Role::Call(CallRole {
                 peer,
                 destination,
@@ -409,6 +424,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
                 },
                 relay,
                 fallback,
+                command: flags.command.clone(),
             })
         }
         (None, None, None, None) if relay.is_some() => {
@@ -428,6 +444,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
                 })
                 .transpose()?
                 .unwrap_or_default();
+            command_needs_a_port(&flags.command, &maps)?;
             Role::Call(CallRole {
                 peer: relay.clone(),
                 destination: String::new(),
@@ -439,6 +456,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
                 },
                 relay: Some(relay),
                 fallback: None,
+                command: flags.command.clone(),
             })
         }
         (None, Some((park, _)), None, None) => {
@@ -542,11 +560,41 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
             )
         }
     };
+    if !flags.command.is_empty() && !matches!(role, Role::Call(_)) {
+        return Err(
+            "a command after -- belongs with a call, and this is not one; it runs against the \
+             call's -p ports"
+                .into(),
+        );
+    }
     Ok(Resolved {
         role,
         extra_roots,
         extra_roots_key,
     })
+}
+
+/// A call's command reaches the far side through a bound port, never
+/// stdio: stdio is the command's own, as a terminal client needs it.
+fn command_needs_a_port(command: &[String], maps: &[PortMap]) -> Result<(), String> {
+    if command.is_empty() {
+        return Ok(());
+    }
+    if maps.iter().any(|m| m.local.is_none()) {
+        return Err(
+            "with a command after --, stdio is the command's; -p :<remote> has none to ask \
+             with. Bind a port for it: -p <local>:<remote>"
+                .into(),
+        );
+    }
+    if maps.is_empty() {
+        return Err(
+            "a command after -- reaches the far side through a port: name one with \
+             -p <local>[:<remote>]"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 /// The file's `headers` map, then each `--H` over it, a flag replacing the
@@ -596,22 +644,23 @@ fn headers(
 
 /// Carry out a [`Resolved`]: the one match on [`Role`]. `--match` runs a
 /// deployment and never returns; the others run on a runtime of their own.
-pub fn run(args: &Args, config: &RootConfig) -> Result<(), String> {
+/// The exit status is a call's command's, and 0 otherwise.
+pub fn run(args: &Args, config: &RootConfig) -> Result<u8, String> {
     if let Some(peer) = &args.show {
         println!("{}", Peer::parse(peer)?.canonical());
-        return Ok(());
+        return Ok(0);
     }
     let resolved = resolve(config, args)?;
     let roots = crate::roots::load_roots_named(resolved.extra_roots_key, &resolved.extra_roots)?;
     if let Role::Match(m) = &resolved.role {
-        return matchmaker::run(m, config);
+        return matchmaker::run(m, config).map(|()| 0);
     }
     let runtime = tokio::runtime::Runtime::new().map_err(|e| format!("a runtime: {e}"))?;
     let outcome = runtime.block_on(async {
         match &resolved.role {
             Role::Call(c) => call::run(c, &roots).await,
-            Role::Park(p) => park::run(p, config, &roots).await,
-            Role::Listen(l) => serve::listen(l, config, &roots).await,
+            Role::Park(p) => park::run(p, config, &roots).await.map(|()| 0),
+            Role::Listen(l) => serve::listen(l, config, &roots).await.map(|()| 0),
             Role::Match(_) => unreachable!("dispatched above"),
         }
     });
@@ -872,6 +921,53 @@ mod tests {
         )
         .unwrap_err();
         assert!(e.contains("`--pair`") && e.contains("a park"), "{e}");
+    }
+
+    #[test]
+    fn a_command_after_the_peer_needs_a_bound_port_and_a_call() {
+        use clap::Parser;
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            p2p: Args,
+        }
+        let parsed = Cli::try_parse_from([
+            "p2p",
+            "drt://x/v1/mypc",
+            "-p",
+            "13389",
+            "--",
+            "xfreerdp",
+            "/v:localhost:13389",
+        ])
+        .unwrap()
+        .p2p;
+        assert_eq!(parsed.command, ["xfreerdp", "/v:localhost:13389"]);
+        let none = cfg("{}");
+        match role(&none, parsed).unwrap() {
+            Role::Call(c) => assert_eq!(c.command, ["xfreerdp", "/v:localhost:13389"]),
+            other => panic!("{other:?}"),
+        }
+        let call = |ports: &[&str]| Args {
+            peer: Some("drt://x/v1/mypc".into()),
+            ports: ports.iter().map(|p| p.to_string()).collect(),
+            command: vec!["true".into()],
+            ..Args::default()
+        };
+        let e = role(&none, call(&[])).unwrap_err();
+        assert!(e.contains("through a port"), "{e}");
+        let e = role(&none, call(&["13389", ":ssh"])).unwrap_err();
+        assert!(e.contains("stdio is the command's"), "{e}");
+        let e = role(
+            &none,
+            Args {
+                listen: Some(5000),
+                command: vec!["true".into()],
+                ..Args::default()
+            },
+        )
+        .unwrap_err();
+        assert!(e.contains("belongs with a call"), "{e}");
     }
 
     #[test]

@@ -257,6 +257,7 @@ async fn peer_stream(peer: &str, args: &SshArgs) -> Result<Stream, String> {
         },
         relay: args.relay.as_deref().map(Peer::parse).transpose()?,
         fallback: args.fallback.as_deref().map(Peer::parse).transpose()?,
+        command: Vec::new(),
         peer: peer.clone(),
     };
     let connected = call::session(&role, &roots).await?;

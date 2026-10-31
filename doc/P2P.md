@@ -25,7 +25,8 @@ the path is a flag the user typed.
   `--fingerprint` (`--fingerp`), `--H` (`auth=` for a bearer token),
   `--authorized-keys`, `--capacity`, `--extra-root`, `--config`; `--show`
   prints a peer's canonical form. Every flag is also a key of the `p2p`
-  block (§8).
+  block (§8). A call's command after `--` (§2.1) is the one argument that
+  is not.
 - Fan-out: the role table (§2), the peer address forms (§3), the forward
   targets and how a requested port meets them (§5), the admission table
   (§6), and the `drt tunnel` map (§9).
@@ -73,6 +74,7 @@ serves it.
 ssh -o ProxyCommand="drt p2p drt://signal.example/v1/mypc --fingerprint SHA256:…" me@mypc
 ssh -o ProxyCommand="drt p2p --config mypc.json" me@mypc
 drt p2p drt://signal.example/v1/mypc -p 8080:80 -p 5432:5432
+drt p2p drt://signal.example/v1/mypc -p 13389 -- xfreerdp /v:localhost:13389
 ```
 
 The positional is a peer address (§3). The process is the caller in a
@@ -104,6 +106,22 @@ to.
 
 A port the far side does not serve behaves as a closed port does anywhere
 else: the stream is refused, and nothing more is said.
+
+**A command after `--` runs through the call**, for a client that has no
+`ProxyCommand`, such as an RDP client. Once the session is up and every
+`-p` port is bound, the command runs with this process's stdio; when it
+exits, `drt p2p` exits with its status and the call ends, as with
+`ssh -L … host cmd`. A command killed by a signal is 128 plus the signal's
+number, as a shell reports it. If the call does not come up, the command
+does not run.
+
+- **It needs a bound port.** The command reaches the far side through
+  `-p <local>[:<remote>]`; stdio is the command's own, so `-p :<remote>`
+  beside a command is refused, and so is a command with no `-p`.
+- **It belongs with a call**, including a call through `--relay` or
+  `--fallback`. Beside `--park`, `--listen` or `--match` it is refused.
+- **It is not a key of the `p2p` block.** It is what this invocation runs,
+  not what the peer is.
 
 ### 2.2 Park
 
