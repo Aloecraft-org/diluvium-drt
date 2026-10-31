@@ -575,6 +575,15 @@ Underneath it the embedded core moves from 0.15.1 to
   and fish find by themselves, and a `completion.ps1` on Windows. zsh
   outside `/usr/local` and PowerShell read only what a profile names,
   so the install prints the line to add rather than edit the profile.
+- **`drt p2p <peer> -p <port> -- <cmd>` runs a client through the
+  call in one command (`doc/P2P.md` §2.1).** Once the call is up and
+  every `-p` port is bound, drt runs the command with this terminal's
+  stdio; when it exits, drt exits with its status and the call ends,
+  as with `ssh -L … host cmd`. It is for clients with no
+  `ProxyCommand`, such as RDP:
+  `drt p2p drt://match.example/v1/mypc -p 13389 -- xfreerdp /v:localhost:13389`.
+  The command needs a bound `-p <local>`, belongs with a call only,
+  and is a command-line argument, not a key of the `p2p` block.
 
 ### Changed
 

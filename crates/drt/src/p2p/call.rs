@@ -1,13 +1,14 @@
 //! The call role (`doc/P2P.md` §2.1): this process is the caller in a
 //! browser access session. Its end is stdio, or the local ports `-p`
-//! binds, each connection to one its own stream to the far side.
+//! binds, each connection to one its own stream to the far side; with a
+//! command after `--`, those ports for as long as the command runs.
 //!
 //! ## surface block
 //!
 //! - Entry points: [`connect`], a peer reached and the session up, for this
 //!   role and for anything else that wants a [`Call`] (the `drt://`
 //!   forward); [`session`], the same with the role's carrier (`drt ssh`);
-//!   [`run`], the role carried out.
+//!   [`run`], the role carried out, returning the exit status.
 //! - Configurable: [`EOF_GRACE`]; [`Dial`], what every call is made with.
 //! - Fan-out: the match on [`How`] in `connect`: a record in hand, a
 //!   signalling request, or a WebSocket relay, which carries bytes and not
@@ -124,13 +125,14 @@ async fn reach(
 }
 
 /// The role: connect, then stdio and the mapped ports until the session
-/// ends. Returns when stdio ends; with ports alone, never.
-pub async fn run(role: &CallRole, roots: &[CertificateDer<'static>]) -> Result<(), String> {
+/// ends. Returns when stdio ends, or with a command when it exits, with its
+/// status; with ports alone, never. The status is 0 but for a command.
+pub async fn run(role: &CallRole, roots: &[CertificateDer<'static>]) -> Result<u8, String> {
     if let Some(Peer {
         how: How::Ws(url), ..
     }) = &role.relay
     {
-        return over_ws(url, &role.maps, &role.dial.headers, roots).await;
+        return over_ws(url, &role.maps, &role.command, &role.dial.headers, roots).await;
     }
     if let Some(Peer {
         how: How::Ws(_), ..
@@ -190,6 +192,10 @@ pub async fn run(role: &CallRole, roots: &[CertificateDer<'static>]) -> Result<(
             }
         }));
     }
+    if !role.command.is_empty() {
+        // Every port is bound: the command may connect at once.
+        return command(&role.command).await;
+    }
     let Some(target) = stdio else {
         // Ports alone: serve until the process is stopped.
         return std::future::pending().await;
@@ -243,7 +249,34 @@ pub async fn run(role: &CallRole, roots: &[CertificateDer<'static>]) -> Result<(
             }
         }
     }
-    Ok(())
+    Ok(0)
+}
+
+/// The command after `--` (§2.1), run with this process's stdio once the
+/// ports are bound. Its exit status is this process's, as `ssh host cmd`
+/// makes the remote command's: a signal is 128 plus its number, as a shell
+/// reports it. Returning ends the process, and the call with it.
+async fn command(argv: &[String]) -> Result<u8, String> {
+    let (program, args) = argv
+        .split_first()
+        .expect("only a call with a command runs one");
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .spawn()
+        .map_err(|e| format!("cannot run `{program}`: {e}"))?;
+    let status = tokio::task::spawn_blocking(move || child.wait())
+        .await
+        .map_err(|e| format!("waiting for `{program}`: {e}"))?
+        .map_err(|e| format!("waiting for `{program}`: {e}"))?;
+    if let Some(code) = status.code() {
+        // Windows codes run past a byte; one that does still fails.
+        return Ok(u8::try_from(code).unwrap_or(255));
+    }
+    #[cfg(unix)]
+    if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(&status) {
+        return Ok(128u8.saturating_add(signal as u8));
+    }
+    Ok(255)
 }
 
 /// The session a call role gets: direct, through its relay, or through its
@@ -368,12 +401,15 @@ async fn through(
 async fn over_ws(
     url: &str,
     maps: &[PortMap],
+    run: &[String],
     headers: &[(String, String)],
     roots: &[CertificateDer<'static>],
-) -> Result<(), String> {
+) -> Result<u8, String> {
     let bound: Vec<u16> = maps.iter().filter_map(|m| m.local).collect();
     if bound.is_empty() {
-        return crate::tunnel::stdio_to_ws(url, roots, headers).await;
+        return crate::tunnel::stdio_to_ws(url, roots, headers)
+            .await
+            .map(|()| 0);
     }
     let mut legs = Vec::new();
     for local in bound {
@@ -388,6 +424,9 @@ async fn over_ws(
         legs.push(tokio::spawn(async move {
             let _ = crate::tunnel::serve_local(listener, &url, &roots, &headers).await;
         }));
+    }
+    if !run.is_empty() {
+        return command(run).await;
     }
     std::future::pending().await
 }

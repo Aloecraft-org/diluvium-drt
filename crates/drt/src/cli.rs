@@ -353,7 +353,8 @@ pub enum Command {
     /// server. With no --relay and no --fallback, no machine other than
     /// the two ends carries a byte of the session; when no such path
     /// exists, this fails and says so. Every flag is also a key of the
-    /// `p2p` block in --config.
+    /// `p2p` block in --config. A command after -- runs once a call's -p
+    /// ports are bound, and the call ends when it exits, with its status.
     #[cfg(feature = "p2p")]
     P2p(crate::p2p::Args),
     /// Alias of `drt p2p` for one release: a call or a park prints the
@@ -1942,7 +1943,7 @@ pub fn main(cli: Cli) -> ExitCode {
             if let Some((form, args)) = crate::p2p::from_tunnel(&resolved.mode, &resolved) {
                 eprintln!("drt tunnel: this is `{form}` now; `drt tunnel` goes away in a release");
                 return match crate::p2p::run(&args, &config) {
-                    Ok(()) => ExitCode::SUCCESS,
+                    Ok(status) => ExitCode::from(status),
                     Err(e) => {
                         eprintln!("drt p2p: {e}");
                         ExitCode::FAILURE
@@ -1977,8 +1978,9 @@ pub fn main(cli: Cli) -> ExitCode {
             }
         }
         #[cfg(feature = "p2p")]
+        // A call's command's status is this command's, as with `ssh host cmd`.
         Command::P2p(ref args) => match crate::p2p::run(args, &config) {
-            Ok(()) => ExitCode::SUCCESS,
+            Ok(status) => ExitCode::from(status),
             Err(e) => {
                 eprintln!("drt p2p: {e}");
                 ExitCode::FAILURE
