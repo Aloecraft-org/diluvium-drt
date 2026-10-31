@@ -7,45 +7,63 @@
   drt-ssh-web module and its glue at the placeholders below, and nothing is
   fetched at run time.
 
-  The link carries everything in its fragment, which never reaches whoever
-  serves this page:
+  The form says where to connect, and so can a link. The link carries
+  everything in its fragment, which never reaches whoever serves this page:
 
-    ssh.html#url=<the relay claim URL, encoded>&user=<name>[&hostkey=SHA256:…]
-    ssh.html#rtc=<a host's record, encoded>&user=<name>[&to=host:port][&hostkey=SHA256:…][&fingerprint=SHA256:…]
-    ssh.html#call=<a peer address, encoded>&user=<name>[&to=…][&hostkey=SHA256:…][&fingerprint=SHA256:…]
+    ssh.html#call=<a peer address, encoded>&user=<name>[&k=…][&to=host:port][&stun=…][&hostkey=SHA256:…][&fingerprint=SHA256:…]
+    ssh.html#rtc=<a host's record, encoded>&user=<name>[&to=host:port][&stun=…][&hostkey=SHA256:…][&fingerprint=SHA256:…]
+    ssh.html#url=<the relay claim URL, encoded>&user=<name>[&k=…][&hostkey=SHA256:…]
 
-  The claim URL is wss://<relay>/s/<label>?k=<caller key>, the same one
-  `ssh -o ProxyCommand="drt p2p --relay …"` dials. The record is the one a
-  `webrtc` block with `direct` on reports (doc/BrowserAccess.md §3.4), and
-  `to` picks which of its scope to reach: by default its first `ssh://`
-  entry, else its `default`, else whatever the host forwards to. The peer
-  address is one of doc/P2P.md §3: drt://<server>/v1/<name> (HTTPS, or
-  HTTP on loopback), drt+ssh://… to open the service `ssh`, or the caller's
-  URL of doc/DRT-Signalling.md as written,
-  https://<server>/v1/<name>/calls?k=<caller token>: this page's record is
-  POSTed there and the answerer's comes back. An answerer that serves a
-  service named `ssh` (a page, doc/BrowserAccess.md §10) is reached on it
-  unless `to` names another; otherwise `to` and the scope are read as for a
-  record, and a host with no scope gets no target named. A `fingerprint`
-  in the link holds the answerer to that DTLS fingerprint, as `drt p2p
-  --fingerprint` does, before anything flows. A `hostkey` in the link is a
-  pin: any other key refuses the connection. Without one, the first key seen is shown and
-  trusted on confirmation, and remembered per relay and label, or per host
-  record and target; a key that later changes is refused.
+  The peer address is one of doc/P2P.md §3: drt://<server>/v1/<name>
+  (HTTPS, or HTTP on loopback), drt+ssh://… to open the service `ssh`, or
+  the caller's URL of doc/DRT-Signalling.md as written,
+  https://<server>/v1/<name>/calls: this page's record is POSTed there and
+  the answerer's comes back. The record is the one a `webrtc` block with
+  `direct` on reports (doc/BrowserAccess.md §3.4). The claim URL is
+  wss://<relay>/s/<label>, the same one `ssh -o ProxyCommand="drt p2p
+  --relay …"` dials.
+
+  The caller secret (the caller token of a call, the caller key of a
+  claim) is `k`: in the link, in the address's own query, or typed into
+  the form's hidden field. The page moves it out of the address and out of
+  the fragment as soon as it reads it, and never writes it back to the
+  address bar. It is remembered only when the form's box is ticked, per
+  peer, in this browser's IndexedDB beside its key: a cookie would be sent
+  to whatever server serves the page, and Chromium keeps none for a file://
+  page.
+
+  `to` picks which of the answerer's scope to reach. An answerer that
+  serves a service named `ssh` (a page, doc/BrowserAccess.md §10) is
+  reached on it unless `to` names another; otherwise by default its first
+  `ssh://` entry, else its `default`, else whatever it forwards to. `stun`
+  is a STUN server for ICE, needed when the answerer is on another network
+  (stun:host:port; `stun:` may be left off; several separated by commas).
+  A `fingerprint` holds the answerer to that DTLS fingerprint, as `drt p2p
+  --fingerprint` does, before anything flows. A `hostkey` is a pin: any
+  other key refuses the connection. Without one, the first key seen is
+  shown and trusted on confirmation, and remembered per peer, relay label,
+  or host record and target; a key that later changes is refused.
 
   surface block
-  - Entry point: loading the page. With `url`, `rtc` or `call`, and `user`,
-    in the fragment it connects at once; otherwise the form does.
+  - Entry points: loading the page, and a change to its fragment, fill the
+    form and connect when the link names a place and a user; the form's
+    Connect; the bar's Disconnect (Cancel while connecting), Reconnect
+    (the last place again, after a logout, a drop or an error) and Change
+    setup. Key buttons: Create a key, Forget this key, Forget the saved
+    secret.
   - Configurable: RETRIES and RETRY_MS (a claim that finds nothing parked,
     close 1013, is retried with backoff); KEEPALIVE_MS, how often an idle
-    session says it is alive (the module runs no timers of its own);
-    STORE, the IndexedDB name; SIGNAL_MS, how long a call may be held by
-    its signalling server (the profile's 30 s hold and a margin).
-  - Fan-out: open() picks the transport: the relay, a direct session, or
-    a session through a signalling server; REFUSALS, what each status the
-    signalling profile names means to a caller;
-    start() is the rest of the flow -- check the host key, authenticate
-    (this browser's key, then a password), open the shell.
+    session says it is alive, and a beat that fails is a lost connection
+    (the module runs no timers of its own); STORE, the IndexedDB name;
+    SIGNAL_MS, how long a call may be held by its signalling server (the
+    profile's 30 s hold and a margin).
+  - Fan-out: STATES, the connection's states and what the page shows in
+    each; MODES, the three kinds of place and the form fields each reads;
+    open() picks the transport: the relay, a direct session, or a session
+    through a signalling server; REFUSALS, what each status the
+    signalling profile names means to a caller; start() is the rest of the
+    flow -- check the host key, authenticate (this browser's key, then a
+    password), open the shell.
 -->
 <html lang="en">
 <head>
@@ -56,39 +74,125 @@
 <title>SSH</title>
 <style>@@XTERM_CSS@@</style>
 <style>
-  :root { color-scheme: light dark; --bg: #fff; --fg: #1d1d1f; --muted: #6e6e73; --bad: #b3261e; --line: #d2d2d7; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #111; --fg: #eee; --muted: #9a9aa0; --bad: #ff6b60; --line: #333; } }
+  :root { color-scheme: light dark; --bg: #fff; --fg: #1d1d1f; --muted: #6e6e73; --bad: #b3261e; --good: #1a7f37;
+          --line: #d2d2d7; --accent: #0a66d6; --on-accent: #fff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111; --fg: #eee; --muted: #9a9aa0; --bad: #ff6b60; --good: #4ac26b; --line: #333; --accent: #5aa2ff; --on-accent: #0b1a2e; }
+  }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
                font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
   body { display: flex; flex-direction: column; }
-  #status { padding: 6px 12px; border-bottom: 1px solid var(--line); color: var(--muted);
-            white-space: pre-wrap; overflow-wrap: anywhere; }
+  #bar { display: flex; gap: 8px; align-items: center; padding: 6px 12px; border-bottom: 1px solid var(--line); }
+  #status { flex: 1; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+  #status::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+                    margin-right: 8px; vertical-align: 1px; background: var(--line); }
+  body[data-state="connected"] #status::before { background: var(--good); }
+  body[data-state="calling"] #status::before, body[data-state="connecting"] #status::before,
+  body[data-state="signing-in"] #status::before { background: var(--accent); }
   #status.bad { color: var(--bad); }
-  #setup { padding: 16px; max-width: 640px; }
+  #status.bad::before { background: var(--bad); }
+  button { font: inherit; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--line);
+           background: transparent; color: inherit; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  #setup { padding: 16px; max-width: 640px; overflow: auto; }
+  #setup h2 { font-size: 15px; margin: 18px 0 4px; }
+  #setup fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
   #setup label { display: block; margin: 10px 0 4px; color: var(--muted); }
-  #setup input, #setup textarea { width: 100%; box-sizing: border-box; font: inherit; padding: 6px 8px;
+  #setup label.inline { display: inline-flex; gap: 6px; align-items: center; margin: 6px 12px 0 0; color: inherit; }
+  #setup .hint { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  #setup input:not([type=checkbox]):not([type=radio]), #setup textarea {
+            width: 100%; box-sizing: border-box; font: inherit; padding: 6px 8px;
             border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; }
   #setup textarea { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; height: 4.5em; }
-  #setup button { margin-top: 12px; font: inherit; padding: 6px 14px; border-radius: 6px;
-            border: 1px solid var(--line); background: transparent; color: inherit; cursor: pointer; }
+  #setup .row { display: flex; gap: 8px; }
+  #setup .row > * { flex: 1; min-width: 0; }
+  #setup .with-button { display: flex; gap: 6px; }
+  #setup .with-button input { flex: 1; }
+  #setup details { margin-top: 12px; }
+  #setup summary { cursor: pointer; color: var(--muted); }
+  #setup #connect { margin-top: 16px; }
   #term { flex: 1; min-height: 0; background: #000; padding: 4px; }
+  body[data-state="closed"] #term, body[data-state="error"] #term { opacity: .6; }
   [hidden] { display: none !important; }
 </style>
 </head>
-<body>
-<div id="status">Not connected.</div>
-<form id="setup">
-  <label for="url">Relay claim URL</label>
-  <input id="url" name="url" placeholder="wss://relay.example/s/label?k=…" autocomplete="off">
-  <label for="rtc">Host record (direct mode, instead of a relay)</label>
-  <textarea id="rtc" name="rtc" placeholder='{"v":1,"u":"…","p":"…","f":"…","c":[…]}' autocomplete="off"></textarea>
-  <label for="call">Signalling URL (instead of a relay or a record)</label>
-  <input id="call" name="call" placeholder="https://signal.example/v1/name/calls?k=…" autocomplete="off">
-  <label for="user">User</label>
-  <input id="user" name="user" autocomplete="username" required>
-  <button type="submit">Connect</button>
+<body data-state="idle">
+<div id="bar">
+  <div id="status">Not connected.</div>
+  <button type="button" id="disconnect" hidden>Disconnect</button>
+  <button type="button" id="reconnect" class="primary" hidden>Reconnect</button>
+  <button type="button" id="edit" hidden>Change setup</button>
+</div>
+<form id="setup" autocomplete="off">
+  <fieldset id="fields">
+    <div id="modes">
+      <label class="inline"><input type="radio" name="mode" value="call" checked> Peer</label>
+      <label class="inline"><input type="radio" name="mode" value="rtc"> Host record</label>
+      <label class="inline"><input type="radio" name="mode" value="url"> Relay</label>
+    </div>
+
+    <div data-modes="call">
+      <label for="call">Peer address</label>
+      <input id="call" list="known-call" placeholder="drt://signal.example/v1/name" spellcheck="false">
+      <datalist id="known-call"></datalist>
+      <div class="hint">drt://, drt+ssh:// or https://…/v1/name/calls. A ?k= in it moves to the secret below.</div>
+    </div>
+    <div data-modes="rtc">
+      <label for="rtc">Host record</label>
+      <textarea id="rtc" placeholder='{"v":1,"u":"…","p":"…","f":"…","c":[…]}' spellcheck="false"></textarea>
+    </div>
+    <div data-modes="url">
+      <label for="url">Relay claim URL</label>
+      <input id="url" list="known-url" placeholder="wss://relay.example/s/label" spellcheck="false">
+      <datalist id="known-url"></datalist>
+    </div>
+
+    <div data-modes="call url">
+      <label for="secret">Caller secret</label>
+      <div class="with-button">
+        <input id="secret" type="password" autocomplete="off" spellcheck="false" placeholder="k">
+        <button type="button" id="showsecret">Show</button>
+      </div>
+      <label class="inline"><input type="checkbox" id="remember"> Remember it for this peer in this browser</label>
+      <button type="button" id="forgetsecret" hidden>Forget the saved secret</button>
+    </div>
+
+    <div class="row">
+      <div>
+        <label for="user">User</label>
+        <input id="user" autocomplete="username" spellcheck="false">
+      </div>
+      <div data-modes="call rtc">
+        <label for="to">Target on the peer</label>
+        <input id="to" placeholder="127.0.0.1:22" spellcheck="false">
+      </div>
+    </div>
+    <div data-modes="call rtc" class="hint">Target: host:port the peer forwards to. Blank: its ssh service, or its first ssh:// target.</div>
+
+    <div data-modes="call rtc">
+      <label for="stun">STUN server</label>
+      <input id="stun" placeholder="stun:stun.example.org:3478" spellcheck="false">
+      <div class="hint">Needed when the peer is on another network. Blank: none.</div>
+    </div>
+
+    <details id="advanced">
+      <summary>Pins and password</summary>
+      <label for="hostkey">SSH host key</label>
+      <input id="hostkey" placeholder="SHA256:… (blank: ask the first time)" spellcheck="false">
+      <div data-modes="call rtc">
+        <label for="fingerprint">Peer's DTLS fingerprint</label>
+        <input id="fingerprint" placeholder="SHA256:…" spellcheck="false">
+      </div>
+      <label for="password">Password</label>
+      <input id="password" type="password" autocomplete="current-password" placeholder="blank: ask if this browser's key is not accepted">
+    </details>
+
+    <button type="submit" id="connect" class="primary">Connect</button>
+  </fieldset>
+
   <section id="keys">
-    <label>This browser's key</label>
+    <h2>This browser's key</h2>
     <div id="nokey"><button type="button" id="makekey">Create a key</button></div>
     <div id="haskey" hidden>
       <textarea id="pub" readonly></textarea>
@@ -110,6 +214,26 @@ const RETRY_MS = 250;
 const KEEPALIVE_MS = 20000;
 const STORE = 'drt-ssh';
 const SIGNAL_MS = 35000;
+// The connection's states. `view` is what the page shows: the form, the
+// terminal, or whichever was showing; `busy` disables the form; `bar` is
+// which of the bar's buttons appear.
+const STATES = {
+  idle: { view: 'setup', bar: [] },
+  calling: { view: 'keep', busy: true, bar: ['cancel'] },
+  connecting: { view: 'keep', busy: true, bar: ['cancel'] },
+  'signing-in': { view: 'keep', busy: true, bar: ['cancel'] },
+  connected: { view: 'term', bar: ['disconnect'] },
+  closed: { view: 'keep', bar: ['reconnect', 'edit'] },
+  error: { view: 'setup', bar: ['reconnect'] },
+};
+// The three kinds of place, the fragment key each is linked by, and which
+// of the form's optional fields it reads. Only `call` and `url` places are
+// remembered: a record is long and is its own identity.
+const MODES = {
+  call: { fields: ['secret', 'to', 'stun', 'fingerprint'], remember: true },
+  rtc: { fields: ['to', 'stun', 'fingerprint'], remember: false },
+  url: { fields: ['secret'], remember: true },
+};
 // doc/DRT-Signalling.md §2's statuses, as a caller reads them.
 const REFUSALS = {
   400: 'the request was malformed',
@@ -125,12 +249,41 @@ const REFUSALS = {
 
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// depth: the state, and what the page shows for it
+
+let state = 'idle';
+function setState(next, text, bad) {
+  state = next;
+  const s = STATES[next];
+  document.body.dataset.state = next;
+  $('status').textContent = text;
+  $('status').className = bad ? 'bad' : '';
+  if (s.view === 'setup' || (s.view === 'keep' && !$('setup').hidden)) showSetup();
+  else showTerm();
+  $('fields').disabled = !!s.busy;
+  $('disconnect').hidden = !s.bar.includes('cancel') && !s.bar.includes('disconnect');
+  $('disconnect').textContent = s.bar.includes('cancel') ? 'Cancel' : 'Disconnect';
+  $('reconnect').hidden = !s.bar.includes('reconnect') || !last;
+  $('edit').hidden = !s.bar.includes('edit') || !$('setup').hidden;
+}
+// A status line that keeps the state, for progress inside one.
 function say(text, bad) {
   $('status').textContent = text;
   $('status').className = bad ? 'bad' : '';
 }
+function showSetup() {
+  $('setup').hidden = false;
+  $('term').hidden = true;
+}
+function showTerm() {
+  $('setup').hidden = true;
+  $('term').hidden = false;
+  fit?.fit();
+}
 
-// depth: what this browser remembers -- trusted host keys and its own key
+// depth: what this browser remembers -- trusted host keys, its own key, and
+// the places it has connected to
 
 const kv = (() => {
   const memory = new Map();
@@ -162,12 +315,50 @@ const kv = (() => {
   };
 })();
 
-// The trust is per relay and label, not per key: the caller key in the
-// query can be rotated without the host key becoming a stranger. Directly,
-// it is per host (its record's certificate) and target.
+// The trust is per relay and label, or per server and name, not per
+// secret: the secret can be rotated without the host key becoming a
+// stranger. Directly, it is per host (its record's certificate) and target.
 function place(url) {
   const u = new URL(url);
   return `${u.host}${u.pathname}`;
+}
+
+// A remembered place, under its mode and its address without a query:
+// { mode, address, user, to, stun, hostkey, fingerprint, secret? }. The
+// secret is there only when its box was ticked.
+const placeKey = (mode, address) => `${mode}:${address}`;
+async function places() {
+  return (await kv.get('places')) || {};
+}
+async function remember(plan) {
+  if (!MODES[plan.mode].remember) return;
+  const all = await places();
+  const key = placeKey(plan.mode, plan.address);
+  const { mode, address, user, to, stun, hostkey, fingerprint } = plan.form;
+  all[key] = { mode, address, user, to, stun, hostkey, fingerprint };
+  if (plan.form.remember && plan.form.secret) all[key].secret = plan.form.secret;
+  await kv.set('places', all);
+  await kv.set('last', key);
+  await listPlaces();
+}
+async function forgetSecret(mode, address) {
+  const all = await places();
+  const p = all[placeKey(mode, address)];
+  if (p) {
+    delete p.secret;
+    await kv.set('places', all);
+  }
+}
+async function listPlaces() {
+  const all = await places();
+  for (const mode of ['call', 'url']) {
+    const list = $(`known-${mode}`);
+    list.replaceChildren(...Object.values(all).filter((p) => p.mode === mode).map((p) => {
+      const o = document.createElement('option');
+      o.value = p.address;
+      return o;
+    }));
+  }
 }
 
 // depth: the module, unpacked from the page itself
@@ -188,43 +379,154 @@ async function showKey() {
   }
 }
 
-// depth: the session
+// depth: the form and the link
+
+const mode = () => document.querySelector('input[name=mode]:checked').value;
+function setMode(m) {
+  document.querySelector(`input[name=mode][value=${m}]`).checked = true;
+  for (const el of document.querySelectorAll('[data-modes]')) el.hidden = !el.dataset.modes.split(' ').includes(m);
+  showForget();
+}
+async function showForget() {
+  const m = mode();
+  const p = MODES[m].remember && (await places())[placeKey(m, $(m).value.trim())];
+  $('forgetsecret').hidden = !p?.secret;
+}
+
+// An address with its secret taken out: `?k=` moves to the secret field.
+function splitSecret(address) {
+  const q = address.indexOf('?');
+  if (q < 0) return { address, secret: null };
+  const params = new URLSearchParams(address.slice(q + 1));
+  const secret = params.get('k');
+  params.delete('k');
+  const rest = params.toString();
+  return { address: address.slice(0, q) + (rest ? `?${rest}` : ''), secret };
+}
+
+// Fill the form from a place: a link, or one remembered. Fields the place
+// does not name are cleared, so one place never leaks into the next.
+function fill(m, p) {
+  setMode(m);
+  const { address, secret } = splitSecret(p.address || '');
+  $(m).value = address;
+  $('secret').value = p.secret || secret || '';
+  $('remember').checked = !!p.remembered;
+  for (const f of ['user', 'to', 'stun', 'hostkey', 'fingerprint']) $(f).value = p[f] || '';
+  showForget();
+}
+
+// The link's place, if it names one; `k` and an address's ?k= are both
+// the secret.
+function fromLink(hash) {
+  const link = new URLSearchParams(hash.replace(/^#/, ''));
+  const m = ['call', 'rtc', 'url'].find((k) => link.get(k));
+  if (!m) return null;
+  const { address, secret } = splitSecret(link.get(m).trim());
+  const get = (k) => link.get(k) || '';
+  return { mode: m, address, secret: link.get('k') || secret || '', user: get('user'), to: get('to'),
+           stun: get('stun'), hostkey: get('hostkey'), fingerprint: get('fingerprint') };
+}
+
+// The fragment for a place, without its secret.
+function toLink(f) {
+  const link = new URLSearchParams({ [f.mode]: f.address });
+  for (const k of ['user', ...MODES[f.mode].fields.filter((x) => x !== 'secret'), 'hostkey']) {
+    if (f[k]) link.set(k, f[k]);
+  }
+  return `#${link}`;
+}
+
+// A place from the link. A link says everything but the secret, so the
+// secret is the one thing this browser's memory adds to it.
+async function fillFromLink() {
+  const p = fromLink(location.hash);
+  if (!p) return null;
+  const saved = MODES[p.mode].remember ? (await places())[placeKey(p.mode, p.address)] : null;
+  const merged = { ...p };
+  if (!merged.secret && saved?.secret) Object.assign(merged, { secret: saved.secret, remembered: true });
+  fill(p.mode, merged);
+  // The secret is in the form now; take it out of the address bar.
+  const clean = toLink(p);
+  if (location.hash !== clean) history.replaceState(null, '', clean);
+  return merged;
+}
+
+// What the form says, checked, as the plan connectTo() runs.
+function readForm() {
+  const m = mode();
+  const v = (id) => $(id).value.trim();
+  const form = { mode: m, address: v(m), user: v('user'), secret: $('secret').value.trim(), remember: $('remember').checked,
+                 to: v('to'), stun: v('stun'), hostkey: v('hostkey'), fingerprint: v('fingerprint') };
+  for (const f of ['secret', 'to', 'stun', 'fingerprint']) if (!MODES[m].fields.includes(f)) form[f] = '';
+  if (!form.address) throw new Error({ call: 'Enter a peer address.', rtc: 'Paste a host record.', url: 'Enter a relay claim URL.' }[m]);
+  if (!form.user) throw new Error('Enter the user to sign in as.');
+  if (form.to && !/^(\[[^\]]+\]|[^\s:[\]]+):\d{1,5}$/.test(form.to)) {
+    throw new Error(`Target "${form.to}" is not host:port.`);
+  }
+  const iceServers = form.stun
+    ? [{ urls: form.stun.split(',').map((s) => s.trim()).filter(Boolean).map((s) => (/^stuns?:/.test(s) ? s : `stun:${s}`)) }]
+    : [];
+  const where = { [m]: form.address, secret: form.secret || null, to: form.to || null,
+                  fingerprint: form.fingerprint || undefined, iceServers };
+  return { mode: m, address: form.address, form, where, user: form.user, pinned: form.hostkey || null,
+           password: $('password').value };
+}
+
+// depth: the transport
 
 // The transport: a relay claim, or a direct session to a host and one
 // stream to its scope. Resolves with the SSH session, where its host key is
 // remembered, and what else to close when it ends.
-async function open(where, pinned) {
-  if (where.call) return called(where, pinned);
-  if (!where.rtc) return { ssh: await connect(where.url, pinned), place: place(where.url), session: null };
+async function open(where, pinned, signal) {
+  if (where.call) return called(where, pinned, signal);
+  if (!where.rtc) {
+    const url = withSecret(where.url, where.secret);
+    return { ssh: await connect(url, pinned, signal), place: place(url), session: null };
+  }
   say('Connecting directly…');
   const record = drtBrowserAccess.parseRecord(where.rtc);
-  const session = await drtBrowserAccess.direct(record, { fingerprint: where.fingerprint });
+  const session = await drtBrowserAccess.direct(record, { fingerprint: where.fingerprint, iceServers: where.iceServers });
   try {
-    // The service `ssh` when the host names one, else `to` or its scope,
-    // else whatever it forwards to (doc/P2P.md §5.1, §7.3).
-    const named = !where.to && (session.hello.services || []).includes('ssh') ? 'ssh' : null;
-    const target = named ? null : pick(session.hello, where.to);
-    const stream = named ? session.connect(named) : target ? session.connect(target.host, target.port) : session.connect();
-    const ssh = await wasm_bindgen.Ssh.connect(stream, pinned || undefined);
-    const at = named || (target ? `${target.host}:${target.port}` : 'forward');
-    return { ssh, place: `rtc:${record.f}/${at}`, session };
+    return { ...(await shellStream(session, where, null, pinned)), place: null, session, at: `rtc:${record.f}` };
   } catch (e) {
     session.close();
     throw e;
   }
 }
 
+function withSecret(url, secret) {
+  if (!secret) return url;
+  const u = new URL(url);
+  u.searchParams.set('k', secret);
+  return u.toString();
+}
+
+// The SSH session over one stream of a browser access session: the
+// service `ssh` when the host names one (or the address does), else `to`
+// or its scope, else whatever it forwards to (doc/P2P.md §5.1, §7.3).
+async function shellStream(session, where, service, pinned) {
+  const named = !where.to && (service || ((session.hello.services || []).includes('ssh') ? 'ssh' : null));
+  const target = named ? null : pick(session.hello, where.to);
+  const stream = named ? session.connect(named) : target ? session.connect(target.host, target.port) : session.connect();
+  const ssh = await wasm_bindgen.Ssh.connect(stream, pinned || undefined);
+  return { ssh, to: named || (target ? `${target.host}:${target.port}` : 'forward') };
+}
+
 // A session through a signalling server: this page's record out in one
 // POST, held until the answerer answers, and the answerer's record back.
-// The host key is remembered per server and name, never per token.
-async function called(where, pinned) {
-  say('Calling…');
-  const { url, service } = callUrl(where.call);
-  const pending = await drtBrowserAccess.offer();
+// The host key is remembered per server and name, never per secret.
+async function called(where, pinned, signal) {
+  setState('calling', 'Calling…');
+  const { url: bare, service } = callUrl(where.call);
+  const url = withSecret(bare, where.secret);
+  const pending = await drtBrowserAccess.offer({ iceServers: where.iceServers });
   let reply;
   try {
     const abort = new AbortController();
-    const timer = setTimeout(() => abort.abort(), SIGNAL_MS);
+    const stop = () => abort.abort();
+    signal.addEventListener('abort', stop);
+    const timer = setTimeout(stop, SIGNAL_MS);
     let res;
     try {
       res = await fetch(url, {
@@ -236,24 +538,21 @@ async function called(where, pinned) {
       throw new Error(`${place(url)} could not be reached: ${e.message || e}`);
     } finally {
       clearTimeout(timer);
+      signal.removeEventListener('abort', stop);
     }
     if (!res.ok) {
       const why = REFUSALS[res.status];
-      throw new Error(`${place(url)} answered ${res.status}${why ? `: ${why}` : ''}.`);
+      const hint = !where.secret && (res.status === 401 || res.status === 403) ? ' Enter the caller secret.' : '';
+      throw new Error(`${place(url)} answered ${res.status}${why ? `: ${why}` : ''}.${hint}`);
     }
   } catch (e) {
     pending.close?.();
     throw e;
   }
-  say('Answered; connecting…');
+  setState('connecting', 'Answered; connecting…');
   const session = await pending.accept(reply, { fingerprint: where.fingerprint });
   try {
-    const named = !where.to && (service || ((session.hello.services || []).includes('ssh') ? 'ssh' : null));
-    const target = named ? null : pick(session.hello, where.to);
-    const stream = named ? session.connect(named) : target ? session.connect(target.host, target.port) : session.connect();
-    const ssh = await wasm_bindgen.Ssh.connect(stream, pinned || undefined);
-    const at = named || (target ? `${target.host}:${target.port}` : 'forward');
-    return { ssh, place: `call:${place(url)}/${at}`, session };
+    return { ...(await shellStream(session, where, service, pinned)), place: null, session, at: `call:${place(url)}` };
   } catch (e) {
     session.close();
     throw e;
@@ -270,7 +569,7 @@ function pick(hello, to) {
   }
   if (!hello.scope || hello.scope.length === 0) return null;
   const entry = hello.scope.find((e) => e.scheme === 'ssh') ?? hello.default;
-  if (!entry) throw new Error('The host serves no ssh:// target. Name one with to=host:port.');
+  if (!entry) throw new Error('The host serves no ssh:// target. Name one in Target.');
   return entry;
 }
 
@@ -294,14 +593,14 @@ function callUrl(text) {
   return { url: `${loopback ? 'http' : 'https'}://${authority}${trimmed}${query ? `?${query}` : ''}`, service };
 }
 
-async function connect(url, pinned) {
+async function connect(url, pinned, signal) {
   for (let attempt = 0; ; attempt++) {
     try {
       return await wasm_bindgen.Ssh.connect(url, pinned || undefined);
     } catch (e) {
       // 1013: right key, nothing parked. The device parks a fresh leg as
       // soon as another caller claims one, so this is worth a retry.
-      if (e.code === 1013 && attempt < RETRIES) {
+      if (e.code === 1013 && attempt < RETRIES && !signal.aborted) {
         say(`The device is not home yet; retrying (${attempt + 1}/${RETRIES})…`);
         await sleep(RETRY_MS * 2 ** attempt);
         continue;
@@ -311,69 +610,146 @@ async function connect(url, pinned) {
   }
 }
 
-async function start(target, user, pinned) {
-  say('Connecting…');
-  const { ssh, place: where, session } = await open(target, pinned);
-  const done = () => {
-    ssh.close();
-    session?.close();
-  };
-  const fp = ssh.hostKey;
+// depth: the session
+
+// The attempt or session in hand ({ plan, abort, ssh, session, beat,
+// connected }), and the plan Reconnect repeats. A callback from an attempt
+// that is no longer `current` is ignored, so a late close from an old
+// session never touches a new one.
+let current = null;
+let last = null;
+let term = null;
+let fit = null;
+
+class Cancelled extends Error {}
+
+function release(a) {
+  clearInterval(a.beat);
+  a.ssh?.close();
+  a.session?.close();
+}
+
+// End the attempt or session in hand, as the bar's button does.
+function disconnect() {
+  const a = current;
+  if (!a) return;
+  current = null;
+  a.abort.abort();
+  release(a);
+  setState('closed', a.connected ? 'Disconnected.' : 'Cancelled.');
+}
+
+// The session ended by itself: a logout, the far side closing, or a beat
+// that failed.
+function ended(a, text) {
+  if (current !== a) return;
+  current = null;
+  release(a);
+  setState('closed', text);
+}
+
+async function connectTo(plan) {
+  if (current) return;
+  last = plan;
+  const a = { plan, abort: new AbortController() };
+  current = a;
+  try {
+    await start(a);
+  } catch (e) {
+    if (current !== a) {
+      release(a);
+      return;
+    }
+    current = null;
+    release(a);
+    if (e instanceof Cancelled) return;
+    setState('error', e.message || String(e), true);
+  }
+}
+
+// Throws once the attempt has been cancelled, after closing what it got.
+function live(a) {
+  if (current !== a) throw new Cancelled();
+}
+
+function terminal() {
+  if (term) {
+    term.reset();
+    return;
+  }
+  term = new Terminal({ cursorBlink: true, fontFamily: 'ui-monospace, Menlo, Consolas, monospace' });
+  fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open($('term'));
+  const text = new TextEncoder();
+  const shell = () => (current?.connected ? current.ssh : null);
+  term.onData((d) => shell()?.write(text.encode(d)));
+  term.onBinary((d) => shell()?.write(Uint8Array.from(d, (c) => c.charCodeAt(0))));
+  term.onResize(({ cols, rows }) => shell()?.resize(cols, rows));
+  addEventListener('resize', () => fit.fit());
+}
+
+async function start(a) {
+  const { where, user, pinned } = a.plan;
+  setState('connecting', 'Connecting…');
+  const opened = await open(where, pinned, a.abort.signal);
+  a.ssh = opened.ssh;
+  a.session = opened.session;
+  live(a);
+  const at = opened.place || `${opened.at}/${opened.to}`;
+  const fp = a.ssh.hostKey;
   if (!pinned) {
-    const known = await kv.get(`host:${where}`);
+    const known = await kv.get(`host:${at}`);
+    live(a);
     if (known && known !== fp) {
-      done();
-      throw new Error(`The host key for ${where} has changed.\nIt was ${known}\nIt is now ${fp}\n` +
+      throw new Error(`The host key for ${at} has changed.\nIt was ${known}\nIt is now ${fp}\n` +
         'Refusing to go on. If you know why it changed, forget the old key in this browser and try again.');
     }
     if (!known) {
-      if (!confirm(`First connection to ${where}.\n\nIts host key is\n${fp}\n\nTrust this host?`)) {
-        done();
-        say('Not trusted; nothing was sent.');
+      if (!confirm(`First connection to ${at}.\n\nIts host key is\n${fp}\n\nTrust this host?`)) {
+        live(a);
+        current = null;
+        release(a);
+        setState('closed', 'Not trusted; nothing was sent.');
         return;
       }
-      await kv.set(`host:${where}`, fp);
+      await kv.set(`host:${at}`, fp);
     }
   }
 
-  say(`Host key ${fp}. Signing in as ${user}…`);
+  setState('signing-in', `Host key ${fp}. Signing in as ${user}…`);
   let ok = false;
   const key = await kv.get('key');
-  if (key) ok = await ssh.authKey(user, key.privateOpenssh);
+  if (key) ok = await a.ssh.authKey(user, key.privateOpenssh);
+  live(a);
   if (!ok) {
-    const password = prompt(`Password for ${user}@${where}`);
-    if (password !== null) ok = await ssh.authPassword(user, password);
+    const password = a.plan.password || prompt(`Password for ${user}@${at}`);
+    live(a);
+    if (password) ok = await a.ssh.authPassword(user, password);
   }
-  if (!ok) {
-    done();
-    throw new Error(`${user} was not accepted.${key ? ' Is this browser\'s key in authorized_keys?' : ''}`);
-  }
+  live(a);
+  if (!ok) throw new Error(`${user} was not accepted.${key ? ' Is this browser\'s key in authorized_keys?' : ''}`);
 
-  $('setup').hidden = true;
-  $('term').hidden = false;
-  const term = new Terminal({ cursorBlink: true, fontFamily: 'ui-monospace, Menlo, Consolas, monospace' });
-  const fit = new FitAddon.FitAddon();
-  term.loadAddon(fit);
-  term.open($('term'));
+  remember(a.plan).catch(() => {});
+  // The address bar links to this place, without its secret, so a reload
+  // or a bookmark comes back here.
+  history.replaceState(null, '', toLink(a.plan.form));
+  showTerm();
+  terminal();
   fit.fit();
-  const text = new TextEncoder();
-  await ssh.shell(term.cols, term.rows,
-    (bytes) => term.write(bytes),
+  await a.ssh.shell(term.cols, term.rows,
+    (bytes) => current === a && term.write(bytes),
     (status) => {
-      clearInterval(beat);
-      session?.close();
-      say(`Session ended${status === null ? '' : ` (exit ${status})`}.`);
-      window.drtSsh.ended = status;
+      if (window.drtSsh?.ssh === a.ssh) window.drtSsh.ended = status;
+      ended(a, `Session ended${status === null ? '' : ` (exit ${status})`}.`);
     });
-  const beat = setInterval(() => ssh.keepalive().catch(() => {}), KEEPALIVE_MS);
-  term.onData((d) => ssh.write(text.encode(d)));
-  term.onBinary((d) => ssh.write(Uint8Array.from(d, (c) => c.charCodeAt(0))));
-  term.onResize(({ cols, rows }) => ssh.resize(cols, rows));
-  addEventListener('resize', () => fit.fit());
+  live(a);
+  a.connected = true;
+  a.beat = setInterval(() => a.ssh.keepalive().catch(() => ended(a, 'The connection was lost.')), KEEPALIVE_MS);
+  setState('connected', `${user}@${at} · ${fp}`);
   term.focus();
-  say(`${user}@${where} · ${fp}`);
   // For the end-to-end check, and for anyone debugging from the console.
-  window.drtSsh = { ssh, session, term, fit, ended: undefined };
+  window.drtSsh = { ssh: a.ssh, session: a.session, term, fit, ended: undefined };
 }
 
 // depth: the page
@@ -382,11 +758,11 @@ async function start(target, user, pinned) {
   try {
     await load();
   } catch (e) {
-    say(`This browser cannot run the SSH module: ${e.message || e}`, true);
+    setState('error', `This browser cannot run the SSH module: ${e.message || e}`, true);
     return;
   }
-  if (!(await kv.persistent)) say('This browser will not remember keys or trusted hosts for this page.', true);
   await showKey();
+  await listPlaces();
 
   $('makekey').onclick = async () => {
     const k = wasm_bindgen.generateKey(`drt-ssh@${location.host || 'page'} ${new Date().toISOString().slice(0, 10)}`);
@@ -400,33 +776,70 @@ async function start(target, user, pinned) {
       await showKey();
     }
   };
-
-  const go = (target, user, pinned) =>
-    start(target, user, pinned).catch((e) => {
-      $('setup').hidden = false;
-      $('term').hidden = true;
-      say(e.message || String(e), true);
-    });
-  const link = new URLSearchParams(location.hash.slice(1));
-  $('url').value = link.get('url') || '';
-  $('rtc').value = link.get('rtc') || '';
-  $('call').value = link.get('call') || '';
-  $('user').value = link.get('user') || '';
-  const target = () => {
-    const rtc = $('rtc').value.trim();
-    const call = $('call').value.trim();
-    if (rtc) return { rtc, to: link.get('to'), fingerprint: link.get('fingerprint') };
-    if (call) return { call, to: link.get('to'), fingerprint: link.get('fingerprint') };
-    return { url: $('url').value.trim() };
+  for (const r of document.querySelectorAll('input[name=mode]')) r.onchange = () => setMode(r.value);
+  $('showsecret').onclick = () => {
+    const shown = $('secret').type === 'text';
+    $('secret').type = shown ? 'password' : 'text';
+    $('showsecret').textContent = shown ? 'Show' : 'Hide';
   };
+  $('forgetsecret').onclick = async () => {
+    await forgetSecret(mode(), $(mode()).value.trim());
+    $('secret').value = '';
+    $('remember').checked = false;
+    await showForget();
+    say('The saved secret is forgotten.');
+  };
+  // An address with ?k= gives up its secret; one this browser knows fills
+  // in the rest of its place.
+  for (const m of ['call', 'url']) {
+    $(m).onchange = async () => {
+      const { address, secret } = splitSecret($(m).value.trim());
+      $(m).value = address;
+      if (secret) $('secret').value = secret;
+      const saved = (await places())[placeKey(m, address)];
+      if (saved) fill(m, { ...saved, secret: secret || saved.secret, remembered: !!saved.secret });
+      await showForget();
+    };
+  }
   $('setup').onsubmit = (e) => {
     e.preventDefault();
-    const t = target();
-    if (!t.rtc && !t.call && !t.url) return say('Enter a relay claim URL, a host record or a signalling URL.', true);
-    go(t, $('user').value.trim(), link.get('hostkey'));
+    if (current) return;
+    let plan;
+    try {
+      plan = readForm();
+    } catch (err) {
+      return setState('error', err.message, true);
+    }
+    connectTo(plan);
   };
-  if ((link.get('url') || link.get('rtc') || link.get('call')) && link.get('user')) go(target(), link.get('user'), link.get('hostkey'));
-  else say('Not connected.');
+  $('disconnect').onclick = disconnect;
+  $('reconnect').onclick = () => last && connectTo(last);
+  $('edit').onclick = () => {
+    showSetup();
+    $('edit').hidden = true;
+  };
+
+  // A link connects at once when it names a place and a user; so does a
+  // change to the fragment, without a reload, unless a session is open.
+  const follow = async () => {
+    const p = await fillFromLink();
+    if (!p || !p.user || current) return;
+    try {
+      connectTo(readForm());
+    } catch (e) {
+      setState('error', e.message, true);
+    }
+  };
+  addEventListener('hashchange', follow);
+
+  setMode('call');
+  if (!fromLink(location.hash)) {
+    const saved = (await places())[await kv.get('last')];
+    if (saved) fill(saved.mode, { ...saved, remembered: !!saved.secret });
+  }
+  if (!(await kv.persistent)) setState('idle', 'This browser will not remember keys, trusted hosts or secrets for this page.', true);
+  else setState('idle', 'Not connected.');
+  await follow();
 })();
 </script>
 </body>
