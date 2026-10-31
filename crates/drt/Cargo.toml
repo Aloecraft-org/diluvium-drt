@@ -105,6 +105,10 @@ drt-connector-data = { workspace = true, optional = true }
 # is the whole executor a `Session` over the blocking backend needs.
 ego_cli = { workspace = true, optional = true }
 futures-executor = { version = "0.3", default-features = false, features = ["std"], optional = true }
+# A `{"prompt": "hidden"}` secret's blind read (`src/prompt.rs`), on the
+# controlling terminal. Already in the tree with `cli`, through ego_cli,
+# at the version and features ego_cli asks for.
+crossterm = { version = "0.29", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -190,7 +194,7 @@ web = ["connector-time", "connector-fs", "connector-crypto", "cli", "numeric"]
 #
 # A pipe is never edited either way -- `drt repl < script.dlua` keeps the
 # plain reader, whose prompts go to stderr so that redirect stays clean.
-cli = ["dep:ego_cli", "dep:futures-executor"]
+cli = ["dep:ego_cli", "dep:futures-executor", "dep:crossterm"]
 connector-time = ["dep:drt-connector-time"]
 connector-ssh = ["dep:drt-connector-ssh", "runtime"]
 # `drt start`'s `ssh` listener: the REPL over SSH (SPEC.md §9), on

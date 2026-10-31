@@ -264,11 +264,77 @@ pub enum ForwardSpec {
     Peer(Peer),
     /// Bare `--forward`: a relay; the caller names the destination.
     Relay,
+    /// Several `--forward` targets, each `host:port` or `scheme://host:port`:
+    /// a caller names one by its address, and a non-`tcp` scheme is a named
+    /// service too, as with one.
+    Many(Vec<Entry>),
 }
 
 impl ForwardSpec {
-    /// `--forward <target>`, with `-P <ports>` and `-A` beside it.
+    /// `--forward`, as many times as it was given (or `commands.p2p.forward`
+    /// as a list), with `-P <ports>` and `-A` beside it. One target is the
+    /// table's row for it; several must each name one TCP address, since
+    /// the REPL, stdio, a peer or a relay is the whole forward and not one
+    /// choice among others.
     pub fn parse(
+        forward: Option<&[String]>,
+        ports: Option<&str>,
+        all: bool,
+    ) -> Result<ForwardSpec, String> {
+        let many = match forward {
+            None => return ForwardSpec::parse_one(None, ports, all),
+            Some([]) => {
+                return Err(
+                    "`forward` is an empty list, which serves nothing; leave it out to serve \
+                     the REPL"
+                        .into(),
+                )
+            }
+            Some([one]) => return ForwardSpec::parse_one(Some(one), ports, all),
+            Some(many) => many,
+        };
+        if ports.is_some() || all {
+            return Err(
+                "-P and -A go with one `--forward <host>`; with several targets, name each \
+                 host:port"
+                    .into(),
+            );
+        }
+        let mut entries: Vec<Entry> = Vec::new();
+        for target in many {
+            let entry = match ForwardSpec::parse_one(Some(target), None, false)? {
+                ForwardSpec::One(entry) => entry,
+                whole => {
+                    return Err(format!(
+                        "--forward '{target}' is {}, which is a whole forward and not one of \
+                         several; give it alone",
+                        whole.describe()
+                    ))
+                }
+            };
+            if entries
+                .iter()
+                .any(|e| e.port == entry.port && e.host.eq_ignore_ascii_case(&entry.host))
+            {
+                return Err(format!(
+                    "--forward names {}:{} twice",
+                    entry.host, entry.port
+                ));
+            }
+            if entry.scheme != "tcp" && entries.iter().any(|e| e.scheme == entry.scheme) {
+                return Err(format!(
+                    "--forward names two targets as the service {}; a caller could not say \
+                     which it means",
+                    entry.scheme
+                ));
+            }
+            entries.push(entry);
+        }
+        Ok(ForwardSpec::Many(entries))
+    }
+
+    /// One `--forward <target>`, with `-P <ports>` and `-A` beside it.
+    fn parse_one(
         forward: Option<&str>,
         ports: Option<&str>,
         all: bool,
@@ -370,6 +436,17 @@ impl ForwardSpec {
             ForwardSpec::Stdio => "this process's stdio, one session at a time".into(),
             ForwardSpec::Peer(p) => format!("the peer {}", p.shown()),
             ForwardSpec::Relay => "whatever the caller names (a relay)".into(),
+            ForwardSpec::Many(entries) => entries
+                .iter()
+                .map(|e| {
+                    if e.scheme == "tcp" {
+                        format!("{}:{}", e.host, e.port)
+                    } else {
+                        format!("{} (the service {})", e.url(), e.scheme)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
         }
     }
 }
@@ -654,7 +731,10 @@ mod tests {
 
     #[test]
     fn a_forward_is_one_row_of_section_5s_table() {
-        let f = |fw: Option<&str>, p: Option<&str>, a: bool| ForwardSpec::parse(fw, p, a);
+        let f = |fw: Option<&str>, p: Option<&str>, a: bool| {
+            let list: Option<Vec<String>> = fw.map(|one| vec![one.to_string()]);
+            ForwardSpec::parse(list.as_deref(), p, a)
+        };
         assert_eq!(f(None, None, false), Ok(ForwardSpec::Repl));
         assert_eq!(
             f(Some("127.0.0.1:8080"), None, false),
@@ -696,6 +776,46 @@ mod tests {
         assert!(f(None, Some("80"), false).is_err());
         assert!(f(Some("127.0.0.1"), Some("80"), true).is_err());
         assert!(f(Some("127.0.0.1"), Some("80-90"), false).is_err());
+    }
+
+    /// Several targets: each one address a caller can name, and nothing
+    /// that is a whole forward on its own.
+    #[test]
+    fn a_forward_list_is_several_addresses_and_nothing_else() {
+        let f = |list: &[&str], p: Option<&str>, a: bool| {
+            let list: Vec<String> = list.iter().map(|s| s.to_string()).collect();
+            ForwardSpec::parse(Some(&list), p, a)
+        };
+        assert_eq!(
+            f(&["127.0.0.1:3389", "ssh://127.0.0.1:22"], None, false),
+            Ok(ForwardSpec::Many(vec![
+                Entry {
+                    scheme: "tcp".into(),
+                    host: "127.0.0.1".into(),
+                    port: 3389
+                },
+                Entry::parse("ssh://127.0.0.1:22").unwrap(),
+            ]))
+        );
+        // One entry is today's single forward, row for row.
+        assert_eq!(f(&["-"], None, false), Ok(ForwardSpec::Stdio));
+        assert_eq!(f(&[""], None, false), Ok(ForwardSpec::Relay));
+        assert!(f(&[], None, false).unwrap_err().contains("empty list"));
+        for whole in ["-", "", "drt://s.example/v1/b"] {
+            let e = f(&["127.0.0.1:22", whole], None, false).unwrap_err();
+            assert!(e.contains("whole forward"), "{whole:?}: {e}");
+        }
+        assert!(f(&["127.0.0.1:22", "127.0.0.1"], None, false).is_err());
+        assert!(f(&["127.0.0.1:22", "127.0.0.1:80"], Some("80"), false).is_err());
+        assert!(f(&["127.0.0.1:22", "127.0.0.1:80"], None, true).is_err());
+        assert!(f(
+            &["127.0.0.1:22", "LOCALHOST:22", "localhost:22"],
+            None,
+            false
+        )
+        .is_err());
+        let e = f(&["ssh://10.0.0.1:22", "ssh://10.0.0.2:22"], None, false).unwrap_err();
+        assert!(e.contains("service ssh"), "{e}");
     }
 
     #[test]

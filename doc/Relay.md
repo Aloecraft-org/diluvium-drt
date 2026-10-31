@@ -80,20 +80,20 @@ with backoff, so a relay restart or a lost uplink heals itself.
 
 **From a file, which is how a device should run it.** The `?k=` is a
 credential, and on a command line it is in `ps`, in shell history, and in
-every "run this" someone pastes. The same verb reads a `p2p` block --
-one key per flag, under the flag's name -- so a unit runs
-`drt --config park.json p2p` and the key lives in a 0600 file:
+every "run this" someone pastes. The same verb reads a `commands.p2p`
+block -- one key per flag, under the flag's name (`doc/P2P.md` §8) -- so a
+unit runs `drt --config park.json p2p` and the key lives in a 0600 file:
 
 ```json
-{ "p2p": { "park": "wss://rendezvous.example/park/xps?k=…", "forward": "ssh://127.0.0.1:22" } }
+{ "commands": { "p2p": { "park": "wss://rendezvous.example/park/xps?k=…", "forward": ["ssh://127.0.0.1:22"] } } }
 ```
 
 The caller's half is `relay`, with `ports` where `-p` would go;
 `extra_roots` is spelled as `connectors.rest` spells it. A flag typed
 beside the file replaces the key it names, and a flag naming a different
-role than the file is refused as the conflict it is. A `tunnel` block is
-still read, for one release, with a warning naming each key's
-replacement. `examples/19-a-tunnel-a-program-can-use` runs both halves
+role than the file is refused as the conflict it is. A `tunnel` block, or
+`p2p` at the top level, is still read, for one release, with a warning
+naming each key's replacement. `examples/19-a-tunnel-a-program-can-use` runs both halves
 this way.
 
 **Or with the key as a header, and none in the URL.** Either half may
@@ -102,8 +102,8 @@ present its key as `Authorization: Bearer …` on the handshake instead of
 access logs record:
 
 ```json
-{ "p2p": { "relay": "wss://rendezvous.example/s/xps", "ports": ["2222"],
-           "headers": { "Authorization": "Bearer …" } } }
+{ "commands": { "p2p": { "relay": "wss://rendezvous.example/s/xps", "ports": ["2222"],
+                         "headers": { "auth": { "env": "CALLER_KEY" } } } } }
 ```
 
 `--header 'Authorization: Bearer …'` is the same, one flag at a time, and

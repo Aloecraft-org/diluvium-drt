@@ -12,6 +12,13 @@ RootConfig {
             max_tier: None,
         },
     },
+    defaults: DefaultConfig {
+        stun: [],
+        extra_roots: [],
+    },
+    commands: CommandsConfig {
+        p2p: None,
+    },
     connectors: {},
     plugins: {},
     listeners: [],
@@ -36,7 +43,9 @@ RootConfig {
             forward: [],
             expose: [],
             private_key: Some(
-                "8nq7WxIN1FhAoPljA+Te1djRmDWpN/WZto6OTwktZnU=",
+                Literal(
+                    "8nq7WxIN1FhAoPljA+Te1djRmDWpN/WZto6OTwktZnU=",
+                ),
             ),
             private_key_file: None,
             private_key_env: None,

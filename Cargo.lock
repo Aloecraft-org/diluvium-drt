@@ -1257,6 +1257,7 @@ dependencies = [
  "base64",
  "clap",
  "clap_complete",
+ "crossterm",
  "drt-caps",
  "drt-config",
  "drt-connector",

@@ -584,6 +584,26 @@ Underneath it the embedded core moves from 0.15.1 to
   `drt p2p drt://match.example/v1/mypc -p 13389 -- xfreerdp /v:localhost:13389`.
   The command needs a bound `-p <local>`, belongs with a call only,
   and is a command-line argument, not a key of the `p2p` block.
+- **A config file has `default` and `commands` (`doc/P2P.md` §8).**
+  `commands.p2p` is `drt p2p`'s block, one key per flag, and
+  `default` holds `stun` and `extra_roots` for every block under
+  `commands`. The order is `default`, then the command's block,
+  then the command line, each replacing the one before per key. An
+  unknown key in either is refused, as everywhere else.
+- **A credential in the config can come from a variable, a file or a
+  prompt.** Any secret-valued field takes a string, as before, or one
+  of `{"env": "NAME"}`, `{"file": "/path"}` and
+  `{"prompt": "hidden"|"visible"}`: `commands.p2p.headers` values,
+  `turn.key` and `wireguard.private_key`. `{"file": "%d/name"}` is
+  systemd's `LoadCredential=`. A prompt reads the controlling
+  terminal, never stdin, and with no terminal (a systemd unit, a
+  Windows scheduled task) it is refused at once, naming the field.
+- **`drt p2p --forward` takes several targets.** Repeat the flag, or
+  give `commands.p2p.forward` a list: each entry is `host:port` or
+  `scheme://host:port`, and a caller names one by its address
+  (`-p 13389:127.0.0.1:3389`, a page's `to=`). On one host a port
+  alone is enough, as with `-P`; a non-`tcp` scheme is also its named
+  service. A string is still one target.
 
 ### Changed
 
@@ -643,7 +663,14 @@ Underneath it the embedded core moves from 0.15.1 to
   prints the `drt p2p` form of what it was given on stderr and runs
   as that. `drt tunnel --listen`, the WebSocket to TCP bridge, is not
   a peer: it still runs, warns, and moves to the `relay` block.
-- **The `tunnel` config block is read as `p2p` for one release**,
+- **A top-level `p2p` block is read as `commands.p2p` for one
+  release**, with a warning. `turn.key_file` and `turn.key_env` are
+  `turn.key` as `{"file": ..}` and `{"env": ..}`, and
+  `wireguard.private_key_file` and `private_key_env` are
+  `wireguard.private_key` the same way; each still reads, in the
+  order it always did, with a warning naming its replacement.
+  Examples 11, 19, 20, 21 and 22 use the new spellings.
+- **The `tunnel` config block is read as `commands.p2p` for one release**,
   each key warned about with its replacement: `claim` is `relay` (or
   `peer`, without the `rtc:`), `bind` is `ports` (the port only, on
   127.0.0.1), `to` is `forward`, `park` stays `park`. A
