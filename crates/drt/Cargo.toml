@@ -96,6 +96,7 @@ drt-connector-exec = { workspace = true, optional = true }
 drt-plugin = { workspace = true, optional = true }
 drt-connector-socket = { workspace = true, optional = true }
 drt-connector-ws = { workspace = true, optional = true }
+drt-connector-kv = { workspace = true, optional = true }
 # `full` only: the parquet reader is the one dependency in this workspace
 # that would not fit a slim binary, and a browser has no file to read.
 drt-connector-data = { workspace = true, optional = true }
@@ -158,7 +159,7 @@ libc = "0.2"
 # connector is its own gate so a profile is a feature list, not a fork.
 default = ["slim"]
 slim = ["connector-time", "connector-fs", "connector-crypto", "listen", "cli"]
-full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "connector-ldap", "connector-exec", "connector-socket", "connector-ws", "connector-data", "tunnel", "relay", "stun", "netcheck", "turn", "wireguard", "webrtc", "numeric", "sshd", "p2p"]
+full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "connector-ldap", "connector-exec", "connector-socket", "connector-ws", "connector-kv", "connector-data", "tunnel", "relay", "stun", "netcheck", "turn", "wireguard", "webrtc", "numeric", "sshd", "p2p"]
 # The portable build (doc/Wasm.md D2): what `drt` carries on
 # wasm32-wasip2, under wasmtime. Every connector here compiles for that
 # target with no source change and is exercised by the examples gate
@@ -252,6 +253,10 @@ connector-socket = ["dep:drt-connector-socket"]
 # only, on rest's argument: it links the same TLS stack. What browser access
 # signals over (doc/BrowserAccess.md §7).
 connector-ws = ["dep:drt-connector-ws"]
+# One topic of a signalling server's kv store (`drt p2p --match --kv`):
+# `host:kv/get|put|delete|list|watch`, over rest's HTTP client (connectors/
+# kv). `full` only, on rest's argument: it links the same TLS stack.
+connector-kv = ["dep:drt-connector-kv"]
 # Parquet and CSV columns out of a granted directory, as raw buffers. In
 # `full` and nowhere else: the parquet reader is a large dependency, and
 # both smaller profiles exist to not carry things like it.

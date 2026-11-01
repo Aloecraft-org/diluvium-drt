@@ -77,6 +77,9 @@ pub mod ldap;
 // `drt p2p`: one verb for peer-to-peer sessions (doc/P2P.md).
 #[cfg(feature = "p2p")]
 pub mod p2p;
+// `drt kv`: the signalling server's kv store (doc/DRT-Signalling.md §10).
+#[cfg(feature = "p2p")]
+pub mod kv;
 #[cfg(feature = "tunnel")]
 pub mod tunnel;
 #[cfg(feature = "turn")]

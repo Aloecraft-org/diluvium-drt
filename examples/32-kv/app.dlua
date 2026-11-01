@@ -1,0 +1,24 @@
+-- A counter any number of programs can share, and a key that lives only
+-- while it is refreshed. host.call is the only API: no DRT library.
+
+-- Read, add one, write only over the version read; a lost race reads again.
+-- example: omits a bound on the retries
+local function increment(key)
+  while true do
+    local cur = host.call("kv/get", {key = key})
+    local n = cur and tonumber(cur.value) or 0
+    local wrote = host.call("kv/put", {key = key, value = tostring(n + 1),
+                                       version = cur and cur.version or 0})
+    if not wrote.conflict then return n + 1 end
+  end
+end
+
+print("visits", increment("visits"))
+print("visits", increment("visits"))
+
+-- Presence: a key with a TTL is gone unless it is written again in time.
+host.call("kv/put", {key = "presence/pi", value = "up", ttl = 30})
+
+for _, k in ipairs(host.call("kv/list", {prefix = "presence/"}).keys) do
+  print("present", k.key, k.value, k.expires_in .. "s")
+end

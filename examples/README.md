@@ -1,7 +1,7 @@
 # DRT examples
 
 A run-through for someone who has a `drt` binary and has never run anything
-with it. Thirty-two sittings — thirty-three directories, because `05` has a
+with it. Thirty-three sittings — thirty-four directories, because `05` has a
 live twin — meant in order: one idea each, a command block you can paste, and
 an `expected.txt` that is the real output of running it rather than a
 transcription of what it ought to say. A **drt app** is a config plus a
@@ -45,6 +45,7 @@ reference. Everything here is v0.8.0.
 | [`29-browser-access`](29-browser-access) | Signalling is a program: the host answers `doc/DRT-Signalling.md`'s caller request with its own record, and the browser then reaches the host's scope directly over WebRTC. | `./demo.sh` |
 | [`30-signaling-room`](30-signaling-room) | The reference server for `doc/DRT-Signalling.md`: a caller's request is held until an answerer that cannot take requests, such as a page, reads it by cursor and answers. Its event stream says when to read. | `./demo.sh` |
 | [`31-streaming-responses`](31-streaming-responses) | Server-Sent Events from a program: a reply with `stream = true` sends the head at once, the body follows in pieces, and a client that leaves is reported back. | `./demo.sh` |
+| [`32-kv`](32-kv) | A key-value store on the signalling server: every key has a version a write can name, a TTL key lives while it is refreshed, and `drt kv`, `curl` and a program reach the same keys. | `./demo.sh` |
 
 `drt run` executes one program to completion and exits — no swarm, no
 listeners, no second instance — and it is what `01`–`07`, `10`, `12`, `16`,

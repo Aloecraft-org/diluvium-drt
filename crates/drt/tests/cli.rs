@@ -433,6 +433,7 @@ fn profile_matches_its_manifest() {
         "connector-exec",
         "connector-fs",
         "connector-ldap",
+        "connector-kv",
         "connector-rest",
         "connector-socket",
         "connector-sql",
@@ -535,6 +536,7 @@ fn profile_matches_its_manifest() {
     feature!("connector-exec");
     feature!("connector-fs");
     feature!("connector-ldap");
+    feature!("connector-kv");
     feature!("connector-rest");
     feature!("connector-socket");
     feature!("connector-sql");
