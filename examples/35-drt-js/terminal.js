@@ -39,7 +39,7 @@ export function startTerminal(drt, element) {
   }
 
   (async () => {
-    terminal.write('drt in this page. Try: drt start --config app.json   (^C stops it)\n');
+    terminal.write('Files: app.json app.dlua\nRun:   drt start --config app.json\nStop:  Ctrl+C\n');
     for (;;) {
       const argv = ((await ask('$ ')) ?? '').trim().split(/\s+/);
       if (argv[0] === 'drt') await run(argv);
