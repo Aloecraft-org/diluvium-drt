@@ -94,8 +94,7 @@
       repl.resize(100, 30);
       repl.input(encoder.encode('\x04'));
       const closed = await until(() => status !== null);
-      // A second session may start once the first ended: the one-at-a-time
-      // rule is about the runtime's output, not a lock that outlives it.
+      // A second session on the same terminal once the first ended.
       let again = null;
       if (closed) {
         try {
@@ -108,7 +107,90 @@
       }
       return { out, status, closed, again, prompts: prompts.length };
     },
-    // The swarm table, driven the way the Lab's Instances panel drives
+    // Two kernels in one page (doc/Browser.md): two DrtTerms from one
+    // module, each with its own sink and filesystem, their commands ticked
+    // alternately, then a raw REPL on each, both open at once. Answers
+    // what each sink and stream got and what each filesystem holds, for
+    // run.mjs to say whether either saw the other.
+    async twoKernels() {
+      const kernel = (name, other) => {
+        const k = { out: '', decoder: new TextDecoder() };
+        k.term = new DrtTerm((fd, bytes) => { k.out += k.decoder.decode(bytes, { stream: true }); });
+        const put = (path, text) => k.term.putFile(path, new TextEncoder().encode(text));
+        k.term.putDir('/k/data');
+        put('/k/app.dlua',
+          `print('print from ${name}')\n` +
+          `host.fs.write('${name}.txt', '${name}')\n` +
+          `local _, seen = host.fs.try_read('${other}.txt')\n` +
+          `host.fs.write('saw-other.txt', tostring(seen))\n`);
+        put('/k/bad.dlua', `error('boom from ${name}')`);
+        put('/k/deploy.json', JSON.stringify({
+          program: { path: 'app.dlua' },
+          caps: [{ capability: 'host:fs/*' }],
+          connectors: { fs: { scope: { scope: './data', access: 'readwrite' } } },
+        }));
+        k.term.setCwd('/k');
+        return k;
+      };
+      const a = kernel('a', 'b');
+      // Made second, so its filesystem and sink are the ones installed last.
+      const b = kernel('b', 'a');
+      const sessions = [
+        a.term.exec(['drt', 'run', '--config', 'deploy.json']),
+        b.term.exec(['drt', 'run', '--config', 'deploy.json']),
+        a.term.exec(['drt', 'run', 'bad.dlua']),
+        b.term.exec(['drt', 'run', 'bad.dlua']),
+      ];
+      const status = sessions.map(() => null);
+      const deadline = Date.now() + 10000;
+      while (status.some((s) => s === null) && Date.now() < deadline) {
+        sessions.forEach((s, i) => {
+          if (status[i] !== null) return;
+          const step = s.tick();
+          if (step.done) status[i] = step.status;
+        });
+        await new Promise((r) => setTimeout(r, 1));
+      }
+      const files = (k) => Object.fromEntries(k.term.listFiles()
+        .filter((p) => p.startsWith('/k/data/'))
+        .map((p) => [p, new TextDecoder().decode(k.term.getFile(p))]));
+      // Two raw REPLs, open together, each typed a line naming its kernel.
+      const repl = (k, name) => {
+        const r = { out: '', status: null, decoder: new TextDecoder() };
+        r.repl = k.term.repl(80, 24, (bytes) => { r.out += r.decoder.decode(bytes, { stream: true }); }, (s) => { r.status = s; });
+        r.name = name;
+        return r;
+      };
+      const until = async (pred) => {
+        const end = Date.now() + 10000;
+        while (!pred() && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
+        return pred();
+      };
+      let replError = null;
+      const repls = [];
+      try {
+        repls.push(repl(a, 'a'), repl(b, 'b'));
+        await until(() => repls.every((r) => /dv> $/.test(r.out)));
+        for (const r of repls) r.repl.input(new TextEncoder().encode(`print('repl ' .. '${r.name}')\r`));
+        await until(() => repls.every((r) => r.out.includes(`repl ${r.name}\r\n`)));
+        for (const r of repls) r.repl.input(new TextEncoder().encode('\x04'));
+        await until(() => repls.every((r) => r.status !== null));
+      } catch (e) {
+        replError = String(e);
+      }
+      const out = {
+        status,
+        outA: a.out, outB: b.out,
+        filesA: files(a), filesB: files(b),
+        replA: repls[0]?.out ?? '', replB: repls[1]?.out ?? '',
+        replStatus: repls.map((r) => r.status),
+        replError,
+      };
+      sessions.forEach((s) => s.free());
+      a.term.free();
+      b.term.free();
+      return out;
+    },
     // it: root a program, step until it settles, and read the roster and
     // its capability answers back. What this proves is that the exports
     // are a swarm and not a shape -- the instance runs, is asked what it

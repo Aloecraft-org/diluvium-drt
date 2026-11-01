@@ -15,14 +15,15 @@
 //!
 //! ## surface block
 //!
-//! - [`Raw::start`]: a session over `Term::exec(["drt", "repl"])`, its bytes
-//!   to `sink`, its end to `closed`. One at a time in a page: the runtime's
-//!   `print` reaches one sink.
+//! - [`Raw::start`]: a session over `Term::exec_to(["drt", "repl"])`, its
+//!   bytes to `sink`, its end to `closed`. As many as the page wants: each
+//!   session's ticks install its own sink (`term::Context`), so one
+//!   stream's `print` never reaches another.
 //! - [`Raw::input`], [`Raw::resize`], [`Raw::close`]: what the stream's
 //!   holder does.
 //! - [`PROMPT`], [`CONTINUING`]: the two prompts, as the native REPL's.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -37,11 +38,6 @@ use crate::term::{Session, Step, Term};
 
 pub const PROMPT: &str = "dv> ";
 pub const CONTINUING: &str = ">> ";
-
-thread_local! {
-    /// Whether a raw session holds the runtime's output.
-    static ACTIVE: Cell<bool> = const { Cell::new(false) };
-}
 
 /// What the terminal and the stream's holder share.
 struct Shared {
@@ -69,7 +65,7 @@ pub struct Raw {
 impl Raw {
     /// Start a REPL whose terminal is the stream: keystrokes in through
     /// [`Raw::input`], everything it writes out through `sink(bytes)`,
-    /// `closed(status)` once, when it ends. Refused while another runs.
+    /// `closed(status)` once, when it ends.
     pub fn start(
         term: &Term,
         cols: u16,
@@ -77,23 +73,21 @@ impl Raw {
         sink: js_sys::Function,
         closed: js_sys::Function,
     ) -> Result<Raw, String> {
-        if ACTIVE.with(|a| a.get()) {
-            return Err("one raw REPL session at a time in a page".into());
-        }
-        ACTIVE.with(|a| a.set(true));
         let shared = Rc::new(RefCell::new(Shared {
             queue: VecDeque::new(),
             waker: None,
             size: Size::new(cols.max(1), rows.max(1)),
             closed: false,
         }));
-        let session = term.exec(&["drt".to_string(), "repl".to_string()]);
-        // While this runs, the runtime's print is the stream's; the page's
-        // own sink comes back when it ends.
+        // The runtime's print is the stream's, for this session only: every
+        // tick installs it and puts back whatever was there.
         let out = sink.clone();
-        let previous = drt_platform::stdio::install_sink(Box::new(move |_fd, bytes| {
-            let _ = out.call1(&JsValue::NULL, &js_sys::Uint8Array::from(&crlf(bytes)[..]));
-        }));
+        let session = term.exec_to(
+            &["drt".to_string(), "repl".to_string()],
+            Some(Rc::new(move |_fd, bytes: &[u8]| {
+                let _ = out.call1(&JsValue::NULL, &js_sys::Uint8Array::from(&crlf(bytes)[..]));
+            })),
+        );
         let terminal = ByteTerminal {
             shared: shared.clone(),
             sink,
@@ -106,15 +100,6 @@ impl Raw {
         wasm_bindgen_futures::spawn_local(async move {
             let status = drive(session, terminal).await;
             handle.borrow_mut().closed = true;
-            match previous {
-                Some(p) => {
-                    drt_platform::stdio::install_sink(p);
-                }
-                None => {
-                    drt_platform::stdio::uninstall_sink();
-                }
-            }
-            ACTIVE.with(|a| a.set(false));
             let _ = closed.call1(&JsValue::NULL, &JsValue::from(status));
         });
         Ok(Raw { shared })

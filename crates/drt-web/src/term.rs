@@ -12,11 +12,28 @@
 //! ## surface block
 //!
 //! - [`Term`]: the memory filesystem a page seeds, and `exec`.
+//!   [`Term::with_sink`] gives a terminal output of its own;
+//!   [`Term::exec_to`] runs one command into a sink of the caller's.
 //! - [`Session`]: one command, ticked to completion.
+//!   [`Session::enter`] for host calls that reach the runtime between
+//!   ticks.
 //! - [`Step`]: what a tick asks of the page.
+//! - [`Sink`]: where a terminal's bytes go.
+//!
+//! Several terminals in one page (doc/Browser.md): the runtime reads
+//! through one process filesystem (`drt_platform::fs::host`) and writes
+//! through one stdio sink, because that is where the C core's libc
+//! `fd_write` lands and it has no way to say whose `print` it is. So each
+//! terminal carries its own filesystem and sink as a [`Context`], and
+//! everything that runs a command -- `exec`, every tick, every feed --
+//! installs that context for its duration and puts back what was there.
+//! The page is one thread and ticks are synchronous, so one kernel at a
+//! time is the only kernel there is, the way one process at a time is on
+//! one CPU.
 
 use std::io::Write;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,8 +45,12 @@ use drt::drive::{Next, Solo};
 use drt::repl::Repl;
 use drt::start::DeployDriver;
 use drt_connector::Dispatcher;
-use drt_platform::fs::MemFs;
+use drt_platform::fs::{Backend, MemFs};
 use drt_platform::stdio::{self, Fd};
+
+/// Where a terminal's bytes go: the C core's `print`, the REPL's answers,
+/// the runtime's own sentences, with the stream each was written to.
+pub type Sink = Rc<dyn Fn(Fd, &[u8])>;
 
 /// What the page does next.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +68,7 @@ pub enum Step {
 /// against it.
 pub struct Term {
     fs: Arc<MemFs>,
+    sink: Option<Sink>,
 }
 
 impl Default for Term {
@@ -60,10 +82,22 @@ impl Term {
     /// process's own (`drt_platform::fs::install`): a page is one process,
     /// and every file a command opens -- a program, a config, a granted
     /// directory -- is one the page put here.
+    ///
+    /// Its commands write to whatever sink is installed when they run. A
+    /// page with more than one terminal wants [`Term::with_sink`].
     pub fn new() -> Self {
         let fs = Arc::new(MemFs::new());
         drt_platform::fs::install(fs.clone());
-        Term { fs }
+        Term { fs, sink: None }
+    }
+
+    /// A terminal whose commands write to `sink` and read this terminal's
+    /// filesystem, whichever other terminals the page holds.
+    pub fn with_sink(sink: Sink) -> Self {
+        Term {
+            sink: Some(sink),
+            ..Term::new()
+        }
     }
 
     /// The filesystem, to seed and to read back.
@@ -76,6 +110,25 @@ impl Term {
     /// first tick; parse errors, `--help` and `buildinfo` are answered here
     /// and the session is already over.
     pub fn exec(&self, argv: &[String]) -> Session {
+        self.exec_to(argv, self.sink.clone())
+    }
+
+    /// [`Term::exec`], with this command's output going to `sink` instead
+    /// of the terminal's own: a raw REPL's byte stream, say. `None` writes
+    /// to whatever sink is installed when it runs.
+    pub fn exec_to(&self, argv: &[String], sink: Option<Sink>) -> Session {
+        let context = Context {
+            fs: self.fs.clone(),
+            sink,
+        };
+        let kind = {
+            let _entered = context.enter();
+            self.command(argv)
+        };
+        Session { kind, context }
+    }
+
+    fn command(&self, argv: &[String]) -> Kind {
         let cli = match Cli::try_parse_from(argv) {
             Ok(cli) => cli,
             Err(e) => {
@@ -88,11 +141,11 @@ impl Term {
                 return match e.kind() {
                     ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
                         say(Fd::Stdout, &text);
-                        Session::exited(0)
+                        Kind::Exited(0)
                     }
                     _ => {
                         say(Fd::Stderr, &text);
-                        Session::exited(2)
+                        Kind::Exited(2)
                     }
                 };
             }
@@ -101,7 +154,7 @@ impl Term {
             Ok(pair) => pair,
             Err(e) => {
                 say(Fd::Stderr, &format!("drt: {e}\n"));
-                return Session::exited(1);
+                return Kind::Exited(1);
             }
         };
         match cli.command {
@@ -135,7 +188,7 @@ impl Term {
                                 Fd::Stderr,
                                 "drt run: name a program, as an argument or as `program` in the config\n",
                             );
-                            return Session::exited(1);
+                            return Kind::Exited(1);
                         }
                     },
                 };
@@ -169,12 +222,10 @@ impl Term {
                     Requested::Default => unreachable!("classify never answers Default"),
                 };
                 match prepared {
-                    Ok(solo) => Session {
-                        kind: Kind::Run { solo, dispatcher },
-                    },
+                    Ok(solo) => Kind::Run { solo, dispatcher },
                     Err(e) => {
                         say(Fd::Stderr, &format!("drt run: {e}\n"));
-                        Session::exited(1)
+                        Kind::Exited(1)
                     }
                 }
             }
@@ -193,16 +244,14 @@ impl Term {
                          a page runs the config it was given\n"
                     ),
                 );
-                Session::exited(1)
+                Kind::Exited(1)
             }
             Command::Start { profile: None, .. } => {
                 match drt::start::prepare(&config, dispatcher) {
-                    Ok(driver) => Session {
-                        kind: Kind::Start(driver),
-                    },
+                    Ok(driver) => Kind::Start(driver),
                     Err(e) => {
                         say(Fd::Stderr, &format!("drt start: {e}\n"));
-                        Session::exited(1)
+                        Kind::Exited(1)
                     }
                 }
             }
@@ -215,7 +264,7 @@ impl Term {
                     Fd::Stderr,
                     "drt: that verb acts on a root, and a page has none\n",
                 );
-                Session::exited(1)
+                Kind::Exited(1)
             }
             Command::Repl { unsafe_stdlib } => {
                 let build = if unsafe_stdlib {
@@ -230,19 +279,17 @@ impl Term {
                 ) {
                     Ok(repl) => {
                         say(Fd::Stderr, &format!("{}\n", repl.banner()));
-                        Session {
-                            kind: Kind::Repl(repl),
-                        }
+                        Kind::Repl(repl)
                     }
                     Err(e) => {
                         say(Fd::Stderr, &format!("drt repl: {e}\n"));
-                        Session::exited(1)
+                        Kind::Exited(1)
                     }
                 }
             }
             Command::Buildinfo { json } => {
                 say(Fd::Stdout, &cli::buildinfo(json));
-                Session::exited(0)
+                Kind::Exited(0)
             }
             // The same script the native binary prints, for whoever copies it
             // out of the page; nothing in a page sources it.
@@ -250,7 +297,7 @@ impl Term {
                 let mut script = Vec::new();
                 cli::completions(shell, &mut script);
                 say(Fd::Stdout, &String::from_utf8_lossy(&script));
-                Session::exited(0)
+                Kind::Exited(0)
             }
             Command::Ps(_) => {
                 say(
@@ -258,7 +305,7 @@ impl Term {
                     "drt ps: reaches a running deployment over its ssh listener (SPEC.md \
                      §13a), and a page has no socket to reach one with\n",
                 );
-                Session::exited(1)
+                Kind::Exited(1)
             }
             // The verbs behind native-only features (`tunnel`, `netcheck`,
             // `wg`): absent from a browser build of `drt`, and present when
@@ -273,8 +320,62 @@ impl Term {
                     "drt: that verb needs sockets and a runtime of its own, which a terminal \
                      session does not have\n",
                 );
-                Session::exited(1)
+                Kind::Exited(1)
             }
+        }
+    }
+}
+
+// depth: a terminal's context, installed for as long as its command runs
+
+/// What a terminal's command reads through and writes to.
+#[derive(Clone)]
+struct Context {
+    fs: Arc<MemFs>,
+    sink: Option<Sink>,
+}
+
+impl Context {
+    fn enter(&self) -> Entered {
+        let fs = drt_platform::fs::install(self.fs.clone());
+        let sink = self
+            .sink
+            .clone()
+            .map(|sink| stdio::install_sink(Box::new(move |fd, bytes| sink(fd, bytes))));
+        Entered { fs, sink }
+    }
+}
+
+/// A sink as `drt_platform::stdio` holds it.
+type InstalledSink = Box<dyn Fn(Fd, &[u8])>;
+
+/// A terminal's context, installed; what was there before comes back on
+/// drop. Nested entries unwind in order, so a sink that runs another
+/// terminal's command hands the page back as it found it.
+pub struct Entered {
+    fs: Option<Arc<dyn Backend>>,
+    /// `None`: the context has no sink and left the installed one alone.
+    sink: Option<Option<InstalledSink>>,
+}
+
+impl Drop for Entered {
+    fn drop(&mut self) {
+        match self.fs.take() {
+            Some(fs) => {
+                drt_platform::fs::install(fs);
+            }
+            None => {
+                drt_platform::fs::uninstall();
+            }
+        }
+        match self.sink.take() {
+            Some(Some(sink)) => {
+                stdio::install_sink(sink);
+            }
+            Some(None) => {
+                stdio::uninstall_sink();
+            }
+            None => {}
         }
     }
 }
@@ -282,6 +383,7 @@ impl Term {
 /// One command, ticked to completion.
 pub struct Session {
     kind: Kind,
+    context: Context,
 }
 
 enum Kind {
@@ -314,15 +416,18 @@ impl Session {
         }
     }
 
-    fn exited(status: i32) -> Self {
-        Session {
-            kind: Kind::Exited(status),
-        }
+    /// Install this session's terminal -- its filesystem and sink -- until
+    /// the guard drops. `tick` and `feed` do this themselves; a host call
+    /// that reaches the runtime some other way (a message pushed into the
+    /// deployment, a kill) holds one around the call.
+    pub fn enter(&self) -> Entered {
+        self.context.enter()
     }
 
     /// Advance, and say what the page does next. Over sessions answer
     /// [`Step::Exit`] again on every tick.
     pub fn tick(&mut self) -> Step {
+        let _entered = self.context.enter();
         let step = match &mut self.kind {
             Kind::Exited(status) => return Step::Exit(*status),
             Kind::Run { solo, dispatcher } => {
@@ -389,6 +494,7 @@ impl Session {
     /// line outside a continuation is not). Only a `repl` session takes
     /// input.
     pub fn feed(&mut self, line: &str) -> Result<bool, String> {
+        let _entered = self.context.enter();
         match &mut self.kind {
             Kind::Repl(repl) => repl.feed(line),
             _ => Err("this session takes no input".into()),
@@ -425,6 +531,7 @@ impl Session {
 
     /// Throw away an unfinished line, the way Ctrl+C does natively.
     pub fn abandon(&mut self) {
+        let _entered = self.context.enter();
         if let Kind::Repl(repl) = &mut self.kind {
             repl.abandon();
         }
