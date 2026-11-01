@@ -426,8 +426,9 @@ fn every_profile_name_is_a_feature_the_binary_probes() {
 #[test]
 fn profile_matches_its_manifest() {
     const PROFILES: [&str; 4] = ["full", "slim", "wasi", "web"];
-    const LEAVES: [&str; 28] = [
+    const LEAVES: [&str; 29] = [
         "cli",
+        "connector-aloecrypt",
         "connector-crypto",
         "connector-data",
         "connector-exec",
@@ -531,6 +532,7 @@ fn profile_matches_its_manifest() {
         };
     }
     feature!("cli");
+    feature!("connector-aloecrypt");
     feature!("connector-crypto");
     feature!("connector-data");
     feature!("connector-exec");

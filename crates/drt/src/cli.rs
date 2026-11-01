@@ -42,12 +42,14 @@ use drt_connector::Registry;
 /// notices when someone forgets.
 const PROFILE_SLIM: &[&str] = &[
     "cli",
+    "connector-aloecrypt",
     "connector-crypto",
     "connector-fs",
     "connector-time",
     "listen",
 ];
 const PROFILE_WASI: &[&str] = &[
+    "connector-aloecrypt",
     "connector-crypto",
     "connector-fs",
     "connector-sql",
@@ -56,6 +58,7 @@ const PROFILE_WASI: &[&str] = &[
 ];
 const PROFILE_WEB: &[&str] = &[
     "cli",
+    "connector-aloecrypt",
     "connector-crypto",
     "connector-fs",
     "connector-time",
@@ -63,6 +66,7 @@ const PROFILE_WEB: &[&str] = &[
 ];
 const PROFILE_FULL: &[&str] = &[
     "cli",
+    "connector-aloecrypt",
     "connector-crypto",
     "connector-data",
     "connector-exec",
@@ -572,6 +576,7 @@ pub enum Command {
         feature = "connector-fs",
         feature = "connector-sql",
         feature = "connector-crypto",
+        feature = "connector-aloecrypt",
         feature = "connector-rest",
         feature = "connector-ssmtp",
         feature = "connector-ldap",
@@ -604,6 +609,9 @@ pub fn buildinfo(json: bool) -> String {
     }
     if cfg!(feature = "connector-crypto") {
         connectors.push("crypto");
+    }
+    if cfg!(feature = "connector-aloecrypt") {
+        connectors.push("aloecrypt");
     }
     if cfg!(feature = "connector-sql") {
         connectors.push("sql");
@@ -776,6 +784,7 @@ fn enabled_features() -> Vec<&'static str> {
         };
     }
     feature!("cli");
+    feature!("connector-aloecrypt");
     feature!("connector-crypto");
     feature!("connector-fs");
     feature!("connector-kv");
@@ -903,6 +912,17 @@ pub fn wire_connectors_with(config: &RootConfig, supplied: &Supplied) -> Result<
                 .wire(
                     "crypto",
                     std::sync::Arc::new(drt_connector_crypto::CryptoConnector::new()),
+                    wiring.scope.clone(),
+                )
+                .map_err(|e| e.to_string())?,
+            // `crypto`'s rule for every private key: the scope holds the
+            // master, a program names labels derived from it, and the
+            // grants on `sign` and `decrypt` say which labels it may name.
+            #[cfg(feature = "connector-aloecrypt")]
+            "aloecrypt" => registry
+                .wire(
+                    "aloecrypt",
+                    std::sync::Arc::new(drt_connector_aloecrypt::AloecryptConnector::new()),
                     wiring.scope.clone(),
                 )
                 .map_err(|e| e.to_string())?,

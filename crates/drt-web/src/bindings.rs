@@ -76,6 +76,13 @@ impl DrtTerm {
     /// core's `print`, the REPL's answers, a `drt run:` refusal -- with
     /// `fd` 1 or 2 and `bytes` a `Uint8Array`, in order.
     ///
+    /// Each terminal is a kernel of its own: its commands read its own
+    /// filesystem and write to its own sink, however many terminals the
+    /// page holds (doc/Browser.md, "Several kernels in one page"). The
+    /// sink is also installed page-wide, as it always was, so output from
+    /// something no terminal owns -- a `DrtSwarm` -- reaches the newest
+    /// terminal.
+    ///
     /// `backings` are connectors the page hands this terminal, by family
     /// (`js`'s surface block): `{ net: transport, store: { call } }`.
     /// Each command whose config names a family, and every command with
@@ -83,7 +90,7 @@ impl DrtTerm {
     #[wasm_bindgen(constructor)]
     pub fn new(sink: js_sys::Function, backings: JsValue) -> Result<DrtTerm, JsValue> {
         let backings = crate::js::backings(&backings).map_err(|e| JsValue::from_str(&e))?;
-        drt_platform::stdio::install_sink(Box::new(move |fd, bytes| {
+        let sink: crate::term::Sink = std::rc::Rc::new(move |fd, bytes: &[u8]| {
             let fd = match fd {
                 drt_platform::stdio::Fd::Stdout => 1u32,
                 drt_platform::stdio::Fd::Stderr => 2u32,
@@ -93,9 +100,11 @@ impl DrtTerm {
                 &JsValue::from(fd),
                 &js_sys::Uint8Array::from(bytes),
             );
-        }));
+        });
+        let page = sink.clone();
+        drt_platform::stdio::install_sink(Box::new(move |fd, bytes| page(fd, bytes)));
         Ok(DrtTerm {
-            inner: Term::with_backings(backings),
+            inner: Term::with_sink(sink).with_backings(backings),
         })
     }
 
@@ -148,9 +157,9 @@ impl DrtTerm {
     /// go in through `input`, everything the REPL writes comes out through
     /// `sink(bytes)` as a `Uint8Array`, line editing happens inside, and
     /// `closed(status)` is called once when it ends. `cols` and `rows` are
-    /// the far terminal's size; `resize` follows it. One at a time in a
-    /// page: while it runs, the runtime's output is the stream's and this
-    /// terminal's sink sees nothing; throws if one is already running.
+    /// the far terminal's size; `resize` follows it. The REPL's output is
+    /// the stream's alone; this terminal's sink and its other sessions
+    /// keep theirs, and any number may run at once.
     pub fn repl(
         &self,
         cols: u16,
@@ -355,7 +364,11 @@ impl DrtSession {
 
     /// The verbs. Each refuses by name for a session with no swarm rather
     /// than reporting a success that did not happen.
+    /// Each runs inside this session's terminal, as a tick does: what the
+    /// deployment does in answer reads and writes that terminal's
+    /// filesystem and output, not another kernel's.
     pub fn push(&mut self, id: u32, queue: &str, msg: &[u8]) -> Result<(), JsValue> {
+        let _entered = self.inner.enter();
         match self.inner.deployment_mut() {
             Some(d) => swarm::view::push(d, id, queue, msg).map_err(|e| JsValue::from_str(&e)),
             None => Err(JsValue::from_str(no_swarm())),
@@ -363,6 +376,7 @@ impl DrtSession {
     }
 
     pub fn kill(&mut self, id: u32) -> Result<(), JsValue> {
+        let _entered = self.inner.enter();
         match self.inner.deployment_mut() {
             Some(d) => swarm::view::kill(d, id).map_err(|e| JsValue::from_str(&e)),
             None => Err(JsValue::from_str(no_swarm())),
@@ -370,6 +384,7 @@ impl DrtSession {
     }
 
     pub fn hibernate(&mut self, id: u32) -> Result<(), JsValue> {
+        let _entered = self.inner.enter();
         match self.inner.deployment_mut() {
             Some(d) => swarm::view::hibernate(d, id).map_err(|e| JsValue::from_str(&e)),
             None => Err(JsValue::from_str(no_swarm())),
@@ -377,6 +392,7 @@ impl DrtSession {
     }
 
     pub fn wake(&mut self, id: u32) -> Result<(), JsValue> {
+        let _entered = self.inner.enter();
         match self.inner.deployment_mut() {
             Some(d) => swarm::view::wake(d, id).map_err(|e| JsValue::from_str(&e)),
             None => Err(JsValue::from_str(no_swarm())),

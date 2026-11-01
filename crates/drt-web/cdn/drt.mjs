@@ -34,8 +34,10 @@
 //     the key-value store of doc/DRT-Signalling.md §10. Options: `token`,
 //     `headers`.
 //   - `session(options)` -> { info, token, logout }: stdlib:session's
-//     /api/session, /api/token and /logout (doc/Session.md), with the
-//     browser's cookie; `options.base` defaults to the page's origin.
+//     /api/session, /api/token and /logout, with the browser's cookie;
+//     `options.base` defaults to the page's origin, where a proxy must
+//     mount stdlib:session's /api/* (crates/drt-web/npm/README.md says
+//     why and how).
 //   - Everything drt_browser_access.js exports: offer, direct, answer,
 //     listen, canonicalPeer, parseRecord, ... (doc/BrowserAccess.md).
 // - Configurable: HOLD_MARGIN_MS, what `call` allows past a server's hold
@@ -107,6 +109,7 @@ export class SessionError extends Error {
 // depth: calling a peer
 
 export async function call(peer, options = {}) {
+  options.signal?.throwIfAborted();
   const p = access.canonicalPeer(peer);
   if (p.kind === 'ws') {
     throw new Error(`${p.canonical} is a relay; call() never uses one. Dial it with loadSsh() or a WebSocket yourself.`);
@@ -164,10 +167,16 @@ async function unpack(b64) {
   return new Response(raw).arrayBuffer();
 }
 
+// A failed load is not kept: the next call tries again (an unpack can
+// fail on a page that ran out of memory, and that need not be final).
 export function loadSsh() {
   sshReady ??= unpack(SSH_WASM_GZ_B64)
     .then((bytes) => sshGlue.default({ module_or_path: bytes }))
-    .then(() => ({ Ssh: sshGlue.Ssh, generateKey: sshGlue.generateKey }));
+    .then(() => ({ Ssh: sshGlue.Ssh, generateKey: sshGlue.generateKey }))
+    .catch((e) => {
+      sshReady = null;
+      throw e;
+    });
   return sshReady;
 }
 
@@ -179,7 +188,11 @@ export async function ssh(target, pinned) {
 export function loadRuntime() {
   webReady ??= unpack(WEB_WASM_GZ_B64)
     .then((bytes) => webGlue.default({ module_or_path: bytes }))
-    .then(() => webGlue);
+    .then(() => webGlue)
+    .catch((e) => {
+      webReady = null;
+      throw e;
+    });
   return webReady;
 }
 
@@ -289,7 +302,7 @@ export function kv(server, topic, options = {}) {
 export function session(options = {}) {
   const fetchFn = options.fetch ?? globalThis.fetch.bind(globalThis);
   const base = String(options.base ?? globalThis.location.origin).replace(/\/+$/, '');
-  const send = (method, path) => fetchFn(`${base}${path}`, { method, credentials: 'include' });
+  const send = (method, path, init = {}) => fetchFn(`${base}${path}`, { method, credentials: 'include', ...init });
   return {
     /** The session ({ user, groups, amr, signed_in, expires_in, ... }), or null when there is none. */
     async info() {
@@ -308,8 +321,11 @@ export function session(options = {}) {
     },
     /** Ends the session, and revokes the user's tokens when the server issues them. */
     async logout() {
-      const res = await send('POST', '/logout');
-      if (res.status >= 400) throw new SessionError('logout', res.status, await res.text());
+      // /logout answers with a redirect to the login page, which a proxy
+      // may send on to another origin; the redirect is the answer, so it
+      // is not followed.
+      const res = await send('POST', '/logout', { redirect: 'manual' });
+      if (res.type !== 'opaqueredirect' && !res.ok) throw new SessionError('logout', res.status, await res.text());
     },
   };
 }

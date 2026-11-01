@@ -89,6 +89,7 @@ drt-sshd = { workspace = true, optional = true }
 drt-connector-fs = { workspace = true, optional = true }
 drt-connector-sql = { workspace = true, optional = true }
 drt-connector-crypto = { workspace = true, optional = true }
+drt-connector-aloecrypt = { workspace = true, optional = true }
 drt-connector-rest = { workspace = true, optional = true }
 drt-connector-ssmtp = { workspace = true, optional = true }
 drt-connector-ldap = { workspace = true, optional = true }
@@ -166,7 +167,7 @@ libc = "0.2"
 # fs/time/stdio only; `full` is everything this build can carry. Each
 # connector is its own gate so a profile is a feature list, not a fork.
 default = ["slim"]
-slim = ["connector-time", "connector-fs", "connector-crypto", "listen", "cli"]
+slim = ["connector-time", "connector-fs", "connector-crypto", "connector-aloecrypt", "listen", "cli"]
 full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "connector-ldap", "connector-exec", "connector-socket", "connector-ws", "connector-kv", "connector-data", "tunnel", "relay", "stun", "netcheck", "turn", "wireguard", "webrtc", "numeric", "sshd", "p2p"]
 # The portable build (doc/Wasm.md D2): what `drt` carries on
 # wasm32-wasip2, under wasmtime. Every connector here compiles for that
@@ -178,14 +179,14 @@ full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-s
 # `rest`, `ssmtp` -- cannot
 # cross at all (tokio refuses its `net` feature on wasm), so `full` is not
 # a wasm build and this is.
-wasi = ["connector-time", "connector-fs", "connector-crypto", "connector-sql", "listen"]
+wasi = ["connector-time", "connector-fs", "connector-crypto", "connector-aloecrypt", "connector-sql", "listen"]
 # The browser build (doc/Wasm.md D3): what `drt-web` links into a page.
 # `wasi` without `sql`, and without `listen`, because a page has neither
 # threads nor sockets to serve on; the fs connector reaches the page's
 # memory filesystem through `drt-platform`. Named here so `buildinfo`
 # reports `web` from inside the page and the examples gate can skip by
 # profile there as it does everywhere else.
-web = ["connector-time", "connector-fs", "connector-crypto", "cli", "numeric"]
+web = ["connector-time", "connector-fs", "connector-crypto", "connector-aloecrypt", "cli", "numeric"]
 # There is no `windows` profile any more, and that is the point. It
 # existed from v0.7.0-rc.2 as `full` minus `exec`, because `exec` opened
 # with a `compile_error!` naming itself unix-only. The process group that
@@ -222,6 +223,15 @@ sshd = ["dep:drt-sshd", "cli", "runtime", "listen"]
 connector-fs = ["dep:drt-connector-fs"]
 connector-sql = ["dep:drt-connector-sql"]
 connector-crypto = ["dep:drt-connector-crypto"]
+# Post-quantum signatures and encryption: `host:aloecrypt/*`, aloecrypt_core
+# (ML-DSA, ML-KEM, its document envelope) compiled in. In every profile,
+# because aloecrypt_core is no_std and builds for every target drt has,
+# the browser included; at `release-small` it measured about +150 KB on
+# wasm and +165 KB native. Its own crate behind the `Connector` trait, with
+# the aloecrypt calls in a module that has no drt type in it
+# (connectors/aloecrypt/src/ops.rs), so it can become a plugin once the
+# plugin channel reaches the page.
+connector-aloecrypt = ["dep:drt-connector-aloecrypt"]
 # Outbound HTTP for guests: `host:rest/get` / `host:rest/post`, the same two
 # calls diluvium's rest plugin answers. `full` only -- it links a TLS stack,
 # and a notebook profile that cannot reach the network is a smaller

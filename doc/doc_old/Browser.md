@@ -33,9 +33,10 @@ natively. The one thing a page cannot share is the loop, which may not
 sleep: so a `Session` does not run itself, `tick()` advances it and says
 what the page should do next, and the page owns the clock.
 
-Everything the runtime writes -- the C core's `print` (through wasi-libc's
-`fd_write`), the REPL's answers, a `drt run:` refusal -- reaches the page
-through one sink, in order, as bytes on fd 1 or 2. What a shell shows is
+Everything a terminal's commands write -- the C core's `print` (through
+wasi-libc's `fd_write`), the REPL's answers, a `drt run:` refusal --
+reaches the page through that terminal's sink, in order, as bytes on fd 1
+or 2. What a shell shows is
 what the page shows, which is why `expected.txt` can be the oracle there.
 
 ## The exports (`pkg/drt_web.js`, wasm-bindgen `--target web`)
@@ -88,9 +89,39 @@ answered inside `exec` and the session is already over on its first
 tick, with clap's own conventions: help to fd 1 and status 0, a usage
 error to fd 2 and status 2.
 
-**A `DrtTerm` is the process.** Its filesystem is installed as the
-module's, and its sink as the module's; make a second one and the first
-is no longer wired. One terminal per module, one session at a time.
+### Several kernels in one page
+
+Supported. Each `DrtTerm` is a kernel of its own: its commands read its
+own filesystem and write to its own sink, and any number of terminals,
+sessions and `repl` streams can run in one page, ticked in any order.
+The `two-kernels` browser check runs two at once and shows neither sees
+the other's `print`, errors, files or REPL stream.
+
+How: the module has one filesystem slot and one stdio sink, because the
+C core's `print` arrives through libc's `fd_write`, which cannot say whose
+it is. So every `exec`, `tick`, `feed`, `abandon` and swarm verb
+(`push`, `kill`, `hibernate`, `wake`) installs its terminal's filesystem
+and sink for the length of the call and puts back what was there
+(`crates/drt-web/src/term.rs`, `Context`). The page is one thread, so
+one kernel runs at a time.
+
+What the kernels still share:
+
+- One wasm memory and one heap. Each instance keeps its own budget, but
+  nothing walls one kernel's memory off from another's. A trap (`Module
+  terminated`) ends every kernel in the module.
+- One thread. A long tick in one kernel delays the others' ticks.
+- The clock and the entropy source. Harmless.
+- The C core's process-wide state: the continuation registries, filled
+  once by the first instance, identical for every kernel and locked; and
+  the embedder task hooks, which `drt` never sets. Every Lua state is
+  per instance.
+- `DrtSwarm`, which no terminal owns. It writes to the sink of the
+  newest `DrtTerm` and reads the newest one's filesystem.
+
+So a harness of many kernels on one page works. Cards that must survive
+another card's crash, or run in parallel, need a worker or an iframe
+each.
 
 **Exports do not panic.** On this target a Rust panic is a trap, not an
 unwind: `catch_unwind` never runs, `RuntimeError: unreachable` is thrown
@@ -166,9 +197,10 @@ terminal.onResize(({ cols, rows }) => repl.resize(cols, rows));
 
 The editor is the same `ego_cli` session as `DrtEditor`'s, over a
 terminal whose keys arrive as bytes decoded as the native service decodes
-them, so the two REPL shapes cannot differ in what a key does. One at a
-time in a page: while it runs the runtime's output is the stream's, and
-the `DrtTerm`'s own sink gets it back when the session ends.
+them, so the two REPL shapes cannot differ in what a key does. The
+runtime's output during the session is the stream's alone; the
+`DrtTerm`'s own sink and its other sessions keep theirs, and several
+streams can be open at once.
 
 ### `drt ssh` and `:ssh` in a page
 
@@ -246,7 +278,9 @@ collapsed on both sides, a tab having already become columns on the one
 side and not the other. And `xterm.html` is loaded with a
 real xterm.js `Terminal`, typed into with real keystrokes (including
 Backspace, so the edit path is exercised), asked to `run` a line nobody
-typed, and read back from the terminal's own buffer.
+typed, and read back from the terminal's own buffer. `two-kernels` runs
+two `DrtTerm`s interleaved, then a `repl` stream on each at once, and
+fails if either sees the other's output or files.
 
 On 2026-09-03: 01, 02, 03, 04, 06, 08, 12, the REPL and the xterm
 embedding pass; the rest skip for needing `full`, a network, or a port a

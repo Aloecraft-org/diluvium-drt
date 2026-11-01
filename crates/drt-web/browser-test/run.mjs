@@ -21,7 +21,8 @@
 // over a real relay (`drt start`) with `drt tunnel` as the `ProxyCommand`
 // (doc/SshInBrowser.md); and `repl-parity`, repl-script.txt typed at
 // drt-term.js against the transcript the native binary produced for the
-// same lines (repl-expected.txt).
+// same lines (repl-expected.txt); and `two-kernels`, two DrtTerms in one
+// page that must not see each other's output or files.
 //
 // usage: node run.mjs [--net] [--list] [example ...]
 //   --net    also run examples whose meta.json sets "needs_network"
@@ -1154,6 +1155,43 @@ if (PAGE_CHECKS) {
     if (r.again !== true) wrong.push(`a second session after the first: ${r.again}`);
     if (wrong.length === 0) {
       console.log(`ok       ${name.padEnd(24)} DrtTerm.repl: keystrokes in, prompt, echo and 42 out, ^D ends it`);
+      nOk += 1;
+    } else {
+      fail(name, wrong.join('; '));
+    }
+  } catch (e) {
+    fail(name, e === TIMED_OUT ? `timed out after ${TIMEOUT}s` : `the page threw: ${e.message}`);
+  }
+}
+
+// Two kernels in one page (doc/Browser.md, issue #82): two DrtTerms from
+// one module, run interleaved, then a raw REPL on each open at once.
+// Neither may see the other's output -- the C core's `print` included,
+// which only a page can show, since natively it goes to fd 1 -- or the
+// other's files.
+if (PAGE_CHECKS) {
+  const name = 'two-kernels';
+  try {
+    const r = await withTimeout(page.evaluate(() => window.drtBrowserTest.twoKernels()), TIMEOUT * 1000);
+    const wrong = [];
+    if (JSON.stringify(r.status) !== '[0,0,1,1]') wrong.push(`statuses ${JSON.stringify(r.status)}, wanted [0,0,1,1]`);
+    for (const [me, other, out, files, repl] of [
+      ['a', 'b', r.outA, r.filesA, r.replA],
+      ['b', 'a', r.outB, r.filesB, r.replB],
+    ]) {
+      if (!out.includes(`print from ${me}\n`)) wrong.push(`${me}'s print did not reach ${me}'s sink`);
+      if (!out.includes(`boom from ${me}`)) wrong.push(`${me}'s error did not reach ${me}'s sink`);
+      if (out.includes(`from ${other}`)) wrong.push(`${me}'s sink saw ${other}'s output`);
+      if (files[`/k/data/${me}.txt`] !== me) wrong.push(`${me}.txt missing from ${me}'s filesystem`);
+      if (`/k/data/${other}.txt` in files) wrong.push(`${other}.txt is in ${me}'s filesystem`);
+      if (files['/k/data/saw-other.txt'] !== 'error') wrong.push(`${me} read ${other}.txt: ${files['/k/data/saw-other.txt']}`);
+      if (!repl.includes(`repl ${me}\r\n`)) wrong.push(`${me}'s REPL stream lacks its own print: ${JSON.stringify(repl.slice(-120))}`);
+      if (repl.includes(`repl ${other}\r\n`)) wrong.push(`${me}'s REPL stream got ${other}'s print`);
+    }
+    if (r.replError) wrong.push(`two REPLs at once: ${r.replError}`);
+    else if (JSON.stringify(r.replStatus) !== '[0,0]') wrong.push(`REPL statuses ${JSON.stringify(r.replStatus)}`);
+    if (wrong.length === 0) {
+      console.log(`ok       ${name.padEnd(24)} two DrtTerms: own print, files and REPL stream each`);
       nOk += 1;
     } else {
       fail(name, wrong.join('; '));
