@@ -16,6 +16,7 @@ members = [
     "connectors/fs",
     "connectors/sql",
     "connectors/crypto",
+    "connectors/aloecrypt",
     "connectors/ssmtp",
     "connectors/ldap",
     "connectors/exec",
@@ -52,6 +53,7 @@ drt-connector-ssh = { path = "connectors/ssh", version = "0.8.0" }
 drt-connector-fs = { path = "connectors/fs", version = "0.8.0" }
 drt-connector-sql = { path = "connectors/sql", version = "0.8.0" }
 drt-connector-crypto = { path = "connectors/crypto", version = "0.8.0" }
+drt-connector-aloecrypt = { path = "connectors/aloecrypt", version = "0.8.0" }
 drt-connector-rest = { path = "connectors/rest", version = "0.8.0" }
 drt-connector-ssmtp = { path = "connectors/ssmtp", version = "0.8.0" }
 drt-connector-ldap = { path = "connectors/ldap", version = "0.8.0" }
