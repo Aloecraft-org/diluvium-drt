@@ -75,8 +75,8 @@ Underneath it the embedded core moves from 0.15.1 to
   carry the label patterns it may use. With no scope the family is
   keyless and answers `verify`, `encrypt` and `hash`. It builds for
   the browser and wasip2 like every other target, and costs about
-  150 KB at `release-small`. Public keys are base64 of the raw key
-  until aloecrypt_core has an armored public-key document.
+  150 KB at `release-small`. Public keys travel as aloecrypt's armored
+  `SIGNER` and `RECIPIENT` documents.
   `examples/36-post-quantum` walks through it.
 - **`stdlib:session`, a login portal and forward-auth endpoint
   (`doc/Session.md`).** A dlua program on four connectors: `ldap`

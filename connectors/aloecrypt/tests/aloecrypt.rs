@@ -6,8 +6,11 @@
 //! The interop half checks the connector's output with aloecrypt_core's
 //! own struct API, which shares no code with this crate's msgpack layer.
 
-use aloecrypt_core::document::{dearmor, verify_detached_65, SIGNATURE_LABEL};
-use aloecrypt_core::dsa_api::{IMlDsa65Pubkey, MlDsa65Pubkey, MlDsa65Verifier};
+use aloecrypt_core::document::{
+    armor, armored_size, dearmor, public_key_document_size, read_signer_65, verify_detached_65,
+    write_recipient_768, RECIPIENT_LABEL, SIGNATURE_LABEL, SIGNER_LABEL,
+};
+use aloecrypt_core::kem_api::{MlKem768Encapsulator, MLKEM_768_ENCAP_KEY_SZ};
 use drt_caps::Scope;
 use drt_connector::{Asker, Caller, Connector};
 use drt_connector_aloecrypt::{ops, AloecryptConnector, DEFAULT_HASH_DOMAIN};
@@ -346,23 +349,25 @@ fn a_keyless_wiring_answers_only_the_public_calls() {
 
 #[test]
 fn an_invalid_kem_key_is_refused_not_a_panic() {
-    // The right length for ML-KEM-768 and coefficients past the modulus:
-    // aloecrypt_core would unwrap this key (aloecrypt_core#7).
-    let bad = data_encoding::BASE64.encode(&[0xFFu8; 1184]);
+    // A RECIPIENT document carrying the right length for ML-KEM-768 and
+    // coefficients past the modulus. aloecrypt_core's encapsulator would
+    // unwrap this key (aloecrypt_core#7); its reader refuses it instead.
+    let bogus = MlKem768Encapsulator {
+        public_key: [0xFFu8; MLKEM_768_ENCAP_KEY_SZ],
+    };
+    let mut doc = vec![0u8; public_key_document_size(MLKEM_768_ENCAP_KEY_SZ)];
+    let n = write_recipient_768(&bogus, &mut doc).unwrap();
+    let mut text = vec![0u8; armored_size(RECIPIENT_LABEL.len(), n)];
+    let m = armor(RECIPIENT_LABEL, &doc[..n], &mut text).unwrap();
+    let text = std::str::from_utf8(&text[..m]).unwrap();
     let e = call(
         &AloecryptConnector::new(),
         &[],
         "aloecrypt/encrypt",
-        args(vec![
-            ("public_key", bad.as_str().into()),
-            ("data", "m".into()),
-        ]),
+        args(vec![("public_key", text.into()), ("data", "m".into())]),
     )
     .unwrap_err();
-    assert!(
-        e.contains("not a valid ml-kem-768 encapsulation key"),
-        "{e}"
-    );
+    assert!(e.contains("not a valid public-key document"), "{e}");
 }
 
 #[test]
@@ -393,7 +398,10 @@ fn malformed_input_is_named() {
         ]),
     )
     .unwrap_err();
-    assert!(e.contains("no ML-DSA or ML-KEM public key"), "{e}");
+    assert!(
+        e.contains("not an armored ALOECRYPT SIGNER or RECIPIENT document"),
+        "{e}"
+    );
 
     let kem = public_key(&c, "doc:1", "ml-kem-512");
     let e = call(
@@ -493,9 +501,10 @@ fn a_signature_verifies_with_aloecrypt_core_directly() {
     )
     .unwrap();
 
-    let bytes = data_encoding::BASE64.decode(pk.as_bytes()).unwrap();
-    let pk: &MlDsa65Pubkey = bytes.as_slice().try_into().unwrap();
-    let verifier = <MlDsa65Verifier as IMlDsa65Pubkey>::unpack_bytes(pk);
+    // The SIGNER document, read by the core's own reader.
+    let mut doc = vec![0u8; pk.len()];
+    let n = dearmor(pk.as_bytes(), SIGNER_LABEL, &mut doc).unwrap();
+    let verifier = read_signer_65(&doc[..n]).unwrap();
     let text = sig.as_str().unwrap();
     let mut doc = vec![0u8; text.len()];
     let n = dearmor(text.as_bytes(), SIGNATURE_LABEL, &mut doc).unwrap();

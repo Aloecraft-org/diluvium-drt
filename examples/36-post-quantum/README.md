@@ -30,8 +30,9 @@ armored base64 that another aloecrypt reader can open.
 - **A label is a keypair.** `release:1` under `ml-dsa-65` and `inbox:alice`
   under `ml-kem-768` are derived from the master and the label, so the same
   config gives the same keys on every host and nothing is stored.
-- **The public half is text.** `aloecrypt/public_key` answers it as base64,
-  for a program to publish, and `verify` and `encrypt` take it back.
+- **The public half is text.** `aloecrypt/public_key` answers it as an
+  armored `ALOECRYPT SIGNER` or `RECIPIENT` document, for a program to
+  publish, and `verify` and `encrypt` take it back.
 - **A failed signature is an answer.** `verify` replies `valid = false`
   with a reason (`mismatch` or `malformed`). A malformed key is an error.
 - **The grant names the labels.** `sign` and `decrypt` use a private key,
@@ -40,6 +41,6 @@ armored base64 that another aloecrypt reader can open.
 
 ## What it does not show
 
-A public key in an armored document of its own: aloecrypt_core does not
-have one yet, so the key is bare base64 of its bytes. This also runs under
-`drt` only. The plain Diluvium host has no aloecrypt connector.
+Whether to trust a public key: the document moves a key intact and is not
+signed, and trust is aloecrypt's certificate layer, which is not built. This
+also runs under `drt` only. The plain Diluvium host has no aloecrypt connector.

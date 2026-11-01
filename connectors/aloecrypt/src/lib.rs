@@ -35,9 +35,10 @@
 //!   name (`"doc:*"`), in the capability grammar's trailing-`*` shape, and a
 //!   grant with no scope names nothing. `public_key` hands out only the
 //!   public half and needs no pattern.
-//! - **Public keys are text** in one encoding, kept in `ops::PublicKey`
-//!   until aloecrypt_core has an armored public-key document
-//!   (aloecrypt_core#6).
+//! - **Public keys are text**: aloecrypt_core's armored `SIGNER` (ML-DSA)
+//!   and `RECIPIENT` (ML-KEM) documents, which carry the algorithm and the
+//!   address, so any aloecrypt reader opens them. The encoding is
+//!   `ops::PublicKey`'s and nowhere else.
 //!
 //! ## Plugin-ready
 //!

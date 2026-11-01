@@ -106,7 +106,7 @@ dependencies = [
 [[package]]
 name = "aloecrypt_core"
 version = "0.1.0"
-source = "git+https://github.com/Aloecraft-org/aloecrypt_core?rev=2e5ff7b0c9fb7279ded4c8789b9cc1b6511c240e#2e5ff7b0c9fb7279ded4c8789b9cc1b6511c240e"
+source = "git+https://github.com/Aloecraft-org/aloecrypt_core?rev=cf62a17f2c3089f60ce3157a478c09b89ac34c23#cf62a17f2c3089f60ce3157a478c09b89ac34c23"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -1416,7 +1416,6 @@ dependencies = [
  "drt-connector",
  "drt-hostcall",
  "drt-platform",
- "ml-kem",
  "pollster",
  "rmpv",
  "serde",

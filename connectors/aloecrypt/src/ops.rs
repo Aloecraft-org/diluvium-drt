@@ -27,18 +27,20 @@
 //! tables at the bottom of this file.
 //!
 //! The public-key encoding is [`PublicKey::encode`] / [`PublicKey::decode`]
-//! and nowhere else. It is standard base64 of the raw key, with the
-//! algorithm read off the length. That is a drt-only format, kept in one place
-//! so that an armored public-key document (aloecrypt_core#6) replaces it in
-//! one edit.
+//! and nowhere else: aloecrypt_core's armored SIGNER and RECIPIENT
+//! documents, which any aloecrypt reader opens.
 
-use aloecrypt_core::aloecrypt_api::{AloecryptAddress, StatusCodeEnum};
+use aloecrypt_core::aloecrypt_api::{AloecryptAddress, AloecryptAlgorithmEnum, StatusCodeEnum};
 use aloecrypt_core::document::{
     armor, armored_size, dearmor, dearmored_size_bound, decrypt_as_recipient_1024,
     decrypt_as_recipient_512, decrypt_as_recipient_768, detached_signature_size,
     encrypt_to_recipient_1024, encrypt_to_recipient_512, encrypt_to_recipient_768,
-    encrypted_document_size, sign_detached_44, sign_detached_65, sign_detached_87,
-    verify_detached_44, verify_detached_65, verify_detached_87, ENCRYPTED_LABEL, SIGNATURE_LABEL,
+    encrypted_document_size, public_key_algorithm, public_key_document_size, read_recipient_1024,
+    read_recipient_512, read_recipient_768, read_signer_44, read_signer_65, read_signer_87,
+    sign_detached_44, sign_detached_65, sign_detached_87, verify_detached_44, verify_detached_65,
+    verify_detached_87, write_recipient_1024, write_recipient_512, write_recipient_768,
+    write_signer_44, write_signer_65, write_signer_87, ENCRYPTED_LABEL, RECIPIENT_LABEL,
+    SIGNATURE_LABEL, SIGNER_LABEL,
 };
 use aloecrypt_core::dsa_api::*;
 use aloecrypt_core::kem_api::*;
@@ -167,58 +169,93 @@ pub struct PublicKey {
 }
 
 impl PublicKey {
-    /// The one place a public key becomes text. See the module comment.
+    /// The one place a public key becomes text: aloecrypt_core's public-key
+    /// document, armored as `ALOECRYPT SIGNER` (ML-DSA) or `ALOECRYPT
+    /// RECIPIENT` (ML-KEM). It carries the algorithm and the address, so
+    /// any aloecrypt reader takes it back without being told what it is.
     pub fn encode(&self) -> String {
-        data_encoding::BASE64.encode(&self.bytes)
+        let mut doc = vec![0u8; public_key_document_size(self.bytes.len())];
+        let n = match self.alg {
+            Alg::MlDsa44 => write_signer_44(&dsa_verifier_44(&self.bytes), &mut doc),
+            Alg::MlDsa65 => write_signer_65(&dsa_verifier_65(&self.bytes), &mut doc),
+            Alg::MlDsa87 => write_signer_87(&dsa_verifier_87(&self.bytes), &mut doc),
+            Alg::MlKem512 => write_recipient_512(&kem_encapsulator_512(&self.bytes), &mut doc),
+            Alg::MlKem768 => write_recipient_768(&kem_encapsulator_768(&self.bytes), &mut doc),
+            Alg::MlKem1024 => write_recipient_1024(&kem_encapsulator_1024(&self.bytes), &mut doc),
+        }
+        .expect("the buffer is public_key_document_size of the key");
+        armor_text(self.label(), &doc[..n]).expect("SIGNER and RECIPIENT are valid labels")
     }
 
-    /// The one place text becomes a public key. Every parameter set has a
-    /// distinct key length, so the length names the algorithm.
+    /// The one place text becomes a public key. The armor label says which
+    /// family, the document says which parameter set, and the core's reader
+    /// checks the address against the key and, for ML-KEM, the FIPS 203
+    /// encapsulation-key check the core would otherwise unwrap.
     pub fn decode(text: &str) -> Result<PublicKey, OpError> {
-        let bytes = data_encoding::BASE64
-            .decode(text.trim().as_bytes())
-            .map_err(|_| OpError::Malformed("public_key is not standard base64".into()))?;
-        let alg = Alg::ALL
-            .into_iter()
-            .find(|a| a.public_key_len() == bytes.len())
-            .ok_or_else(|| {
-                OpError::Malformed(format!(
-                    "public_key is {} bytes, which is no ML-DSA or ML-KEM public key",
-                    bytes.len()
-                ))
-            })?;
-        let key = PublicKey { alg, bytes };
-        key.check()?;
-        Ok(key)
+        let label = if text.contains(&format!("BEGIN ALOECRYPT {SIGNER_LABEL}-")) {
+            SIGNER_LABEL
+        } else if text.contains(&format!("BEGIN ALOECRYPT {RECIPIENT_LABEL}-")) {
+            RECIPIENT_LABEL
+        } else {
+            return Err(OpError::Malformed(
+                "public_key is not an armored ALOECRYPT SIGNER or RECIPIENT document".into(),
+            ));
+        };
+        let doc = dearmor_text(text, label, "public_key")?;
+        let bad = |_| OpError::Malformed("public_key is not a valid public-key document".into());
+        let alg = match public_key_algorithm(&doc).map_err(bad)? {
+            AloecryptAlgorithmEnum::MlDsa44 => Alg::MlDsa44,
+            AloecryptAlgorithmEnum::MlDsa65 => Alg::MlDsa65,
+            AloecryptAlgorithmEnum::MlDsa87 => Alg::MlDsa87,
+            AloecryptAlgorithmEnum::MlKem512 => Alg::MlKem512,
+            AloecryptAlgorithmEnum::MlKem768 => Alg::MlKem768,
+            AloecryptAlgorithmEnum::MlKem1024 => Alg::MlKem1024,
+            _ => return Err(OpError::Unsupported),
+        };
+        if alg.signs() != (label == SIGNER_LABEL) {
+            return Err(OpError::Malformed(format!(
+                "public_key is armored as {label} but carries an {} key",
+                alg.name()
+            )));
+        }
+        let bytes = match alg {
+            Alg::MlDsa44 => read_signer_44(&doc).map(|v| v.public_key.to_vec()),
+            Alg::MlDsa65 => read_signer_65(&doc).map(|v| v.public_key.to_vec()),
+            Alg::MlDsa87 => read_signer_87(&doc).map(|v| v.public_key.to_vec()),
+            Alg::MlKem512 => read_recipient_512(&doc).map(|e| e.public_key.to_vec()),
+            Alg::MlKem768 => read_recipient_768(&doc).map(|e| e.public_key.to_vec()),
+            Alg::MlKem1024 => read_recipient_1024(&doc).map(|e| e.public_key.to_vec()),
+        }
+        .map_err(bad)?;
+        Ok(PublicKey { alg, bytes })
     }
 
-    /// An ML-KEM key must be checked before aloecrypt_core sees it: the
-    /// core unwraps this same check, and a panic in a `panic = "abort"`
-    /// release takes the process with it (aloecrypt_core#7).
+    fn label(&self) -> &'static str {
+        if self.alg.signs() {
+            SIGNER_LABEL
+        } else {
+            RECIPIENT_LABEL
+        }
+    }
+
+    /// A `PublicKey` built from bytes rather than decoded still has to pass
+    /// the ML-KEM check before the core sees it: the core's encapsulator
+    /// unwraps it, and a release build aborts on panic (aloecrypt_core#7).
     fn check(&self) -> Result<(), OpError> {
         let valid = match self.alg {
-            Alg::MlKem512 => kem_key_valid!(
-                ml_kem::MlKem512,
-                MLKEM_512_ENCAP_KEY_SZ,
-                self.bytes.as_slice()
-            ),
-            Alg::MlKem768 => kem_key_valid!(
-                ml_kem::MlKem768,
-                MLKEM_768_ENCAP_KEY_SZ,
-                self.bytes.as_slice()
-            ),
-            Alg::MlKem1024 => kem_key_valid!(
-                ml_kem::MlKem1024,
-                MLKEM_1024_ENCAP_KEY_SZ,
-                self.bytes.as_slice()
-            ),
-            _ => true,
+            Alg::MlKem512 => <&MlKem512Pubkey>::try_from(self.bytes.as_slice())
+                .is_ok_and(|k| MlKem512Encapsulator::try_from_public_key(k).is_some()),
+            Alg::MlKem768 => <&MlKem768Pubkey>::try_from(self.bytes.as_slice())
+                .is_ok_and(|k| MlKem768Encapsulator::try_from_public_key(k).is_some()),
+            Alg::MlKem1024 => <&MlKem1024Pubkey>::try_from(self.bytes.as_slice())
+                .is_ok_and(|k| MlKem1024Encapsulator::try_from_public_key(k).is_some()),
+            _ => self.bytes.len() == self.alg.public_key_len(),
         };
         if valid {
             Ok(())
         } else {
             Err(OpError::Malformed(format!(
-                "public_key is not a valid {} encapsulation key",
+                "public_key is not a valid {} public key",
                 self.alg.name()
             )))
         }
@@ -401,18 +438,6 @@ enum Signer {
     D65(MlDsa65Keypair),
     D87(MlDsa87Keypair),
 }
-
-/// `EncapsulationKey::new` is the check the core unwraps (FIPS 203's
-/// modulus check); answering it here first is what keeps it from panicking.
-macro_rules! kem_key_valid {
-    ($params:ty, $n:expr, $bytes:expr) => {
-        match <[u8; $n]>::try_from($bytes) {
-            Ok(arr) => ml_kem::EncapsulationKey::<$params>::new(&arr.into()).is_ok(),
-            Err(_) => false,
-        }
-    };
-}
-use kem_key_valid;
 
 /// One constructor per parameter set, from bytes whose length the caller
 /// already checked. A wrong length here is a bug in this file, not input.

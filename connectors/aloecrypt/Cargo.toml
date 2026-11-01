@@ -18,14 +18,8 @@ drt-platform = { workspace = true }
 # `default-features = false`: no `host_rng`, because the core is seeded by
 # its caller and drt supplies the entropy, and getrandom without a backend
 # would refuse the browser target; no wordlists, which nothing here calls.
-aloecrypt_core = { git = "https://github.com/Aloecraft-org/aloecrypt_core", rev = "2e5ff7b0c9fb7279ded4c8789b9cc1b6511c240e", default-features = false }
-# Only to check a guest's ML-KEM public key before aloecrypt_core sees it:
-# the core's encapsulator `unwrap`s `EncapsulationKey::new`, and a release
-# build is `panic = "abort"`, so an invalid key from a program would take
-# the process down (aloecrypt_core#7). The same version the core links, so
-# this adds no crate to the tree.
-ml-kem = "0.3.2"
-# Base64 for public keys and hex for addresses and digests. Already in the
+aloecrypt_core = { git = "https://github.com/Aloecraft-org/aloecrypt_core", rev = "cf62a17f2c3089f60ce3157a478c09b89ac34c23", default-features = false }
+# Hex for addresses and digests. Already in the
 # tree through aloecrypt_core itself.
 data-encoding = "2"
 zeroize = "1"
@@ -36,5 +30,5 @@ drt-hostcall = { workspace = true }
 pollster = "0.4"
 # Interop: the connector's signatures are checked with the core's own
 # struct API, and its digest against the core's hash.
-aloecrypt_core = { git = "https://github.com/Aloecraft-org/aloecrypt_core", rev = "2e5ff7b0c9fb7279ded4c8789b9cc1b6511c240e", default-features = false }
+aloecrypt_core = { git = "https://github.com/Aloecraft-org/aloecrypt_core", rev = "cf62a17f2c3089f60ce3157a478c09b89ac34c23", default-features = false }
 data-encoding = "2"
