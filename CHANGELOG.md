@@ -33,10 +33,10 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Connectors
 
-- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `ldap`, `exec`, `data`, `socket`, `ws`, `kv`, `listen`
-- `slim`: `time`, `fs`, `crypto`, `listen`
-- `wasi`: `time`, `fs`, `crypto`, `sql`, `listen`
-- `web`: `time`, `fs`, `crypto`
+- `full`: `time`, `fs`, `crypto`, `aloecrypt`, `sql`, `ssh`, `rest`, `ssmtp`, `ldap`, `exec`, `data`, `socket`, `ws`, `kv`, `listen`
+- `slim`: `time`, `fs`, `crypto`, `aloecrypt`, `listen`
+- `wasi`: `time`, `fs`, `crypto`, `aloecrypt`, `sql`, `listen`
+- `web`: `time`, `fs`, `crypto`, `aloecrypt`
 
 ### Core features
 
@@ -66,6 +66,20 @@ Underneath it the embedded core moves from 0.15.1 to
   `examples/35-drt-js` is a page on it: an xterm.js terminal that
   runs `drt` with no config and no files, and an Alpine panel for
   the instances of what it runs.
+- **`host:aloecrypt/*`, post-quantum signatures and encryption, in
+  every profile.** aloecrypt_core (ML-DSA 44/65/87, ML-KEM
+  512/768/1024 and its document envelope) is compiled in as the
+  `aloecrypt` connector: `sign` and `verify` armored detached
+  signatures, `encrypt` and `decrypt` armored documents to a
+  recipient's public key, `public_key`, and `hash`, Keccak-256. Every
+  private key is a label derived from the wiring's master, so a
+  program never holds one, and the grants on `sign` and `decrypt`
+  carry the label patterns it may use. With no scope the family is
+  keyless and answers `verify`, `encrypt` and `hash`. It builds for
+  the browser and wasip2 like every other target, and costs about
+  150 KB at `release-small`. Public keys travel as aloecrypt's armored
+  `SIGNER` and `RECIPIENT` documents.
+  `examples/36-post-quantum` walks through it.
 - **`stdlib:session`, a login portal and forward-auth endpoint
   (`doc/Session.md`).** A dlua program on four connectors: `ldap`
   binds the user, `crypto` checks a TOTP code (enrolment by policy:

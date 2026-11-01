@@ -1,0 +1,21 @@
+{
+  "_comment": "One master key. Every private key is a label derived from it, and never leaves the host.",
+
+  "program": { "path": "app.dlua" },
+
+  "_caps": "sign and decrypt use a private key, so their grants name the labels they may use. The other four are public.",
+  "caps": [
+    { "capability": "host:aloecrypt/public_key" },
+    { "capability": "host:aloecrypt/sign", "scope": ["release:*"] },
+    { "capability": "host:aloecrypt/verify" },
+    { "capability": "host:aloecrypt/encrypt" },
+    { "capability": "host:aloecrypt/decrypt", "scope": ["inbox:*"] },
+    { "capability": "host:aloecrypt/hash" }
+  ],
+
+  "connectors": {
+    "aloecrypt": {
+      "scope": { "key": "post-quantum-example-master-key-000000" }
+    }
+  }
+}
