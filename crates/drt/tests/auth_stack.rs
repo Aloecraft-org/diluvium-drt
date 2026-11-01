@@ -18,6 +18,9 @@
 //!    `drt kv` as a person would type them.
 //! 6. PyJWT, sharing no code with DRT, verifies the same token from the
 //!    JWKS URL alone.
+//! 7. Signing out revokes the user's tokens at the match server and frees
+//!    the name they parked; an admin revokes another user with `drt kv`,
+//!    and the revocation's TTL is what lifts it.
 //!
 //! No step is stubbed, and nothing is handed between steps except what a
 //! person would carry: the password, the TOTP secret on the enrolment
@@ -855,7 +858,7 @@ fn a_person_signs_in_and_the_session_token_opens_topics_kv_and_a_third_party() {
     //    carol (no group) may not. bob calls through a real WebRTC session;
     //    carol, no token, and a tampered token may not.
     let box_url = stack.match_url("/v1/home/box");
-    let (_parked, _) = {
+    let (parked, _) = {
         let mut cmd = drt();
         cmd.arg("p2p")
             .arg("--park")
@@ -927,13 +930,98 @@ fn a_person_signs_in_and_the_session_token_opens_topics_kv_and_a_third_party() {
         );
     }
 
-    // 6. Signing out ends the session for the proxy at once. A token
-    //    already issued lives out its own `exp`, as any bearer JWT does:
-    //    `jwt_ttl` is how long that is.
+    // 6. A revocation dated before a token was issued does not touch it:
+    //    only tokens issued at or before the revocation's second are
+    //    refused.
+    let revoked = |user: &str| stack.match_url(&format!("/v1/auth/kv/revoked/{user}"));
+    let (code, _, err) = kv(&["put", &revoked("bob"), "1"], AUTH_TOKEN);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        bearer(stack.match_port, "GET", names, Some(&bob), "").status,
+        200,
+        "a revocation older than bob's token refused it"
+    );
+
+    // 7. Signing out ends the session for the proxy at once, and revokes
+    //    alice's tokens at the match server: `revoked/alice` in `auth`
+    //    holds the second she signed out, so her token is refused, and the
+    //    name she parked with it is free. bob's token is untouched.
     assert_eq!(alice_browser.send("POST", "/logout", "").status, 303);
     assert_eq!(alice_browser.send("GET", "/verify", "").status, 401);
+    let r = bearer(stack.match_port, "GET", names, Some(&alice), "");
     assert_eq!(
-        bearer(stack.match_port, "GET", names, Some(&alice), "").status,
-        200
+        (r.status, r.body.as_str()),
+        (401, r#"{"error":"the token does not verify: revoked"}"#),
+        "{}",
+        stack.logs()
+    );
+    let (code, at, err) = kv(&["get", &revoked("alice")], AUTH_TOKEN);
+    assert_eq!(
+        code,
+        0,
+        "no revocation was written: {err}\n{}",
+        stack.logs()
+    );
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let at: u64 = at.trim().parse().unwrap();
+    assert!(now.abs_diff(at) <= 5, "revoked at {at}, now {now}");
+    stack
+        .matcher
+        .wait_for("alice was revoked; home/box is free");
+    let r = bearer(stack.match_port, "GET", names, Some(&bob), "");
+    assert_eq!(
+        (r.status, r.body.as_str()),
+        (200, r#"{"topic":"home","names":[]}"#)
+    );
+    let (out, errs) = call(&box_url, Some(&bob), b"x\n");
+    assert!(
+        out.is_empty() && errs.contains("503"),
+        "bob reached box: {errs}"
+    );
+    // The parked side asks again with the revoked token and is refused,
+    // so it does not take the name back.
+    let deadline = Instant::now() + WAIT;
+    while !parked.log().contains("401") {
+        assert!(
+            Instant::now() < deadline,
+            "the parked side was never refused:\n{}",
+            parked.log()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(
+        bearer(stack.match_port, "GET", names, Some(&bob), "").body,
+        r#"{"topic":"home","names":[]}"#
+    );
+    assert_eq!(kv(&["get", &note], &bob).1, "the box is in the hall");
+
+    // 8. An admin revokes bob the same way, by hand, and the TTL lifts it:
+    //    once the key expires, the list has pruned itself and the token
+    //    (which in use would have expired by then, since the TTL is
+    //    `jwt_ttl`) is admitted again.
+    let (code, _, err) = kv(
+        &["put", &revoked("bob"), &now.to_string(), "--ttl", "2"],
+        AUTH_TOKEN,
+    );
+    assert_eq!(code, 0, "{err}");
+    let r = bearer(stack.match_port, "GET", names, Some(&bob), "");
+    assert_eq!(
+        (r.status, r.body.contains("revoked")),
+        (401, true),
+        "{}",
+        r.body
+    );
+    let deadline = Instant::now() + WAIT;
+    while kv(&["get", &revoked("bob")], AUTH_TOKEN).0 == 0 {
+        assert!(Instant::now() < deadline, "revoked/bob never expired");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert_eq!(
+        bearer(stack.match_port, "GET", names, Some(&bob), "").status,
+        200,
+        "bob is still refused after his revocation expired"
     );
 }

@@ -12,14 +12,16 @@
 --   file as the verb checked it (JSON text: topic -> token -> roles), or
 --   '' for none; `args.groups` the file's group maps (JSON text: topic ->
 --   group -> roles) and `args.jwt` its jwt block (JSON text: issuer,
---   audience, groups_claim, and jwks or jwks_kv), or '' for none;
+--   audience, groups_claim, jwks or jwks_kv, and revoked_topic), or ''
+--   for none;
 --   `args.kv` the database `drt p2p --match --kv <dir>` names, or nil for
 --   no kv.
 -- - Configurable: HOLD_MS (§3), PRESENT_MS (§4.2), WAITING_CAP (§6),
 --   RECORD_MAX (§1), KEEPALIVE_MS (§5), the CORS headers; RESERVED, the
 --   second path segments that are not a name inside a topic; kv's
 --   KV_VALUE_MAX, KV_KEY_MAX, KV_TOPIC_MAX, KV_LIST_DEFAULT, KV_LIST_MAX,
---   KV_TTL_MAX, KV_EVENTS_KEPT, KV_POLL_MS.
+--   KV_TTL_MAX, KV_EVENTS_KEPT, KV_POLL_MS; REVOKED_PREFIX, the kv keys
+--   that revoke a subject's JWTs.
 -- - Fan-out: `route`, which splits /v1/<a>/<b>/… four ways (a topic's kv,
 --   a bare name, a topic's listing, a name inside a topic); `routes`, the
 --   five requests of §2 and the two of §6.2 (pairing), each with whose
@@ -28,7 +30,8 @@
 --   is judged, by two kinds (a static token the file lists, or a JWT whose
 --   groups the file maps); `kv_route`, the kv requests
 --   (doc/DRT-Signalling.md §10), and `kv_access`, the one place a kv
---   request is admitted.
+--   request is admitted; `revoked_written`, what a put under
+--   REVOKED_PREFIX does to the names its subject holds.
 --
 -- Topics (doc/P2P.md §2.4): /v1/<topic>/<name>/… is a name inside a topic
 -- the --topics file declares, and every request there takes a token the
@@ -45,6 +48,12 @@
 -- `iss`, `aud` and `sub`. Its roles in a topic are the union of the roles
 -- the topic maps to each name in its groups claim. A JWT holds a name by
 -- its `sub`, so a renewed token keeps the name.
+--
+-- Revocation (doc/P2P.md §2.4): a kv key `revoked/<sub>` in the jwt
+-- block's revoked topic holds a time in Unix seconds. While it is there,
+-- a JWT for that `sub` issued at or before that time (its `iat`) is
+-- refused as `revoked`, and writing it drops the names that subject holds
+-- by such a token. The key's TTL is what prunes the list.
 --
 -- Admission is by token, not origin: every reply carries
 -- access-control-allow-origin: *, so a page opened from file:// (Origin:
@@ -70,6 +79,9 @@ local KV_LIST_MAX     = 1000
 local KV_TTL_MAX      = 31536000   -- a year, in seconds
 local KV_EVENTS_KEPT  = 1024       -- changes a watcher can resume across
 local KV_POLL_MS      = 25000      -- inside the listener's 30 s deadline
+-- revoked/<sub> in the revoked topic, spelled as `revoked_key` spells it
+-- and as stdlib:session writes it on logout.
+local REVOKED_PREFIX  = 'revoked/'
 local CORS = {
   ['access-control-allow-origin']   = '*',
   ['access-control-allow-methods']  = 'GET, PUT, POST, DELETE, OPTIONS',
@@ -244,6 +256,18 @@ local function current_jwks()
   return kv_jwks()
 end
 
+-- The kv key that revokes `sub`'s tokens: the subject as written when it
+-- is plain, else hex behind a `~`, which a plain subject cannot hold.
+-- stdlib:session spells it the same way.
+local function revoked_key(sub)
+  if sub:match('^[%w%._%-]+$') then return REVOKED_PREFIX .. sub end
+  return REVOKED_PREFIX .. '~' .. (sub:gsub('.', function(c) return string.format('%02x', c:byte()) end))
+end
+
+-- The time `sub` was revoked at, in Unix seconds, or nil when it is not.
+-- Assigned once the kv storage below is defined.
+local kv_revoked
+
 -- A JWT's claims, or nil and why: crypto/jwt_verify against the JWKS
 -- (signature, kid, exp, nbf; the header is rebuilt from the key, so a
 -- token cannot pick its algorithm), then `iss`, `aud` when the file names
@@ -267,6 +291,12 @@ local function jwt_claims(token)
     if not held then return nil, 'audience' end
   end
   if type(c.sub) ~= 'string' or c.sub == '' then return nil, 'subject' end
+  if JWT.revoked_topic then
+    -- A subject with no key to revoke it by could never be revoked.
+    if #revoked_key(c.sub) > KV_KEY_MAX then return nil, 'subject' end
+    local at = kv_revoked(c.sub)
+    if at and not (type(c.iat) == 'number' and c.iat > at) then return nil, 'revoked' end
+  end
   return c
 end
 
@@ -292,7 +322,7 @@ local function principal(topic, token)
       for role in pairs(type(g) == 'string' and map[g] or {}) do held[role] = true end
     end
   end
-  return {id = 'jwt:' .. claims.sub, roles = held}
+  return {id = 'jwt:' .. claims.sub, roles = held, iat = claims.iat}
 end
 
 -- Whether `token` holds `role` in `topic`.
@@ -339,8 +369,9 @@ end
 -- DRT-Caller-Token. `holder` is who the answerer is: its token for a bare
 -- name, its principal's id inside a topic (a JWT's `sub`, so a renewed
 -- token keeps the name). `r.token` is the holder's latest token, which a
--- pairing checks and hands on.
-local function claim(m, name, token, now, topic, holder)
+-- pairing checks and hands on; `iat` is that token's, when it is a JWT, so
+-- a revocation knows whether it covers the holder.
+local function claim(m, name, token, now, topic, holder, iat)
   holder = holder or token
   local r = names[name]
   if r and not present(r, now) then names[name] = nil; r = nil end
@@ -353,6 +384,7 @@ local function claim(m, name, token, now, topic, holder)
     names[name] = r
   end
   r.token = token
+  r.iat = iat
   local h = m.headers or {}
   if h['drt-caller-token'] and not topic then r.caller = h['drt-caller-token'] end
   if h['drt-accept'] then r.accept = h['drt-accept'] end
@@ -525,6 +557,24 @@ local function topic_names(m, topic, now)
   json(m.conn, 200, '{"topic":' .. json_text(topic) .. ',"names":' .. (#out > 0 and json_text(out) or '[]') .. '}')
 end
 
+-- A revocation of `sub` at `at` (Unix seconds) was written: every name it
+-- holds by a JWT issued at or before then is dropped, its waiting callers
+-- told no answerer is present and its event streams ended, so the parked
+-- side's next request is judged again, and refused.
+local function revoked_written(sub_key, at)
+  for name, r in pairs(names) do
+    local sub = type(r.holder) == 'string' and r.holder:match('^jwt:(.+)$')
+    if sub and revoked_key(sub) == sub_key and not (type(r.iat) == 'number' and r.iat > at) then
+      for _, c in pairs(r.calls) do
+        if not c.answered then fail(c.conn, 503, 'no answerer is present') end
+      end
+      for conn in pairs(r.streams) do queue.push(replies, {conn = conn, done = true}) end
+      names[name] = nil
+      print('p2p match: ' .. sub .. ' was revoked; ' .. name .. ' is free')
+    end
+  end
+end
+
 -- depth: kv admission, the seam topics fills in
 
 -- Whether this request may `op` ('read' or 'write') the kv of `topic`;
@@ -585,6 +635,24 @@ kv_jwks = function()
   end
   if jwks_seen.expires > 0 and jwks_seen.expires <= wall then return nil end
   return jwks_seen.text
+end
+
+-- A revocation's time, from its value: Unix seconds. A value that is not a
+-- number revokes every token of the subject while it stands (fail closed).
+local function revoked_time(value)
+  local at = tonumber(value)
+  if not at then
+    print('p2p match: a revocation holds ' .. string.format('%q', value:sub(1, 40))
+      .. ', not Unix seconds; every token of that subject is refused while it stands')
+    return math.huge
+  end
+  return at
+end
+
+kv_revoked = function(sub)
+  if not kv.db then return nil end
+  local row = kv_row(JWT.revoked_topic, revoked_key(sub), host.time())
+  return row and revoked_time(row.value)
 end
 
 -- One change, `e` = {topic, key, op, value?}: the row, the revision and the
@@ -743,6 +811,9 @@ local function kv_put(m, topic, key, params, now, wall)
   if expires > 0 and (not kv.next_expiry or expires < kv.next_expiry) then kv.next_expiry = expires end
   json(m.conn, row and 200 or 201, json_text({key = key, version = e.version}), {etag = kv_etag(e.version)})
   kv_notify(e, now)
+  if JWT and topic == JWT.revoked_topic and key:sub(1, #REVOKED_PREFIX) == REVOKED_PREFIX then
+    revoked_written(key, revoked_time(m.body))
+  end
 end
 
 local function kv_delete(m, topic, key, now, wall)
@@ -889,7 +960,7 @@ local function name_route(m, key, topic, rest, params, now)
     local id = pattern:find('(', 1, true) and matched or nil
     if m.method == method and matched then
       local token = token_of(m, params)
-      local holder = nil
+      local holder, iat = nil, nil
       if topic then
         -- Inside a topic: a caller's token holds call, an answerer's park;
         -- DELETE is either, so a call token withdraws its own call only.
@@ -899,7 +970,7 @@ local function name_route(m, key, topic, rest, params, now)
         end
         local p = topic_access(m, topic, role)
         if not p then return end
-        holder = p.id
+        holder, iat = p.id, p.iat
         if role == 'call' then
           if i == 1 then return call(m, key, token, now, holder) end
           local r, c = names[key], nil
@@ -914,7 +985,7 @@ local function name_route(m, key, topic, rest, params, now)
         local r = names[key]
         if who == 'either' and r and r.caller == token then return withdraw(m, r, id) end
       end
-      local r = claim(m, key, token, now, topic, holder)
+      local r = claim(m, key, token, now, topic, holder, iat)
       if not r then return end
       if i == 2 then return list(m, r, params, now) end
       if i == 3 then return answer(m, r, id, '/v1/' .. key .. '/calls/') end
@@ -996,7 +1067,9 @@ end
 if JWT then
   print('p2p match: topics also admit JWTs from issuer ' .. JWT.issuer .. ', checked against '
     .. (JWT.jwks and 'the keys in the topics file'
-        or ('the JWKS in kv ' .. JWT.jwks_kv.topic .. '/' .. JWT.jwks_kv.key)))
+        or ('the JWKS in kv ' .. JWT.jwks_kv.topic .. '/' .. JWT.jwks_kv.key))
+    .. (JWT.revoked_topic and ('; revoked by kv ' .. JWT.revoked_topic .. '/' .. REVOKED_PREFIX .. '<sub>')
+        or '; nothing revokes them before exp'))
 end
 while true do
   local _, m = queue.wait({requests}, 1000)

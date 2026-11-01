@@ -6,8 +6,9 @@
 -- server's kv store (the `kv` connector), with a TTL, named by a cookie. A
 -- reverse proxy asks `/verify` before each request it forwards and gets 200
 -- with Remote-User and Remote-Groups, or 401. `/api/token` issues a JWT
--- from the session. Passwords stay in the directory: nothing here hashes or
--- stores one.
+-- from the session, and `/logout` revokes every token the user holds
+-- (`revoked/<user>`, which a match server reads). Passwords stay in the
+-- directory: nothing here hashes or stores one.
 --
 -- surface block
 --
@@ -19,6 +20,9 @@
 -- - Fan-out: `ROUTES` (method + path -> a name in `handlers`); `FACTORS`
 --   (a factor name -> `usable`, whether this user may use it now); the
 --   session `level`: 1 is a password only (pending), 2 is signed in.
+-- - `revoked/<sub>` is shared with the match server (p2p_match.dlua
+--   `revoked_key`): the same spelling on both sides, or logout revokes
+--   nothing.
 --
 -- One request is served at a time, as every program on the http listener
 -- is: each host call is a round trip (the directory, the kv server, a
@@ -50,12 +54,13 @@ local DEFAULTS = {
   email_attr         = 'mail',         -- Remote-Email
 }
 
--- The kv topic holds four families of keys, each under its prefix.
+-- The kv topic holds five families of keys, each under its prefix.
 local KV_PREFIX = {
   session = 'session/',  -- session/<sha256 of the cookie>: the session, TTL = its life
   totp    = 'totp/',     -- totp/<user>: {label, step}, the enrolled seed's label and last step used
   fail    = 'fail/',     -- fail/<user>: failures counted toward max_retries, TTL find_time
   ban     = 'ban/',      -- ban/<user>: present while the user is banned, TTL ban_time
+  revoked = 'revoked/',  -- revoked/<sub>: the Unix second of a logout, TTL jwt_ttl (doc/Session.md)
 }
 
 -- Who may enrol TOTP, for a user with none on file.
@@ -331,6 +336,23 @@ local function store_session(s)
 end
 
 local function new_sid() return host.call('crypto/random', {bytes = SESSION_ID_BYTES}) end
+
+-- The key that revokes `sub`'s tokens, spelled as the match server's
+-- `revoked_key` spells it: the subject as written when it is plain, else
+-- hex behind a `~`. Not `user_key`, which folds case: a token's `sub` is
+-- the user as the directory spells it.
+local function revoked_key(sub)
+  if sub:match('^[%w%._%-]+$') then return KV_PREFIX.revoked .. sub end
+  return KV_PREFIX.revoked .. '~' .. (sub:gsub('.', function(c) return string.format('%02x', c:byte()) end))
+end
+
+-- Every token issued to `sub` until now stops opening a match server's
+-- topics: `revoked/<sub>` holds this second, and a token whose `iat` is
+-- not after it is refused. It lives `jwt_ttl`, the longest any such token
+-- does, so the list prunes itself.
+local function revoke_tokens(sub)
+  kv_put(revoked_key(sub), string.format('%d', math.floor(now_ms() / 1000)), A.jwt_ttl)
+end
 
 -- depth: regulation (failures per user, RFC 4226 §7.3)
 --
@@ -684,9 +706,17 @@ function handlers.webhook_poll(m)
   webhook_decided(m, s, ask_webhook(s, 'poll', m))
 end
 
+-- Signing out ends the session and, when this sign-in issues tokens,
+-- revokes every token the user holds, on every device: a token names its
+-- user, not its session. A pending session was never issued one.
 function handlers.logout(m)
+  local s = load_session(m)
   local sid = cookie_of(m)
   if sid then kv_delete(session_key(sid)) end
+  if s and s.level == 2 and A.jwt_key ~= '' then
+    revoke_tokens(s.user)
+    print('session: ' .. s.user .. ' signed out; their tokens are revoked')
+  end
   redirect(m.conn, '/', {['set-cookie'] = clear_cookie()})
 end
 

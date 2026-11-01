@@ -81,7 +81,14 @@ Traefik's `forwardAuth` sends the same headers. That is not tested here.
   with the same crypto master and `keys` set to `jwt_key`, publishes the
   public key to a topic's kv and serves the set, so a match server's
   topics (`doc/P2P.md` §2.4) and any JWKS client verify the token.
-- `POST /logout`.
+- `POST /logout`: ends the session and, when `jwt_key` is set, revokes
+  every token the user holds, on every device. It writes
+  `revoked/<user>` to the topic, holding the Unix second of the logout,
+  with a TTL of `jwt_ttl`. A match server refuses that user's tokens
+  issued at or before that second and frees the names they parked
+  (`doc/P2P.md` §2.4). An admin revokes a user the same way:
+  `drt kv put drt://<server>/v1/<topic>/kv/revoked/<user> "$(date +%s)"
+  --ttl <jwt_ttl>`, with a token of the topic holding `write`.
 
 ## Arguments
 
@@ -98,6 +105,6 @@ program.
 ## Not built
 
 WebAuthn, OIDC, access rules by domain or path (beyond `?group=`), an idle
-timeout, a QR code, and serving more than one request at
+timeout, revoking one token rather than all of a user's, a QR code, and serving more than one request at
 a time. Each request makes several host calls in turn (directory, kv,
 webhook), so a slow webhook delays everyone by up to `webhook_timeout_ms`.

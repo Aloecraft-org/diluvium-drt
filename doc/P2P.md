@@ -274,6 +274,18 @@ what the profile asks of them.
     same in every topic, so a JWT does not list topics either.
   - A JWT holds a name by its `sub`, so a renewed token keeps the name and
     a token of another subject does not take it.
+  - **Revocation.** A kv key `revoked/<sub>` in the topic the keys are
+    published in (or the one `"revoked": {"kv": "<topic>"}` names, which
+    needs `--kv`) holds a Unix second. While it stands, a token for that
+    `sub` whose `iat` is at or before that second is 401 `revoked`, and
+    writing it frees every name the subject parked with such a token:
+    waiting callers get 503 and the event stream ends. A token issued
+    later is admitted. A value that is not a number refuses all of the
+    subject's tokens while it stands. The key's TTL prunes the list, so
+    make it at least the issuer's token lifetime. `stdlib:session` writes
+    one on logout; an admin writes one with `drt kv put`. A `sub` that is
+    not all of A-Z, a-z, 0-9 and `._-` is spelled `~` and its bytes in
+    hex. An inline `jwks` without `revoked` revokes nothing.
   - Listed tokens and bare names work beside JWTs as before.
 
   `stdlib:session` (`doc/Session.md`) issues these tokens: it binds the

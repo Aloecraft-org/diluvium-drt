@@ -94,6 +94,12 @@ pub fn run(role: &MatchRole, config: &RootConfig) -> Result<(), String> {
             role.topics.as_deref().unwrap_or(Path::new("")).display()
         ));
     }
+    if topics.revoked_in_kv && role.kv.is_none() {
+        return Err(format!(
+            "--topics {}: jwt.revoked names a kv topic, and this server keeps no kv; add --kv <dir>",
+            role.topics.as_deref().unwrap_or(Path::new("")).display()
+        ));
+    }
     config.args = BTreeMap::from([
         (
             "capacity".to_string(),
@@ -141,7 +147,8 @@ pub fn run(role: &MatchRole, config: &RootConfig) -> Result<(), String> {
 ///
 /// ```json
 /// {"jwt": {"issuer": "…", "audience": "…", "groups_claim": "groups",
-///          "jwks": {"keys": […]} | {"kv": "<topic>/<key>"}},
+///          "jwks": {"keys": […]} | {"kv": "<topic>/<key>"},
+///          "revoked": {"kv": "<topic>"}},
 ///  "topics": {"<topic>": {"tokens": [{"token": "…", "roles": ["park", …]}],
 ///                         "groups": {"<group>": ["call", …]}}}}
 /// ```
@@ -182,6 +189,10 @@ struct JwtEntry {
     #[serde(default)]
     groups_claim: Option<String>,
     jwks: serde_json::Value,
+    /// The kv topic whose `revoked/<sub>` keys revoke a subject's tokens;
+    /// left out, the topic `jwks` is kept in, when it is kept in kv.
+    #[serde(default)]
+    revoked: Option<serde_json::Value>,
 }
 
 /// The topics file as the program takes it, each part JSON text or empty.
@@ -191,10 +202,14 @@ pub struct Topics {
     pub tokens: String,
     /// topic -> group -> roles; empty when no topic maps a group.
     pub groups: String,
-    /// `{issuer, audience?, groups_claim, jwks | jwks_kv}`; empty for none.
+    /// `{issuer, audience?, groups_claim, jwks | jwks_kv, revoked_topic?}`;
+    /// empty for none.
     pub jwt: String,
     /// Whether `jwks` names a key in this server's kv, which needs `--kv`.
     pub jwks_in_kv: bool,
+    /// Whether `revoked` names a topic in this server's kv, which needs
+    /// `--kv`. A `jwks` in kv implies it.
+    pub revoked_in_kv: bool,
 }
 
 /// Read and check the `--topics` file, and return it as the program takes
@@ -248,8 +263,8 @@ fn topics_from_text(text: &str) -> Result<Topics, String> {
             roles_into(held.entry(group).or_default(), roles, &what)?;
         }
     }
-    let (jwt, jwks_in_kv) = match file.jwt {
-        None => (String::new(), false),
+    let (jwt, jwks_in_kv, revoked_in_kv) = match file.jwt {
+        None => (String::new(), false, false),
         Some(j) => jwt_block(j)?,
     };
     Ok(Topics {
@@ -261,6 +276,7 @@ fn topics_from_text(text: &str) -> Result<Topics, String> {
         },
         jwt,
         jwks_in_kv,
+        revoked_in_kv,
     })
 }
 
@@ -284,11 +300,11 @@ fn roles_into(into: &mut BTreeSet<String>, roles: Vec<String>, what: &str) -> Re
     Ok(())
 }
 
-/// The `jwt` block checked, as the program takes it, and whether its keys
-/// are in kv. An inline JWKS must hold at least one Ed25519 key with a
+/// The `jwt` block checked, as the program takes it, whether its keys are
+/// in kv, and whether its revocations are. An inline JWKS must hold at least one Ed25519 key with a
 /// `kid` and an `x`, the only kind `crypto/jwt_verify {jwks}` uses, so a
 /// file with none is refused here rather than refusing every token.
-fn jwt_block(j: JwtEntry) -> Result<(String, bool), String> {
+fn jwt_block(j: JwtEntry) -> Result<(String, bool, bool), String> {
     if j.issuer.is_empty() {
         return Err("jwt.issuer: name the issuer every token's `iss` must be".into());
     }
@@ -313,12 +329,7 @@ fn jwt_block(j: JwtEntry) -> Result<(String, bool), String> {
             };
             // The kv's own rules (doc/DRT-Signalling.md §10), so the key
             // named is one a publisher can write.
-            let kv_chars = |s: &str, slash: bool| {
-                s.chars()
-                    .all(|c| c.is_ascii_alphanumeric() || "._~-".contains(c) || (slash && c == '/'))
-            };
-            if !(1..=64).contains(&topic.len())
-                || !kv_chars(topic, false)
+            if !is_kv_topic(topic)
                 || !(1..=256).contains(&key.len())
                 || !kv_chars(key, true)
                 || key.starts_with('/')
@@ -363,7 +374,43 @@ fn jwt_block(j: JwtEntry) -> Result<(String, bool), String> {
             )
         }
     };
-    Ok((out.to_string(), in_kv))
+    // Revocations (doc/P2P.md §2.4): the topic named, or the one the keys
+    // are published in, since whoever publishes the keys issues the tokens.
+    let revoked = match j.revoked {
+        None => out["jwks_kv"]["topic"].as_str().map(str::to_string),
+        Some(serde_json::Value::Object(o)) if o.len() == 1 && o.contains_key("kv") => {
+            let topic = o["kv"].as_str().unwrap_or_default();
+            if !is_kv_topic(topic) {
+                return Err(format!(
+                    "jwt.revoked.kv: '{topic}' is not a kv topic: 1 to 64 of A-Z, a-z, 0-9 and ._~-"
+                ));
+            }
+            Some(topic.to_string())
+        }
+        Some(_) => {
+            return Err(
+                "jwt.revoked: the kv topic whose revoked/<sub> keys revoke tokens, \
+                 {\"kv\": \"<topic>\"}"
+                    .into(),
+            )
+        }
+    };
+    let revoked_in_kv = revoked.is_some();
+    if let Some(topic) = revoked {
+        out["revoked_topic"] = topic.into();
+    }
+    Ok((out.to_string(), in_kv, revoked_in_kv))
+}
+
+/// A kv topic as the kv spells it (doc/DRT-Signalling.md §10).
+fn is_kv_topic(s: &str) -> bool {
+    (1..=64).contains(&s.len()) && kv_chars(s, false)
+}
+
+/// The kv's key charset; `slash` admits the segment separator.
+fn kv_chars(s: &str, slash: bool) -> bool {
+    s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || "._~-".contains(c) || (slash && c == '/'))
 }
 
 /// A topic: the charset of a parked name.
@@ -482,6 +529,7 @@ mod tests {
         let jwks: serde_json::Value = serde_json::from_str(jwt["jwks"].as_str().unwrap()).unwrap();
         assert_eq!(jwks["keys"][1]["kid"], "s1");
         assert!(!t.jwks_in_kv);
+        assert!(!t.revoked_in_kv && jwt.get("revoked_topic").is_none());
 
         let kv = r#"{"jwt": {"issuer": "i", "groups_claim": "memberOf", "jwks": {"kv": "auth/jwks"}},
                      "topics": {"home": {"groups": {"g": ["call"]}}}}"#;
@@ -494,6 +542,15 @@ mod tests {
         assert_eq!(jwt["groups_claim"], "memberOf");
         assert!(jwt.get("audience").is_none());
         assert!(t.jwks_in_kv);
+        // Revocations default to the topic the keys are published in.
+        assert_eq!(jwt["revoked_topic"], "auth");
+        assert!(t.revoked_in_kv);
+
+        let named = r#"{"jwt": {"issuer": "i", "jwks": {"kv": "auth/jwks"}, "revoked": {"kv": "logins"}},
+                        "topics": {}}"#;
+        let jwt: serde_json::Value =
+            serde_json::from_str(&topics_from_text(named).unwrap().jwt).unwrap();
+        assert_eq!(jwt["revoked_topic"], "logins");
     }
 
     #[test]
@@ -531,6 +588,16 @@ mod tests {
                 r#""jwt":{"issuer":"i","jwks":"https://example/jwks"},"#,
                 "{}",
                 "jwt.jwks: a JWKS",
+            ),
+            (
+                &format!(r#""jwt":{{"issuer":"i","jwks":{jwks},"revoked":"auth"}},"#),
+                "{}",
+                "jwt.revoked: the kv topic",
+            ),
+            (
+                &format!(r#""jwt":{{"issuer":"i","jwks":{jwks},"revoked":{{"kv":"a/b"}}}},"#),
+                "{}",
+                "jwt.revoked.kv: 'a/b'",
             ),
             (
                 &format!(r#""jwt":{{"issuer":"i","jwks":{jwks}}},"#),
