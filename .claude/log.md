@@ -197,3 +197,32 @@ connections with parked peers.
 
 Next: per-topic tokens (topics thread); `host.kv.*` sugar and `kv/*` in
 the diluvium binary are diluvium's to add.
+## 2026-11-01 run: TOTP and EdDSA in the crypto connector
+
+Plan: the owner asked, through the project coordinator, for TOTP and
+asymmetric JWTs in `crypto`, feeding a session framework (LDAP bind, a
+second factor, a session, forward-auth, JWTs) and a JWKS served by a
+program. One step on claude/project-thread-qq22id: three TOTP verbs
+(generate, verify with a window and a replay step, enroll), EdDSA chosen
+per key (a derived label or a configured PKCS#8 key in the secret-value
+shape of PR #67), `public_key` as a JWK, then RFC vectors, interop with
+independent libraries, an example, docs, changelog, a pull request.
+
+Done:
+- `crypto/totp`, `crypto/totp_verify`, `crypto/totp_enroll`; seeds are a
+  label's third subkey (`KDF_LABEL_TOTP`) or a `crypto.secrets` entry,
+  which never enrols.
+- `derive {alg = "EdDSA"}` (`KDF_LABEL_EDDSA`), `crypto.signing_keys`,
+  EdDSA in `jwt_sign`/`jwt_verify` with the algorithm taken from the key,
+  `crypto/public_key`.
+- Tests: RFC 4226/6238/8037 vectors; totp-rs and jsonwebtoken as
+  dev-dependencies; alg-confusion forgeries. By hand, PyJWT and pyotp
+  against a real `drt run`. Example 32, corpus entry, GUARANTEES and the
+  changelog.
+
+Learned: a bare `*` in a derive scope names only the label `*`, by
+design (`drt_caps::implies` refuses a zero-length prefix so a grant
+cannot widen); grant labels by name or by a prefix like `issuer:*`.
+
+Next: the plain Diluvium host (`dhost_crypto.c`) answers none of these
+calls; TOTP there is cheap (dhash.h has HMAC-SHA1), EdDSA is not.
