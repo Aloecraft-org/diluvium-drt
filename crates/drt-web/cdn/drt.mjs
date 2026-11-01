@@ -99,6 +99,7 @@ export class SessionError extends Error {
 // depth: calling a peer
 
 export async function call(peer, options = {}) {
+  options.signal?.throwIfAborted();
   const p = access.canonicalPeer(peer);
   if (p.kind === 'ws') {
     throw new Error(`${p.canonical} is a relay; call() never uses one. Dial it with loadSsh() or a WebSocket yourself.`);
@@ -156,10 +157,16 @@ async function unpack(b64) {
   return new Response(raw).arrayBuffer();
 }
 
+// A failed load is not kept: the next call tries again (an unpack can
+// fail on a page that ran out of memory, and that need not be final).
 export function loadSsh() {
   sshReady ??= unpack(SSH_WASM_GZ_B64)
     .then((bytes) => sshGlue.default({ module_or_path: bytes }))
-    .then(() => ({ Ssh: sshGlue.Ssh, generateKey: sshGlue.generateKey }));
+    .then(() => ({ Ssh: sshGlue.Ssh, generateKey: sshGlue.generateKey }))
+    .catch((e) => {
+      sshReady = null;
+      throw e;
+    });
   return sshReady;
 }
 
@@ -171,7 +178,11 @@ export async function ssh(target, pinned) {
 export function loadRuntime() {
   webReady ??= unpack(WEB_WASM_GZ_B64)
     .then((bytes) => webGlue.default({ module_or_path: bytes }))
-    .then(() => webGlue);
+    .then(() => webGlue)
+    .catch((e) => {
+      webReady = null;
+      throw e;
+    });
   return webReady;
 }
 
