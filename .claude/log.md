@@ -393,3 +393,43 @@ Next: the session framework issues these tokens with claims `iss`,
 `aud`, `sub` (the LDAP username) and `groups` (`ldap/bind`'s answer),
 and publishes `crypto/public_key` as `{"keys": [...]}` at a kv key.
 Renewal on a parked side is not built.
+
+## 2026-11-01 run: the auth stack integrated, #67 to #74 together
+
+Plan: merge the eight auth PRs onto one branch from main in dependency
+order (#67 config, #70 ldap, #68 topics, #69 kv, #71 crypto, then #72
+jwks, #73 session, #74 topics-jwt), resolve where their separate merges
+of each other disagree, run every gate with all features and with
+default features, and write one end-to-end test that does what a person
+would. Fixes that belong to one PR go to that PR's thread; the
+integration PR stays unmerged for the owner.
+
+Done:
+- Branch claude/project-thread-kj0elp. Each merge is its own commit.
+  Seams: kv_access asks topic_access the same way in #72, #73 and #74
+  (only comments and one log line differ; #73's kept, #72's test
+  matched to it); #74's principal() kept for names and kv; the crypto
+  example is 33, after kv's 32, as #72 named it; one base64
+  dev-dependency where #72 and #74 each added one; the slapd AppArmor
+  fix (#70 d60fa9c, #73 1165590) is the same copy-the-binary fix in two
+  test files and both are kept, since each file starts its own slapd.
+- CHANGELOG.yaml rebuilt from each PR's items: the text merges had
+  glued items together and duplicated kv's. #74's branch has the TOTP
+  item glued onto the --forward one by itself; sent to its thread.
+- crates/drt/tests/auth_stack.rs: slapd, one match server with kv and
+  topics, stdlib:session and stdlib:jwks on one master, a browser
+  signing in with TOTP computed in the test, the session JWT parking,
+  calling and using kv in `home` by group, sessions in `auth` out of a
+  user's reach, PyJWT verifying through the JWKS URL. Mutations (staff
+  without call; wrong groups expected from PyJWT) fail it.
+- CI installs PyJWT in the test job and sets DRT_TEST_REQUIRE_PYJWT.
+- doc/Session.md and doc/P2P.md no longer say the JWKS endpoint or the
+  session framework is unbuilt.
+- Gates: fmt, clippy all features, config schema, changelog
+  check/consistency, cargo test all features and default features
+  (with DRT_TEST_REQUIRE_SSH/LDAP), the examples gate on a full build.
+
+Found, not fixed here: crypto's signing_keys secret parser duplicates
+drt_config::Secret and refuses prompt, where ldap's bind_password takes
+it (sent to the crypto thread). A session JWT outlives a logout until
+its own exp; the test states that, and jwt_ttl is the knob.
