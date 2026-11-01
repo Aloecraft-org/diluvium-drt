@@ -56,4 +56,4 @@ pub mod ws;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod wasi_shim;
 
-pub use term::{Backing, Session, Step, Term};
+pub use term::{Backing, Entered, Session, Sink, Step, Term};

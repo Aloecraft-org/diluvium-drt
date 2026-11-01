@@ -30,8 +30,8 @@ const INPUTS = {
   sshGlue: path.resolve(here, '../../drt-ssh-web/page/pkg/inline/drt_ssh_web.js'),
   sshWasm: path.resolve(here, '../../drt-ssh-web/page/pkg/drt_ssh_web_bg.wasm'),
 };
-/** Both modules gzipped are about 2.4 MB of base64 (2026-11-01); this is the alarm, not the goal. */
-export const MAX_BYTES = 4 * 1024 * 1024;
+/** Both modules gzipped are about 2 MB of base64 once drt-web is wasm-opt'd (2026-11-01); this is the alarm, not the goal. */
+export const MAX_BYTES = 3 * 1024 * 1024;
 
 const b64gz = (file) => zlib.gzipSync(fs.readFileSync(file), { level: 9 }).toString('base64');
 const VIRTUAL = {

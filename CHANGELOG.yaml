@@ -90,10 +90,10 @@ releases:
     diluvium: 97bb9f9d28974e3b4124a2a015e5b06da54a0c98
     diluvium_version: "0.17.2"
     connectors:
-      full: [time, fs, crypto, sql, ssh, rest, ssmtp, ldap, exec, data, socket, ws, kv, listen]
-      slim: [time, fs, crypto, listen]
-      wasi: [time, fs, crypto, sql, listen]
-      web: [time, fs, crypto]
+      full: [time, fs, crypto, aloecrypt, sql, ssh, rest, ssmtp, ldap, exec, data, socket, ws, kv, listen]
+      slim: [time, fs, crypto, aloecrypt, listen]
+      wasi: [time, fs, crypto, aloecrypt, sql, listen]
+      web: [time, fs, crypto, aloecrypt]
     features:
       full: [regex, json, msgpack, snapshot, numeric]
       slim: [regex, json, msgpack, snapshot]
@@ -144,9 +144,26 @@ releases:
         origin, served as `application/javascript` alone, against a peer
         parked at `drt p2p --match`, a stock sshd and the kv store
         (`script/drt-js-gate.sh`), and through the session check.
+        The browser build's module is now shrunk with wasm-opt, as the SSH
+        page's is (5.9 MB to 2.8 MB), so `drt.js` is about 2.1 MB.
         `examples/35-drt-js` is a page on it: an xterm.js terminal that
         runs `drt start`, and an Alpine panel listing the instances it
         spawned, with park, wake and kill.
+      - |
+        **`host:aloecrypt/*`, post-quantum signatures and encryption, in
+        every profile.** aloecrypt_core (ML-DSA 44/65/87, ML-KEM
+        512/768/1024 and its document envelope) is compiled in as the
+        `aloecrypt` connector: `sign` and `verify` armored detached
+        signatures, `encrypt` and `decrypt` armored documents to a
+        recipient's public key, `public_key`, and `hash`, Keccak-256. Every
+        private key is a label derived from the wiring's master, so a
+        program never holds one, and the grants on `sign` and `decrypt`
+        carry the label patterns it may use. With no scope the family is
+        keyless and answers `verify`, `encrypt` and `hash`. It builds for
+        the browser and wasip2 like every other target, and costs about
+        150 KB at `release-small`. Public keys travel as aloecrypt's armored
+        `SIGNER` and `RECIPIENT` documents.
+        `examples/36-post-quantum` walks through it.
       - |
         **`stdlib:session`, a login portal and forward-auth endpoint
         (`doc/Session.md`).** A dlua program on four connectors: `ldap`
@@ -1039,6 +1056,14 @@ releases:
       `listen` sessions resolve only once the caller's `hello` and credit
       are in.
     fixed:
+      - |
+        **Several `DrtTerm`s in one page are separate kernels.** The page's
+        filesystem and output sink were module-wide, so a second terminal
+        took both: the first one's commands read the second one's files
+        and printed into its sink, and only one `repl` stream could run at
+        a time. Each terminal now installs its own filesystem and sink for
+        the length of every call that runs its commands, and the
+        `two-kernels` browser check runs two at once (issue #82).
       - |
         **A root install runs for every user.** The installer built each
         version folder with `mktemp -d`, which makes it 0700, so after
