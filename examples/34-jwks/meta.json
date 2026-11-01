@@ -1,0 +1,12 @@
+{
+  "name": "34-jwks",
+  "teaches": "stdlib:jwks publishes each signing key's public JWK to a topic's kv and serves the topic's set at /.well-known/jwks.json, old and new keys together; a relying party that holds only that URL verifies a token by its kid.",
+  "cmd": "./demo.sh",
+  "needs_network": false,
+  "needs_build": "full",
+  "needs_unix": true,
+  "needs_listener": true,
+  "normalise": [
+    "s|expires in [0-9][0-9]*s$|expires in 86400s|"
+  ]
+}

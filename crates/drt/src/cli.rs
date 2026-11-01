@@ -356,8 +356,10 @@ pub enum Command {
     /// exists, this fails and says so. Every flag is also a key of the
     /// `p2p` block in --config. A command after -- runs once a call's -p
     /// ports are bound, and the call ends when it exits, with its status.
+    // Boxed: with topics and kv its flags are the largest variant by far,
+    // and every other command would carry that size.
     #[cfg(feature = "p2p")]
-    P2p(crate::p2p::Args),
+    P2p(Box<crate::p2p::Args>),
     /// The key-value store a signalling server keeps (`drt p2p --match
     /// <port> --kv <dir>`, doc/DRT-Signalling.md §10): get, put, rm, ls
     /// and watch a key at drt://host[:port]/v1/<topic>/kv/<key>. Values are

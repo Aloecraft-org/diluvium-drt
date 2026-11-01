@@ -134,6 +134,10 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 # (crates/drt-rtc/tests/common/peer.rs, included by path), which is str0m.
 drt-rtc = { workspace = true }
 str0m = { version = "0.23", default-features = false, features = ["rust-crypto"] }
+# The JWKS test verifies tokens the way a service holding only the served
+# set does: a standard library, sharing no code with the crypto connector.
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
+base64 = "0.22"
 
 [target.'cfg(unix)'.dev-dependencies]
 # `drt ssh` and the REPL's `:ssh` under a pseudo-terminal, against OpenSSH

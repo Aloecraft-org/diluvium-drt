@@ -1,0 +1,11 @@
+{
+  "_comment": "The issuer: the same master, and the right to ask for a signature. It never holds a key.",
+  "program": { "path": "sign.dlua" },
+  "caps": [
+    { "capability": "host:crypto/derive", "scope": ["issuer:*"] },
+    { "capability": "host:crypto/jwt_sign" }
+  ],
+  "connectors": {
+    "crypto": { "scope": { "key": "jwks-example-master-key-000000" } }
+  }
+}

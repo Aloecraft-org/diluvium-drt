@@ -41,7 +41,6 @@ there is nothing to store. Change the master and both change.
 
 ## What it does not show
 
-It does not serve the JWKS over HTTP; `17-serving-http` is how a program
-answers a request. And it runs under `drt` only for now: the plain
+It does not serve the JWKS over HTTP; `34-jwks` does, from a topic's kv. And it runs under `drt` only for now: the plain
 Diluvium host's crypto connector does not answer `derive`, the TOTP calls or
 EdDSA.

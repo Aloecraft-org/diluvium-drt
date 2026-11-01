@@ -143,6 +143,7 @@ drt p2p drt://signal.example/v1/xps -p 8080:80            # or map a port to it
 drt p2p --park drt://signal.example/v1/xps --H auth=…     # answer calls for a name
 drt p2p --match 8443                 # be the signalling server
 drt p2p --match 8443 --kv ./kv       # ... keeping a kv store; drt kv get|put|ls|watch its keys
+drt --config jwks.json start         # stdlib:jwks: signing keys' public halves, at /.well-known/jwks.json
 drt --config p2p.json p2p            # any role, with the token in a 0600 file
 drt --config nc.json netcheck        # what can this network do, with the evidence
 drt --config st.json start           # a STUN server: what address did that come from

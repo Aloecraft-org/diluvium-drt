@@ -206,9 +206,13 @@ jobs:
       # `custom` and nothing was red, which is how two examples calling
       # removed verbs survived three CI runs.
       # `every_profile_name_is_a_feature_the_binary_probes` is the guard.
+      # PyJWT is the relying party in `examples/34-jwks`: a JWKS client that
+      # shares no code with DRT fetches the served set and verifies a token
+      # by its kid. Pinned, so a new release cannot change what it checks.
       - name: The examples gate, natively
         run: |
           set -eu
+          pip install --quiet 'pyjwt[crypto]==2.15.0'
           cargo build --release --features full
           cd examples && DRT="$GITHUB_WORKSPACE/target/release/drt" ./run-all.sh
       # tests/determinism/README.md: one expected.txt per corpus, and every

@@ -1,0 +1,271 @@
+-- `stdlib:jwks`: a JSON Web Key Set (RFC 7517 §5) for the tokens this
+-- deployment's crypto connector signs, kept in a topic's kv and served at
+-- /.well-known/jwks.json. The private half of every key stays in the
+-- crypto connector: this program asks it for the public JWK
+-- (`crypto/public_key`), writes that to kv, and serves what kv holds.
+--
+-- ## surface block
+--
+-- - Entry point: `"entry": "stdlib:jwks"` under `drt start`, with an http
+--   listener whose queue is `http_in` and reply queue `http_out`, naming
+--   `cache-control` and `access-control-allow-origin` in `resp_headers`.
+--   Grants: `host:crypto/public_key`, `host:kv/put`, `host:kv/list`,
+--   `host:time/monotonic` (the refresh clock), and
+--   `host:crypto/derive` scoped to the labels when the keys are derived
+--   rather than configured. The `kv` connector's scope is the topic URL,
+--   with a token holding `write` and `read` when the server has topics.
+--   - `args.keys`: the crypto key names to publish, separated by spaces or
+--     commas. Each is a `crypto.signing_keys` name or an EdDSA label,
+--     derived here with `alg = "EdDSA"` if `public_key` does not know it.
+--   - `args.ttl`: seconds a published key outlives its last refresh
+--     (default TTL_DEFAULT). Set it past the longest token lifetime.
+--   - `args.max_age`: the reply's Cache-Control max-age (MAX_AGE_DEFAULT).
+--   - `args.set_key`: the kv key the whole set is also kept under, as one
+--     `{"keys": [...]}` value, for a reader that wants one key rather than
+--     a listing: the match server's JWT topic tokens read it there
+--     (SET_KEY_DEFAULT; `none` keeps no such key).
+-- - Configurable: JWKS_PATH, KV_PREFIX, SET_KEY_DEFAULT, TTL_DEFAULT,
+--   MAX_AGE_DEFAULT, LIST_PAGE, KEY_MAX, RETRY_MS, SYNC_MS; PUBLIC_MEMBERS, the JWK members served
+--   per `kty`; PRIVATE_MEMBERS, those that refuse an entry.
+-- - Fan-out: `serve`, one branch per request (OPTIONS, GET JWKS_PATH,
+--   anything else 404); `publish`, one kv write per key in `args.keys`;
+--   `sync`, the set rewritten under `args.set_key` when it changed.
+--
+-- Rotation is by TTL, not by a delete. Every key named in `args.keys` is
+-- written again every ttl/3 seconds with `?ttl=<ttl>`, so it stays. A key
+-- taken out of `args.keys` is no longer refreshed, and kv drops it within
+-- `ttl` of its last write: tokens it signed keep verifying until then. To
+-- rotate, publish the new key beside the old one (`keys = "issuer:2
+-- issuer:1"`), wait past `max_age` so caches hold both, then sign with the
+-- new one; take the old one out once its tokens have expired, or leave the
+-- TTL to do it. A token names its key in `kid`, and a verifier picks the
+-- JWK with that `kid` from the set.
+--
+-- The set is the topic's, not this program's: every entry under KV_PREFIX
+-- is served, so several issuers sharing one topic serve one set. What is
+-- served is filtered, never trusted: only PUBLIC_MEMBERS of a known `kty`
+-- are copied; a symmetric (`oct`) key, an entry holding a private member
+-- and an entry without `kid` are dropped; and an entry whose kv key is not the one its `kid` maps to is
+-- dropped, so one `kid` names one key. The set under `args.set_key` is the
+-- same filtered set, in the same bytes the endpoint serves, checked every
+-- SYNC_MS and rewritten only when it changed (and at every refresh, which
+-- renews its TTL), so a retired key leaves it within SYNC_MS of leaving kv.
+
+local JWKS_PATH       = '/.well-known/jwks.json'
+local KV_PREFIX       = 'jwks/'
+local SET_KEY_DEFAULT = 'jwks'
+local TTL_DEFAULT     = 86400   -- a day
+local MAX_AGE_DEFAULT = 300
+local LIST_PAGE       = 1000    -- the kv server's KV_LIST_MAX
+local KEY_MAX         = 256     -- the kv server's KV_KEY_MAX
+local RETRY_MS        = 5000    -- a failed refresh, tried again after this
+local SYNC_MS         = 5000    -- how often the set key is compared with kv
+-- The public members of each key type (RFC 7518 §6, RFC 8037 §2), and the
+-- members every key may carry (RFC 7517 §4). Nothing else is copied: `d`,
+-- `p`, `q`, `dp`, `dq`, `qi`, `k` and anything unknown never leave.
+local PUBLIC_MEMBERS = {
+  OKP = {'crv', 'x'},
+  EC  = {'crv', 'x', 'y'},
+  RSA = {'n', 'e'},
+}
+local COMMON_MEMBERS = {'kid', 'alg', 'use'}
+-- Private members (RFC 7518 §6.2.2, §6.3.2, §6.4; RFC 8037 §2). An entry
+-- carrying one is refused whole, not served with it cut off: a private key
+-- in the topic is a fault to see, not to tidy.
+local PRIVATE_MEMBERS = {'d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k'}
+
+local CORS = {['access-control-allow-origin'] = '*'}
+
+local requests = queue.declare('http_in', {capacity = 64})
+local replies  = queue.declare('http_out', {capacity = 64, exported = true})
+local _, args  = queue.wait({queue.declare('args', {capacity = 1})})
+
+-- depth: arguments
+
+local function names_of(text)
+  local out = {}
+  for name in tostring(text or ''):gmatch('[^%s,]+') do out[#out + 1] = name end
+  return out
+end
+
+local KEYS = names_of(args.keys)
+assert(#KEYS > 0, 'jwks: args.keys names no key; give the crypto key names to publish')
+local TTL = math.tointeger(tonumber(args.ttl)) or TTL_DEFAULT
+assert(TTL >= 3 and TTL <= 31536000, 'jwks: args.ttl is seconds, 3 to 31536000')
+local MAX_AGE = math.tointeger(tonumber(args.max_age)) or MAX_AGE_DEFAULT
+assert(MAX_AGE >= 0, 'jwks: args.max_age is seconds, 0 or more')
+local REFRESH_MS = (TTL // 3) * 1000
+local SET_KEY = args.set_key or SET_KEY_DEFAULT
+if SET_KEY == 'none' then SET_KEY = nil end
+assert(not SET_KEY or SET_KEY:sub(1, #KV_PREFIX) ~= KV_PREFIX,
+  'jwks: args.set_key may not be under ' .. KV_PREFIX .. ', where the keys are kept')
+
+-- depth: the kv key a kid is kept under
+
+-- A kid in kv's key charset: A-Z a-z 0-9 . _ - pass, and every other
+-- byte, `~` included, is `~` and two hex digits. `issuer:1` is
+-- `jwks/issuer~3A1`. One kid, one kv key, and back again.
+local function kv_key(kid)
+  return KV_PREFIX .. kid:gsub('[^%w%._%-]', function(c) return string.format('~%02X', c:byte()) end)
+end
+
+-- depth: what is served
+
+-- The public JWK in `entry` (a kv listing's {key, value}), or nil with
+-- the reason it is not served.
+local function public_jwk(entry)
+  local ok, jwk = pcall(json.decode, entry.value)
+  if not ok or type(jwk) ~= 'table' then return nil, 'not JSON' end
+  local members = PUBLIC_MEMBERS[jwk.kty]
+  if not members then return nil, 'kty ' .. tostring(jwk.kty) .. ' is not a public key type' end
+  for _, name in ipairs(PRIVATE_MEMBERS) do
+    if jwk[name] ~= nil then return nil, 'it holds the private member ' .. name end
+  end
+  if type(jwk.kid) ~= 'string' or jwk.kid == '' then return nil, 'no kid' end
+  if entry.key ~= kv_key(jwk.kid) then return nil, 'kept under ' .. entry.key .. ', not its kid\'s key' end
+  local out = {kty = jwk.kty}
+  for _, list in ipairs({members, COMMON_MEMBERS}) do
+    for _, name in ipairs(list) do
+      local v = jwk[name]
+      if v ~= nil then
+        if type(v) ~= 'string' then return nil, name .. ' is not a string' end
+        out[name] = v
+      end
+    end
+  end
+  for _, name in ipairs(members) do
+    if out[name] == nil then return nil, 'no ' .. name end
+  end
+  return out
+end
+
+-- The set as JSON with every member in one order, so the same keys are
+-- the same bytes: the endpoint's body, and what `sync` compares.
+local ORDER = {'kty', 'crv', 'x', 'y', 'n', 'e', 'kid', 'alg', 'use'}
+local function encode_set(keys)
+  local parts = {}
+  for i, jwk in ipairs(keys) do
+    local members = {}
+    for _, name in ipairs(ORDER) do
+      if jwk[name] ~= nil then members[#members + 1] = json.encode(name) .. ':' .. json.encode(jwk[name]) end
+    end
+    parts[i] = '{' .. table.concat(members, ',') .. '}'
+  end
+  return '{"keys":[' .. table.concat(parts, ',') .. ']}'
+end
+
+local warned = {}   -- kv key -> the reason last printed, so a bad entry is said once
+
+-- Every public JWK under KV_PREFIX, in kv's key order.
+local function key_set()
+  local keys, after = {}, nil
+  repeat
+    local page = host.call('kv/list', {prefix = KV_PREFIX, after = after, limit = LIST_PAGE})
+    for _, entry in ipairs(page.keys) do
+      local jwk, why = public_jwk(entry)
+      if jwk then
+        keys[#keys + 1] = jwk
+        warned[entry.key] = nil
+      elseif warned[entry.key] ~= why then
+        print('jwks: not serving ' .. entry.key .. ': ' .. why)
+        warned[entry.key] = why
+      end
+      after = entry.key
+    end
+  until not page.more
+  return keys
+end
+
+-- depth: publishing
+
+-- The public JWK of `name`, deriving it as an EdDSA label when the crypto
+-- connector does not know it yet. A label derived with the other alg, or
+-- a name the derive grant does not cover, is the connector's error.
+local function public_key(name)
+  local jwk, status = host.try('crypto/public_key', {key = name})
+  if status == 'ok' then return jwk end
+  host.call('crypto/derive', {label = name, alg = 'EdDSA'})
+  return host.call('crypto/public_key', {key = name})
+end
+
+-- Write every key in KEYS to kv with the TTL. A key whose kid would not
+-- fit kv's key limit is refused here by name rather than by the server.
+local function publish()
+  for _, name in ipairs(KEYS) do
+    local answer = public_key(name)
+    assert(type(answer.kid) == 'string', 'jwks: crypto/public_key answered no kid for ' .. name)
+    -- What is written is what `public_jwk` would serve, checked the same way.
+    local key = kv_key(answer.kid)
+    local jwk, why = public_jwk({key = key, value = json.encode(answer)})
+    assert(jwk, 'jwks: not publishing ' .. name .. ': ' .. tostring(why))
+    assert(#key <= KEY_MAX, 'jwks: kid ' .. jwk.kid .. ' is too long for a kv key')
+    host.call('kv/put', {key = key, value = json.encode(jwk), ttl = TTL})
+  end
+end
+
+-- depth: the set under one key
+
+local written = nil   -- the set last written under SET_KEY
+
+-- Write the set under SET_KEY if it differs from what was last written,
+-- or always when `renew`. An empty set is written too: the reader then
+-- holds no keys and verifies nothing, rather than keys that were retired.
+local function sync(renew)
+  if not SET_KEY then return end
+  local body = encode_set(key_set())
+  if body == written and not renew then return end
+  host.call('kv/put', {key = SET_KEY, value = body, ttl = TTL})
+  written = body
+end
+
+-- depth: requests
+
+local function reply(conn, status, body, extra)
+  local headers = {}
+  for k, v in pairs(CORS) do headers[k] = v end
+  for k, v in pairs(extra or {}) do headers[k] = v end
+  queue.push(replies, {conn = conn, status = status, body = body,
+                       content_type = 'application/json', headers = headers})
+end
+
+local function serve(m)
+  local path = m.path:match('^[^?]*')
+  if m.method == 'OPTIONS' then return reply(m.conn, 204, '') end
+  if path ~= JWKS_PATH then return reply(m.conn, 404, '{"error":"no such request"}') end
+  if m.method ~= 'GET' then return reply(m.conn, 405, '{"error":"only GET"}') end
+  local ok, keys = pcall(key_set)
+  if not ok then
+    print('jwks: kv: ' .. tostring(keys))
+    return reply(m.conn, 503, '{"error":"the key store did not answer"}', {['cache-control'] = 'no-store'})
+  end
+  reply(m.conn, 200, encode_set(keys), {['cache-control'] = 'max-age=' .. MAX_AGE})
+end
+
+-- The first publish is not caught: a key that cannot be published at
+-- start is a deployment that is wrong, and it stops saying why. A later
+-- refresh that fails is tried again after RETRY_MS, since kv may be down a
+-- while and the keys it holds outlive that by their TTL.
+publish()
+sync(true)
+print('jwks: publishing ' .. table.concat(KEYS, ', ') .. ' for ' .. TTL .. 's, refreshed every '
+  .. (REFRESH_MS // 1000) .. 's; serving ' .. JWKS_PATH
+  .. (SET_KEY and (' and the set at kv key ' .. SET_KEY) or ''))
+local published = host.monotonic()
+local synced = published
+while true do
+  local _, m = queue.wait({requests}, 1000)
+  if m and m.event ~= 'closed' then serve(m) end
+  local now = host.monotonic()
+  if now - published >= REFRESH_MS then
+    local ok, err = pcall(function() publish(); sync(true) end)
+    if ok then published = now; synced = now
+    else
+      print('jwks: refresh: ' .. tostring(err))
+      published = now - REFRESH_MS + RETRY_MS
+    end
+  elseif now - synced >= SYNC_MS then
+    local ok, err = pcall(sync, false)
+    if not ok then print('jwks: set: ' .. tostring(err)) end
+    synced = now
+  end
+end

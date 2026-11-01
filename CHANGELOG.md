@@ -47,6 +47,24 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Added
 
+- **A JWKS for the tokens DRT signs: `stdlib:jwks`.** A deployment
+  running it under `drt start` asks the crypto connector for each
+  key's public JWK (`crypto/public_key`; the private key never leaves
+  it), writes it to a topic's kv under `jwks/<kid>` (`~XX`-escaped) with a
+  TTL, and
+  serves every key the topic holds at `/.well-known/jwks.json`, with
+  `Cache-Control` and CORS. `args.keys` lists the keys, old and new
+  together for a rotation; each is refreshed every `ttl / 3`, so a key
+  taken out of the list leaves the set within `ttl`. What is served is
+  filtered: only public members of an `OKP`, `EC` or `RSA` key, never
+  a symmetric key or one holding a private member, and one key per
+  `kid`. The same set is also kept as one value under the kv key
+  `args.set_key` (`jwks`), rewritten when it changes, for a reader
+  that wants one key. A store that does not answer is 503, not an
+  empty set.
+  Verified against `jsonwebtoken` and PyJWT's `PyJWKClient`;
+  `examples/34-jwks`. Under `drt` only: the plain `diluvium` host has
+  no `kv` connector and no EdDSA.
 - **A key-value store on the signalling server, and `drt kv`
   (`doc/DRT-Signalling.md` §10).** `drt p2p --match <port> --kv
   <dir>` keeps one in SQLite at `/v1/<topic>/kv/<key>`, over plain
@@ -109,7 +127,7 @@ Underneath it the embedded core moves from 0.15.1 to
     (`park`, `call`, `read`, `write`), and `read` lists the names
     present at `GET /v1/<topic>/names`. Bare `/v1/<name>` names,
     their answerer token and `DRT-Caller-Token` work as before.
-    `write` is reserved for the topic's keys (kv, not built).
+    `read` and `write` also admit the topic's kv.
   - **The wire:** a Wisp `CONNECT` with an empty host asks for
     whatever the far side forwards to, at the port named or at none;
     `hello` names services and carries `scope` only when the

@@ -1,0 +1,153 @@
+parsed to:
+RootConfig {
+    root: InstanceConfig {
+        program: None,
+        caps: [
+            Grant {
+                effect: Grant,
+                capability: "host:crypto/derive",
+                scope: Some(
+                    Scope(
+                        Array(
+                            [
+                                String(
+                                    Utf8String {
+                                        s: Ok(
+                                            "issuer:*",
+                                        ),
+                                    },
+                                ),
+                            ],
+                        ),
+                    ),
+                ),
+            },
+            Grant {
+                effect: Grant,
+                capability: "host:crypto/public_key",
+                scope: None,
+            },
+            Grant {
+                effect: Grant,
+                capability: "host:kv/put",
+                scope: None,
+            },
+            Grant {
+                effect: Grant,
+                capability: "host:kv/list",
+                scope: None,
+            },
+            Grant {
+                effect: Grant,
+                capability: "host:time/monotonic",
+                scope: None,
+            },
+        ],
+        budget: Budget {
+            instructions: None,
+            memory_kb: None,
+        },
+        numeric: Numeric {
+            max_elements: None,
+            max_tier: None,
+        },
+    },
+    connectors: {
+        "crypto": ConnectorWiring {
+            backing: None,
+            scope: Some(
+                Scope(
+                    Map(
+                        [
+                            (
+                                String(
+                                    Utf8String {
+                                        s: Ok(
+                                            "key",
+                                        ),
+                                    },
+                                ),
+                                String(
+                                    Utf8String {
+                                        s: Ok(
+                                            "jwks-example-master-key-000000",
+                                        ),
+                                    },
+                                ),
+                            ),
+                        ],
+                    ),
+                ),
+            ),
+        },
+        "kv": ConnectorWiring {
+            backing: None,
+            scope: Some(
+                Scope(
+                    String(
+                        Utf8String {
+                            s: Ok(
+                                "drt://127.0.0.1:18498/v1/auth",
+                            ),
+                        },
+                    ),
+                ),
+            ),
+        },
+        "time": ConnectorWiring {
+            backing: None,
+            scope: None,
+        },
+    },
+    plugins: {},
+    listeners: [
+        Listener {
+            scheme: "http",
+            address: "127.0.0.1:18499",
+            queue: "http_in",
+            reply_queue: "http_out",
+            max_body: 65536,
+            conn_deadline_ms: 10000,
+            max_conns: 64,
+            admit_timeout_ms: 2000,
+            headers: [],
+            resp_headers: [
+                "cache-control",
+                "access-control-allow-origin",
+            ],
+            streaming: false,
+            stream_idle_ms: 60000,
+            authorized_keys: None,
+        },
+    ],
+    residency: None,
+    relay: None,
+    stun: None,
+    turn: None,
+    wireguard: None,
+    tunnel: None,
+    p2p: None,
+    netcheck: None,
+    webrtc: None,
+    identity: Identity {
+        host_key_path: None,
+    },
+    principals: [],
+    dlua_dir: None,
+    entry: Some(
+        Stdlib(
+            "jwks",
+        ),
+    ),
+    args: {
+        "keys": Str(
+            "issuer:2 issuer:1",
+        ),
+        "max_age": Int(
+            300,
+        ),
+        "ttl": Int(
+            86400,
+        ),
+    },
+}

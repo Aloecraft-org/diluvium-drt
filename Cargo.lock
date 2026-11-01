@@ -1293,6 +1293,7 @@ dependencies = [
  "hmac 0.12.1",
  "httparse",
  "ipnetwork",
+ "jsonwebtoken",
  "libc",
  "pollster",
  "rcgen 0.13.2",
