@@ -363,8 +363,11 @@ pub enum Command {
     /// exists, this fails and says so. Every flag is also a key of the
     /// `p2p` block in --config. A command after -- runs once a call's -p
     /// ports are bound, and the call ends when it exits, with its status.
+    ///
+    /// Boxed: the flags outgrew every other verb's (clippy's
+    /// large_enum_variant), and a Command is moved around whole.
     #[cfg(feature = "p2p")]
-    P2p(crate::p2p::Args),
+    P2p(Box<crate::p2p::Args>),
     /// The key-value store a signalling server keeps (`drt p2p --match
     /// <port> --kv <dir>`, doc/DRT-Signalling.md §10): get, put, rm, ls
     /// and watch a key at drt://host[:port]/v1/<topic>/kv/<key>. Values are
@@ -1021,7 +1024,8 @@ pub fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
 /// quiet kind of wrong.
 #[cfg(feature = "plugins")]
 const BUILTIN_FAMILIES: &[&str] = &[
-    "time", "fs", "sql", "crypto", "data", "ssh", "rest", "ssmtp", "ldap", "exec", "socket", "ws", "kv",
+    "time", "fs", "sql", "crypto", "data", "ssh", "rest", "ssmtp", "ldap", "exec", "socket", "ws",
+    "kv",
 ];
 
 /// Every plugin family's name, judged before anything is wired.
