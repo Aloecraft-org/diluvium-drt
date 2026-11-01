@@ -151,6 +151,11 @@
 //!   keeps no state, so `totp_verify` answers the matched time `step`, and
 //!   a caller that stores it and passes it back as `after` gets `replayed`
 //!   for that code and any older one.
+//! - **Throttling is the caller's too.** Six digits are a million guesses
+//!   and a window of one accepts three codes, so a verifier that lets a
+//!   client try without limit is guessable in hours. RFC 4226 §7.3 asks
+//!   the verifier to bound attempts per account; the host cannot, since it
+//!   does not know which account a call is for.
 //!
 //! ## Departures from the C, noted rather than hidden
 //!
