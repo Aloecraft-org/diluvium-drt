@@ -121,9 +121,10 @@ ok('alice: the login page knows her, and /api/token answers an EdDSA JWT carryin
 // the app: the session and a JWT through the API the proxy mounts on the
 // app (Caddyfile). DRT_JS names the directory holding the built file;
 // without it this step says it was skipped.
+let cdn;
 if (process.env.DRT_JS) {
   const cdnPort = Number(PROXY) + 10;
-  const cdn = http.createServer((req, res) => {
+  cdn = http.createServer((req, res) => {
     const file = { '/drt.min.js': 'drt.min.js', '/drt.js': 'drt.js' }[req.url];
     if (!file) return res.writeHead(404).end();
     res.writeHead(200, { 'content-type': 'application/javascript', 'access-control-allow-origin': '*' })
@@ -153,7 +154,6 @@ if (process.env.DRT_JS) {
   }, src);
   assert.deepEqual(none, { info: null, token: 401 });
   await stranger.context().close();
-  cdn.close();
   ok('alice: a page of the app imports drt.js from another origin, and drt.session() reads her session and a JWT with her groups; a stranger gets none');
 } else {
   console.log('skip - drt.js: DRT_JS is not set');
@@ -192,5 +192,20 @@ assert.equal(again.url(), `${APP}/private`);
 assert.equal(await again.textContent('body'), 'user=alice groups=admins,staff path=/private');
 ok('alice: a second sign-in asks for a code from the app she enrolled, not a new enrolment');
 
+if (process.env.DRT_JS) {
+  const src = `http://cdn.example.test:${Number(PROXY) + 10}/drt.min.js`;
+  const out = await again.evaluate(async (src) => {
+    const s = (await import(src)).session();
+    const before = await s.info();
+    await s.logout();
+    return { before: before?.user, after: await s.info() };
+  }, src);
+  assert.deepEqual(out, { before: 'alice', after: null });
+  await again.goto(`${APP}/private`);
+  assert.equal(new URL(again.url()).host, `auth.example.test:${PROXY}`);
+  ok('alice: drt.session().logout() from a page of the app ends her session, and the app sends her to the login');
+}
+
 await browser.close();
+cdn?.close();
 console.log(`${passed} checks passed`);

@@ -11,10 +11,11 @@ http://auth.example.test:@PROXY@ {
 }
 
 http://app.example.test:@PROXY@ {
-	# The session's JSON API on the app's own origin, as a page that
-	# fetches its token with drt.js (crates/drt-web/cdn) needs it: the
-	# cookie goes with a same-origin request, and nothing needs CORS.
-	handle /api/* {
+	# The session's JSON API and /logout on the app's own origin, as a
+	# page using drt.js's session() needs them (crates/drt-web/npm/README.md):
+	# the cookie goes with a same-origin request, and nothing needs CORS.
+	@session path /api/* /logout
+	handle @session {
 		reverse_proxy 127.0.0.1:@AUTH@
 	}
 	handle /admin* {
