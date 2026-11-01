@@ -1110,6 +1110,10 @@ pub struct P2pConfig {
     /// `--capacity`: names a `match` server holds at once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capacity: Option<usize>,
+    /// `--topics`: a `match` server's topics file, each topic with its
+    /// tokens and their roles (`doc/P2P.md` §2.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topics: Option<PathBuf>,
     /// `--extra-root`: PEM files trusted beside the public roots.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_roots: Vec<PathBuf>,

@@ -23,7 +23,7 @@ the path is a flag the user typed.
 - Configurable: `-p` (call), `--host` (default `127.0.0.1`), `--accept`,
   `--pair`, `--forward`, `-A`, `-P`, `--signal`, `--stun`,
   `--fingerprint` (`--fingerp`), `--H` (`auth=` for a bearer token),
-  `--authorized-keys`, `--capacity`, `--extra-root`, `--config`; `--show`
+  `--authorized-keys`, `--capacity`, `--topics`, `--extra-root`, `--config`; `--show`
   prints a peer's canonical form. Every flag is also a key of the `p2p`
   block (§8). A call's command after `--` (§2.1) is the one argument that
   is not.
@@ -215,6 +215,35 @@ what the profile asks of them.
 - **`--capacity`** is the number of names held at once. A claim past it
   gets 429 with `retry-after`. Each name keeps the profile's cap of 16
   waiting calls.
+- **`--topics <file>`** declares topics: namespaces with their own
+  tokens. A name inside topic `home` is `drt://<server>/v1/home/<name>`,
+  and every request under `/v1/home/` needs a token the file gives
+  `home`, with the role the request needs. Bare `/v1/<name>` names are
+  untouched, and a server without `--topics` refuses a topic's path (404).
+  The file:
+
+  ```json
+  {"topics": {"home": {"tokens": [
+    {"token": "…", "roles": ["park", "call"]},
+    {"token": "…", "roles": ["read"]}]}}}
+  ```
+
+  | Role | Opens |
+  |---|---|
+  | `park` | the answerer's requests for a name in the topic: claim, poll, answer, the event stream, pairing |
+  | `call` | calling a name in the topic, and withdrawing that token's own call |
+  | `read` | `GET /v1/<topic>/names`: `{"topic": …, "names": [...]}`, the names present now |
+  | `write` | nothing yet; it is reserved for the topic's keys (kv, not built) |
+
+  No token is 401. A token without the role, or a topic the file does not
+  declare, is 403, so probing does not list topics. Inside a topic,
+  `calls`, `events`, `pair`, `names` and `kv` are not names, and
+  `DRT-Caller-Token` is not read: the topic's `call` tokens admit. Pairing
+  stays inside the topic, and the told side calls with its own token, so
+  that token needs `call` as well as `park`. `--capacity` counts every
+  name held, bare or in a topic. The file is read at start; a change
+  needs a restart. Tokens are compared as written, so keep the file
+  private.
 - **Admission is by token, not origin**, so every reply carries
   `access-control-allow-origin: *`. A page opened from `file://` sends
   `Origin: null` and preflights because of its `Authorization` header; a
@@ -437,6 +466,7 @@ change, so nothing negotiates it.
 |---|---|---|---|
 | `--host` | listen, match | the serving process | who may connect: an address binds there; `0.0.0.0` admits anyone; a CIDR, typically a WireGuard subnet, admits that range, and binds this machine's own address inside it when it holds exactly one, everywhere otherwise |
 | `--accept` | park | the signalling server, then the parked side | which callers are passed to the parked side |
+| `--topics FILE` | match | the signalling server | which tokens may park, call or list in each topic (§2.4) |
 | `--H name=value` | call, park | sent to the signalling side only | HTTP headers; `auth=` is shorthand for `Authorization: Bearer` |
 | `--fingerprint SHA256:…` | call | the caller, locally | the answerer's DTLS fingerprint must match; `--fingerp` is the same flag |
 

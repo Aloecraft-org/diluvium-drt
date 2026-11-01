@@ -637,6 +637,13 @@
           "items": {
             "type": "string"
           }
+        },
+        "topics": {
+          "description": "`--topics`: a `match` server's topics file, each topic with its\ntokens and their roles (`doc/P2P.md` §2.4).",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false
