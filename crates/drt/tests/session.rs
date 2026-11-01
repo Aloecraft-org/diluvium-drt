@@ -224,26 +224,57 @@ fn slapd(dir: &Path) -> Option<(Proc, u16)> {
         .local_addr()
         .unwrap()
         .port();
-    let child = Command::new(bin)
-        .arg("-f")
-        .arg(dir.join("slapd.conf"))
-        .arg("-h")
-        .arg(format!("ldap://127.0.0.1:{port}/"))
-        .args(["-d", "0"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let proc = Proc {
+    // Run a copy. Ubuntu's AppArmor profile for slapd attaches to the path
+    // /usr/sbin/slapd and lets it read only its own directories, so the
+    // real binary cannot open this test's config or database (slapadd, the
+    // same file under another path, is not confined). A copy at another
+    // path is the same program without the profile.
+    let copy = dir.join("slapd");
+    std::fs::copy(bin, &copy).unwrap();
+    let log = dir.join("slapd.log");
+    let child = spawn_written(
+        Command::new(&copy)
+            .arg("-f")
+            .arg(dir.join("slapd.conf"))
+            .arg("-h")
+            .arg(format!("ldap://127.0.0.1:{port}/"))
+            // -d keeps it in the foreground, so the child is the server; at 0
+            // it still says why it refused to start.
+            .args(["-d", "0"])
+            .stdout(Stdio::null())
+            .stderr(std::fs::File::create(&log).unwrap()),
+    );
+    let mut proc = Proc {
         child,
         log: Arc::default(),
     };
     let deadline = Instant::now() + Duration::from_secs(10);
     while TcpStream::connect(("127.0.0.1", port)).is_err() {
-        assert!(Instant::now() < deadline, "slapd did not listen on {port}");
+        let exited = proc.child.try_wait().unwrap();
+        if exited.is_some() || Instant::now() > deadline {
+            let said = std::fs::read_to_string(&log).unwrap_or_default();
+            panic!("slapd did not listen on {port} ({exited:?}):\n{said}");
+        }
         std::thread::sleep(Duration::from_millis(50));
     }
     Some((proc, port))
+}
+
+/// Spawns a program this process has just written. Another test's fork can
+/// still hold the copy's write descriptor for the moment before its exec
+/// closes it, and exec of a file open for writing fails with ETXTBSY, so
+/// that one error is waited out.
+fn spawn_written(cmd: &mut Command) -> Child {
+    const ETXTBSY: i32 = 26;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match cmd.spawn() {
+            Err(e) if e.raw_os_error() == Some(ETXTBSY) && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20))
+            }
+            spawned => return spawned.unwrap(),
+        }
+    }
 }
 
 // depth: the webhook

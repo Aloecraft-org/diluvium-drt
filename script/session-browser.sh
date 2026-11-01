@@ -65,7 +65,10 @@ access to attrs=userPassword by self read by anonymous auth by * none
 access to * by * read
 CONF
 /usr/sbin/slapadd -f "$W/slapd.conf" -l crates/drt/tests/session-browser/directory.ldif
-/usr/sbin/slapd -f "$W/slapd.conf" -h "ldap://127.0.0.1:$LDAP/" -d 0 >"$W/slapd.log" 2>&1 &
+# A copy, because Ubuntu's AppArmor profile for /usr/sbin/slapd confines
+# that path to its own directories and so refuses this config.
+cp /usr/sbin/slapd "$W/slapd"
+"$W/slapd" -f "$W/slapd.conf" -h "ldap://127.0.0.1:$LDAP/" -d 0 >"$W/slapd.log" 2>&1 &
 PIDS="$PIDS $!"
 wait_port $LDAP slapd
 
