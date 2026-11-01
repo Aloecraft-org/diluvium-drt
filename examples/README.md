@@ -1,7 +1,7 @@
 # DRT examples
 
 A run-through for someone who has a `drt` binary and has never run anything
-with it. Thirty-three sittings — thirty-four directories, because `05` has a
+with it. Thirty-five sittings — thirty-six directories, because `05` has a
 live twin — meant in order: one idea each, a command block you can paste, and
 an `expected.txt` that is the real output of running it rather than a
 transcription of what it ought to say. A **drt app** is a config plus a
@@ -51,7 +51,7 @@ reference. Everything here is v0.8.0.
 
 `drt run` executes one program to completion and exits — no swarm, no
 listeners, no second instance — and it is what `01`–`07`, `10`, `12`, `16`,
-`18`, `23`, `25`, `32` and `33` use.
+`18`, `23`, `25` and `33` use.
 `drt start` runs the whole deployment: `08` needs it because a child has
 nowhere to live under `drt run`, and `11`, `13`, `17`, `19`, `20`, `22` and
 `24` need it because a config block that serves — `relay`, `stun`, `turn`,

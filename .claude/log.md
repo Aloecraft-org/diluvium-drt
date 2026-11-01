@@ -315,7 +315,7 @@ Done:
   `crypto/public_key`.
 - Tests: RFC 4226/6238/8037 vectors; totp-rs and jsonwebtoken as
   dev-dependencies; alg-confusion forgeries. By hand, PyJWT and pyotp
-  against a real `drt run`. Example 32, corpus entry, GUARANTEES and the
+  against a real `drt run`. Example 33 (32 is kv's), corpus entry, GUARANTEES and the
   changelog.
 
 Learned: a bare `*` in a derive scope names only the label `*`, by
