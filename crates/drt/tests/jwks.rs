@@ -150,7 +150,10 @@ impl Match {
         let line = out.next().expect("the server says what it serves").unwrap();
         assert!(line.contains("1 topic(s)"), "{line}");
         let line = out.next().expect("the server says it keeps kv").unwrap();
-        assert!(line.contains("kv takes a token of its topic"), "{line}");
+        // Only what every wording of this line shares: kv is on, and it is
+        // not the no-token warning a server without topics prints.
+        assert!(line.contains("kv in "), "{line}");
+        assert!(!line.contains("no token"), "{line}");
         std::thread::spawn(move || for _ in out {});
         collect(child.stderr.take().unwrap());
         Match { child, port, dir }
