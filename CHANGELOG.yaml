@@ -131,6 +131,16 @@ releases:
         Tested against OpenLDAP, and in Chromium through Caddy's
         `forward_auth` (`script/session-browser.sh`, a CI job).
       - |
+        **Signing out revokes the user's JWTs at the match server.**
+        `POST /logout` writes `revoked/<user>` to the session's kv topic,
+        holding the logout's Unix second, with a TTL of `jwt_ttl`. A match
+        server whose `jwt` block reads its keys from kv reads revocations
+        from the same topic (or `"revoked": {"kv": "<topic>"}`), refuses
+        that subject's tokens issued at or before that second as
+        `revoked`, and frees the names the subject parked with them. An
+        admin revokes a user with `drt kv put`, and the TTL prunes the
+        list. Tested end to end in `crates/drt/tests/auth_stack.rs`.
+      - |
         **A JWKS for the tokens DRT signs: `stdlib:jwks`.** A deployment
         running it under `drt start` asks the crypto connector for each
         key's public JWK (`crypto/public_key`; the private key never leaves
