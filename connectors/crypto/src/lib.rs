@@ -11,10 +11,26 @@
 //! crypto/random          {bytes=N}                 -> N CSPRNG bytes, hex
 //! crypto/hash            {data, alg?}              -> lowercase hex; sha256 (default) or sha1
 //! crypto/hmac            {data, key?, expect?}     -> hex, or {valid}
-//! crypto/jwt_sign        {claims, ttl?, key?}      -> a JWT-HS256 string; `key` is a label, carried as `kid`
-//! crypto/jwt_verify      {token}                   -> {valid, claims?|reason}; `kid` selects the key
+//! crypto/jwt_sign        {claims, ttl?, key?}      -> a JWT string; `key` names a label or a signing key, carried as `kid`
+//! crypto/jwt_verify      {token}                   -> {valid, claims?|reason}; `kid` selects the key, the key fixes `alg`
+//! crypto/public_key      {key}                     -> the EdDSA key's public half as a JWK, for a JWKS
 //! crypto/turn_credential {user, ttl?}              -> {username, password, …}
-//! crypto/derive          {label}                   -> nothing; `label` now names a key
+//! crypto/derive          {label, alg?}             -> nothing; `label` now names a key, `alg` HS256 (default) or EdDSA
+//! crypto/totp            {key, alg?, digits?, period?}                  -> {code, step, expires}
+//! crypto/totp_verify     {key, code, alg?, digits?, period?, window?, after?} -> {valid, step?|reason}
+//! crypto/totp_enroll     {key, account, issuer?, alg?, digits?, period?} -> {secret, uri}; the one call that hands out a seed
+//! ```
+//!
+//! What a `key` name resolves to, which is the fan-out every keyed call
+//! goes through. A name is in at most one of these places: the config
+//! refuses a configured name used twice, and `derive` a label that shadows
+//! one.
+//!
+//! ```text
+//! (no key)                the master's derived subkeys: HS256 for jwt, the hmac subkey for hmac
+//! crypto.signing_keys[]   a configured EdDSA key: jwt_sign, jwt_verify, public_key
+//! crypto.secrets[]        a peer's raw bytes: hmac, totp, totp_verify; refused by jwt_sign and totp_enroll
+//! a derived label         this caller's: hmac, jwt (its alg), totp*, public_key when EdDSA
 //! ```
 //!
 //! Randomness through the hostcall log is the canonical replay win: the
@@ -88,8 +104,64 @@
 //!   shared with a peer by definition, and `KDF_LABEL_JWT` is public, so
 //!   the peer could mint tokens this host would accept.
 //!
-//! ## Two departures from the C, both noted rather than hidden
+//! ## EdDSA: the key picks the algorithm, the token never does
 //!
+//! - **`alg` belongs to a key, not to a token.** A label derived with
+//!   `alg = "EdDSA"` signs Ed25519 (RFC 8037) under a keypair derived from
+//!   its label master under [`KDF_LABEL_EDDSA`]; a `crypto.signing_keys`
+//!   entry is a configured one. `jwt_verify` finds the key by `kid`, takes
+//!   the algorithm from the key it found, rebuilds the header that key
+//!   writes, and compares. A token cannot ask to be checked as HS256 under
+//!   an EdDSA key's public bytes, which is the RS256/HS256 confusion in its
+//!   EdDSA form, because nothing in it is read as an algorithm.
+//! - **An EdDSA token always names its key.** There is no unkeyed EdDSA
+//!   header, so `accept_unkeyed` stays an HS256-only switch.
+//! - **`crypto/public_key` is the half that may leave.** It answers a JWK
+//!   (`kty = "OKP"`, `crv = "Ed25519"`, `x`, and `kid`, `alg`, `use`), so a
+//!   program serves a JWKS from the keys it names and another service
+//!   verifies with any JWT library. The private half is in this process
+//!   only, like every other key here. An HS256 key has no public half and
+//!   is refused there by name.
+//! - **A derived EdDSA key is deterministic**, like every label: two nodes
+//!   with one master derive one keypair, and rotation is a new label, with
+//!   the old one's JWK served beside the new one until its tokens expire.
+//!
+//! ## TOTP: verify by name, and enroll is the grant that sees a seed
+//!
+//! - RFC 6238 over RFC 4226's truncation, SHA-1 (what every authenticator
+//!   assumes, so the default) or SHA-256, 6 to 8 digits, a period in
+//!   seconds. The host owns the time: no call takes a timestamp, so a
+//!   program cannot mint a code for later.
+//! - **The seed is named, never passed.** `key` is a label this caller
+//!   derived, whose seed is a third subkey under [`KDF_LABEL_TOTP`] (20
+//!   bytes for SHA-1, 32 for SHA-256, RFC 6238's lengths), or a
+//!   `crypto.secrets` entry for a seed provisioned somewhere else.
+//! - **`crypto/totp_enroll` is the exception, and a separate grant.** An
+//!   authenticator needs the seed, so enrolment answers it as base32 and as
+//!   an `otpauth://` URI. Only a derived label enrols; a configured secret
+//!   is never handed to a program. Grant `totp_enroll` to the enrolment
+//!   program alone, and the program that checks codes never sees a seed.
+//!   `crypto/totp`, the current code, is as good as the seed for one
+//!   period, so it is a grant for a test or a robot account's login, and
+//!   never the verifier's.
+//!   Rotation is a new label (`totp:alice:2`), since a label's seed is a
+//!   pure function of its name.
+//! - **Single use is the caller's to keep, and the call makes it cheap.**
+//!   RFC 6238 §5.2 says a verifier must not accept a code twice. The host
+//!   keeps no state, so `totp_verify` answers the matched time `step`, and
+//!   a caller that stores it and passes it back as `after` gets `replayed`
+//!   for that code and any older one.
+//! - **Throttling is the caller's too.** Six digits are a million guesses
+//!   and a window of one accepts three codes, so a verifier that lets a
+//!   client try without limit is guessable in hours. RFC 4226 §7.3 asks
+//!   the verifier to bound attempts per account; the host cannot, since it
+//!   does not know which account a call is for.
+//!
+//! ## Departures from the C, noted rather than hidden
+//!
+//! - `derive`, `public_key`, the EdDSA keys and the three TOTP calls are
+//!   DRT's alone: `dhost_crypto.c` answers none of them, so a program that
+//!   uses them runs under `drt` and not yet under the plain host.
 //! - The C's fixed tables (`DH_MAX_SECRETS`, `DH_MAX_TURN_URIS`) are
 //!   consequences of having no allocator in the config path, not semantics.
 //!   Named secrets and TURN URIs are unbounded here.
@@ -108,6 +180,8 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use base64::Engine as _;
+use ed25519_dalek::pkcs8::DecodePrivateKey as _;
+use ed25519_dalek::Signer as _;
 use hmac::{Mac, SimpleHmac};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -133,6 +207,24 @@ const TURN_USER_MAX: usize = 256;
 const TTL_MAX: i64 = 315_360_000;
 /// A derived label is a name, not a document.
 const LABEL_MAX: usize = 256;
+/// RFC 4226 §5.3: at least six digits, and the 31-bit truncation carries
+/// nine at most; eight is what any authenticator offers.
+const TOTP_DIGITS_MIN: i64 = 6;
+const TOTP_DIGITS_MAX: i64 = 8;
+const TOTP_DIGITS_DEFAULT: i64 = 6;
+/// Seconds per time step. RFC 6238 §5.2 recommends thirty, and every
+/// authenticator assumes it when an enrolment names none.
+const TOTP_PERIOD_MIN: i64 = 10;
+const TOTP_PERIOD_MAX: i64 = 300;
+const TOTP_PERIOD_DEFAULT: i64 = 30;
+/// Steps either side of now that `totp_verify` accepts. One is RFC 6238
+/// §5.2's "at most one time step" for transmission delay, each way, to
+/// absorb a clock that drifts in either direction.
+const TOTP_WINDOW_DEFAULT: i64 = 1;
+const TOTP_WINDOW_MAX: i64 = 10;
+/// An enrolment's account and issuer are what an authenticator shows in
+/// its list; past this they are not names.
+const TOTP_NAME_MAX: usize = 128;
 
 /// Domain separation: the master secret signs nothing directly, it only
 /// keys these two derivations. Versioned, so a future scheme can coexist.
@@ -150,6 +242,17 @@ pub const KDF_LABEL_JWT: &[u8] = b"diluvium/crypto/jwt-hs256/v1";
 /// no runtime labels — and public for the same reason the other two are:
 /// changing it re-keys every label in every deployment.
 pub const KDF_LABEL_DERIVE: &[u8] = b"drt/crypto/derive/v1";
+/// A label's TOTP seed is `HMAC(label master, this)`, truncated to the
+/// algorithm's length. Its own subkey, so enrolling a label (which hands
+/// the seed to an authenticator) discloses neither its hmac nor its JWT
+/// key. Public and versioned for the same reason as the rest: changing it
+/// re-seeds every enrolled authenticator.
+pub const KDF_LABEL_TOTP: &[u8] = b"drt/crypto/totp/v1";
+/// An EdDSA label's Ed25519 secret key is `HMAC(label master, this)`.
+/// Distinct from [`KDF_LABEL_JWT`], so one label's HS256 and EdDSA keys are
+/// unrelated bytes. Changing it re-keys every EdDSA label, and every JWKS
+/// that publishes one.
+pub const KDF_LABEL_EDDSA: &[u8] = b"drt/crypto/jwt-eddsa/v1";
 
 /// `{"alg":"HS256","typ":"JWT"}`, base64url, unpadded. A **constant**,
 /// never a parsed field: `jwt_verify` compares the header segment against
@@ -162,6 +265,9 @@ pub const JWT_HEADER_B64: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9";
 /// every time. `jwt_verify` rebuilds it from the label a token names and
 /// compares byte-wise, so it is as much a constant as [`JWT_HEADER_B64`].
 const JWT_HEADER_KID_PREFIX: &str = r#"{"alg":"HS256","typ":"JWT","kid":"#;
+/// The header of every EdDSA token, built the same way:
+/// `{"alg":"EdDSA","typ":"JWT","kid":"<name>"}`. There is no unkeyed form.
+const JWT_HEADER_EDDSA_KID_PREFIX: &str = r#"{"alg":"EdDSA","typ":"JWT","kid":"#;
 
 const B64URL: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -280,6 +386,68 @@ struct NamedSecret {
     secret: SecretSource,
 }
 
+/// One `crypto.signing_keys` entry: a configured asymmetric key, for a
+/// deployment that holds its key material itself rather than deriving it
+/// from the master. `alg` is required, so a second algorithm can be added
+/// without a guess about what an entry that names none meant.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SigningKeyConfig {
+    name: String,
+    alg: String,
+    /// PKCS#8 PEM, the shape `openssl genpkey -algorithm ed25519` writes.
+    /// A secret value in the root config's shape (`drt_config::Secret`):
+    /// the string itself, `{"env": NAME}` or `{"file": PATH}`.
+    private_key: rmpv::Value,
+}
+
+/// A secret value as the root config spells one: a string is the value,
+/// and an object with exactly one of `env` or `file` says where it is. A
+/// file loses one trailing newline. `{"prompt": ...}` is refused by name:
+/// a connector's scope is read when the first call arrives, with no
+/// terminal to ask on. `what` is the field, for every refusal.
+fn load_secret_value(value: &rmpv::Value, what: &str) -> Result<String, String> {
+    if let Some(literal) = as_str(value) {
+        return Ok(literal.to_string());
+    }
+    let rmpv::Value::Map(entries) = value else {
+        return Err(format!(
+            "{what}: a secret value is a string, {{\"env\": NAME}} or {{\"file\": PATH}}"
+        ));
+    };
+    let [(k, v)] = entries.as_slice() else {
+        return Err(format!(
+            "{what}: a secret value object names exactly one of 'env' or 'file'"
+        ));
+    };
+    let Some(from) = v.as_str().filter(|_| as_str(k).is_some()) else {
+        return Err(format!(
+            "{what}: '{}' takes a string",
+            as_str(k).unwrap_or("?")
+        ));
+    };
+    match as_str(k) {
+        Some("env") => std::env::var(from)
+            .map_err(|_| format!("{what}: the environment variable '{from}' is not set")),
+        Some("file") => {
+            let mut text = std::fs::read_to_string(from)
+                .map_err(|e| format!("{what}: cannot read '{from}': {e}"))?;
+            if text.ends_with('\n') {
+                text.pop();
+            }
+            Ok(text)
+        }
+        Some("prompt") => Err(format!(
+            "{what}: a connector scope cannot prompt, since it is read with no terminal; \
+             use {{\"env\": NAME}} or {{\"file\": PATH}}"
+        )),
+        other => Err(format!(
+            "{what}: unknown source '{}'; a secret value object names 'env' or 'file'",
+            other.unwrap_or("?")
+        )),
+    }
+}
+
 /// The `jwt` block: what `jwt_verify` accepts beyond a token that names its
 /// key. Unknown keys here are refused at wiring like the rest of the scope.
 #[derive(Debug, Clone, Deserialize)]
@@ -314,6 +482,8 @@ struct CryptoScope {
     #[serde(default)]
     secrets: Vec<NamedSecret>,
     #[serde(default)]
+    signing_keys: Vec<SigningKeyConfig>,
+    #[serde(default)]
     jwt: Option<JwtConfig>,
 }
 
@@ -334,6 +504,8 @@ struct Keys {
     /// shared secret (a webhook sender's), raw for the same reason as
     /// TURN's.
     secrets: Vec<(String, Vec<u8>)>,
+    /// `crypto.signing_keys`, parsed. `SigningKey` zeroizes itself on drop.
+    signing_keys: Vec<(String, ed25519_dalek::SigningKey)>,
     /// `jwt.accept_unkeyed`: whether a token naming no `kid` verifies under
     /// `k_jwt`.
     accept_unkeyed: bool,
@@ -388,6 +560,37 @@ impl Keys {
                 s.secret.load(&format!("crypto.secrets['{}']", s.name))?,
             ));
         }
+        let mut signing_keys = Vec::with_capacity(scope.signing_keys.len());
+        for k in &scope.signing_keys {
+            let what = format!("crypto.signing_keys['{}']", k.name);
+            if k.name.is_empty() {
+                return Err("crypto.signing_keys: an entry has an empty name".into());
+            }
+            // One name, one key: a name found in two places would sign
+            // under one and verify under the other depending on which
+            // lookup ran first.
+            if secrets.iter().any(|(n, _)| n == &k.name)
+                || signing_keys.iter().any(|(n, _)| n == &k.name)
+            {
+                return Err(format!(
+                    "{what}: the name is already used in crypto.secrets or crypto.signing_keys"
+                ));
+            }
+            if k.alg != "EdDSA" {
+                return Err(format!(
+                    "{what}: alg '{}' is not one this host signs with; it signs 'EdDSA'",
+                    k.alg
+                ));
+            }
+            let pem = load_secret_value(&k.private_key, &format!("{what}.private_key"))?;
+            let key = ed25519_dalek::SigningKey::from_pkcs8_pem(pem.trim()).map_err(|e| {
+                format!(
+                    "{what}.private_key: not an Ed25519 PKCS#8 PEM key \
+                     (`openssl genpkey -algorithm ed25519` writes one): {e}"
+                )
+            })?;
+            signing_keys.push((k.name.clone(), key));
+        }
         Ok(Keys {
             k_hmac,
             k_jwt,
@@ -395,6 +598,7 @@ impl Keys {
             default_ttl: clamp_ttl(scope.default_ttl).unwrap_or(3600),
             turn,
             secrets,
+            signing_keys,
             accept_unkeyed: scope
                 .jwt
                 .as_ref()
@@ -422,7 +626,7 @@ struct CryptoScopeType;
 
 impl ScopeType for CryptoScopeType {
     fn describe(&self) -> &str {
-        "a signing key: { key_file | key_env | key, default_ttl?, turn?, secrets?, jwt? }"
+        "a signing key: { key_file | key_env | key, default_ttl?, turn?, secrets?, signing_keys?, jwt? }"
     }
 
     fn validate(&self, scope: Option<&Scope>) -> Result<(), String> {
@@ -561,35 +765,85 @@ fn verify_fail(reason: &str) -> CallResult {
 // The connector
 // ---------------------------------------------------------------------------
 
-/// One registered label's two subkeys. The label master they came from
-/// is not kept: nothing signs with it, so it does not outlive `derive`.
+/// The key a JWT is signed and checked under, which fixes the algorithm:
+/// the token's header is rebuilt from this and never read for an `alg`.
+#[derive(Clone)]
+enum JwtKey {
+    Hs256([u8; 32]),
+    EdDsa(ed25519_dalek::SigningKey),
+}
+
+impl JwtKey {
+    fn alg(&self) -> &'static str {
+        match self {
+            JwtKey::Hs256(_) => "HS256",
+            JwtKey::EdDsa(_) => "EdDSA",
+        }
+    }
+}
+
+impl Drop for JwtKey {
+    fn drop(&mut self) {
+        // `SigningKey` zeroizes itself; the HMAC key is ours to clear.
+        if let JwtKey::Hs256(k) = self {
+            for b in k.iter_mut() {
+                unsafe { std::ptr::write_volatile(b, 0) };
+            }
+        }
+    }
+}
+
+/// One registered label's subkeys. The label master they came from is not
+/// kept: nothing signs with it, so it does not outlive `derive`.
 struct LabelKeys {
     hmac: [u8; 32],
-    jwt: [u8; 32],
+    /// The TOTP seed, before truncation to the algorithm's length.
+    totp: [u8; 32],
+    /// HS256 or EdDSA, as `derive {alg}` chose.
+    jwt: JwtKey,
 }
 
 impl Drop for LabelKeys {
     fn drop(&mut self) {
-        for b in self.hmac.iter_mut().chain(self.jwt.iter_mut()) {
+        for b in self.hmac.iter_mut().chain(self.totp.iter_mut()) {
             unsafe { std::ptr::write_volatile(b, 0) };
         }
     }
 }
 
 impl LabelKeys {
-    /// Deterministic in `(k_label, label)`, which is what lets two nodes
-    /// that both derive `room:2` reach the same key.
-    fn derive(k_label: &[u8; 32], label: &str) -> LabelKeys {
+    /// Deterministic in `(k_label, label, alg)`, which is what lets two
+    /// nodes that both derive `room:2` reach the same key.
+    fn derive(k_label: &[u8; 32], label: &str, alg: LabelAlg) -> LabelKeys {
         let mut master = hmac_sha256(k_label, label.as_bytes());
+        let jwt = match alg {
+            LabelAlg::Hs256 => JwtKey::Hs256(hmac_sha256(&master, KDF_LABEL_JWT)),
+            LabelAlg::EdDsa => {
+                let mut secret = hmac_sha256(&master, KDF_LABEL_EDDSA);
+                let key = ed25519_dalek::SigningKey::from_bytes(&secret);
+                for b in secret.iter_mut() {
+                    unsafe { std::ptr::write_volatile(b, 0) };
+                }
+                JwtKey::EdDsa(key)
+            }
+        };
         let keys = LabelKeys {
             hmac: hmac_sha256(&master, KDF_LABEL_HMAC),
-            jwt: hmac_sha256(&master, KDF_LABEL_JWT),
+            totp: hmac_sha256(&master, KDF_LABEL_TOTP),
+            jwt,
         };
         for b in master.iter_mut() {
             unsafe { std::ptr::write_volatile(b, 0) };
         }
         keys
     }
+}
+
+/// What `derive {alg}` names: which JWT key a label carries.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LabelAlg {
+    Hs256,
+    EdDsa,
 }
 
 /// `host:crypto/*`. Holds the derived subkeys for the scope it was wired
@@ -622,14 +876,23 @@ impl CryptoConnector {
             .map(|k| k.hmac)
     }
 
-    /// The JWT subkey of a label `caller` registered — the other half of
+    /// The JWT key of a label `caller` registered — the other half of
     /// §4.2a's split, and never the same bytes as [`Self::label_hmac_key`].
-    fn label_jwt_key(&self, caller: Caller, label: &str) -> Option<[u8; 32]> {
+    fn label_jwt_key(&self, caller: Caller, label: &str) -> Option<JwtKey> {
         self.labels
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&(caller, label.to_string()))
-            .map(|k| k.jwt)
+            .map(|k| k.jwt.clone())
+    }
+
+    /// The TOTP seed of a label `caller` registered, untruncated.
+    fn label_totp_seed(&self, caller: Caller, label: &str) -> Option<[u8; 32]> {
+        self.labels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&(caller, label.to_string()))
+            .map(|k| k.totp)
     }
 
     fn keys(&self, scope: Option<&Scope>) -> Result<std::sync::Arc<Keys>, CallError> {
@@ -772,21 +1035,26 @@ fn do_hmac(
     Ok(rmpv::Value::from(to_hex(&mac)))
 }
 
-/// The header a token signed under `label` carries, base64url unpadded:
-/// [`JWT_HEADER_KID_PREFIX`], the label as a JSON string, the closing
+/// The header a token signed under `name` with `key` carries, base64url
+/// unpadded: the algorithm's prefix ([`JWT_HEADER_KID_PREFIX`] or
+/// [`JWT_HEADER_EDDSA_KID_PREFIX`]), the name as a JSON string, the closing
 /// brace. Built the same way by `jwt_sign` and by `jwt_verify`'s rebuild,
 /// which is what makes the byte compare meaningful.
-fn kid_header_b64(label: &str) -> String {
-    let mut header = String::with_capacity(JWT_HEADER_KID_PREFIX.len() + label.len() + 3);
-    header.push_str(JWT_HEADER_KID_PREFIX);
-    header.push_str(&serde_json::Value::String(label.to_string()).to_string());
+fn kid_header_b64(key: &JwtKey, name: &str) -> String {
+    let prefix = match key {
+        JwtKey::Hs256(_) => JWT_HEADER_KID_PREFIX,
+        JwtKey::EdDsa(_) => JWT_HEADER_EDDSA_KID_PREFIX,
+    };
+    let mut header = String::with_capacity(prefix.len() + name.len() + 3);
+    header.push_str(prefix);
+    header.push_str(&serde_json::Value::String(name.to_string()).to_string());
     header.push('}');
     B64URL.encode(header.as_bytes())
 }
 
 /// The `kid` a token's header segment names, if it names one as a string.
 /// This is the **only** thing ever read out of a header: it selects which
-/// label to look up, and the header is then rebuilt from that label and
+/// key to look up, and the header is then rebuilt from that key and
 /// compared whole. A segment that does not decode, or decodes to something
 /// other than an object, or carries no string `kid`, names nothing —
 /// and then only the constant header can match.
@@ -798,6 +1066,56 @@ fn header_kid(segment: &str) -> Option<String> {
     members.get("kid")?.as_str().map(str::to_string)
 }
 
+/// The JWT key a name resolves to for `caller`: a configured signing key,
+/// or a label the caller derived. The config refuses a signing key named
+/// like a secret, and `derive` a label named like either, so the order
+/// here decides nothing.
+fn named_jwt_key(c: &CryptoConnector, keys: &Keys, caller: Caller, name: &str) -> Option<JwtKey> {
+    if let Some((_, k)) = keys.signing_keys.iter().find(|(n, _)| n == name) {
+        return Some(JwtKey::EdDsa(k.clone()));
+    }
+    c.label_jwt_key(caller, name)
+}
+
+/// The signature segment over `input`, base64url.
+fn jwt_signature(key: &JwtKey, input: &[u8]) -> String {
+    match key {
+        JwtKey::Hs256(k) => B64URL.encode(hmac_sha256(k, input)),
+        JwtKey::EdDsa(k) => B64URL.encode(k.sign(input).to_bytes()),
+    }
+}
+
+/// Whether `sig` (the token's third segment) is `key`'s signature over
+/// `input`. HS256 recomputes and compares in constant time; EdDSA decodes
+/// and runs the strict check, which refuses a non-canonical `S` and a
+/// small-order key. Either way a segment that is not the one encoding of
+/// the 32 or 64 bytes fails, so one token has one spelling.
+fn jwt_signature_ok(key: &JwtKey, input: &[u8], sig: &str) -> bool {
+    match key {
+        JwtKey::Hs256(k) => {
+            let expect = B64URL.encode(hmac_sha256(k, input));
+            sig.len() == expect.len()
+                && bool::from(subtle::ConstantTimeEq::ct_eq(
+                    sig.as_bytes(),
+                    expect.as_bytes(),
+                ))
+        }
+        JwtKey::EdDsa(k) => {
+            let Ok(bytes) = B64URL.decode(sig) else {
+                return false;
+            };
+            let Ok(bytes) = <[u8; 64]>::try_from(bytes.as_slice()) else {
+                return false;
+            };
+            if B64URL.encode(bytes) != sig {
+                return false;
+            }
+            let signature = ed25519_dalek::Signature::from_bytes(&bytes);
+            k.verifying_key().verify_strict(input, &signature).is_ok()
+        }
+    }
+}
+
 fn do_jwt_sign(
     c: &CryptoConnector,
     keys: &Keys,
@@ -807,17 +1125,20 @@ fn do_jwt_sign(
     let iat = now_secs();
     let ttl = clamp_ttl(int_field(args, "ttl")).unwrap_or(keys.default_ttl);
 
-    // args.key names a label this caller derived (§5.2): the token carries
-    // it as `kid` and is signed under the label's JWT subkey — never its
-    // hmac subkey, which is what keeps `crypto/hmac {key = label}` from
-    // being a forging oracle for it (§4.2a). Absent, the constant header
-    // and the default derived JWT key, as it always was.
-    let (header, k_jwt): (String, [u8; 32]) = match field(args, "key") {
-        None => (JWT_HEADER_B64.to_string(), keys.k_jwt),
+    // args.key names a configured signing key or a label this caller
+    // derived (§5.2): the token carries the name as `kid` and is signed
+    // under that key, in the algorithm the key has. A label signs under
+    // its JWT key, never its hmac subkey, which is what keeps
+    // `crypto/hmac {key = label}` from being a forging oracle for it
+    // (§4.2a). Absent, the constant header and the default derived JWT
+    // key, as it always was.
+    let (header, key): (String, JwtKey) = match field(args, "key") {
+        None => (JWT_HEADER_B64.to_string(), JwtKey::Hs256(keys.k_jwt)),
         Some(named) => {
             let name = as_str(named).ok_or_else(|| {
                 CallError::new(
-                    "crypto/jwt_sign: args.key must be a string naming a derived label (crypto/derive)",
+                    "crypto/jwt_sign: args.key must be a string naming a derived label (crypto/derive) \
+                     or a configured signing key (crypto.signing_keys)",
                 )
             })?;
             // A configured secret is refused by name, and before the labels
@@ -835,12 +1156,14 @@ fn do_jwt_sign(
                     &name[..name.len().min(64)]
                 )));
             }
-            match c.label_jwt_key(caller, name) {
-                Some(k) => (kid_header_b64(name), k),
+            match named_jwt_key(c, keys, caller, name) {
+                Some(k) => (kid_header_b64(&k, name), k),
                 // Never-derived and released read alike, as in hmac.
                 None => {
                     return Err(CallError::new(format!(
-                        "crypto/jwt_sign: this caller derived no label named '{}' (crypto/derive)",
+                        "crypto/jwt_sign: this caller derived no label named '{}' (crypto/derive), \
+                         and this deployment configures no signing key by that name \
+                         (config.connectors.crypto.signing_keys)",
                         &name[..name.len().min(64)]
                     )))
                 }
@@ -883,14 +1206,14 @@ fn do_jwt_sign(
         return Err(CallError::new("crypto/jwt_sign: the claims are too large"));
     }
 
-    // token = header "." base64url(payload) "." base64url(hmac(header.payload))
+    // token = header "." base64url(payload) "." base64url(sig(header.payload))
     let mut token = String::with_capacity(payload.len() * 2);
     token.push_str(&header);
     token.push('.');
     token.push_str(&B64URL.encode(payload.as_bytes()));
-    let mac = hmac_sha256(&k_jwt, token.as_bytes());
+    let sig = jwt_signature(&key, token.as_bytes());
     token.push('.');
-    token.push_str(&B64URL.encode(mac));
+    token.push_str(&sig);
     if token.len() > JWT_MAX_TOKEN {
         return Err(CallError::new("crypto/jwt_sign: the token is too large"));
     }
@@ -920,19 +1243,22 @@ fn do_jwt_verify(
     let header = &token[..dot1];
 
     // The key is selected from the `kid` the header names and from nothing
-    // else in the token (§5.2): look the label up for this caller, rebuild
-    // the header that key would produce, and compare the segment against
-    // it byte for byte. `alg` is never read, so there is no field a token
-    // can set to be checked differently; a header carrying two `kid`s, or
-    // its members in another order, fails the compare with no rule about
-    // either. No `kid` rebuilds to the constant header and the default
-    // key — the branch `accept_unkeyed` bounds (§5.3).
-    let k_jwt: [u8; 32] = match header_kid(header) {
+    // else in the token (§5.2): look the name up for this caller, rebuild
+    // the header that key would produce — in the key's algorithm, not one
+    // the token claims — and compare the segment against it byte for byte.
+    // `alg` is never read, so there is no field a token can set to be
+    // checked differently: an EdDSA key's public bytes are never an HMAC
+    // key, and an HS256 label never checks an Ed25519 signature. A header
+    // carrying two `kid`s, or its members in another order, fails the
+    // compare with no rule about either. No `kid` rebuilds to the constant
+    // header and the default key — the branch `accept_unkeyed` bounds
+    // (§5.3).
+    let key: JwtKey = match header_kid(header) {
         Some(kid) => {
-            let Some(k) = c.label_jwt_key(caller, &kid) else {
+            let Some(k) = named_jwt_key(c, keys, caller, &kid) else {
                 return verify_fail("kid");
             };
-            if header != kid_header_b64(&kid) {
+            if header != kid_header_b64(&k, &kid) {
                 return verify_fail("alg");
             }
             k
@@ -944,22 +1270,14 @@ fn do_jwt_verify(
             if !keys.accept_unkeyed {
                 return verify_fail("unkeyed");
             }
-            keys.k_jwt
+            JwtKey::Hs256(keys.k_jwt)
         }
     };
 
-    // The MAC over "header.payload" and a constant-time compare against the
-    // token's signature, BEFORE decoding or parsing the payload: the claims
-    // parser below only ever runs on bytes this host signed with its own key.
-    let mac = hmac_sha256(&k_jwt, &token.as_bytes()[..dot2]);
-    let expect = B64URL.encode(mac);
-    let sig = &token[dot2 + 1..];
-    if sig.len() != expect.len()
-        || !bool::from(subtle::ConstantTimeEq::ct_eq(
-            sig.as_bytes(),
-            expect.as_bytes(),
-        ))
-    {
+    // The signature over "header.payload", BEFORE decoding or parsing the
+    // payload: the claims parser below only ever runs on bytes this host
+    // signed with its own key.
+    if !jwt_signature_ok(&key, &token.as_bytes()[..dot2], &token[dot2 + 1..]) {
         return verify_fail("signature");
     }
 
@@ -994,6 +1312,44 @@ fn do_jwt_verify(
         ("valid", rmpv::Value::Boolean(true)),
         ("claims", from_json(&serde_json::Value::Object(claims))),
     ]))
+}
+
+/// `crypto/public_key {key}`: the public half of an EdDSA key as a JWK
+/// (RFC 8037 §2), with the name as `kid` so the JWK and the tokens it
+/// checks agree on it. The one answer in this family that is about a key
+/// rather than made with one, and safe to publish by construction.
+fn do_public_key(
+    c: &CryptoConnector,
+    keys: &Keys,
+    caller: Caller,
+    args: Option<&rmpv::Value>,
+) -> CallResult {
+    let name = field(args, "key").and_then(as_str).ok_or_else(|| {
+        CallError::new(
+            "crypto/public_key: args.key must be a string naming an EdDSA label (crypto/derive) \
+             or a configured signing key (crypto.signing_keys)",
+        )
+    })?;
+    let shown = &name[..name.len().min(64)];
+    match &named_jwt_key(c, keys, caller, name) {
+        Some(JwtKey::EdDsa(k)) => Ok(map(vec![
+            ("kty", "OKP".into()),
+            ("crv", "Ed25519".into()),
+            ("x", B64URL.encode(k.verifying_key().to_bytes()).into()),
+            ("kid", name.into()),
+            ("alg", "EdDSA".into()),
+            ("use", "sig".into()),
+        ])),
+        Some(JwtKey::Hs256(_)) => Err(CallError::new(format!(
+            "crypto/public_key: '{shown}' is an HS256 key, which has no public half; \
+             derive it with alg = \"EdDSA\" for a key another service can verify with"
+        ))),
+        None => Err(CallError::new(format!(
+            "crypto/public_key: this caller derived no label named '{shown}' (crypto/derive), \
+             and this deployment configures no signing key by that name \
+             (config.connectors.crypto.signing_keys)"
+        ))),
+    }
 }
 
 /// coturn's `use-auth-secret` scheme (the "REST API For Access To TURN
@@ -1112,15 +1468,406 @@ fn do_derive(
             &label[..label.len().min(64)]
         )));
     }
+    // Nor a configured signing key, for the same reason, found the same way.
+    if keys.signing_keys.iter().any(|(n, _)| n == label) {
+        return Err(CallError::new(format!(
+            "crypto/derive: '{}' is already a configured signing key \
+             (config.connectors.crypto.signing_keys); a derived label may not shadow one",
+            &label[..label.len().min(64)]
+        )));
+    }
+    // Which JWT key the label carries. The choice is the label's, made
+    // here, so that jwt_verify can take the algorithm from the key and
+    // never from a token.
+    let alg = match field(args, "alg") {
+        None => LabelAlg::Hs256,
+        Some(v) => match as_str(v) {
+            Some("HS256") => LabelAlg::Hs256,
+            Some("EdDSA") => LabelAlg::EdDsa,
+            _ => {
+                return Err(CallError::new(
+                    "crypto/derive: args.alg must be 'HS256' (the default) or 'EdDSA'",
+                ))
+            }
+        },
+    };
     let mut table = c.labels.lock().unwrap_or_else(|e| e.into_inner());
-    // Idempotent: the bytes are a pure function of the master and the
-    // label, so re-deriving is re-registering, and a refusal here would
-    // leave a second owner of the same name unable to reach it.
-    table
+    // Idempotent: the bytes are a pure function of the master, the label
+    // and the alg, so re-deriving is re-registering, and a refusal here
+    // would leave a second owner of the same name unable to reach it. A
+    // second derive that names the other alg is refused instead: one name
+    // carrying two JWT keys would sign under one and be checked under the
+    // other.
+    let entry = table
         .entry((asker.caller, label.to_string()))
-        .or_insert_with(|| LabelKeys::derive(&keys.k_label, label));
+        .or_insert_with(|| LabelKeys::derive(&keys.k_label, label, alg));
+    let held = entry.jwt.alg();
+    let asked = match alg {
+        LabelAlg::Hs256 => "HS256",
+        LabelAlg::EdDsa => "EdDSA",
+    };
+    if held != asked {
+        return Err(CallError::new(format!(
+            "crypto/derive: '{}' is already derived here with alg '{held}', not '{asked}'; \
+             one label carries one JWT key, so name another label",
+            &label[..label.len().min(64)]
+        )));
+    }
     // Nothing comes back. That is the point.
     Ok(rmpv::Value::Nil)
+}
+
+// depth: TOTP (RFC 6238 over RFC 4226)
+
+/// The two hashes TOTP runs on here. SHA-1 is RFC 6238's default and what
+/// an enrolment that names none means to every authenticator; it is HMAC,
+/// where SHA-1's collision breaks do not reach.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TotpAlg {
+    Sha1,
+    Sha256,
+}
+
+impl TotpAlg {
+    /// RFC 6238's seed length for the hash: its output size.
+    fn seed_len(self) -> usize {
+        match self {
+            TotpAlg::Sha1 => 20,
+            TotpAlg::Sha256 => 32,
+        }
+    }
+
+    /// The `algorithm` parameter of an `otpauth://` URI.
+    fn uri_name(self) -> &'static str {
+        match self {
+            TotpAlg::Sha1 => "SHA1",
+            TotpAlg::Sha256 => "SHA256",
+        }
+    }
+}
+
+/// The parameters every TOTP call shares, read and bounded once.
+struct TotpParams {
+    alg: TotpAlg,
+    digits: u32,
+    period: u64,
+}
+
+fn totp_params(call: &str, args: Option<&rmpv::Value>) -> Result<TotpParams, CallError> {
+    let alg = match field(args, "alg") {
+        None => TotpAlg::Sha1,
+        Some(v) => match as_str(v) {
+            Some("sha1") => TotpAlg::Sha1,
+            Some("sha256") => TotpAlg::Sha256,
+            _ => {
+                return Err(CallError::new(format!(
+                    "{call}: args.alg must be 'sha1' (the default) or 'sha256'"
+                )))
+            }
+        },
+    };
+    let digits = bounded_int(
+        call,
+        args,
+        "digits",
+        TOTP_DIGITS_DEFAULT,
+        TOTP_DIGITS_MIN,
+        TOTP_DIGITS_MAX,
+    )?;
+    let period = bounded_int(
+        call,
+        args,
+        "period",
+        TOTP_PERIOD_DEFAULT,
+        TOTP_PERIOD_MIN,
+        TOTP_PERIOD_MAX,
+    )?;
+    Ok(TotpParams {
+        alg,
+        digits: digits as u32,
+        period: period as u64,
+    })
+}
+
+/// An optional integer argument in `min..=max`, `default` when absent. Out
+/// of range is a refusal naming the range, never a clamp: a program that
+/// asked for nine digits and got eight would enrol one thing and check
+/// another.
+fn bounded_int(
+    call: &str,
+    args: Option<&rmpv::Value>,
+    name: &str,
+    default: i64,
+    min: i64,
+    max: i64,
+) -> Result<i64, CallError> {
+    match field(args, name) {
+        None => Ok(default),
+        Some(v) => v
+            .as_i64()
+            .filter(|n| (min..=max).contains(n))
+            .ok_or_else(|| {
+                CallError::new(format!(
+                    "{call}: args.{name} must be an integer {min}..{max}"
+                ))
+            }),
+    }
+}
+
+/// RFC 4226 §5.3: HMAC over the counter, dynamic truncation, the low
+/// `digits` decimal digits, zero-padded.
+fn hotp(seed: &[u8], alg: TotpAlg, counter: u64, digits: u32) -> String {
+    let msg = counter.to_be_bytes();
+    let mac: Vec<u8> = match alg {
+        TotpAlg::Sha1 => {
+            let mut m = <HmacSha1 as Mac>::new_from_slice(seed).expect("hmac takes any key length");
+            m.update(&msg);
+            m.finalize().into_bytes().to_vec()
+        }
+        TotpAlg::Sha256 => hmac_sha256(seed, &msg).to_vec(),
+    };
+    let offset = (mac[mac.len() - 1] & 0x0f) as usize;
+    let binary = (u32::from(mac[offset] & 0x7f) << 24)
+        | (u32::from(mac[offset + 1]) << 16)
+        | (u32::from(mac[offset + 2]) << 8)
+        | u32::from(mac[offset + 3]);
+    let code = binary % 10u32.pow(digits);
+    format!("{code:0width$}", width = digits as usize)
+}
+
+/// The time step now: RFC 6238's `T = floor((now - T0) / X)` with `T0 = 0`.
+fn totp_step_now(period: u64) -> u64 {
+    (now_secs().max(0) as u64) / period
+}
+
+/// The seed a `key` names, truncated to the algorithm's length when it is
+/// a label's. `enrolling` refuses a configured secret: those bytes were
+/// provisioned outside this host and are never handed to a program.
+fn totp_seed(
+    c: &CryptoConnector,
+    keys: &Keys,
+    caller: Caller,
+    call: &str,
+    args: Option<&rmpv::Value>,
+    alg: TotpAlg,
+    enrolling: bool,
+) -> Result<Vec<u8>, CallError> {
+    let name = field(args, "key").and_then(as_str).ok_or_else(|| {
+        CallError::new(format!(
+            "{call}: args.key must be a string naming a derived label (crypto/derive){}",
+            if enrolling {
+                ""
+            } else {
+                " or a configured secret (crypto.secrets)"
+            }
+        ))
+    })?;
+    let shown = &name[..name.len().min(64)];
+    if let Some((_, bytes)) = keys.secrets.iter().find(|(n, _)| n == name) {
+        if enrolling {
+            return Err(CallError::new(format!(
+                "{call}: '{shown}' is a configured secret (config.connectors.crypto.secrets), \
+                 which is never handed to a program; enrol a derived label (crypto/derive) instead"
+            )));
+        }
+        return Ok(bytes.clone());
+    }
+    match c.label_totp_seed(caller, name) {
+        Some(seed) => Ok(seed[..alg.seed_len()].to_vec()),
+        None => Err(CallError::new(format!(
+            "{call}: this caller derived no label named '{shown}' (crypto/derive){}",
+            if enrolling {
+                ""
+            } else {
+                ", and this deployment configures no secret by that name \
+                 (config.connectors.crypto.secrets)"
+            }
+        ))),
+    }
+}
+
+/// `crypto/totp {key, alg?, digits?, period?}`: the code for now, the step
+/// it belongs to, and when it stops being the current one (unix seconds).
+fn do_totp(
+    c: &CryptoConnector,
+    keys: &Keys,
+    caller: Caller,
+    args: Option<&rmpv::Value>,
+) -> CallResult {
+    let p = totp_params("crypto/totp", args)?;
+    let seed = totp_seed(c, keys, caller, "crypto/totp", args, p.alg, false)?;
+    let step = totp_step_now(p.period);
+    Ok(map(vec![
+        ("code", hotp(&seed, p.alg, step, p.digits).into()),
+        ("step", rmpv::Value::from(step)),
+        ("expires", rmpv::Value::from((step + 1) * p.period)),
+    ]))
+}
+
+/// `crypto/totp_verify {key, code, ..., window?, after?}`. A verdict, like
+/// `jwt_verify`'s: a wrong code is `{valid = false, reason}` with status
+/// ok. Reasons: `malformed` (not `digits` decimal digits), `mismatch`,
+/// `replayed` (it matched, but at a step no later than `after`).
+fn do_totp_verify(
+    c: &CryptoConnector,
+    keys: &Keys,
+    caller: Caller,
+    args: Option<&rmpv::Value>,
+) -> CallResult {
+    const CALL: &str = "crypto/totp_verify";
+    let p = totp_params(CALL, args)?;
+    let window = bounded_int(
+        CALL,
+        args,
+        "window",
+        TOTP_WINDOW_DEFAULT,
+        0,
+        TOTP_WINDOW_MAX,
+    )? as u64;
+    let after = match field(args, "after") {
+        None => None,
+        Some(v) => Some(v.as_u64().ok_or_else(|| {
+            CallError::new(format!(
+                "{CALL}: args.after must be a step a previous totp_verify answered"
+            ))
+        })?),
+    };
+    // A code is a string, because a leading zero is part of it. An integer
+    // is taken too and zero-padded, since a Lua program that read the code
+    // as a number has lost the zeros and nothing else.
+    let code: String = match field(args, "code") {
+        Some(v) if as_str(v).is_some() => as_str(v).unwrap_or_default().to_string(),
+        Some(v) if v.as_u64().is_some() => {
+            let n = v.as_u64().unwrap_or_default();
+            format!("{n:0width$}", width = p.digits as usize)
+        }
+        _ => {
+            return Err(CallError::new(format!(
+                "{CALL}: args.code must be a string of digits"
+            )))
+        }
+    };
+    let seed = totp_seed(c, keys, caller, CALL, args, p.alg, false)?;
+    if code.len() != p.digits as usize || !code.bytes().all(|b| b.is_ascii_digit()) {
+        return verify_fail("malformed");
+    }
+
+    // Every step in the window is computed and compared, in constant time
+    // per compare, and the scan does not stop at a match, so how long the
+    // call takes says nothing about where in the window a code fell.
+    let now = totp_step_now(p.period);
+    let mut matched: Option<u64> = None;
+    let mut replayed = false;
+    for step in now.saturating_sub(window)..=now.saturating_add(window) {
+        let candidate = hotp(&seed, p.alg, step, p.digits);
+        let hit = bool::from(subtle::ConstantTimeEq::ct_eq(
+            candidate.as_bytes(),
+            code.as_bytes(),
+        ));
+        if hit {
+            if after.is_some_and(|a| step <= a) {
+                replayed = true;
+            } else if matched.is_none() {
+                matched = Some(step);
+            }
+        }
+    }
+    match matched {
+        Some(step) => Ok(map(vec![
+            ("valid", rmpv::Value::Boolean(true)),
+            ("step", rmpv::Value::from(step)),
+        ])),
+        None if replayed => verify_fail("replayed"),
+        None => verify_fail("mismatch"),
+    }
+}
+
+/// `crypto/totp_enroll {key, account, issuer?, ...}`: the seed of a label,
+/// as base32 and as the `otpauth://` URI an authenticator scans. This is
+/// the one call in the family whose answer is key material, and it is
+/// its own grant so that the program checking codes never holds it.
+fn do_totp_enroll(
+    c: &CryptoConnector,
+    keys: &Keys,
+    caller: Caller,
+    args: Option<&rmpv::Value>,
+) -> CallResult {
+    const CALL: &str = "crypto/totp_enroll";
+    let p = totp_params(CALL, args)?;
+    let name_arg = |name: &str, required: bool| -> Result<Option<&str>, CallError> {
+        match field(args, name).map(as_str) {
+            None if !required => Ok(None),
+            Some(Some(v)) if !v.is_empty() && v.len() <= TOTP_NAME_MAX && !v.contains(':') => {
+                Ok(Some(v))
+            }
+            _ => Err(CallError::new(format!(
+                "{CALL}: args.{name} must be a string of 1..{TOTP_NAME_MAX} bytes with no ':' \
+                 (the URI's label is issuer:account)"
+            ))),
+        }
+    };
+    let account = name_arg("account", true)?.unwrap_or_default();
+    let issuer = name_arg("issuer", false)?;
+    let seed = totp_seed(c, keys, caller, CALL, args, p.alg, true)?;
+    let secret = base32(&seed);
+
+    // Google's Key URI format: label is `issuer:account`, percent-encoded,
+    // and `issuer` is repeated as a parameter, which is the one current
+    // authenticators read. Every parameter is written out, defaults too,
+    // so the URI means one thing to every app.
+    let mut uri = String::from("otpauth://totp/");
+    if let Some(issuer) = issuer {
+        uri.push_str(&percent_encode(issuer));
+        uri.push(':');
+    }
+    uri.push_str(&percent_encode(account));
+    uri.push_str("?secret=");
+    uri.push_str(&secret);
+    if let Some(issuer) = issuer {
+        uri.push_str("&issuer=");
+        uri.push_str(&percent_encode(issuer));
+    }
+    uri.push_str(&format!(
+        "&algorithm={}&digits={}&period={}",
+        p.alg.uri_name(),
+        p.digits,
+        p.period
+    ));
+    Ok(map(vec![("secret", secret.into()), ("uri", uri.into())]))
+}
+
+/// RFC 4648 §6 base32, unpadded, which is how an `otpauth://` URI carries
+/// a seed.
+fn base32(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let mut out = String::with_capacity(bytes.len().div_ceil(5) * 8);
+    let mut buffer: u32 = 0;
+    let mut bits = 0;
+    for &b in bytes {
+        buffer = (buffer << 8) | u32::from(b);
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            out.push(ALPHABET[((buffer >> bits) & 0x1f) as usize] as char);
+        }
+    }
+    if bits > 0 {
+        out.push(ALPHABET[((buffer << (5 - bits)) & 0x1f) as usize] as char);
+    }
+    out
+}
+
+/// RFC 3986 percent-encoding of everything but the unreserved characters.
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 #[async_trait::async_trait]
@@ -1163,8 +1910,12 @@ impl Connector for CryptoConnector {
             "crypto/hmac" => do_hmac(self, &keys, asker.caller, args),
             "crypto/jwt_sign" => do_jwt_sign(self, &keys, asker.caller, args),
             "crypto/jwt_verify" => do_jwt_verify(self, &keys, asker.caller, args),
+            "crypto/public_key" => do_public_key(self, &keys, asker.caller, args),
             "crypto/turn_credential" => do_turn_credential(&keys, args),
             "crypto/derive" => do_derive(self, &keys, asker, args),
+            "crypto/totp" => do_totp(self, &keys, asker.caller, args),
+            "crypto/totp_verify" => do_totp_verify(self, &keys, asker.caller, args),
+            "crypto/totp_enroll" => do_totp_enroll(self, &keys, asker.caller, args),
             other => Err(CallError::new(format!(
                 "the crypto connector has no call '{other}'"
             ))),
@@ -1181,5 +1932,86 @@ impl Connector for CryptoConnector {
             .unwrap_or_else(|e| e.into_inner())
             .retain(|(owner, _), _| owner != caller);
         Vec::new()
+    }
+}
+
+// depth: the published vectors, against the private primitives
+//
+// The connector's calls read the host clock, which a test cannot set, so
+// the RFC tables are checked here against the arithmetic those calls run.
+// `tests/totp.rs` checks the calls against an independent implementation
+// at the real time.
+#[cfg(test)]
+mod vectors {
+    use super::*;
+
+    /// RFC 4226 Appendix D: HOTP over the ASCII seed, counters 0 to 9.
+    #[test]
+    fn rfc4226_hotp() {
+        let seed = b"12345678901234567890";
+        let want = [
+            "755224", "287082", "359152", "969429", "338314", "254676", "287922", "162583",
+            "399871", "520489",
+        ];
+        for (counter, code) in want.iter().enumerate() {
+            assert_eq!(
+                hotp(seed, TotpAlg::Sha1, counter as u64, 6),
+                *code,
+                "counter {counter}"
+            );
+        }
+    }
+
+    /// RFC 6238 Appendix B, the SHA-1 and SHA-256 columns: eight digits,
+    /// a thirty-second period, each hash's own seed.
+    #[test]
+    fn rfc6238_totp() {
+        let sha1 = b"12345678901234567890";
+        let sha256 = b"12345678901234567890123456789012";
+        let table: [(u64, &str, &str); 6] = [
+            (59, "94287082", "46119246"),
+            (1111111109, "07081804", "68084774"),
+            (1111111111, "14050471", "67062674"),
+            (1234567890, "89005924", "91819424"),
+            (2000000000, "69279037", "90698825"),
+            (20000000000, "65353130", "77737706"),
+        ];
+        for (time, want1, want256) in table {
+            let step = time / 30;
+            assert_eq!(hotp(sha1, TotpAlg::Sha1, step, 8), want1, "sha1 at {time}");
+            assert_eq!(
+                hotp(sha256, TotpAlg::Sha256, step, 8),
+                want256,
+                "sha256 at {time}"
+            );
+        }
+    }
+
+    /// RFC 4648 §10, less the padding an `otpauth://` URI leaves off.
+    #[test]
+    fn rfc4648_base32() {
+        for (input, want) in [
+            ("", ""),
+            ("f", "MY"),
+            ("fo", "MZXQ"),
+            ("foo", "MZXW6"),
+            ("foob", "MZXW6YQ"),
+            ("fooba", "MZXW6YTB"),
+            ("foobar", "MZXW6YTBOI"),
+        ] {
+            assert_eq!(base32(input.as_bytes()), want, "{input:?}");
+        }
+        // RFC 6238's SHA-1 seed, as every authenticator test page spells it.
+        assert_eq!(
+            base32(b"12345678901234567890"),
+            "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+        );
+    }
+
+    #[test]
+    fn percent_encoding_keeps_only_the_unreserved() {
+        assert_eq!(percent_encode("alice@example.com"), "alice%40example.com");
+        assert_eq!(percent_encode("Acme Corp"), "Acme%20Corp");
+        assert_eq!(percent_encode("a-b.c_d~e"), "a-b.c_d~e");
     }
 }

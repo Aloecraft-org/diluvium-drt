@@ -1,0 +1,29 @@
+-- A second factor, and a token another service can check, with every key
+-- in the host. The program names keys; it never holds one.
+-- example: omits error handling, because every call here is granted
+
+-- TOTP. The seed is a label's, derived from the master. Enrolment is the
+-- one call that hands it out, as the URI an authenticator scans.
+host.call("crypto/derive", {label = "totp:alice"})
+local enrolled = host.call("crypto/totp_enroll",
+    {key = "totp:alice", account = "alice", issuer = "Example"})
+print("scan    " .. enrolled.uri)
+
+-- The code the authenticator shows now, accepted once. The caller keeps
+-- the step; passing it back is what makes the code single-use.
+local shown = host.call("crypto/totp", {key = "totp:alice"})
+local first = host.call("crypto/totp_verify", {key = "totp:alice", code = shown.code})
+local again = host.call("crypto/totp_verify",
+    {key = "totp:alice", code = shown.code, after = first.step})
+print("verify  " .. tostring(first.valid))
+print("again   " .. tostring(again.valid) .. " " .. again.reason)
+
+-- EdDSA. The label picks the algorithm, and a token cannot change it.
+host.call("crypto/derive", {label = "issuer:1", alg = "EdDSA"})
+local token = host.call("crypto/jwt_sign", {key = "issuer:1", claims = {sub = "alice"}})
+local checked = host.call("crypto/jwt_verify", {token = token})
+print("token   " .. tostring(checked.valid) .. " for " .. checked.claims.sub)
+
+-- The public half, which is what a JWKS endpoint serves.
+local jwk = host.call("crypto/public_key", {key = "issuer:1"})
+print("jwk     " .. jwk.kty .. " " .. jwk.crv .. " kid=" .. jwk.kid .. " x=" .. jwk.x)
