@@ -108,7 +108,7 @@ name = "aloecrypt_core"
 version = "0.1.0"
 source = "git+https://github.com/Aloecraft-org/aloecrypt_core?tag=v0.1.0-dev.1#cf62a17f2c3089f60ce3157a478c09b89ac34c23"
 dependencies = [
- "argon2",
+ "argon2 0.6.0-rc.8",
  "chacha20poly1305",
  "data-encoding",
  "digest 0.11.3",
@@ -123,6 +123,28 @@ dependencies = [
  "sha3 0.11.0",
  "url",
  "zerocopy",
+]
+
+[[package]]
+name = "aloelite-core"
+version = "0.5.0"
+source = "git+https://github.com/Aloecraft-org/aloelite?rev=b4ea3be35b9456fc24352db1b0f4b6f39cfd73bc#b4ea3be35b9456fc24352db1b0f4b6f39cfd73bc"
+dependencies = [
+ "argon2 0.5.3",
+ "chacha20poly1305",
+ "hex",
+ "hkdf 0.13.0",
+ "log",
+ "rand_core 0.10.1",
+ "rmp-serde",
+ "rusqlite",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "serde_norway",
+ "sha2 0.11.0",
+ "thiserror 2.0.20",
+ "zeroize",
 ]
 
 [[package]]
@@ -191,6 +213,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b"
 dependencies = [
  "rustversion",
+]
+
+[[package]]
+name = "argon2"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c3610892ee6e0cbce8ae2700349fcf8f98adb0dbfbee85aec3c9179d29cc072"
+dependencies = [
+ "base64ct",
+ "blake2 0.10.6",
+ "cpufeatures 0.2.17",
 ]
 
 [[package]]
@@ -1653,8 +1686,12 @@ dependencies = [
 name = "drt-platform"
 version = "0.8.0"
 dependencies = [
+ "aloelite-core",
  "getrandom 0.3.4",
  "libc",
+ "rand_core 0.10.1",
+ "rusqlite",
+ "tempfile",
  "web-time",
  "windows-sys 0.61.2",
 ]
@@ -4408,6 +4445,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
+name = "ryu"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
 name = "salsa20"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4622,6 +4665,19 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_norway"
+version = "0.9.42"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e408f29489b5fd500fab51ff1484fc859bb655f32c671f307dcd733b72e8168c"
+dependencies = [
+ "indexmap",
+ "itoa",
+ "ryu",
+ "serde",
+ "unsafe-libyaml-norway",
 ]
 
 [[package]]
@@ -4934,7 +4990,7 @@ version = "0.7.0-rc.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9a32fae177b74a22aa9c5b01bf7e68b33545be32d9e381e248058d2adc15ce3"
 dependencies = [
- "argon2",
+ "argon2 0.6.0-rc.8",
  "bcrypt-pbkdf",
  "ctutils",
  "ed25519-dalek 3.0.0",
@@ -5469,6 +5525,12 @@ dependencies = [
  "crypto-common 0.2.2",
  "ctutils",
 ]
+
+[[package]]
+name = "unsafe-libyaml-norway"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b39abd59bf32521c7f2301b52d05a6a2c975b6003521cbd0c6dc1582f0a22104"
 
 [[package]]
 name = "untrusted"

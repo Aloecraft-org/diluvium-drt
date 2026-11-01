@@ -16,6 +16,19 @@
 //! Reads and writes both refuse past `max_bytes`, host-side. A guest cannot
 //! bound its own file sizes and the instruction budget does not reach the
 //! filesystem, so this is the only bound there is.
+//!
+//! ## surface block
+//!
+//! - [`FsConnector`]: `fs/read`, `fs/write`, `fs/list`, `fs/remove`.
+//! - The two places a scope can grant, decided by [`Grant::parse`]:
+//!   - a directory, [`FsScope`]: `"dir"` or `{scope, access, max_bytes}`,
+//!     over the host's filesystem.
+//!   - a volume, `{volume_file, volume, mount_point, access, max_bytes}`:
+//!     an aloelite volume (feature `aloelite`, not in a page), opened and
+//!     mounted at startup, with the same jail rooted at its `/`. `volume`
+//!     defaults to [`DEFAULT_VOLUME`] and is made when the file has none of
+//!     that name; `mount_point` defaults to the volume root.
+//! - Configurable: `DEFAULT_MAX_BYTES`, [`DEFAULT_VOLUME`].
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -27,6 +40,10 @@ use drt_connector::{CallError, CallResult, Connector};
 use drt_platform::fs::Backend;
 
 const DEFAULT_MAX_BYTES: u64 = 1024 * 1024;
+/// The volume a `volume_file` scope mounts when it names none: the same
+/// name a page's cdn/fs.mjs uses, so a file moved between the two opens
+/// the same tree.
+pub const DEFAULT_VOLUME: &str = "drt";
 
 /// What the host granted: a directory, how much of it, and how large a file
 /// may be. Field names match discofetch's `cap6.host.lua` so a deployment
@@ -223,6 +240,154 @@ impl ScopeType for FsScopeType {
     }
 }
 
+/// The fs connector's own scope type: a directory, as [`FsScopeType`], or
+/// a volume, opened and mounted here so a file that will not open is a
+/// startup refusal by name.
+struct GrantScopeType {
+    fs: Arc<dyn Backend>,
+    volumes: Arc<Volumes>,
+}
+
+impl ScopeType for GrantScopeType {
+    fn describe(&self) -> &str {
+        "a directory: \"path\", or {scope, access?: read|readwrite, max_bytes?}; or a volume: \
+         {volume_file, volume?, mount_point?, access?, max_bytes?}"
+    }
+
+    fn validate(&self, scope: Option<&Scope>) -> Result<(), String> {
+        let (jail, fs) = Grant::parse(scope)?.open(&self.fs, &self.volumes)?;
+        jail.root(&*fs).map(|_| ())
+    }
+}
+
+// depth: a volume scope
+
+/// What a scope grants.
+pub enum Grant {
+    Dir(FsScope),
+    Volume(VolumeScope),
+}
+
+/// An aloelite volume, as a scope names it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VolumeScope {
+    volume_file: PathBuf,
+    #[serde(default)]
+    volume: Option<String>,
+    #[serde(default)]
+    mount_point: Option<String>,
+    #[serde(default)]
+    access: Option<String>,
+    #[serde(default)]
+    max_bytes: Option<u64>,
+}
+
+impl Grant {
+    /// A map naming `volume_file` is a volume; anything else is a directory.
+    pub fn parse(scope: Option<&Scope>) -> Result<Grant, String> {
+        let names_a_volume = scope
+            .and_then(|Scope(v)| v.as_map())
+            .is_some_and(|m| m.iter().any(|(k, _)| k.as_str() == Some("volume_file")));
+        if !names_a_volume {
+            return FsScope::parse(scope).map(Grant::Dir);
+        }
+        let Some(Scope(value)) = scope else {
+            unreachable!("a volume scope was found in it");
+        };
+        let parsed: VolumeScope = rmpv::ext::from_value(value.clone())
+            .map_err(|e| format!("scope does not parse: {e}"))?;
+        if parsed.volume_file.as_os_str().is_empty() {
+            return Err("volume_file names no file".into());
+        }
+        // The same two spellings, checked by the directory scope's parser.
+        FsScope::parse(Some(&Scope(rmpv::Value::Map(vec![
+            ("scope".into(), "/".into()),
+            (
+                "access".into(),
+                parsed
+                    .access
+                    .clone()
+                    .unwrap_or_else(|| "read".into())
+                    .into(),
+            ),
+        ]))))?;
+        Ok(Grant::Volume(parsed))
+    }
+
+    /// The jail and the filesystem it runs over. A volume is opened once
+    /// per connector and kept, so its mount is held for the connector's
+    /// life rather than made per call.
+    fn open(
+        self,
+        host: &Arc<dyn Backend>,
+        volumes: &Volumes,
+    ) -> Result<(FsScope, Arc<dyn Backend>), String> {
+        match self {
+            Grant::Dir(sc) => Ok((sc, host.clone())),
+            Grant::Volume(v) => {
+                let jail = FsScope {
+                    scope: PathBuf::from("/"),
+                    access: v.access.clone(),
+                    max_bytes: v.max_bytes,
+                };
+                Ok((jail, volumes.get(&v)?))
+            }
+        }
+    }
+}
+
+/// Everything that names a mount: the file, the volume, the mount point,
+/// and whether it is read-write.
+type MountKey = (PathBuf, String, String, bool);
+
+/// The volumes a connector has open, by [`MountKey`].
+#[derive(Default)]
+struct Volumes {
+    #[cfg(feature = "aloelite")]
+    open: std::sync::Mutex<std::collections::HashMap<MountKey, Arc<dyn Backend>>>,
+}
+
+impl VolumeScope {
+    fn key(&self) -> MountKey {
+        (
+            self.volume_file.clone(),
+            self.volume
+                .clone()
+                .unwrap_or_else(|| DEFAULT_VOLUME.to_string()),
+            self.mount_point.clone().unwrap_or_else(|| "/".to_string()),
+            self.access.as_deref() == Some("readwrite"),
+        )
+    }
+}
+
+impl Volumes {
+    #[cfg(feature = "aloelite")]
+    fn get(&self, v: &VolumeScope) -> Result<Arc<dyn Backend>, String> {
+        let key = v.key();
+        let writable = key.3;
+        let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(fs) = open.get(&key) {
+            return Ok(fs.clone());
+        }
+        let fs: Arc<dyn Backend> = Arc::new(drt_platform::aloelite::AloeliteFs::open(
+            &key.0, &key.1, &key.2, writable,
+        )?);
+        open.insert(key, fs.clone());
+        Ok(fs)
+    }
+
+    #[cfg(not(feature = "aloelite"))]
+    fn get(&self, v: &VolumeScope) -> Result<Arc<dyn Backend>, String> {
+        let (file, volume, _, _) = v.key();
+        Err(format!(
+            "volume_file {} names aloelite volume '{volume}', and this build carries no \
+             aloelite (the full and wasi profiles do)",
+            file.display()
+        ))
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct PathArgs {
     path: String,
@@ -249,6 +414,7 @@ fn bytes_of(value: &rmpv::Value) -> Option<Vec<u8>> {
 
 pub struct FsConnector {
     fs: Arc<dyn Backend>,
+    volumes: Arc<Volumes>,
 }
 
 impl FsConnector {
@@ -258,12 +424,16 @@ impl FsConnector {
     pub fn new() -> Self {
         FsConnector {
             fs: drt_platform::fs::host(),
+            volumes: Arc::default(),
         }
     }
 
     /// Over a backend of the caller's choosing -- a test's, or a page's.
     pub fn with_backend(fs: Arc<dyn Backend>) -> Self {
-        FsConnector { fs }
+        FsConnector {
+            fs,
+            volumes: Arc::default(),
+        }
     }
 }
 
@@ -276,8 +446,9 @@ impl Default for FsConnector {
 #[async_trait::async_trait]
 impl Connector for FsConnector {
     fn scope_type(&self) -> Box<dyn ScopeType> {
-        Box::new(FsScopeType {
+        Box::new(GrantScopeType {
             fs: self.fs.clone(),
+            volumes: self.volumes.clone(),
         })
     }
 
@@ -287,7 +458,9 @@ impl Connector for FsConnector {
         args: Option<rmpv::Value>,
         scope: Option<&Scope>,
     ) -> CallResult {
-        let sc = FsScope::parse(scope).map_err(CallError::new)?;
+        let (sc, fs) = Grant::parse(scope)
+            .and_then(|g| g.open(&self.fs, &self.volumes))
+            .map_err(CallError::new)?;
         let need_args = |what: &str| -> Result<rmpv::Value, CallError> {
             args.clone()
                 .ok_or_else(|| CallError::new(format!("{call} takes args {what}")))
@@ -303,11 +476,8 @@ impl Connector for FsConnector {
             "fs/read" => {
                 let a: PathArgs = rmpv::ext::from_value(need_args("{path}")?)
                     .map_err(|e| CallError::new(format!("{call} args: {e}")))?;
-                let path = sc
-                    .resolve(&*self.fs, &a.path, true)
-                    .map_err(CallError::new)?;
-                let meta = self
-                    .fs
+                let path = sc.resolve(&*fs, &a.path, true).map_err(CallError::new)?;
+                let meta = fs
                     .metadata(&path)
                     .map_err(|e| CallError::new(format!("'{}': {e}", a.path)))?;
                 if meta.len > sc.max_bytes() {
@@ -318,8 +488,7 @@ impl Connector for FsConnector {
                         sc.max_bytes()
                     )));
                 }
-                let bytes = self
-                    .fs
+                let bytes = fs
                     .read(&path)
                     .map_err(|e| CallError::new(format!("'{}': {e}", a.path)))?;
                 // msgpack bin and str decode identically in the guest, and
@@ -334,11 +503,9 @@ impl Connector for FsConnector {
                     .as_ref()
                     .and_then(bytes_of)
                     .ok_or_else(|| CallError::new("fs/write needs data (a string)"))?;
-                let path = sc
-                    .resolve(&*self.fs, &a.path, false)
-                    .map_err(CallError::new)?;
+                let path = sc.resolve(&*fs, &a.path, false).map_err(CallError::new)?;
                 let existing = if a.append {
-                    self.fs.metadata(&path).map(|m| m.len).unwrap_or(0)
+                    fs.metadata(&path).map(|m| m.len).unwrap_or(0)
                 } else {
                     0
                 };
@@ -351,8 +518,7 @@ impl Connector for FsConnector {
                         sc.max_bytes()
                     )));
                 }
-                self.fs
-                    .write(&path, &data, a.append)
+                fs.write(&path, &data, a.append)
                     .map_err(|e| CallError::new(format!("'{}': {e}", a.path)))?;
                 Ok(rmpv::Value::Nil)
             }
@@ -365,9 +531,8 @@ impl Connector for FsConnector {
                     Some(p) => p.to_string(),
                     None => ".".to_string(),
                 };
-                let dir = sc.resolve(&*self.fs, &rel, true).map_err(CallError::new)?;
-                let names = self
-                    .fs
+                let dir = sc.resolve(&*fs, &rel, true).map_err(CallError::new)?;
+                let names = fs
                     .read_dir(&dir)
                     .map_err(|e| CallError::new(format!("'{rel}': {e}")))?;
                 Ok(rmpv::Value::Array(
@@ -377,11 +542,8 @@ impl Connector for FsConnector {
             "fs/remove" => {
                 let a: PathArgs = rmpv::ext::from_value(need_args("{path}")?)
                     .map_err(|e| CallError::new(format!("{call} args: {e}")))?;
-                let path = sc
-                    .resolve(&*self.fs, &a.path, true)
-                    .map_err(CallError::new)?;
-                self.fs
-                    .remove_file(&path)
+                let path = sc.resolve(&*fs, &a.path, true).map_err(CallError::new)?;
+                fs.remove_file(&path)
                     .map_err(|e| CallError::new(format!("'{}': {e}", a.path)))?;
                 Ok(rmpv::Value::Nil)
             }

@@ -116,6 +116,17 @@ releases:
       `doc/P2P.md` and `doc/DRT-Signalling.md`.
     added:
       - |
+        **An fs scope can be an aloelite volume.** `{"volume_file":
+        "app.fs", "volume": "notes", "mount_point": "/", "access":
+        "readwrite"}` grants a volume inside one SQLite file where a
+        directory was granted before, under the same jail, verbs and
+        `max_bytes`, so a program cannot tell the two apart. The file and
+        volume are made when absent, and a mount point the volume lacks, or
+        a read-write mount another process holds, is a startup refusal by
+        name. In `full` and `wasi` (the `aloelite` feature), and a file
+        written natively opens under wasmtime. Encrypted volumes are not
+        built.
+      - |
         **`drt.js`, DRT in a page as one ES module a page imports from any
         origin.** The browser access client, the SSH client and the
         browser build, with both wasm modules inlined and unpacked on first

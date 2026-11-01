@@ -40,3 +40,29 @@ getrandom = { version = "0.3", features = ["wasm_js"] }
 # `Instant` and `SystemTime` over `performance.now()` and `Date.now()`.
 # std's versions compile on this target and panic when called.
 web-time = "1.1"
+
+# An aloelite volume as an fs backend (src/aloelite.rs). The engine only:
+# aloelite-core takes a Connection this crate opens, a clock and an entropy
+# source, so neither ego-platform nor aloelite's wasm-bindgen pin comes
+# along. Pinned to a commit of aloelite's main (0.5.0); rusqlite matches
+# the sql connector's, since a build holds one SQLite.
+[dependencies.aloelite-core]
+git = "https://github.com/Aloecraft-org/aloelite"
+rev = "b4ea3be35b9456fc24352db1b0f4b6f39cfd73bc"
+optional = true
+
+[dependencies.rusqlite]
+version = "0.40"
+features = ["bundled"]
+optional = true
+
+[dependencies.rand_core]
+version = "0.10"
+optional = true
+
+[features]
+aloelite = ["dep:aloelite-core", "dep:rusqlite", "dep:rand_core"]
+
+[dev-dependencies]
+tempfile = "3"
+rusqlite = "0.40"

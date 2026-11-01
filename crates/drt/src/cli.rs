@@ -47,6 +47,7 @@ const PROFILE_SLIM: &[&str] = &[
     "listen",
 ];
 const PROFILE_WASI: &[&str] = &[
+    "aloelite",
     "connector-aloecrypt",
     "connector-crypto",
     "connector-fs",
@@ -63,6 +64,7 @@ const PROFILE_WEB: &[&str] = &[
     "numeric",
 ];
 const PROFILE_FULL: &[&str] = &[
+    "aloelite",
     "cli",
     "connector-aloecrypt",
     "connector-crypto",
@@ -781,6 +783,7 @@ fn enabled_features() -> Vec<&'static str> {
             }
         };
     }
+    feature!("aloelite");
     feature!("cli");
     feature!("connector-aloecrypt");
     feature!("connector-crypto");
