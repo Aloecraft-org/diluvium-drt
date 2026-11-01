@@ -22,7 +22,8 @@
 //! - Entry points: the tests; [`Slapd::start`]; [`issue`], the stand-in
 //!   session issuer; [`Match::start`], the server.
 //! - Configurable values: [`SLAPD`], [`SCHEMA_DIRS`], [`MODULE_DIRS`];
-//!   the directory in [`LDIF`]; [`ISSUER`] and [`AUDIENCE`].
+//!   the directory in [`LDIF`]; [`ISSUER`] and [`AUDIENCE`]; [`WAIT`] and
+//!   [`PORT_TRIES`].
 //! - Fan-out: none.
 
 #![cfg(all(unix, feature = "connector-ldap", feature = "connector-kv"))]
@@ -49,6 +50,9 @@ const BASE: &str = "dc=example,dc=com";
 const ISSUER: &str = "drt-session";
 const AUDIENCE: &str = "match-test";
 const WAIT: Duration = Duration::from_secs(20);
+/// How many times a lost port race is worth retrying before the failure
+/// is real. Three is generous: losing twice in a row is not a race.
+const PORT_TRIES: usize = 3;
 
 /// alice parks, bob calls, carol reads, dave reads and writes, erin is
 /// staff and nothing else. Every user is in `staff`, which no topic maps.
@@ -424,7 +428,26 @@ struct Match {
 impl Match {
     /// `drt p2p --match` with `args`, read until it has said what it
     /// serves: one line, one more for kv and one more for a jwt block.
+    /// The port is picked free and handed over, so another test can take
+    /// it first; a server that exits saying so is started again on a new
+    /// one, up to [`PORT_TRIES`] times.
     fn start(dir: &Path, args: &[&str], lines: usize) -> Match {
+        for attempt in 1..=PORT_TRIES {
+            match Match::try_start(dir, args, lines) {
+                Ok(server) => return server,
+                Err(lost) => assert!(
+                    attempt < PORT_TRIES,
+                    "the match server lost its port {PORT_TRIES} times, so this is \
+                     not a race: {lost}"
+                ),
+            }
+        }
+        unreachable!("the loop returns or asserts")
+    }
+
+    /// One start. `Err` only when the server exited because its port was
+    /// taken; any other early exit fails the test here.
+    fn try_start(dir: &Path, args: &[&str], lines: usize) -> Result<Match, String> {
         let port = std::net::UdpSocket::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
@@ -449,11 +472,15 @@ impl Match {
                 let _ = tx.send(line);
             }
         });
+        let said = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let stderr = child.stderr.take().unwrap();
+        let (errs, err_done) = (said.clone(), std::sync::mpsc::channel::<()>());
         std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                 eprintln!("match: {line}");
+                errs.lock().unwrap().push_str(&line);
             }
+            let _ = err_done.0.send(());
         });
         let server = Match {
             child,
@@ -462,15 +489,18 @@ impl Match {
             out: rx,
         };
         for _ in 0..lines {
-            server.line();
+            if let Err(e) = server.out.recv_timeout(WAIT) {
+                // stdout closed: the server exited. Let stderr finish
+                // before reading what it said.
+                let _ = err_done.1.recv_timeout(WAIT);
+                let said = said.lock().unwrap().clone();
+                if said.contains("Address already in use") {
+                    return Err(said);
+                }
+                panic!("the server printed a line: {e}; it said: {said}");
+            }
         }
-        server
-    }
-
-    fn line(&self) -> String {
-        self.out
-            .recv_timeout(WAIT)
-            .expect("the server printed a line")
+        Ok(server)
     }
 
     /// One request with `token` as a bearer (or none).
