@@ -427,6 +427,8 @@ local function topic_names(m, topic, now)
   end
   table.sort(out)
   json(m.conn, 200, '{"topic":' .. json_text(topic) .. ',"names":' .. (#out > 0 and json_text(out) or '[]') .. '}')
+end
+
 -- depth: kv admission, the seam topics fills in
 
 -- Whether this request may `op` ('read' or 'write') the kv of `topic`;
