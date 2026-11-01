@@ -262,3 +262,36 @@ cannot widen); grant labels by name or by a prefix like `issuer:*`.
 
 Next: the plain Diluvium host (`dhost_crypto.c`) answers none of these
 calls; TOTP there is cheap (dhash.h has HMAC-SHA1), EdDSA is not.
+
+## 2026-11-01 run: `stdlib:session`, the session framework
+
+Plan: the owner asked, through the project coordinator, for an early
+Authelia-like session framework: LDAP bind, a second factor (TOTP or a
+generic webhook), a session with a TTL in a kv topic, a cookie, a
+forward-auth `/verify`, and a JWT from the session; no password hashing,
+no OIDC or WebAuthn. One step on claude/project-thread-0c13ig, stacked
+on the unmerged #67 (via #70), #68, #69 and #71, merged in that order. A
+dlua stdlib program, host pieces only if needed (none were). Tests
+against a real slapd and kv server, and Chromium through Caddy. No
+subagents.
+
+Done:
+- The stack: kv's `kv_access` asks `topic_access` when `--topics` is on
+  (the seam both PRs named); the topics test reads `/v1/<t>/kv/...` as
+  kv; `Command::P2p` boxed for clippy; the feature-leaves count; docs
+  that said kv takes no token.
+- `crates/drt/src/stdlib/session.dlua`, `stdlib:session`, gated on
+  ldap+kv+crypto+time+listen.
+- `crates/drt/tests/session.rs` (8 tests) and `tests/kv.rs` (topic
+  tokens on kv); `script/session-browser.sh` (13 checks) and its CI job.
+- `doc/Session.md`, README, changelog.
+
+Learned: the args message carries the `from` envelope, so a program
+checking for unknown arguments must skip it. `drt run` does not deliver
+`args` to a `program.path` config. A Caddy site address with a host only
+matches that Host header, and reverse_proxy keeps the original Host. The
+login pages' CSP (`default-src 'none'`) also blocks a test's injected
+fetch. `drt start` exits 0 when the root program faults.
+
+Next: JWKS (the public key is `crypto/public_key` on `jwt_key`), the
+JWT-to-topic-token tie-in, and serving more than one request at a time.

@@ -62,6 +62,7 @@ struct Server {
     port: u16,
     dir: tempfile::TempDir,
     kv: Option<PathBuf>,
+    topics: Option<PathBuf>,
 }
 
 impl Server {
@@ -73,6 +74,23 @@ impl Server {
             port: free_port(),
             dir,
             kv,
+            topics: None,
+        };
+        s.spawn();
+        s
+    }
+
+    /// A server with `--kv` and `--topics`, the file being `topics`.
+    fn with_topics(topics: &str) -> Server {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("topics.json");
+        std::fs::write(&file, topics).unwrap();
+        let mut s = Server {
+            child: None,
+            port: free_port(),
+            kv: Some(dir.path().join("kv")),
+            topics: Some(file),
+            dir,
         };
         s.spawn();
         s
@@ -85,6 +103,7 @@ impl Server {
             port: free_port(),
             dir: tempfile::tempdir().unwrap(),
             kv: None,
+            topics: None,
         };
         s.spawn();
         s
@@ -95,6 +114,9 @@ impl Server {
         cmd.arg("p2p").arg("--match").arg(self.port.to_string());
         if let Some(kv) = &self.kv {
             cmd.arg("--kv").arg(kv);
+        }
+        if let Some(topics) = &self.topics {
+            cmd.arg("--topics").arg(topics);
         }
         let mut child = cmd
             .stdin(Stdio::null())
@@ -225,6 +247,61 @@ const BASE: &str = "/v1/home/kv";
 // depth: the requests of §7
 
 #[test]
+fn with_topics_a_topics_keys_take_its_read_and_write_tokens() {
+    let s = Server::with_topics(
+        r#"{"topics": {"home": {"tokens": [
+            {"token": "home-rw", "roles": ["read", "write"]},
+            {"token": "home-r", "roles": ["read"]},
+            {"token": "home-park", "roles": ["park"]}]},
+          "work": {"tokens": [{"token": "work-rw", "roles": ["read", "write"]}]}}}"#,
+    );
+    let rw = [("authorization", "Bearer home-rw")];
+    let r = [("authorization", "Bearer home-r")];
+    assert_eq!(s.send("PUT", "/v1/home/kv/a", &rw, b"1").status, 201);
+    // No token is 401; a token without the role, another topic's token and
+    // an undeclared topic are all 403.
+    assert_eq!(s.get("/v1/home/kv/a").status, 401);
+    assert_eq!(s.put("/v1/home/kv/a", "2").status, 401);
+    assert_eq!(s.send("PUT", "/v1/home/kv/a", &r, b"2").status, 403);
+    assert_eq!(s.send("DELETE", "/v1/home/kv/a", &r, b"").status, 403);
+    assert_eq!(
+        s.send(
+            "GET",
+            "/v1/home/kv/a",
+            &[("authorization", "Bearer home-park")],
+            b""
+        )
+        .status,
+        403
+    );
+    assert_eq!(
+        s.send(
+            "GET",
+            "/v1/home/kv/a",
+            &[("authorization", "Bearer work-rw")],
+            b""
+        )
+        .status,
+        403
+    );
+    assert_eq!(s.send("GET", "/v1/elsewhere/kv/a", &rw, b"").status, 403);
+    // read gets, lists and watches; ?k= is the same token, for a page.
+    let got = s.send("GET", "/v1/home/kv/a", &r, b"");
+    assert_eq!((got.status, got.body.as_str()), (200, "1"));
+    assert_eq!(
+        s.send("GET", "/v1/home/kv?prefix=", &r, b"").json()["keys"][0]["key"],
+        "a"
+    );
+    assert_eq!(s.get("/v1/home/kv/a?k=home-r").status, 200);
+    assert_eq!(
+        s.send("GET", "/v1/home/kv?watch=poll&since=0&wait=0", &r, b"")
+            .status,
+        200
+    );
+    assert_eq!(s.send("DELETE", "/v1/home/kv/a", &rw, b"").status, 204);
+}
+
+#[test]
 fn a_server_without_kv_says_how_to_turn_it_on() {
     let s = Server::without_kv();
     let r = s.get("/v1/home/kv/x");
@@ -327,6 +404,7 @@ fn of_many_writers_racing_on_one_version_exactly_one_wins() {
                     port,
                     dir: tempfile::tempdir().unwrap(),
                     kv: None,
+                    topics: None,
                 };
                 let body = format!("writer {i}");
                 s.send(
@@ -484,6 +562,7 @@ fn a_held_watch_answers_with_the_change_that_ends_it() {
             port,
             dir: tempfile::tempdir().unwrap(),
             kv: None,
+            topics: None,
         };
         let started = Instant::now();
         let r = s.get(&format!("{BASE}?watch=poll&since=1&prefix=cfg/"));

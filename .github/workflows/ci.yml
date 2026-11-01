@@ -416,6 +416,36 @@ jobs:
       - name: The client's gate, against both hosts
         run: script/browser-access-client.sh --drt
 
+  session-browser:
+    # stdlib:session as a person uses it: Chromium signs in through Caddy's
+    # forward_auth to an app on another subdomain, against a real slapd and
+    # a real `drt p2p --match --kv --topics` (doc/Session.md).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: session-browser
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/drt-web/browser-test/package-lock.json
+      - name: slapd and Caddy
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends slapd caddy
+          caddy version
+      - name: Playwright, and its Chromium
+        working-directory: crates/drt-web/browser-test
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Sign in through a proxy, in Chromium
+        run: script/session-browser.sh
+
   ssh-page:
     # SSH in the browser (doc/Plan-0.8.0.md §2.2): dist/ssh.html built as
     # the release builds it, then e2e.mjs -- stock sshd, the relay, a

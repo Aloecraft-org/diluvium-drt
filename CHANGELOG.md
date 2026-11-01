@@ -47,6 +47,20 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Added
 
+- **`stdlib:session`, a login portal and forward-auth endpoint
+  (`doc/Session.md`).** A dlua program on four connectors: `ldap`
+  binds the user, `crypto` checks a TOTP code (enrolment by policy:
+  off, on first sign-in, or after the webhook) or `rest` asks a
+  webhook to approve, deny or wait, and `kv` keeps the session in
+  one topic with a TTL, named by an `HttpOnly; SameSite=Lax` cookie
+  that may cover a parent domain. `/verify` answers a reverse proxy
+  200 with `Remote-User`, `Remote-Groups`, `Remote-Name` and
+  `Remote-Email`, 403 outside `?group=`, a 302 to the login for a
+  browser, or 401. `/api/token` signs an EdDSA JWT from the session.
+  A TOTP code works once across replicas, failures ban the user for
+  a while, and a sign-in redirects only inside the cookie's domain.
+  Tested against OpenLDAP, and in Chromium through Caddy's
+  `forward_auth` (`script/session-browser.sh`, a CI job).
 - **The `ldap` connector: `host:ldap/bind`, `host:ldap/groups` and
   `host:ldap/search` against one directory, and `drt ldap`.** `full`
   only, on the `ldap3` crate over rustls. The scope names the server
@@ -93,6 +107,10 @@ Underneath it the embedded core moves from 0.15.1 to
   across restarts. With `--topics`, a kv request takes a token of its
   topic holding `read` or `write`; without, whoever reaches the port
   may read and write, and the server says so when it starts.
+  across restarts. With `--topics`, a topic's keys take its tokens:
+  `read` to get, list and watch, `write` to put and delete. Without
+  it whoever reaches the port may read and write, and the server
+  says so when it starts.
   - **`drt kv get|put|rm|ls|watch <drt://…/v1/<topic>/kv/<key>>`**,
     with `--if-version`, `--ttl` and `--H`; exit 1 is a refusal (an
     absent key, a lost race), 2 no answer.
@@ -667,7 +685,7 @@ Underneath it the embedded core moves from 0.15.1 to
   (`-p 13389:127.0.0.1:3389`, a page's `to=`). On one host a port
   alone is enough, as with `-P`; a non-`tcp` scheme is also its named
   service. A string is still one target.
-  **TOTP and EdDSA in the crypto connector, every key still in the
+- **TOTP and EdDSA in the crypto connector, every key still in the
   host.** `crypto/totp_verify` checks an RFC 6238 code (SHA-1 or
   SHA-256, 6 to 8 digits, a period and a window) and answers the step
   it matched, which passed back as `after` refuses the code again.
