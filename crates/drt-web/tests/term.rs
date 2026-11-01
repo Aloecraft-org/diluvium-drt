@@ -284,3 +284,93 @@ fn a_run_session_has_no_deployment_to_hand_out() {
     assert!(session.deployment_mut().is_none());
     uninstall_sink();
 }
+
+/// A kernel for the two-kernel test: its own sink, and a program at one
+/// path that both kernels share, so a kernel reading the other's
+/// filesystem would run the other's program.
+fn kernel(name: &str) -> (Term, Captured) {
+    let seen: Captured = Rc::new(RefCell::new(Vec::new()));
+    let log = seen.clone();
+    let term = Term::with_sink(Rc::new(move |fd, bytes: &[u8]| {
+        log.borrow_mut().push((fd, bytes.to_vec()))
+    }));
+    term.fs().add_dir("/k/data");
+    term.fs().add_file(
+        "/k/app.dlua",
+        format!(
+            "host.fs.write('{name}.txt', '{name}')\n\
+             local _, seen = host.fs.try_read('{other}.txt')\n\
+             host.fs.write('saw-other.txt', tostring(seen))",
+            other = if name == "a" { "b" } else { "a" },
+        ),
+    );
+    term.fs()
+        .add_file("/k/bad.dlua", format!("error('boom from {name}')"));
+    term.fs().add_file(
+        "/k/deploy.json",
+        r#"{"program": {"path": "app.dlua"},
+            "caps": [{"capability": "host:fs/*"}],
+            "connectors": {"fs": {"scope": {"scope": "./data", "access": "readwrite"}}}}"#,
+    );
+    term.fs().set_cwd("/k");
+    (term, seen)
+}
+
+#[test]
+fn two_terminals_are_two_kernels_with_their_own_files_and_output() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    // What a page-wide sink would catch: nothing, when every terminal has
+    // its own.
+    let page = capture();
+    let (a, seen_a) = kernel("a");
+    // Made second, so it is the filesystem installed last: the case that
+    // used to send `a`'s commands to `b`'s files.
+    let (b, seen_b) = kernel("b");
+
+    let mut run_a = a.exec(&argv(&["drt", "run", "--config", "deploy.json"]));
+    let mut run_b = b.exec(&argv(&["drt", "run", "--config", "deploy.json"]));
+    let mut bad_a = a.exec(&argv(&["drt", "run", "bad.dlua"]));
+    let mut bad_b = b.exec(&argv(&["drt", "run", "bad.dlua"]));
+    // Interleaved, a tick each, the way a page's timers would drive them.
+    let mut status = [None; 4];
+    for _ in 0..10_000 {
+        for (i, s) in [&mut run_a, &mut run_b, &mut bad_a, &mut bad_b]
+            .into_iter()
+            .enumerate()
+        {
+            if status[i].is_none() {
+                if let Step::Exit(code) = s.tick() {
+                    status[i] = Some(code);
+                }
+            }
+        }
+        if status.iter().all(Option::is_some) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(status, [Some(0), Some(0), Some(1), Some(1)]);
+
+    assert_eq!(file(&a, "/k/data/a.txt"), "a");
+    assert_eq!(file(&b, "/k/data/b.txt"), "b");
+    assert_eq!(file(&a, "/k/data/saw-other.txt"), "error");
+    assert_eq!(file(&b, "/k/data/saw-other.txt"), "error");
+    assert!(a.fs().read(Path::new("/k/data/b.txt")).is_err());
+    assert!(b.fs().read(Path::new("/k/data/a.txt")).is_err());
+
+    let err_a = text(&seen_a, Fd::Stderr);
+    let err_b = text(&seen_b, Fd::Stderr);
+    assert!(
+        err_a.contains("boom from a") && !err_a.contains("boom from b"),
+        "{err_a}"
+    );
+    assert!(
+        err_b.contains("boom from b") && !err_b.contains("boom from a"),
+        "{err_b}"
+    );
+    assert!(page.borrow().is_empty(), "{:?}", text(&page, Fd::Stderr));
+    // Each tick put back what it found.
+    drt_platform::stdio::write(Fd::Stderr, b"after");
+    assert_eq!(text(&page, Fd::Stderr), "after");
+    uninstall_sink();
+}

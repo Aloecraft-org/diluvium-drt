@@ -845,6 +845,13 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Fixed
 
+- **Several `DrtTerm`s in one page are separate kernels.** The page's
+  filesystem and output sink were module-wide, so a second terminal
+  took both: the first one's commands read the second one's files
+  and printed into its sink, and only one `repl` stream could run at
+  a time. Each terminal now installs its own filesystem and sink for
+  the length of every call that runs its commands, and the
+  `two-kernels` browser check runs two at once (issue #82).
 - **A root install runs for every user.** The installer built each
   version folder with `mktemp -d`, which makes it 0700, so after
   `curl ... | sudo sh` the bin link pointed into a folder only root
