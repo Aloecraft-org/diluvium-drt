@@ -1,0 +1,56 @@
+parsed to:
+RootConfig {
+    root: InstanceConfig {
+        program: Some(
+            Path(
+                "<corpus>/app.dlua",
+            ),
+        ),
+        caps: [
+            Grant {
+                effect: Grant,
+                capability: "host:time/*",
+                scope: None,
+            },
+        ],
+        budget: Budget {
+            instructions: None,
+            memory_kb: None,
+        },
+        numeric: Numeric {
+            max_elements: None,
+            max_tier: None,
+        },
+    },
+    defaults: DefaultConfig {
+        stun: [],
+        extra_roots: [],
+    },
+    commands: CommandsConfig {
+        p2p: None,
+    },
+    connectors: {
+        "storage": ConnectorWiring {
+            backing: None,
+            scope: None,
+        },
+    },
+    plugins: {},
+    listeners: [],
+    residency: None,
+    relay: None,
+    stun: None,
+    turn: None,
+    wireguard: None,
+    tunnel: None,
+    p2p: None,
+    netcheck: None,
+    webrtc: None,
+    identity: Identity {
+        host_key_path: None,
+    },
+    principals: [],
+    dlua_dir: None,
+    entry: None,
+    args: {},
+}

@@ -1,0 +1,16 @@
+-- A family the page answers. `storage` is not in drt: the page that runs
+-- this program hands it in, as a JavaScript object (storage.js).
+--
+--   drt run --config app.json
+--   drt run --config locked.json
+
+-- example: omits the ok/refused branch; one line prints the value or the sentence
+local function show(label, value, status, detail)
+    print(string.format("  %-22s %-7s %s", label, status, detail or tostring(value)))
+end
+
+show("storage/set greeting", host.try("storage/set", { key = "greeting", value = "hello from the page" }))
+show("storage/get greeting", host.try("storage/get", { key = "greeting" }))
+
+-- The page threw. A throw, or a rejected promise, is an `error` reply.
+show("storage/get missing", host.try("storage/get", { key = "missing" }))

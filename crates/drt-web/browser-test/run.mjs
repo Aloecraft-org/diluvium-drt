@@ -160,6 +160,16 @@ const server = http.createServer((req, res) => {
     res.end(fs.readFileSync(NET_BUS));
     return;
   }
+  // An example's own backings module (meta.json "backings"), imported by
+  // the page as that example's terminal is made.
+  if (url.startsWith('/example-backings/')) {
+    const file = path.join(EXAMPLES, url.slice('/example-backings/'.length));
+    if (file.startsWith(EXAMPLES + path.sep) && file.endsWith('.js') && fs.existsSync(file)) {
+      res.writeHead(200, { 'content-type': TYPES['.js'] });
+      res.end(fs.readFileSync(file));
+      return;
+    }
+  }
   if (url === '/drt_browser_access.js') {
     res.writeHead(200, { 'content-type': TYPES['.js'] });
     res.end(fs.readFileSync(BROWSER_ACCESS));
@@ -309,7 +319,10 @@ for (const name of examples) {
     if (isDir) dirs.push(`${cwd}/${rel}`);
     else files.push({ path: `${cwd}/${rel}`, data: fs.readFileSync(path.join(dir, rel)).toString('base64') });
   });
-  await page.evaluate((seed) => window.drtBrowserTest.seed(seed), { cwd, files, dirs });
+  // "backings": a module beside the example whose exports are the
+  // connector families its page hands in, by name (examples/37).
+  const backings = meta.backings ? `/example-backings/${name}/${meta.backings}` : null;
+  await page.evaluate((seed) => window.drtBrowserTest.seed(seed), { cwd, files, dirs, backings });
 
   const started = Date.now();
   let result;
