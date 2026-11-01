@@ -26,6 +26,7 @@ costs latency, never correctness.
 - Configurable values a server states: the hold time (§3), the call
   lifetime (§4.1), the waiting cap (§6), the call notification stream's keepalive (§5).
 - Fan-out: the five requests of §2's table.
+- Optional: the key-value store of §10, its six requests in one table.
 
 ## 1. Names, tokens and records
 
@@ -302,3 +303,44 @@ way the server is built.
   listener. The stream's keepalive (§5) is shorter than the listener's
   `stream_idle_ms`, so the host never closes a stream the program is
   still holding.
+
+## 10. The key-value store
+
+Optional, and off unless the server says it is on: `drt p2p --match
+<port> --kv <dir>` keeps one in `<dir>/kv.db` (SQLite). A server without
+it answers every request below 404. It is plain HTTP, with
+`access-control-allow-origin: *` like every other reply (`PUT` and
+`If-Match` admitted, `ETag` exposed), so a page, `curl`, `drt kv` and the
+`kv` connector all speak it.
+
+- **A topic holds keys.** The first segment after `/v1/` is the topic,
+  1 to 64 of `A-Z a-z 0-9 . _ ~ -`; two topics never see each other's
+  keys. A key is 1 to 256 of the same and `/`, with no empty, `.` or `..`
+  segment; a value is UTF-8 text, at most 16 KiB.
+- **No tokens yet.** Whoever reaches the port may read and write. Per-topic
+  tokens are not built.
+- **Every change takes the next revision**, one counter for the whole
+  server that never goes back, and a key's version is the revision that
+  last wrote it. It survives a restart.
+
+| Request | What |
+|---|---|
+| `GET /v1/<topic>/kv/<key>` | 200, the value as `text/plain`, `ETag: "<version>"`; 404 when absent. |
+| `PUT /v1/<topic>/kv/<key>[?ttl=<s>]` | Body: the value. 201 created or 200 replaced, `{"key", "version"}` and its `ETag`. `ttl`, 1 to 31536000 seconds, expires the key; a write without one makes it permanent. |
+| `DELETE /v1/<topic>/kv/<key>` | 204; 404 when absent. |
+| `GET /v1/<topic>/kv?prefix=&after=&limit=` | `{"revision", "keys": [{"key", "value", "version", "expires_in"?}], "more"}`, by key, at most `limit` (1 to 1000, default 100) after the key `after`. |
+| `GET /v1/<topic>/kv?watch=stream&prefix=[&since=]` | `text/event-stream`: one `event: kv` per change under the prefix, `id:` its revision, `data:` `{"revision", "op", "key", "version"?, "value"?}`. |
+| `GET /v1/<topic>/kv?watch=poll&since=<r>&prefix=[&wait=<ms>]` | The same changes after revision `r` as one `{"revision", "events"}`, held until there is one or for `wait` (0 to 25000, the default). |
+
+- **Compare-and-set is `If-Match`.** `PUT` or `DELETE` with `If-Match:
+  "<version>"` (or `*`, any version) writes only over that version, and
+  `If-None-Match: *` only where the key is absent. A lost race is 412,
+  carrying the current `ETag` when the key exists. The server applies one
+  request at a time, so of many writers naming one version exactly one
+  wins.
+- **`op`** is `put`, `delete` or `expire`. An expired key is absent at
+  once, and its `expire` change is published within a second.
+- **A watch resumes.** The server keeps the last 1024 changes across
+  restarts; `Last-Event-ID` or `since` replays those after it first. When
+  `since` is older than that, a stream sends `event: reset` and a poll
+  answers `"reset": true`: list again, from the listing's `revision`.

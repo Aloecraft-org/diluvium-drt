@@ -28,7 +28,7 @@ hostcall encoding (moved here from diluvium).
 | [`crates/drt-swarm`](crates/drt-swarm) | The swarm: `dvs.c` semantics ported over the `Engine` seam (instance table, attenuated caps with provenance, lifecycle drain, budgets, hibernation + `wake_on_message`); the snapshot store; endpoint refs. |
 | [`crates/drt`](crates/drt) | The binary: `run` \| `start` \| `repl` \| `p2p` \| `ssh` \| `ldap` \| `ps` — see SPEC.md §13a. |
 | [`crates/drt-web`](crates/drt-web) | The browser tier: the same `drt`, C core linked in, behind a terminal contract a page attaches xterm.js to. See [`doc/Browser.md`](doc/Browser.md). |
-| [`connectors/`](connectors) | Connector implementations, each feature-gated: `time`, `crypto`, `fs`, `sql` and `data` (each a granted directory), `rest` and `ssmtp` (each an allowlist), `ldap` (one directory server and a subtree of it: `host:ldap/bind` checks a password and answers the user's groups, `host:ldap/search`, and `drt ldap` from a terminal), `ssh` (client, `host:ssh/exec` and the interactive `host:ssh/shell`), `exec` (local, `host:exec/run`, wired only by name and announced when it is), `socket` and `ws` (each an allowlist; `ws` is what `stdlib:browser-access` signals over), and `listen`, the inbound half. |
+| [`connectors/`](connectors) | Connector implementations, each feature-gated: `time`, `crypto`, `fs`, `sql` and `data` (each a granted directory), `rest` and `ssmtp` (each an allowlist), `ldap` (one directory server and a subtree of it: `host:ldap/bind` checks a password and answers the user's groups, `host:ldap/search`, and `drt ldap` from a terminal), `ssh` (client, `host:ssh/exec` and the interactive `host:ssh/shell`), `exec` (local, `host:exec/run`, wired only by name and announced when it is), `socket` and `ws` (each an allowlist; `ws` is what `stdlib:browser-access` signals over), `kv` (one topic of a signalling server's kv store), and `listen`, the inbound half. |
 
 ## Building
 
@@ -142,6 +142,7 @@ ssh -o ProxyCommand="drt p2p drt://signal.example/v1/xps" me@xps   # call a peer
 drt p2p drt://signal.example/v1/xps -p 8080:80            # or map a port to it
 drt p2p --park drt://signal.example/v1/xps --H auth=…     # answer calls for a name
 drt p2p --match 8443                 # be the signalling server
+drt p2p --match 8443 --kv ./kv       # ... keeping a kv store; drt kv get|put|ls|watch its keys
 drt --config p2p.json p2p            # any role, with the token in a 0600 file
 drt --config nc.json netcheck        # what can this network do, with the evidence
 drt --config st.json start           # a STUN server: what address did that come from

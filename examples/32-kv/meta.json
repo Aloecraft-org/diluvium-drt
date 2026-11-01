@@ -1,0 +1,11 @@
+{
+  "name": "32-kv",
+  "teaches": "drt p2p --match --kv keeps a key-value store over plain HTTP: every key has a version, a write can name the version it replaces, and a key with a TTL lives only while it is refreshed. drt kv, curl and a program through host.call all reach it.",
+  "cmd": "./demo.sh",
+  "needs_network": false,
+  "needs_build": "full",
+  "needs_listener": true,
+  "normalise": [
+    "s|[0-9][0-9]*s$|30s|"
+  ]
+}
