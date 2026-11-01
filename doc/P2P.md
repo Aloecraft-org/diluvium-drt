@@ -276,16 +276,16 @@ what the profile asks of them.
     a token of another subject does not take it.
   - Listed tokens and bare names work beside JWTs as before.
 
-  A program issues these tokens by binding the user with `ldap/bind` and
-  signing `{iss, aud, sub, groups}` with `crypto/jwt_sign` under an EdDSA
-  key, and publishes `crypto/public_key`'s JWK as `{"keys": [...]}` at the
-  kv key with a `write` token of that topic. Limits: the header must be
+  `stdlib:session` (`doc/Session.md`) issues these tokens: it binds the
+  user with `ldap/bind` and signs `{iss, aud, sub, groups}` with
+  `crypto/jwt_sign` under an EdDSA key. `stdlib:jwks` publishes that
+  key's JWK in `{"keys": [...]}` at the kv key `jwks` of its topic, with a
+  token of that topic holding `read` and `write`. Limits: the header must be
   the one `crypto/jwt_sign` writes (`{"alg":"EdDSA","typ":"JWT","kid":…}`,
   in that order), so a token from another library is refused as `alg`;
-  only EdDSA keys are read from a JWKS; a parked side sends the token it
-  started with, so it is refused once that token expires (renewal is not
-  built); and the session framework that logs a browser in and issues the
-  token is not built.
+  only EdDSA keys are read from a JWKS; and a parked side sends the token
+  it started with, so it is refused once that token expires (renewal is
+  not built).
 - **Admission is by token, not origin**, so every reply carries
   `access-control-allow-origin: *`. A page opened from `file://` sends
   `Origin: null` and preflights because of its `Authorization` header; a

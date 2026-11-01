@@ -52,6 +52,13 @@ RootConfig {
             max_tier: None,
         },
     },
+    defaults: DefaultConfig {
+        stun: [],
+        extra_roots: [],
+    },
+    commands: CommandsConfig {
+        p2p: None,
+    },
     connectors: {
         "crypto": ConnectorWiring {
             backing: None,

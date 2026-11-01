@@ -77,8 +77,10 @@ Traefik's `forwardAuth` sends the same headers. That is not tested here.
 - `POST /api/token`: a JWT signed EdDSA under the label `jwt_key`, with
   `iss` (`issuer`), `aud` (`jwt_audience`, when set), `sub` (the
   username), `groups`, `amr`, `name` and `email`. It lives `jwt_ttl` and
-  never longer than the session. The public key is `crypto/public_key` on
-  that label. No JWKS endpoint serves it yet.
+  never longer than the session. `stdlib:jwks` (`examples/34-jwks`), run
+  with the same crypto master and `keys` set to `jwt_key`, publishes the
+  public key to a topic's kv and serves the set, so a match server's
+  topics (`doc/P2P.md` §2.4) and any JWKS client verify the token.
 - `POST /logout`.
 
 ## Arguments
@@ -96,6 +98,6 @@ program.
 ## Not built
 
 WebAuthn, OIDC, access rules by domain or path (beyond `?group=`), an idle
-timeout, a JWKS endpoint, a QR code, and serving more than one request at
+timeout, a QR code, and serving more than one request at
 a time. Each request makes several host calls in turn (directory, kv,
 webhook), so a slow webhook delays everyone by up to `webhook_timeout_ms`.

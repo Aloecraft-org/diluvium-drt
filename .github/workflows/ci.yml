@@ -145,6 +145,12 @@ jobs:
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends slapd
           /usr/sbin/slapd -VV 2>&1 || true
+      # crates/drt/tests/auth_stack.rs ends with PyJWT checking a session
+      # token from the JWKS URL alone, as a third party would. Pinned, as
+      # in the examples gate; without it that step skips, which
+      # DRT_TEST_REQUIRE_PYJWT below turns into a failure.
+      - name: PyJWT
+        run: pip install --quiet 'pyjwt[crypto]==2.15.0'
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
@@ -181,6 +187,7 @@ jobs:
         env:
           DRT_TEST_REQUIRE_SSH: "1"
           DRT_TEST_REQUIRE_LDAP: "1"
+          DRT_TEST_REQUIRE_PYJWT: "1"
         run: |
           ulimit -c unlimited
           cargo test --workspace --all-features
