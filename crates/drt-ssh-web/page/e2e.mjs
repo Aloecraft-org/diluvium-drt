@@ -45,7 +45,7 @@ import path from 'node:path';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DRT = process.env.DRT ?? path.resolve(here, '../../../target/debug/drt');
 const SSHD = process.env.SSHD ?? '/usr/sbin/sshd';
-const PORTS = { sshd: 18222, relay: 18443, page: 18480, mock: 18787, direct: 18790, post: 18792, postRtc: 18793 };
+const PORTS = { sshd: 18222, relay: 18443, page: 18480, mock: 18787, direct: 18790, post: 18792, postRtc: 18793, gate: 18794 };
 const LABEL = 'box';
 const ROOM = 'ssh';
 const WAIT_MS = 20000;
@@ -455,6 +455,114 @@ await check('a call the server refuses is reported by what its status means', as
     return s.includes('answered') ? s : false;
   });
   if (!said.includes('answered 404: no such name on this server')) throw new Error(`the page says ${JSON.stringify(said)}`);
+  await p.close();
+});
+
+// depth: the setup form, the connection's states, and what the page remembers
+
+// A signalling server that wants a caller token, as a real one does: it
+// takes `k` off the call and passes the record on to examples/29, whose
+// program reads no token. What it was given is kept for the checks.
+const SECRET = 's3cret-caller-token';
+const gated = [];
+http.createServer((req, res) => {
+  const u = new URL(req.url, 'http://gate');
+  gated.push(u.searchParams.get('k'));
+  const cors = { 'access-control-allow-origin': '*' };
+  if (u.searchParams.get('k') !== SECRET) return res.writeHead(401, cors).end();
+  const body = [];
+  req.on('data', (d) => body.push(d)).on('end', () => {
+    const up = http.request({ host: '127.0.0.1', port: PORTS.post, method: 'POST', path: u.pathname }, (r) => {
+      res.writeHead(r.statusCode, cors);
+      r.pipe(res);
+    });
+    up.end(Buffer.concat(body));
+  });
+}).listen(PORTS.gate, '127.0.0.1');
+const peer = `drt://127.0.0.1:${PORTS.gate}/v1/box`;
+const shellUp = (p) => until('a shell', () => p.evaluate(() => document.body.dataset.state === 'connected'))
+  .catch(async (e) => {
+    throw new Error(`${e.message}; the page says: ${await p.textContent('#status')}`);
+  });
+const stateIs = (p, want) => until(`state ${want}`, () => p.evaluate((w) => document.body.dataset.state === w, want));
+
+let formPage;
+await check('the form calls a peer with the secret from its hidden field, and keeps it out of the address bar', async () => {
+  const p = formPage = await openSession('');
+  await until('the form', () => p.isVisible('#call'));
+  if (await p.getAttribute('#secret', 'type') !== 'password') throw new Error('the secret field is not a password field');
+  // A ?k= in the address moves to the secret field.
+  await p.fill('#call', `${peer}?k=${SECRET}`);
+  await p.dispatchEvent('#call', 'change');
+  await until('the secret to move', async () => (await p.inputValue('#secret')) === SECRET);
+  if (await p.inputValue('#call') !== peer) throw new Error(`the address kept its query: ${await p.inputValue('#call')}`);
+  await p.fill('#user', USER);
+  await p.fill('#to', `127.0.0.1:${PORTS.sshd}`);
+  await p.click('#advanced summary');
+  await p.fill('#hostkey', fingerprint);
+  await p.check('#remember');
+  await p.click('#connect');
+  await shellUp(p);
+  await typeAndWait(p, 'echo form-$((6*7))', 'form-42');
+  if (gated.at(-1) !== SECRET) throw new Error(`the call carried ${gated.at(-1)}, not the secret`);
+  const at = await p.evaluate(() => location.href);
+  if (at.includes(SECRET)) throw new Error(`the address bar shows the secret: ${at}`);
+  if (!at.includes('call=') || !at.includes('to=')) throw new Error(`the address bar does not link here: ${at}`);
+});
+
+await check('after a logout the page offers Reconnect, and Disconnect and Reconnect work', async () => {
+  const p = formPage;
+  await p.keyboard.type('exit 4\n');
+  await stateIs(p, 'closed');
+  if (await p.evaluate(() => window.drtSsh.ended) !== 4) throw new Error('the exit status was lost');
+  if (!(await p.isVisible('#reconnect'))) throw new Error('no Reconnect after a logout');
+  await p.click('#reconnect');
+  await shellUp(p);
+  await typeAndWait(p, 'echo again-$((6*7))', 'again-42');
+  await p.click('#disconnect');
+  await stateIs(p, 'closed');
+  if (!(await p.textContent('#status')).includes('Disconnected')) throw new Error(await p.textContent('#status'));
+  await p.click('#reconnect');
+  await shellUp(p);
+  await typeAndWait(p, 'echo third-$((6*7))', 'third-42');
+  await p.click('#disconnect');
+  await stateIs(p, 'closed');
+  await p.click('#edit');
+  if (!(await p.isVisible('#call'))) throw new Error('Change setup did not show the form');
+  await p.close();
+});
+
+await check('a new page fills in the remembered peer and secret, and Forget clears the secret', async () => {
+  const p = await openSession('');
+  await until('the remembered secret', async () => (await p.inputValue('#secret')) === SECRET);
+  if (await p.inputValue('#call') !== peer || await p.inputValue('#user') !== USER) throw new Error('the peer was not filled in');
+  if (!(await p.isChecked('#remember'))) throw new Error('the box is not ticked');
+  await p.click('#forgetsecret');
+  await until('the secret to go', async () => (await p.inputValue('#secret')) === '');
+  await p.close();
+  const q = await openSession('');
+  await until('the peer', async () => (await q.inputValue('#call')) === peer);
+  if (await q.inputValue('#secret') !== '') throw new Error('the secret came back after Forget');
+  await q.click('#connect');
+  await stateIs(q, 'error');
+  const said = await q.textContent('#status');
+  if (!said.includes('401') || !said.includes('Enter the caller secret')) throw new Error(`the page says ${JSON.stringify(said)}`);
+  if (!(await q.isVisible('#reconnect'))) throw new Error('no Reconnect after an error');
+  await q.close();
+});
+
+await check('a link\'s fragment edited in place connects without a reload', async () => {
+  const p = await openSession('');
+  await until('the form', () => p.isVisible('#call'));
+  await p.evaluate((h) => (location.hash = h), new URLSearchParams({
+    call: peer, k: SECRET, user: USER, to: `127.0.0.1:${PORTS.sshd}`, hostkey: fingerprint, stun: '127.0.0.1:3478',
+  }).toString());
+  await shellUp(p);
+  await typeAndWait(p, 'echo hash-$((6*7))', 'hash-42');
+  if (await p.inputValue('#stun') !== '127.0.0.1:3478') throw new Error('the link\'s STUN server was not read');
+  if ((await p.evaluate(() => location.hash)).includes(SECRET)) throw new Error('the secret stayed in the fragment');
+  await p.keyboard.type('exit 2\n');
+  await stateIs(p, 'closed');
   await p.close();
 });
 
