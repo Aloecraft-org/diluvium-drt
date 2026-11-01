@@ -1,0 +1,27 @@
+-- Post-quantum signatures and encryption, with every private key in the
+-- host. The program names keys; it never holds one.
+-- example: omits error handling, because every call here is granted
+
+-- ML-DSA. A label names a keypair; the public half is safe to hand out.
+local signer = host.call("aloecrypt/public_key", {key = "release:1", alg = "ml-dsa-65"})
+local sig = host.call("aloecrypt/sign", {key = "release:1", data = "v1.0.0"})
+print(sig:match("^[^\n]*"))
+
+local ok = host.call("aloecrypt/verify",
+    {public_key = signer.public_key, data = "v1.0.0", signature = sig})
+local bad = host.call("aloecrypt/verify",
+    {public_key = signer.public_key, data = "v1.0.1", signature = sig})
+print("verify  " .. tostring(ok.valid))
+print("altered " .. tostring(bad.valid) .. " " .. bad.reason)
+
+-- ML-KEM. Anyone with the public key encrypts; only the label decrypts.
+local inbox = host.call("aloecrypt/public_key", {key = "inbox:alice", alg = "ml-kem-768"})
+local doc = host.call("aloecrypt/encrypt", {public_key = inbox.public_key, data = "hello, alice"})
+print(doc:match("^[^\n]*"))
+print("opened  " .. host.call("aloecrypt/decrypt", {key = "inbox:alice", document = doc}))
+
+-- A label outside the grant is refused by name.
+local _, status, detail = host.try("aloecrypt/sign", {key = "inbox:alice", data = "x"})
+print(status .. "   " .. detail)
+
+print("hash    " .. host.call("aloecrypt/hash", {data = "abc"}))

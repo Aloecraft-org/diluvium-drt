@@ -1,0 +1,7 @@
+-----BEGIN ALOECRYPT SIGNATURE-----
+verify  true
+altered false mismatch
+-----BEGIN ALOECRYPT ENCRYPTED-----
+opened  hello, alice
+error   aloecrypt/sign: 'inbox:alice' is outside this instance's host:aloecrypt/sign grant, which allows: release:*
+hash    f60ab6a916da4915f30847b601e7cb213d3a4efdbbcf987d69381f92b84feeaf

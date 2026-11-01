@@ -1,0 +1,40 @@
+[package]
+name = "drt-connector-aloecrypt"
+description = "The aloecrypt connector: post-quantum signatures and encryption from aloecrypt_core, with every private key in the host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+rmpv = { workspace = true }
+drt-caps = { workspace = true }
+drt-connector = { workspace = true }
+# The entropy source, per target (doc/Wasm.md D5): an encryption's KEM
+# randomness comes from here, never from a guest.
+drt-platform = { workspace = true }
+# Pinned by commit until aloecrypt_core carries a tag (aloecrypt_core#5).
+# `default-features = false`: no `host_rng`, because the core is seeded by
+# its caller and drt supplies the entropy, and getrandom without a backend
+# would refuse the browser target; no wordlists, which nothing here calls.
+aloecrypt_core = { git = "https://github.com/Aloecraft-org/aloecrypt_core", rev = "2e5ff7b0c9fb7279ded4c8789b9cc1b6511c240e", default-features = false }
+# Only to check a guest's ML-KEM public key before aloecrypt_core sees it:
+# the core's encapsulator `unwrap`s `EncapsulationKey::new`, and a release
+# build is `panic = "abort"`, so an invalid key from a program would take
+# the process down (aloecrypt_core#7). The same version the core links, so
+# this adds no crate to the tree.
+ml-kem = "0.3.2"
+# Base64 for public keys and hex for addresses and digests. Already in the
+# tree through aloecrypt_core itself.
+data-encoding = "2"
+zeroize = "1"
+serde = { workspace = true }
+
+[dev-dependencies]
+drt-hostcall = { workspace = true }
+pollster = "0.4"
+# Interop: the connector's signatures are checked with the core's own
+# struct API, and its digest against the core's hash.
+aloecrypt_core = { git = "https://github.com/Aloecraft-org/aloecrypt_core", rev = "2e5ff7b0c9fb7279ded4c8789b9cc1b6511c240e", default-features = false }
+data-encoding = "2"

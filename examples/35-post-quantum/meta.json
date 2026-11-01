@@ -1,0 +1,7 @@
+{
+  "name": "35-post-quantum",
+  "teaches": "aloecrypt's ML-DSA signatures and ML-KEM encryption with every private key in the host: a label names a keypair derived from the master, the public half is text a program hands out, and the grants on sign and decrypt name the labels a program may use.",
+  "cmd": "drt run --config app.json",
+  "needs_network": false,
+  "normalise": []
+}
