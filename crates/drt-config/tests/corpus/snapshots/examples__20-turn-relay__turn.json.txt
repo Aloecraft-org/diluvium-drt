@@ -12,6 +12,13 @@ RootConfig {
             max_tier: None,
         },
     },
+    defaults: DefaultConfig {
+        stun: [],
+        extra_roots: [],
+    },
+    commands: CommandsConfig {
+        p2p: None,
+    },
     connectors: {},
     plugins: {},
     listeners: [],
@@ -25,7 +32,9 @@ RootConfig {
             relay_bind: "0.0.0.0",
             realm: "example",
             key: Some(
-                "the-coturn-static-auth-secret-1",
+                Literal(
+                    "the-coturn-static-auth-secret-1",
+                ),
             ),
             key_file: None,
             key_env: None,

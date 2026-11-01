@@ -75,7 +75,7 @@ pub async fn start(
     config: &RootConfig,
     roots: &[CertificateDer<'static>],
 ) -> Result<Serving, String> {
-    let (forward, services, done) = sinks(spec, settings, config, roots)?;
+    let (forward, services, done, scope) = sinks(spec, settings, config, roots)?;
     let identity_file = match &settings.identity_file {
         Some(p) => p.clone(),
         None => state_dir()?.join("identity.json"),
@@ -88,7 +88,7 @@ pub async fn start(
         publish_host_candidates: true,
         service: String::new(),
         default: None,
-        scope: Scope::new(Vec::new()),
+        scope: Scope::new(scope),
         services,
         max_sessions: MAX_SESSIONS,
         max_streams: MAX_STREAMS,
@@ -298,8 +298,14 @@ pub fn state_dir() -> Result<PathBuf, String> {
 // depth: the forward table, as sinks
 
 /// One row of `doc/P2P.md` §5's table, as what the host routes with: the
-/// forward, the named services, and the `-` session's end signal.
-pub(crate) type Sinks = (Forward, Vec<(String, Sink)>, Option<oneshot::Receiver<()>>);
+/// forward, the named services, the `-` session's end signal, and the
+/// addresses a caller may name (a forward of several targets).
+pub(crate) type Sinks = (
+    Forward,
+    Vec<(String, Sink)>,
+    Option<oneshot::Receiver<()>>,
+    Vec<drt_rtc::Entry>,
+);
 
 pub(crate) fn sinks(
     spec: &ForwardSpec,
@@ -319,6 +325,7 @@ pub(crate) fn sinks(
                     ("repl".to_string(), Sink::Local(raw)),
                 ],
                 None,
+                Vec::new(),
             )
         }
         ForwardSpec::One(entry) => {
@@ -327,7 +334,12 @@ pub(crate) fn sinks(
             } else {
                 vec![(entry.scheme.clone(), Sink::Dial(entry.clone()))]
             };
-            (Forward::One(Sink::Dial(entry.clone())), services, None)
+            (
+                Forward::One(Sink::Dial(entry.clone())),
+                services,
+                None,
+                Vec::new(),
+            )
         }
         ForwardSpec::Ports { host, ports } => (
             Forward::Ports {
@@ -336,6 +348,7 @@ pub(crate) fn sinks(
             },
             Vec::new(),
             None,
+            Vec::new(),
         ),
         ForwardSpec::Stdio => {
             let (tx, rx) = oneshot::channel();
@@ -343,7 +356,12 @@ pub(crate) fn sinks(
                 busy: AtomicBool::new(false),
                 done: Mutex::new(Some(tx)),
             });
-            (Forward::One(Sink::Local(stdio)), Vec::new(), Some(rx))
+            (
+                Forward::One(Sink::Local(stdio)),
+                Vec::new(),
+                Some(rx),
+                Vec::new(),
+            )
         }
         ForwardSpec::Peer(peer) => {
             let service: Arc<dyn Service> = Arc::new(PeerService(Arc::new(PeerInner {
@@ -356,7 +374,12 @@ pub(crate) fn sinks(
                 roots: roots.to_vec(),
                 call: tokio::sync::Mutex::new(None),
             })));
-            (Forward::One(Sink::Local(service)), Vec::new(), None)
+            (
+                Forward::One(Sink::Local(service)),
+                Vec::new(),
+                None,
+                Vec::new(),
+            )
         }
         ForwardSpec::Relay => {
             let relay: Arc<dyn drt_rtc::Relay> = Arc::new(PeerRelay {
@@ -367,7 +390,31 @@ pub(crate) fn sinks(
                 },
                 roots: roots.to_vec(),
             });
-            (Forward::Relay(relay), Vec::new(), None)
+            (Forward::Relay(relay), Vec::new(), None, Vec::new())
+        }
+        ForwardSpec::Many(entries) => {
+            // Each entry is in scope, so `host:port` names it; a non-`tcp`
+            // scheme is also its service. When every entry is on one host,
+            // that host's listed ports are the forward too, so a caller that
+            // names only a port (`-p 13389:3389`) reaches it as it would a
+            // `-P` forward. Across hosts a port alone is ambiguous, and a
+            // caller names the host.
+            let services = entries
+                .iter()
+                .filter(|e| e.scheme != "tcp")
+                .map(|e| (e.scheme.clone(), Sink::Dial(e.clone())))
+                .collect();
+            let host = &entries[0].host;
+            let forward = if entries.iter().all(|e| e.host.eq_ignore_ascii_case(host)) {
+                let list: Vec<String> = entries.iter().map(|e| e.port.to_string()).collect();
+                Forward::Ports {
+                    host: host.clone(),
+                    ports: drt_rtc::PortSet::parse(&list.join(","))?,
+                }
+            } else {
+                Forward::None
+            };
+            (forward, services, None, entries.clone())
         }
     })
 }

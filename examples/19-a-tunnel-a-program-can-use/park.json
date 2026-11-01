@@ -1,8 +1,10 @@
 {
   "_comment": "The device's half, from a file: hold a parked leg at the relay and serve `forward` when a caller claims it. The park key is a credential; here it is in a file a unit runs rather than on a command line in `ps`. `drt --config park.json p2p`.",
 
-  "p2p": {
-    "park": "ws://127.0.0.1:18490/park/fp?k=park-key-for-the-example-only",
-    "forward": "127.0.0.1:18491"
+  "commands": {
+    "p2p": {
+      "park": "ws://127.0.0.1:18490/park/fp?k=park-key-for-the-example-only",
+      "forward": ["127.0.0.1:18491"]
+    }
   }
 }

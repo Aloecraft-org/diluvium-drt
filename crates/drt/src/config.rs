@@ -63,6 +63,11 @@ pub fn load(path: Option<&Path>) -> Result<RootConfig, String> {
     // "relay.labels.xps needs both keys" is a different message when it
     // says which file's `xps`.
     validate(&config).map_err(|e| format!("{}: {e}", path.display()))?;
+    // Every deprecated spelling still reads as it did, for one release; the
+    // operator is told the new one each time the file is read.
+    for warning in config.deprecations() {
+        eprintln!("drt: {}: {warning}", path.display());
+    }
     resolve_program(&mut config, path);
     resolve_manifests(&mut config, path);
     resolve_identity(&mut config, path);

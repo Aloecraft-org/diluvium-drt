@@ -164,3 +164,36 @@ connections with parked peers.
 
 Next: per-topic tokens (topics thread); `host.kv.*` sugar and `kv/*` in
 the diluvium binary are diluvium's to add.
+## 2026-11-01 run: the `ldap` client connector
+
+Plan: the owner asked, in the project thread, for an LDAP client
+connector on the `ldap3` crate, usable from dlua and from the command
+line, with drt started with the connection settings; a later thread
+ties it to JWT and topics. One step on claude/project-thread-qy9ase,
+branched from PR #67 (claude/project-thread-hthum3) because the bind
+password uses its `drt_config::Secret` and `src/prompt.rs`; the pull
+request targets that branch and says so. No subagents.
+
+Done:
+- `connectors/ldap`: `ldap/bind`, `ldap/groups`, `ldap/search`. The
+  scope holds url, base_dn, bind_dn, bind_password (a Secret, resolved
+  once per process in `drt::ldap::connector`), starttls, extra_roots,
+  user_filter, group_filter, group_base, timeout_ms.
+- `drt ldap search|bind|groups` from `connectors.ldap` in `--config`,
+  dispatched before `assemble` so a prompt is asked once.
+- Tests: 4 unit, 12 against a fake directory (ldap3_proto), 5 against a
+  real slapd (plaintext, StartTLS, ldaps, with a CA minted per test),
+  4 through the binary. CI installs slapd and sets
+  DRT_TEST_REQUIRE_LDAP=1, and checks `--features connector-ldap`.
+- By hand, against a local slapd: `drt run` with a hidden-prompt
+  service password under a pty, `drt ldap bind bob` asking for both
+  passwords, and the no-terminal refusal under setsid.
+
+Learned: `rmpv::ext::from_value` reads a unit enum variant only as an
+index, so `{"prompt": "hidden"}` in a connector scope does not parse
+through it; the ldap scope goes through serde_json instead. `host.ldap.*`
+helpers do not exist: the per-family tables live in diluvium's host
+library, so programs use `host.call` and `host.try`.
+
+Next: the owner reviews; #67 merges first. The ruleset's required
+checks do not yet name `features (connector-ldap)`.

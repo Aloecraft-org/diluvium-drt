@@ -66,6 +66,7 @@ const PROFILE_FULL: &[&str] = &[
     "connector-exec",
     "connector-fs",
     "connector-kv",
+    "connector-ldap",
     "connector-rest",
     "connector-socket",
     "connector-sql",
@@ -349,6 +350,12 @@ pub enum Command {
     /// takes the same arguments.
     #[cfg(feature = "connector-ssh")]
     Ssh(crate::ssh::SshArgs),
+    /// The ldap connector's calls from this terminal: `search` a filter,
+    /// or `bind` to check a user's password, against the directory the
+    /// config's `connectors.ldap` names. The same connector and scope a
+    /// program gets.
+    #[cfg(feature = "connector-ldap")]
+    Ldap(crate::ldap::Args),
     /// Peer-to-peer sessions (doc/P2P.md): call a peer, park at a
     /// signalling server, listen on a UDP port, or be the signalling
     /// server. With no --relay and no --fallback, no machine other than
@@ -563,6 +570,7 @@ pub enum Command {
         feature = "connector-crypto",
         feature = "connector-rest",
         feature = "connector-ssmtp",
+        feature = "connector-ldap",
         feature = "connector-exec",
         feature = "connector-socket",
         feature = "connector-ws",
@@ -605,6 +613,9 @@ pub fn buildinfo(json: bool) -> String {
     if cfg!(feature = "connector-ssmtp") {
         connectors.push("ssmtp");
     }
+    if cfg!(feature = "connector-ldap") {
+        connectors.push("ldap");
+    }
     if cfg!(feature = "connector-exec") {
         connectors.push("exec");
     }
@@ -640,6 +651,9 @@ pub fn buildinfo(json: bool) -> String {
     }
     if cfg!(feature = "connector-ssh") {
         verbs.push("ssh");
+    }
+    if cfg!(feature = "connector-ldap") {
+        verbs.push("ldap");
     }
     if cfg!(feature = "tunnel") {
         verbs.push("tunnel");
@@ -761,6 +775,7 @@ fn enabled_features() -> Vec<&'static str> {
     feature!("connector-crypto");
     feature!("connector-fs");
     feature!("connector-kv");
+    feature!("connector-ldap");
     feature!("connector-rest");
     feature!("connector-sql");
     feature!("connector-ssh");
@@ -923,6 +938,18 @@ pub fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
             // so on stderr before the first step, in GUARANTEES.md's words.
             // What bounds it is the scope's -- a deadline, an output cap
             // and an allow list -- and nothing else.
+            // `ssmtp`'s discipline for a directory: the scope holds the
+            // server, the subtree and the service password, resolved once
+            // per process (`ldap::connector`), and the program names users
+            // and filters within it.
+            #[cfg(feature = "connector-ldap")]
+            "ldap" => registry
+                .wire(
+                    "ldap",
+                    crate::ldap::connector(wiring.scope.as_ref())?,
+                    wiring.scope.clone(),
+                )
+                .map_err(|e| e.to_string())?,
             #[cfg(feature = "connector-exec")]
             "exec" => {
                 let _ = std::io::Write::write_all(
@@ -994,7 +1021,8 @@ pub fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
 /// quiet kind of wrong.
 #[cfg(feature = "plugins")]
 const BUILTIN_FAMILIES: &[&str] = &[
-    "time", "fs", "sql", "crypto", "data", "ssh", "rest", "ssmtp", "exec", "socket", "ws", "kv",
+    "time", "fs", "sql", "crypto", "data", "ssh", "rest", "ssmtp", "ldap", "exec", "socket", "ws",
+    "kv",
 ];
 
 /// Every plugin family's name, judged before anything is wired.
@@ -1143,6 +1171,20 @@ pub fn assemble(cli: &Cli) -> Result<(RootConfig, drt_connector::Dispatcher), St
     config::validate(&config)?;
     config::validate_grants(&config, &registry)?;
     Ok((config, drt_connector::Dispatcher::new(registry)))
+}
+
+/// `drt ldap`: the config's ldap scope, and nothing else of it wired.
+#[cfg(feature = "connector-ldap")]
+fn ldap_verb(cli: &Cli, args: &crate::ldap::Args) -> ExitCode {
+    let outcome =
+        config::load(cli.config.as_deref()).and_then(|config| crate::ldap::run(args, &config));
+    match outcome {
+        Ok(status) => ExitCode::from(status),
+        Err(e) => {
+            eprintln!("drt ldap: {e}");
+            ExitCode::from(2)
+        }
+    }
 }
 
 /// Print the setup report. One place, so `drt start preflight` and
@@ -1707,6 +1749,10 @@ pub fn main(cli: Cli) -> ExitCode {
         Command::Deploy => return deploy_verb(&cli),
         Command::Rm => return rm_verb(&cli),
         Command::Commit => return commit_verb(&cli),
+        // Before `assemble`, which would wire the connector a first time:
+        // a `{"prompt": ..}` bind password is asked once, here.
+        #[cfg(feature = "connector-ldap")]
+        Command::Ldap(ref args) => return ldap_verb(&cli, args),
         // Needs no config: the script is a fact about the binary, and a
         // shell sourcing it at login must not trip over a bad `--config`.
         Command::Completions { shell } => {
@@ -1746,6 +1792,8 @@ pub fn main(cli: Cli) -> ExitCode {
         | Command::Completions { .. } => {
             unreachable!("these verbs are dispatched before assemble")
         }
+        #[cfg(feature = "connector-ldap")]
+        Command::Ldap(_) => unreachable!("ldap is dispatched before assemble"),
         #[cfg(feature = "wireguard")]
         Command::Wg {
             action: WgAction::Keygen,

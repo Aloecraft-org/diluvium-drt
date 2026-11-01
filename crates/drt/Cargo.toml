@@ -91,6 +91,7 @@ drt-connector-sql = { workspace = true, optional = true }
 drt-connector-crypto = { workspace = true, optional = true }
 drt-connector-rest = { workspace = true, optional = true }
 drt-connector-ssmtp = { workspace = true, optional = true }
+drt-connector-ldap = { workspace = true, optional = true }
 drt-connector-exec = { workspace = true, optional = true }
 drt-plugin = { workspace = true, optional = true }
 drt-connector-socket = { workspace = true, optional = true }
@@ -125,7 +126,12 @@ ego_transport = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net", "sync", "time"] }
 drt-connector-fs = { workspace = true }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
-futures-util = { version = "0.3", default-features = false }
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+# The fake directory `tests/ldap.rs` runs `drt ldap` and a program against
+# (`connectors/ldap/tests/fake`, included by path): ldap3_proto's server-side
+# codec, framed by tokio-util.
+ldap3_proto = "0.9"
+tokio-util = { version = "0.7", features = ["codec"] }
 # The wss gate the tunnel tests put in front of the bridge: a self-signed
 # cert and a TLS terminator, so `wss://` is exercised without a public CA.
 rcgen = "0.13"
@@ -134,6 +140,13 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 # (crates/drt-rtc/tests/common/peer.rs, included by path), which is str0m.
 drt-rtc = { workspace = true }
 str0m = { version = "0.23", default-features = false, features = ["rust-crypto"] }
+
+# A `{"prompt": "hidden"}` secret's blind read (`src/prompt.rs`), on the
+# controlling terminal. Already in the tree with `cli` off wasm, through
+# ego_cli, which gates it the same way: crossterm does not build for
+# wasm32, and a page or a wasip2 module has no terminal to read.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+crossterm = { version = "0.29", optional = true }
 
 [target.'cfg(unix)'.dev-dependencies]
 # `drt ssh` and the REPL's `:ssh` under a pseudo-terminal, against OpenSSH
@@ -146,7 +159,7 @@ libc = "0.2"
 # connector is its own gate so a profile is a feature list, not a fork.
 default = ["slim"]
 slim = ["connector-time", "connector-fs", "connector-crypto", "listen", "cli"]
-full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "connector-exec", "connector-socket", "connector-ws", "connector-kv", "connector-data", "tunnel", "relay", "stun", "netcheck", "turn", "wireguard", "webrtc", "numeric", "sshd", "p2p"]
+full = ["slim", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "connector-ldap", "connector-exec", "connector-socket", "connector-ws", "connector-kv", "connector-data", "tunnel", "relay", "stun", "netcheck", "turn", "wireguard", "webrtc", "numeric", "sshd", "p2p"]
 # The portable build (doc/Wasm.md D2): what `drt` carries on
 # wasm32-wasip2, under wasmtime. Every connector here compiles for that
 # target with no source change and is exercised by the examples gate
@@ -191,7 +204,7 @@ web = ["connector-time", "connector-fs", "connector-crypto", "cli", "numeric"]
 #
 # A pipe is never edited either way -- `drt repl < script.dlua` keeps the
 # plain reader, whose prompts go to stderr so that redirect stays clean.
-cli = ["dep:ego_cli", "dep:futures-executor"]
+cli = ["dep:ego_cli", "dep:futures-executor", "dep:crossterm"]
 connector-time = ["dep:drt-connector-time"]
 connector-ssh = ["dep:drt-connector-ssh", "runtime"]
 # `drt start`'s `ssh` listener: the REPL over SSH (SPEC.md §9), on
@@ -212,6 +225,11 @@ connector-rest = ["dep:drt-connector-rest", "runtime"]
 # holding the password and cannot forge its From line; that is the whole
 # reason this is a connector and not something a guest reaches via `rest`.
 connector-ssmtp = ["dep:drt-connector-ssmtp", "runtime"]
+# A directory: `host:ldap/bind` and `host:ldap/search`. `full` only, for
+# rest's reason -- it links a TLS stack -- and on ssmtp's argument: the
+# scope holds the server, the subtree and the service password, so a
+# program checks a login without ever holding the service credential.
+connector-ldap = ["dep:drt-connector-ldap", "runtime"]
 # Local exec: `host:exec/run`, the honest escape hatch, the contract
 # `dhost_exec.c` fixes. `full` only, and not for a dependency -- it links
 # nothing -- but because SPEC.md §3's slim profile is "run a script,

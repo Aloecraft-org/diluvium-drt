@@ -12,6 +12,13 @@ RootConfig {
             max_tier: None,
         },
     },
+    defaults: DefaultConfig {
+        stun: [],
+        extra_roots: [],
+    },
+    commands: CommandsConfig {
+        p2p: None,
+    },
     connectors: {},
     plugins: {},
     listeners: [],
@@ -32,11 +39,15 @@ RootConfig {
             mode: Kernel,
             forward: [],
             expose: [],
-            private_key: None,
-            private_key_file: None,
-            private_key_env: Some(
-                "FP_PRIVATE_KEY",
+            private_key: Some(
+                From(
+                    Env(
+                        "FP_PRIVATE_KEY",
+                    ),
+                ),
             ),
+            private_key_file: None,
+            private_key_env: None,
             peers: [
                 WireguardPeer {
                     public_key: "p6VqzzX91j0TRajLGT9Dlkn0TEvvk+j4m9E38LlXhSQ=",
