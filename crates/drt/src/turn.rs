@@ -104,30 +104,19 @@ pub async fn bind(
 }
 
 /// The shared secret, read once at startup and refused by name when it
-/// is missing: `connectors.crypto.turn`'s three knobs, resolved in the
-/// same order, because it is the same secret.
+/// is missing: one [`drt_config::Secret`], from `key` or, for one release,
+/// the deprecated `key_file` and `key_env` before it.
 fn secret(config: &TurnConfig) -> Result<String, String> {
-    let bytes = if let Some(path) = &config.key_file {
-        let mut b = std::fs::read(path)
-            .map_err(|e| format!("turn: cannot read key_file '{}': {e}", path.display()))?;
-        // Trim one trailing newline, the common shape of a key file.
-        if b.last() == Some(&b'\n') {
-            b.pop();
-        }
-        b
-    } else if let Some(var) = &config.key_env {
-        std::env::var(var)
-            .map_err(|_| format!("turn: env var '{var}' (key_env) is not set"))?
-            .into_bytes()
-    } else if let Some(inline) = &config.key {
-        inline.clone().into_bytes()
-    } else {
-        Vec::new()
+    let bytes = match config.key_source() {
+        Some(source) => source
+            .resolve("turn.key", &crate::prompt::terminal)?
+            .into_bytes(),
+        None => Vec::new(),
     };
     if bytes.len() < KEY_MIN {
         return Err(format!(
             "turn: the key is missing or shorter than {KEY_MIN} bytes \
-             (set one of key_file, key_env, key); a relay with nothing to \
+             (set key: a string, {{\"env\": ..}} or {{\"file\": ..}}); a relay with nothing to \
              verify against is an open relay, and is refused"
         ));
     }

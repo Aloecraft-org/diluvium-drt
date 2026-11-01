@@ -75,6 +75,30 @@ fn echo() -> u16 {
     port
 }
 
+/// Says `tag` on every connection, then echoes: a target that tells the
+/// caller which of several it reached.
+fn tagged(tag: &'static str) -> u16 {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for conn in l.incoming().flatten() {
+            std::thread::spawn(move || {
+                let mut c = conn;
+                if c.write_all(tag.as_bytes()).is_err() {
+                    return;
+                }
+                let mut buf = [0u8; 4096];
+                while let Ok(n) = c.read(&mut buf) {
+                    if n == 0 || c.write_all(&buf[..n]).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    port
+}
+
 fn free_port() -> u16 {
     std::net::UdpSocket::bind("127.0.0.1:0")
         .unwrap()
@@ -103,6 +127,12 @@ impl Listening {
         if let Some(p) = signal_port {
             cmd.arg("--signal").arg(p.to_string());
         }
+        Listening::from_command(cmd, signal_port)
+    }
+
+    /// A listening peer however it was started, read until its record.
+    fn from_command(mut cmd: Command, signal_port: Option<u16>) -> Listening {
+        let signal = signal_port.is_some();
         let mut child = cmd
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -203,6 +233,36 @@ fn a_record_in_hand_reaches_the_one_forward_over_stdio() {
     );
     let (out, err) = call(&l.record, &[], b"hello over p2p\n");
     assert_eq!(out, "hello over p2p\n", "{err}");
+}
+
+/// `commands.p2p.forward` as a list, from a config file: a caller names one
+/// target by `host:port`, or by port alone when every target is on one
+/// host, and a port no target names is refused.
+#[test]
+fn a_forward_list_from_the_config_serves_the_target_the_caller_names() {
+    let (a, b) = (tagged("A:"), tagged("B:"));
+    let udp = free_port();
+    let dir = std::env::temp_dir().join(format!("drt-p2p-list-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("listen.json");
+    std::fs::write(
+        &file,
+        format!(
+            r#"{{"commands": {{"p2p": {{"listen": {udp}, "forward": ["127.0.0.1:{a}", "127.0.0.1:{b}"]}}}}}}"#
+        ),
+    )
+    .unwrap();
+    let mut cmd = drt();
+    cmd.arg("--config").arg(&file).arg("p2p");
+    let l = Listening::from_command(cmd, None);
+
+    let (out, err) = call(&l.record, &["-p", &format!(":127.0.0.1:{b}")], b"x\n");
+    assert_eq!(out, "B:x\n", "by host:port: {err}");
+    let (out, err) = call(&l.record, &["-p", &format!(":{a}")], b"y\n");
+    assert_eq!(out, "A:y\n", "by port alone: {err}");
+    let (out, _) = call(&l.record, &["-p", &format!(":{}", free_port())], b"z\n");
+    assert_eq!(out, "", "a port no target names reaches nothing");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -768,10 +828,14 @@ fn the_match_server_admits_a_topic_by_its_tokens_roles() {
     assert_eq!(server.get("/v1/elsewhere/names?k=home-read").0, 403);
 
     // Another park token may not take the held name; a token without park
-    // may not park at all; a reserved word is not a name.
+    // may not park at all; a reserved word is not a name: `kv` is the
+    // topic's key-value store, which this server, without --kv, keeps not.
     assert_eq!(server.get("/v1/home/laptop/calls?k=other-park").0, 403);
     assert_eq!(server.get("/v1/home/desk/calls?k=home-call").0, 403);
-    assert_eq!(server.get("/v1/home/kv/calls?k=home-park").0, 400);
+    let (status, body) = server.get("/v1/home/kv/calls?k=home-park");
+    assert_eq!(status, 404, "{body}");
+    assert!(body.contains("keeps no kv"), "{body}");
+    assert_eq!(server.get("/v1/home/names/calls?k=home-park").0, 400);
 
     // Pairing stays inside the topic: the told side calls with its own
     // token, which holds call.

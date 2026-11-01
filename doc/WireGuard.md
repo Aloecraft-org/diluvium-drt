@@ -56,7 +56,7 @@ return {
     interface       = "drt0",
     address         = "10.9.0.1/24",  -- put on the interface; no `ip addr` needed
     mtu             = 1420,           -- not 1500: WireGuard's overhead is 60-80
-    private_key_env = "WG_KEY",       -- or private_key_file, or private_key
+    private_key     = { env = "WG_KEY" },  -- or { file = … }, { prompt = "hidden" }, or the key
     stun            = { "stun1.example:3478", "stun2.example:3478" },
     turn_fallback   = true,           -- may be asked to relay; see §2
     queue           = "wg_in",        -- reports land here
@@ -144,7 +144,7 @@ of an address:
     "mode": "userspace",
     "listen_port": 51820,
     "address": "10.9.0.2/24",
-    "private_key_env": "WG_KEY",
+    "private_key": { "env": "WG_KEY" },
     "forward": [ { "bind": "127.0.0.1:2222", "to": "10.9.0.1:22" } ],
     "expose":  [ { "tunnel": "10.9.0.2:22", "to": "127.0.0.1:22" } ],
     "peers": [ { "public_key": "…", "allowed_ips": ["10.9.0.1/32"] } ]

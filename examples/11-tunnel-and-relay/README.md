@@ -48,12 +48,12 @@ the caller's `ssh -o ProxyCommand="drt p2p --relay wss://…/s/xps?k=…"`. The
 relay is a carrier the caller asked for by name; without `--relay`, `drt
 p2p` is direct or fails and says so.
 
-**Or one file.** Every flag is a key of a `p2p` block, so the device's half
-is a file a setup script writes and a unit runs, with the key out of `ps`
-and shell history:
+**Or one file.** Every flag is a key of the `commands.p2p` block, so the
+device's half is a file a setup script writes and a unit runs, with the key
+out of `ps` and shell history:
 
 ```json
-{ "p2p": { "park": "wss://rendezvous.example/park/xps?k=…", "forward": "ssh://127.0.0.1:22" } }
+{ "commands": { "p2p": { "park": "wss://rendezvous.example/park/xps?k=…", "forward": ["ssh://127.0.0.1:22"] } } }
 ```
 
 ```

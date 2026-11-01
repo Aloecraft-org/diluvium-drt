@@ -10,15 +10,25 @@
 -- - Entry point: the verb runs it with an http listener on --host:<port>,
 --   `args.capacity` the names held at once, `args.topics` the --topics
 --   file as the verb checked it (JSON text: topic -> token -> roles), or
---   '' for none.
+--   '' for none; `args.groups` the file's group maps (JSON text: topic ->
+--   group -> roles) and `args.jwt` its jwt block (JSON text: issuer,
+--   audience, groups_claim, and jwks or jwks_kv), or '' for none;
+--   `args.kv` the database `drt p2p --match --kv <dir>` names, or nil for
+--   no kv.
 -- - Configurable: HOLD_MS (§3), PRESENT_MS (§4.2), WAITING_CAP (§6),
 --   RECORD_MAX (§1), KEEPALIVE_MS (§5), the CORS headers; RESERVED, the
---   second path segments that are not a name inside a topic.
--- - Fan-out: `route`, which splits /v1/<a>/<b>/… three ways (a bare name,
---   a topic's listing, a name inside a topic); `routes`, the five requests
---   of §2 and the two of §6.2 (pairing), each with whose token it takes
---   (`TOPIC_ROLE` names that token's role inside a topic); `claim`, how a
---   name is held.
+--   second path segments that are not a name inside a topic; kv's
+--   KV_VALUE_MAX, KV_KEY_MAX, KV_TOPIC_MAX, KV_LIST_DEFAULT, KV_LIST_MAX,
+--   KV_TTL_MAX, KV_EVENTS_KEPT, KV_POLL_MS.
+-- - Fan-out: `route`, which splits /v1/<a>/<b>/… four ways (a topic's kv,
+--   a bare name, a topic's listing, a name inside a topic); `routes`, the
+--   five requests of §2 and the two of §6.2 (pairing), each with whose
+--   token it takes (`TOPIC_ROLE` names that token's role inside a topic);
+--   `claim`, how a name is held; `principal`, the one place a topic token
+--   is judged, by two kinds (a static token the file lists, or a JWT whose
+--   groups the file maps); `kv_route`, the kv requests
+--   (doc/DRT-Signalling.md §10), and `kv_access`, the one place a kv
+--   request is admitted.
 --
 -- Topics (doc/P2P.md §2.4): /v1/<topic>/<name>/… is a name inside a topic
 -- the --topics file declares, and every request there takes a token the
@@ -28,6 +38,13 @@
 -- name, untouched by topics: claimed on first use, with an optional
 -- DRT-Caller-Token. Inside a topic DRT-Caller-Token is not read; the
 -- topic's call tokens admit.
+--
+-- JWTs (doc/P2P.md §2.5): with a jwt block, a token that is not one the
+-- file lists is checked as a JWT with crypto/jwt_verify against the
+-- issuer's JWKS (the file's own, or a key in this server's kv), then for
+-- `iss`, `aud` and `sub`. Its roles in a topic are the union of the roles
+-- the topic maps to each name in its groups claim. A JWT holds a name by
+-- its `sub`, so a renewed token keeps the name.
 --
 -- Admission is by token, not origin: every reply carries
 -- access-control-allow-origin: *, so a page opened from file:// (Origin:
@@ -44,11 +61,20 @@ local NAME_MAX     = 64
 local RESERVED = {calls = true, events = true, pair = true, names = true, kv = true}
 -- A request's `who` (below) as the role its token needs inside a topic.
 local TOPIC_ROLE = {caller = 'call', answerer = 'park'}
+-- kv: values are small text, not files; a listing is a page, not a dump.
+local KV_VALUE_MAX    = 16384
+local KV_KEY_MAX      = 256
+local KV_TOPIC_MAX    = 64
+local KV_LIST_DEFAULT = 100
+local KV_LIST_MAX     = 1000
+local KV_TTL_MAX      = 31536000   -- a year, in seconds
+local KV_EVENTS_KEPT  = 1024       -- changes a watcher can resume across
+local KV_POLL_MS      = 25000      -- inside the listener's 30 s deadline
 local CORS = {
   ['access-control-allow-origin']   = '*',
-  ['access-control-allow-methods']  = 'GET, POST, DELETE, OPTIONS',
-  ['access-control-allow-headers']  = 'authorization, content-type, last-event-id, drt-accept, drt-caller-token',
-  ['access-control-expose-headers'] = 'location, retry-after',
+  ['access-control-allow-methods']  = 'GET, PUT, POST, DELETE, OPTIONS',
+  ['access-control-allow-headers']  = 'authorization, content-type, last-event-id, drt-accept, drt-caller-token, if-match, if-none-match',
+  ['access-control-expose-headers'] = 'location, retry-after, etag',
 }
 
 local requests = queue.declare('http_in', {capacity = 64})
@@ -68,6 +94,23 @@ if type(args.topics) == 'string' and args.topics ~= '' then
     end
   end
 end
+-- topic -> group -> {role = true}: what a JWT's groups hold in each topic.
+local GROUPS = {}
+if type(args.groups) == 'string' and args.groups ~= '' then
+  for topic, groups in pairs(json.decode(args.groups)) do
+    GROUPS[topic] = {}
+    for group, roles in pairs(groups) do
+      local set = {}
+      for _, role in ipairs(roles) do set[role] = true end
+      GROUPS[topic][group] = set
+    end
+  end
+end
+-- The jwt block as the verb checked it, or nil: {issuer, audience?,
+-- groups_claim, jwks = JSON text} or {..., jwks_kv = {topic, key}}.
+local JWT = nil
+if type(args.jwt) == 'string' and args.jwt ~= '' then JWT = json.decode(args.jwt) end
+local KV_DB    = args.kv   -- a database name inside the sql scope, or nil: no kv
 
 -- depth: replies
 
@@ -191,26 +234,86 @@ local function valid_name(s)
   return #s >= 1 and #s <= NAME_MAX and s:match('^[a-z0-9.%-]+$') ~= nil and not RESERVED[s]
 end
 
--- Whether `token` holds `role` in `topic`. The one place a topic token is
--- judged: every request inside a topic, kv's included, asks here, so a
--- token that carries its own claims (a JWT with directory groups) replaces
--- this body and nothing else.
-local function may(topic, token, role)
-  local tokens = TOPICS and TOPICS[topic]
-  local roles = tokens and token and tokens[token]
-  return roles ~= nil and roles[role] == true
+-- The JWKS text a JWT is checked against, or nil while none is
+-- published: the file's own, or the kv key the file names, read again
+-- only after the kv has changed. `kv_jwks` is assigned once the kv
+-- storage below is defined.
+local kv_jwks
+local function current_jwks()
+  if JWT.jwks then return JWT.jwks end
+  return kv_jwks()
 end
 
--- The token check for a request inside `topic`: true, or false after
--- replying 401 (no token) or 403 (a token that may not, or a topic the
--- file does not declare: the two look alike, so a stranger cannot list
--- topics by probing). kv's routes call this with role read or write.
+-- A JWT's claims, or nil and why: crypto/jwt_verify against the JWKS
+-- (signature, kid, exp, nbf; the header is rebuilt from the key, so a
+-- token cannot pick its algorithm), then `iss`, `aud` when the file names
+-- one, and a `sub` to hold names by.
+local function jwt_claims(token)
+  local jwks = current_jwks()
+  if not jwks then return nil, 'no signing keys are published' end
+  local ok, v = pcall(host.call, 'crypto/jwt_verify', {token = token, jwks = jwks})
+  if not ok then
+    print('p2p match: jwt: the signing keys do not read as a JWKS: ' .. tostring(v))
+    return nil, 'the signing keys do not read as a JWKS'
+  end
+  if not v.valid then return nil, v.reason end
+  local c = v.claims
+  if c.iss ~= JWT.issuer then return nil, 'issuer' end
+  if JWT.audience then
+    local held = c.aud == JWT.audience
+    if type(c.aud) == 'table' then
+      for _, a in ipairs(c.aud) do if a == JWT.audience then held = true end end
+    end
+    if not held then return nil, 'audience' end
+  end
+  if type(c.sub) ~= 'string' or c.sub == '' then return nil, 'subject' end
+  return c
+end
+
+-- Who `token` is and the roles it holds in `topic`, judged by kind: a
+-- token the file lists for the topic; else, with a jwt block, a JWT,
+-- whose roles are what the topic maps its groups to; else nobody, with no
+-- roles. A JWT that does not verify is nil and why. Every request inside
+-- a topic, kv's included, asks here and nowhere else. A JWT is judged the
+-- same whatever the topic, so a refusal does not say which topics exist.
+local function principal(topic, token)
+  local tokens = TOPICS and TOPICS[topic]
+  local listed = tokens and tokens[token]
+  if listed then return {id = 'token:' .. token, roles = listed} end
+  if not JWT or not token:match('^[%w_%-]+%.[%w_%-]+%.[%w_%-]+$') then
+    return {id = 'token:' .. token, roles = {}}
+  end
+  local claims, why = jwt_claims(token)
+  if not claims then return nil, why end
+  local held, map = {}, GROUPS[topic] or {}
+  local groups = claims[JWT.groups_claim]
+  if type(groups) == 'table' then
+    for _, g in ipairs(groups) do
+      for role in pairs(type(g) == 'string' and map[g] or {}) do held[role] = true end
+    end
+  end
+  return {id = 'jwt:' .. claims.sub, roles = held}
+end
+
+-- Whether `token` holds `role` in `topic`.
+local function may(topic, token, role)
+  local p = token and principal(topic, token)
+  return p ~= nil and p.roles[role] == true
+end
+
+-- The token check for a request inside `topic`: the principal, or nil
+-- after replying 401 (no token, or a JWT that does not verify) or 403 (a
+-- token that may not, or a topic the file does not declare: the two look
+-- alike, so a stranger cannot list topics by probing). kv's routes call
+-- this with role read or write.
 local function topic_access(m, topic, role)
   local _, params = split(m.path)
   local token = token_of(m, params)
-  if not token then fail(m.conn, 401, 'a token for this topic is needed'); return false end
-  if not may(topic, token, role) then fail(m.conn, 403, 'this token may not ' .. role .. ' in this topic'); return false end
-  return true
+  if not token then fail(m.conn, 401, 'a token for this topic is needed'); return nil end
+  local p, why = principal(topic, token)
+  if not p then fail(m.conn, 401, 'the token does not verify: ' .. why); return nil end
+  if not p.roles[role] then fail(m.conn, 403, 'this token may not ' .. role .. ' in this topic'); return nil end
+  return p
 end
 
 -- depth: names, claimed on first use
@@ -226,24 +329,30 @@ local function present(r, now)
   return (r.polled and now - r.polled < PRESENT_MS) or next(r.streams) ~= nil
 end
 
--- The answerer's claim: a free name is taken by the first answerer token to
--- poll it, held while that token is present, and shared by every holder of
--- the same token. A name past the cap is 429; another token's name is 403.
--- Returns the name's record, or nil after replying.
+-- The answerer's claim: a free name is taken by the first answerer to
+-- poll it, held while that answerer is present, and shared by every
+-- request from the same answerer. A name past the cap is 429; another
+-- answerer's name is 403. Returns the name's record, or nil after
+-- replying.
 -- `name` is the key names[] holds it under: `<name>`, or `<topic>/<name>`
 -- inside a topic, where the topic's call tokens admit callers instead of a
--- DRT-Caller-Token.
-local function claim(m, name, token, now, topic)
+-- DRT-Caller-Token. `holder` is who the answerer is: its token for a bare
+-- name, its principal's id inside a topic (a JWT's `sub`, so a renewed
+-- token keeps the name). `r.token` is the holder's latest token, which a
+-- pairing checks and hands on.
+local function claim(m, name, token, now, topic, holder)
+  holder = holder or token
   local r = names[name]
   if r and not present(r, now) then names[name] = nil; r = nil end
-  if r and r.token ~= token then fail(m.conn, 403, 'this name is held by another answerer'); return nil end
+  if r and r.holder ~= holder then fail(m.conn, 403, 'this name is held by another answerer'); return nil end
   if not r then
     if held_count() >= CAPACITY then
       fail(m.conn, 429, 'no room for another name', {['retry-after'] = '30'}); return nil
     end
-    r = {token = token, topic = topic, streams = {}, calls = {}, pairs = {}, last = 0}
+    r = {holder = holder, topic = topic, streams = {}, calls = {}, pairs = {}, last = 0}
     names[name] = r
   end
+  r.token = token
   local h = m.headers or {}
   if h['drt-caller-token'] and not topic then r.caller = h['drt-caller-token'] end
   if h['drt-accept'] then r.accept = h['drt-accept'] end
@@ -280,7 +389,9 @@ local function notify(r, cursor, now, kind)
 end
 
 -- The caller's one request (§3): held until answered, or refused now.
-local function call(m, name, token, now)
+-- `by` is who may withdraw the call: the caller's token, or inside a
+-- topic its principal's id.
+local function call(m, name, token, now, by)
   local r = names[name]
   if not r or not present(r, now) then return fail(m.conn, 503, 'no answerer is present') end
   if not r.topic and r.caller and token ~= r.caller then
@@ -295,7 +406,7 @@ local function call(m, name, token, now)
   if not checked(m) then return end
   if waiting(r) >= WAITING_CAP then return fail(m.conn, 429, 'too many calls waiting', {['retry-after'] = '5'}) end
   r.last = r.last + 1
-  r.calls[r.last] = {record = m.body, conn = m.conn, ends = now + HOLD_MS, by = token}
+  r.calls[r.last] = {record = m.body, conn = m.conn, ends = now + HOLD_MS, by = by or token}
   notify(r, r.last, now)
 end
 
@@ -414,6 +525,347 @@ local function topic_names(m, topic, now)
   json(m.conn, 200, '{"topic":' .. json_text(topic) .. ',"names":' .. (#out > 0 and json_text(out) or '[]') .. '}')
 end
 
+-- depth: kv admission, the seam topics fills in
+
+-- Whether this request may `op` ('read' or 'write') the kv of `topic`;
+-- false after replying. With topics, a token of the topic holding that
+-- role. Without topics there is no token to check: the server says so
+-- when kv is on, and --host is what narrows who reaches it.
+local function kv_access(m, topic, op)
+  if not TOPICS then return true end
+  return topic_access(m, topic, op)
+end
+
+-- depth: kv storage, one SQLite database (doc/DRT-Signalling.md §10)
+
+local kv = {db = nil, revision = 0, next_expiry = nil, events = {}, oldest = 1,
+            streams = {}, polls = {}}
+
+local function kv_open()
+  kv.db = host.sql.open(KV_DB)
+  kv.db.exec('create table if not exists kv (topic text not null, key text not null, '
+    .. 'value text not null, version integer not null, expires integer not null default 0, '
+    .. 'primary key (topic, key)) without rowid')
+  kv.db.exec('create index if not exists kv_expires on kv (expires) where expires > 0')
+  kv.db.exec('create table if not exists kv_meta (name text primary key, value integer not null)')
+  -- The last KV_EVENTS_KEPT changes, so a watcher resumes across a restart.
+  kv.db.exec('create table if not exists kv_events (revision integer primary key, topic text not null, '
+    .. "key text not null, op text not null, version integer not null default 0, value text not null default '')")
+  local r = kv.db.query("select value from kv_meta where name = 'revision'").rows[1]
+  kv.revision = r and r[1] or 0
+  kv.oldest = kv.revision + 1
+  for _, e in ipairs(kv.db.query('select revision, topic, key, op, version, value from kv_events '
+      .. 'order by revision').rows) do
+    kv.events[e[1]] = {revision = e[1], topic = e[2], key = e[3], op = e[4], version = e[5], value = e[6]}
+    if e[1] < kv.oldest then kv.oldest = e[1] end
+  end
+  local e = kv.db.query('select coalesce(min(expires), 0) from kv where expires > 0').rows[1][1]
+  kv.next_expiry = e > 0 and e or nil
+end
+
+-- A key that has expired and not yet been swept is absent.
+local function kv_row(topic, key, wall)
+  local r = kv.db.query('select value, version, expires from kv where topic = ? and key = ?',
+                        topic, key).rows[1]
+  if not r or (r[3] > 0 and r[3] <= wall) then return nil end
+  return {value = r[1], version = r[2], expires = r[3]}
+end
+
+-- The jwt block's jwks_kv: that key's value, read again only after the
+-- kv has changed. A value with a TTL is absent the moment it expires,
+-- before the sweep records the change, so a publisher that stops fails
+-- closed.
+local jwks_seen = {revision = -1, text = nil, expires = 0}
+kv_jwks = function()
+  if not kv.db then return nil end
+  local wall = host.time()
+  if jwks_seen.revision ~= kv.revision then
+    local row = kv_row(JWT.jwks_kv.topic, JWT.jwks_kv.key, wall)
+    jwks_seen = {revision = kv.revision, text = row and row.value, expires = row and row.expires or 0}
+  end
+  if jwks_seen.expires > 0 and jwks_seen.expires <= wall then return nil end
+  return jwks_seen.text
+end
+
+-- One change, `e` = {topic, key, op, value?}: the row, the revision and the
+-- change's event move together, or none of them does. Returns the event,
+-- its revision (and a put's version) filled in.
+local function kv_commit(e, statement, ...)
+  local revision = kv.revision + 1
+  e.revision = revision
+  if e.op == 'put' then e.version = revision end
+  kv.db.exec('begin')
+  local ok, err = pcall(function(...)
+    kv.db.exec(statement, ...)
+    kv.db.exec("insert into kv_meta (name, value) values ('revision', ?) "
+      .. 'on conflict (name) do update set value = excluded.value', revision)
+    kv.db.exec('insert into kv_events (revision, topic, key, op, version, value) values (?, ?, ?, ?, ?, ?)',
+      revision, e.topic, e.key, e.op, e.version or 0, e.value or '')
+    kv.db.exec('delete from kv_events where revision <= ?', revision - KV_EVENTS_KEPT)
+    kv.db.exec('commit')
+  end, ...)
+  if not ok then pcall(kv.db.exec, 'rollback'); error(err, 0) end
+  kv.revision = revision
+  kv.events[revision] = e
+  while kv.revision - kv.oldest + 1 > KV_EVENTS_KEPT do
+    kv.events[kv.oldest] = nil; kv.oldest = kv.oldest + 1
+  end
+  return e
+end
+
+-- depth: kv watchers, by stream and by held request
+
+local function kv_event_json(e)
+  local out = {revision = e.revision, op = e.op, key = e.key}
+  if e.op == 'put' then out.version = e.version; out.value = e.value end
+  return json_text(out)
+end
+
+local function kv_sse(e)
+  return 'id: ' .. e.revision .. '\nevent: kv\ndata: ' .. kv_event_json(e) .. '\n\n'
+end
+
+local function kv_wants(w, e)
+  return w.topic == e.topic and e.key:sub(1, #w.prefix) == w.prefix
+end
+
+-- The events after `since` that `w` wants, oldest first; nil when `since`
+-- is older than what is kept, and the watcher must list again.
+local function kv_since(w, since)
+  if since + 1 < kv.oldest then return nil end
+  local out = {}
+  for n = since + 1, kv.revision do
+    local e = kv.events[n]
+    if e and kv_wants(w, e) then out[#out + 1] = e end
+  end
+  return out
+end
+
+local function kv_reply_poll(conn, events, reset)
+  local parts = {}
+  for i, e in ipairs(events) do parts[i] = kv_event_json(e) end
+  json(conn, 200, '{"revision":' .. kv.revision .. ',"events":[' .. table.concat(parts, ',') .. ']'
+    .. (reset and ',"reset":true' or '') .. '}')
+end
+
+-- Tell every watcher that wants it of a committed change.
+local function kv_notify(e, now)
+  for conn, w in pairs(kv.streams) do
+    if kv_wants(w, e) then queue.push(replies, {conn = conn, chunk = kv_sse(e)}); w.at = now end
+  end
+  for conn, w in pairs(kv.polls) do
+    if kv_wants(w, e) then kv.polls[conn] = nil; kv_reply_poll(conn, {e}) end
+  end
+end
+
+-- Expired keys leave as events of their own, so a watcher hears of them.
+local function kv_sweep(now)
+  if not kv.db or not kv.next_expiry then return end
+  local wall = host.time()
+  if wall < kv.next_expiry then return end
+  local gone = kv.db.query('select topic, key from kv where expires > 0 and expires <= ? '
+    .. 'order by expires', wall).rows
+  for _, r in ipairs(gone) do
+    kv_notify(kv_commit({topic = r[1], key = r[2], op = 'expire'},
+                        'delete from kv where topic = ? and key = ?', r[1], r[2]), now)
+  end
+  local e = kv.db.query('select coalesce(min(expires), 0) from kv where expires > 0').rows[1][1]
+  kv.next_expiry = e > 0 and e or nil
+end
+
+-- depth: kv requests (doc/DRT-Signalling.md §10)
+
+-- Keys travel percent-encoded or not; both spell the same key.
+local function kv_unescape(text)
+  return (text:gsub('%%(%x%x)', function(h) return string.char(tonumber(h, 16)) end))
+end
+
+-- A key, or with `prefix` set the start of one (which may end mid-segment
+-- and may be empty). A `.` or `..` segment is refused: a browser's fetch
+-- folds `a/../b` into `b` before it is sent.
+local function kv_valid_key(key, prefix)
+  if key == '' then return prefix end
+  if #key > KV_KEY_MAX or not key:match('^[%w%._~/%-]+$')
+    or key:sub(1, 1) == '/' or key:find('//', 1, true) then
+    return false
+  end
+  for segment in key:gmatch('[^/]+') do
+    if (segment == '.' or segment == '..') and not prefix then return false end
+  end
+  return true
+end
+
+local function kv_etag(version) return '"' .. version .. '"' end
+
+-- If-Match / If-None-Match against the current row (nil when absent):
+-- true when the write may go ahead, else false after replying 412.
+local function kv_precondition(m, row)
+  local h = m.headers or {}
+  local match, none = h['if-match'], h['if-none-match']
+  local current = row and row.version
+  local ok = true
+  if match then
+    if match == '*' then ok = row ~= nil
+    else ok = row ~= nil and match:gsub('^W/', '') == kv_etag(row.version) end
+  end
+  if ok and none == '*' then ok = row == nil end
+  if ok then return true end
+  fail(m.conn, 412, row and 'the key is at another version' or 'no such key',
+       current and {etag = kv_etag(current)} or nil)
+  return false
+end
+
+local function kv_get(m, topic, key, wall)
+  local row = kv_row(topic, key, wall)
+  if not row then return fail(m.conn, 404, 'no such key') end
+  queue.push(replies, {conn = m.conn, status = 200, body = row.value,
+                       content_type = 'text/plain;charset=utf-8',
+                       headers = with({etag = kv_etag(row.version), ['cache-control'] = 'no-cache'})})
+end
+
+local function kv_put(m, topic, key, params, now, wall)
+  if not utf8.len(m.body) then return fail(m.conn, 400, 'a value is UTF-8 text') end
+  if #m.body > KV_VALUE_MAX then return fail(m.conn, 413, 'a value is at most ' .. KV_VALUE_MAX .. ' bytes') end
+  local expires = 0
+  if params.ttl then
+    local ttl = params.ttl:match('^%d+$') and tonumber(params.ttl)
+    if not ttl or ttl < 1 or ttl > KV_TTL_MAX then
+      return fail(m.conn, 400, 'ttl is whole seconds, 1 to ' .. KV_TTL_MAX)
+    end
+    expires = wall + ttl * 1000
+  end
+  local row = kv_row(topic, key, wall)
+  if not kv_precondition(m, row) then return end
+  local e = kv_commit({topic = topic, key = key, op = 'put', value = m.body},
+    'insert into kv (topic, key, value, version, expires) values (?, ?, ?, ?, ?) '
+    .. 'on conflict (topic, key) do update set value = excluded.value, version = excluded.version, '
+    .. 'expires = excluded.expires', topic, key, m.body, kv.revision + 1, expires)
+  if expires > 0 and (not kv.next_expiry or expires < kv.next_expiry) then kv.next_expiry = expires end
+  json(m.conn, row and 200 or 201, json_text({key = key, version = e.version}), {etag = kv_etag(e.version)})
+  kv_notify(e, now)
+end
+
+local function kv_delete(m, topic, key, now, wall)
+  local row = kv_row(topic, key, wall)
+  if not row and not (m.headers or {})['if-match'] then return fail(m.conn, 404, 'no such key') end
+  if not kv_precondition(m, row) then return end
+  local e = kv_commit({topic = topic, key = key, op = 'delete'},
+                      'delete from kv where topic = ? and key = ?', topic, key)
+  json(m.conn, 204, '')
+  kv_notify(e, now)
+end
+
+local function kv_list(m, topic, params, wall)
+  local prefix, after = params.prefix or '', params.after or ''
+  if not kv_valid_key(prefix, true) or not kv_valid_key(after, true) then
+    return fail(m.conn, 400, 'a malformed prefix or after')
+  end
+  local limit = KV_LIST_DEFAULT
+  if params.limit then
+    limit = params.limit:match('^%d+$') and tonumber(params.limit)
+    if not limit or limit < 1 or limit > KV_LIST_MAX then
+      return fail(m.conn, 400, 'limit is 1 to ' .. KV_LIST_MAX)
+    end
+  end
+  local rows = kv.db.query('select key, value, version, expires from kv where topic = ? '
+    .. 'and substr(key, 1, ?) = ? and key > ? and (expires = 0 or expires > ?) order by key limit ?',
+    topic, #prefix, prefix, after, wall, limit + 1).rows
+  local parts = {}
+  for i = 1, math.min(#rows, limit) do
+    local r = rows[i]
+    local e = {key = r[1], value = r[2], version = r[3]}
+    if r[4] > 0 then e.expires_in = math.ceil((r[4] - wall) / 1000) end
+    parts[i] = json_text(e)
+  end
+  json(m.conn, 200, '{"revision":' .. kv.revision .. ',"keys":[' .. table.concat(parts, ',') .. ']'
+    .. ',"more":' .. tostring(#rows > limit) .. '}', {['cache-control'] = 'no-cache'})
+end
+
+-- `?watch=stream`: an event stream, resumed from Last-Event-ID or `since`.
+-- `?watch=poll&since=R[&wait=ms]`: one reply, held until a change after R
+-- or for `wait` (at most KV_POLL_MS), for a client that reads no stream
+-- (the kv connector).
+local function kv_watch(m, topic, params, now)
+  local prefix = params.prefix or ''
+  if not kv_valid_key(prefix, true) then return fail(m.conn, 400, 'a malformed prefix') end
+  local since = params.since or (m.headers or {})['last-event-id']
+  if since and not since:match('^%d+$') then return fail(m.conn, 400, 'a malformed since') end
+  local w = {topic = topic, prefix = prefix, at = now}
+  if params.watch == 'stream' then
+    queue.push(replies, {conn = m.conn, stream = true, body = 'retry: 2000\n\n',
+                         content_type = 'text/event-stream', headers = with({['cache-control'] = 'no-cache'})})
+    kv.streams[m.conn] = w
+    if since then
+      local missed = kv_since(w, tonumber(since))
+      if not missed then
+        queue.push(replies, {conn = m.conn, chunk = 'id: ' .. kv.revision .. '\nevent: reset\ndata: {"revision":'
+          .. kv.revision .. '}\n\n'})
+      else
+        for _, e in ipairs(missed) do queue.push(replies, {conn = m.conn, chunk = kv_sse(e)}) end
+      end
+    end
+    return
+  end
+  if params.watch ~= 'poll' then return fail(m.conn, 400, 'watch is stream or poll') end
+  if not since then return fail(m.conn, 400, 'a poll names since, the revision it has') end
+  local hold = KV_POLL_MS
+  if params.wait then
+    hold = params.wait:match('^%d+$') and tonumber(params.wait)
+    if not hold or hold > KV_POLL_MS then return fail(m.conn, 400, 'wait is 0 to ' .. KV_POLL_MS .. ' ms') end
+  end
+  local missed = kv_since(w, tonumber(since))
+  if not missed then return kv_reply_poll(m.conn, {}, true) end
+  if #missed > 0 then return kv_reply_poll(m.conn, missed) end
+  w.ends = now + hold
+  kv.polls[m.conn] = w
+end
+
+-- `/v1/<topic>/kv` and `/v1/<topic>/kv/<key>`; `rest` is what follows `kv`.
+local function kv_route(m, topic, rest, params, now)
+  if not kv.db then return fail(m.conn, 404, 'this server keeps no kv; start it with --kv <dir>') end
+  if #topic > KV_TOPIC_MAX or not topic:match('^[%w%._~%-]+$') then
+    return fail(m.conn, 400, 'a malformed topic')
+  end
+  local wall = host.time()
+  for _, name in ipairs({'prefix', 'after'}) do
+    if params[name] then params[name] = kv_unescape(params[name]) end
+  end
+  rest = kv_unescape(rest)
+  if rest == '' or rest == '/' then
+    if m.method ~= 'GET' then return fail(m.conn, 405, 'the kv itself is listed or watched, with GET') end
+    if not kv_access(m, topic, 'read') then return end
+    if params.watch then return kv_watch(m, topic, params, now) end
+    return kv_list(m, topic, params, wall)
+  end
+  local key = rest:sub(2)
+  if not kv_valid_key(key) then
+    return fail(m.conn, 400, 'a key is 1 to ' .. KV_KEY_MAX .. ' of A-Z a-z 0-9 . _ ~ - and /, with no empty, . or .. segment')
+  end
+  local op = m.method == 'GET' and 'read' or 'write'
+  if m.method == 'GET' then
+    if not kv_access(m, topic, op) then return end
+    return kv_get(m, topic, key, wall)
+  elseif m.method == 'PUT' then
+    if not kv_access(m, topic, op) then return end
+    return kv_put(m, topic, key, params, now, wall)
+  elseif m.method == 'DELETE' then
+    if not kv_access(m, topic, op) then return end
+    return kv_delete(m, topic, key, now, wall)
+  end
+  fail(m.conn, 405, 'a key takes GET, PUT or DELETE')
+end
+
+local function kv_housekeep(now)
+  if not kv.db then return end
+  kv_sweep(now)
+  for conn, w in pairs(kv.polls) do
+    if now >= w.ends then kv.polls[conn] = nil; kv_reply_poll(conn, {}) end
+  end
+  for conn, w in pairs(kv.streams) do
+    if now - w.at >= KEEPALIVE_MS then queue.push(replies, {conn = conn, chunk = ': keepalive\n\n'}); w.at = now end
+  end
+end
+
 -- depth: the five requests of §2
 
 -- Paths after /v1/<name>, the same for a bare name and a name inside a
@@ -437,6 +889,7 @@ local function name_route(m, key, topic, rest, params, now)
     local id = pattern:find('(', 1, true) and matched or nil
     if m.method == method and matched then
       local token = token_of(m, params)
+      local holder = nil
       if topic then
         -- Inside a topic: a caller's token holds call, an answerer's park;
         -- DELETE is either, so a call token withdraws its own call only.
@@ -444,13 +897,15 @@ local function name_route(m, key, topic, rest, params, now)
         if who == 'either' then
           role = may(topic, token, 'park') and 'park' or 'call'
         end
-        if not topic_access(m, topic, role) then return end
+        local p = topic_access(m, topic, role)
+        if not p then return end
+        holder = p.id
         if role == 'call' then
-          if i == 1 then return call(m, key, token, now) end
+          if i == 1 then return call(m, key, token, now, holder) end
           local r, c = names[key], nil
           local _n
           if r then _n, c = find(r, id) end
-          if not c or c.by ~= token then return fail(m.conn, 404, 'no such call') end
+          if not c or c.by ~= holder then return fail(m.conn, 404, 'no such call') end
           return withdraw(m, r, id)
         end
       else
@@ -459,7 +914,7 @@ local function name_route(m, key, topic, rest, params, now)
         local r = names[key]
         if who == 'either' and r and r.caller == token then return withdraw(m, r, id) end
       end
-      local r = claim(m, key, token, now, topic)
+      local r = claim(m, key, token, now, topic, holder)
       if not r then return end
       if i == 2 then return list(m, r, params, now) end
       if i == 3 then return answer(m, r, id, '/v1/' .. key .. '/calls/') end
@@ -472,12 +927,24 @@ local function name_route(m, key, topic, rest, params, now)
   fail(m.conn, 404, 'no such request')
 end
 
--- /v1/<a>/<b><rest>, three ways: <b> one of calls, events, pair is the
--- bare name <a>; <b> = names is topic <a>'s listing; any other <b> is the
--- name <b> inside topic <a>.
+-- /v1/<a>/<b><rest>, four ways: <b> = kv is topic <a>'s kv (with or
+-- without --topics); <b> one of calls, events, pair is the bare name <a>;
+-- <b> = names is topic <a>'s listing; any other <b> is the name <b> inside
+-- topic <a>.
 local function route(m, now)
   local path, params = split(m.path)
   if m.method == 'OPTIONS' then return json(m.conn, 204, '') end
+  local kv_topic, kv_rest = path:match('^/v1/([^/]+)/kv(.*)$')
+  if kv_topic and (kv_rest == '' or kv_rest:sub(1, 1) == '/') then
+    -- A kv failure (a full disk, a locked file) is this request's 500,
+    -- never the end of the signalling server.
+    local ok, err = pcall(kv_route, m, kv_topic, kv_rest, params, now)
+    if not ok then
+      print('p2p match: kv: ' .. tostring(err))
+      return fail(m.conn, 500, 'the kv store failed; the server log says why')
+    end
+    return
+  end
   local a, b, rest = path:match('^/v1/([^/]+)/([^/]+)(.*)$')
   if not a then return fail(m.conn, 404, 'no such request') end
   if b == 'calls' or b == 'events' or b == 'pair' then
@@ -494,6 +961,7 @@ end
 
 local function closed(conn)
   for _, r in pairs(names) do r.streams[conn] = nil end
+  kv.streams[conn] = nil; kv.polls[conn] = nil
 end
 
 local function housekeep(now)
@@ -519,10 +987,23 @@ for _ in pairs(TOPICS or {}) do topic_count = topic_count + 1 end
 print('p2p match: serving ' .. CAPACITY .. ' name(s) at most'
   .. (TOPICS and (', ' .. topic_count .. ' topic(s)') or '')
   .. '; admission is by token, not origin')
+if KV_DB then
+  kv_open()
+  print('p2p match: kv in ' .. KV_DB .. ' at revision ' .. kv.revision
+    .. (TOPICS and '; kv takes a token of its topic with read or write'
+        or '; kv takes no token without --topics, so whoever reaches this port may read and write it'))
+end
+if JWT then
+  print('p2p match: topics also admit JWTs from issuer ' .. JWT.issuer .. ', checked against '
+    .. (JWT.jwks and 'the keys in the topics file'
+        or ('the JWKS in kv ' .. JWT.jwks_kv.topic .. '/' .. JWT.jwks_kv.key)))
+end
 while true do
   local _, m = queue.wait({requests}, 1000)
   local now = host.monotonic()
   if m and m.event == 'closed' then closed(m.conn)
   elseif m then route(m, now) end
   housekeep(now)
+  local ok, err = pcall(kv_housekeep, now)
+  if not ok then print('p2p match: kv: ' .. tostring(err)) end
 end

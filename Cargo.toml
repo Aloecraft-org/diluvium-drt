@@ -17,9 +17,11 @@ members = [
     "connectors/sql",
     "connectors/crypto",
     "connectors/ssmtp",
+    "connectors/ldap",
     "connectors/exec",
     "connectors/socket",
     "connectors/ws",
+    "connectors/kv",
     "connectors/data",
     "crates/drt-bench",
     "crates/drt-web",
@@ -52,9 +54,11 @@ drt-connector-sql = { path = "connectors/sql", version = "0.8.0" }
 drt-connector-crypto = { path = "connectors/crypto", version = "0.8.0" }
 drt-connector-rest = { path = "connectors/rest", version = "0.8.0" }
 drt-connector-ssmtp = { path = "connectors/ssmtp", version = "0.8.0" }
+drt-connector-ldap = { path = "connectors/ldap", version = "0.8.0" }
 drt-connector-exec = { path = "connectors/exec", version = "0.8.0" }
 drt-connector-socket = { path = "connectors/socket", version = "0.8.0" }
 drt-connector-ws = { path = "connectors/ws", version = "0.8.0" }
+drt-connector-kv = { path = "connectors/kv", version = "0.8.0" }
 drt-connector-data = { path = "connectors/data", version = "0.8.0" }
 # The line editor, one for every target (doc/Wasm.md D8, M8). From git
 # because that is where it lives; the browser half pins wasm-bindgen

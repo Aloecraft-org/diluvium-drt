@@ -594,36 +594,22 @@ pub fn unroutable(config: &WireguardConfig) -> Vec<String> {
     said
 }
 
-/// This device's private key, by the same three knobs as every other
-/// secret in a root config, resolved in the same order.
+/// This device's private key: one [`drt_config::Secret`], from
+/// `private_key` or, for one release, the deprecated `private_key_file`
+/// and `private_key_env` before it.
 ///
 /// Refusing when none is given rather than generating one: a device with a
 /// fresh key each start has a new identity each start, so every peer's
 /// config is stale the moment it restarts, and the failure appears as
 /// handshakes that never complete rather than as a missing setting.
 pub fn private_key(config: &WireguardConfig) -> Result<StaticSecret, String> {
-    let text = if let Some(path) = &config.private_key_file {
-        let mut text = std::fs::read_to_string(path).map_err(|e| {
-            format!(
-                "wireguard: cannot read private_key_file '{}': {e}",
-                path.display()
-            )
-        })?;
-        if text.ends_with('\n') {
-            text.pop();
-        }
-        text
-    } else if let Some(var) = &config.private_key_env {
-        std::env::var(var)
-            .map_err(|_| format!("wireguard: env var '{var}' (private_key_env) is not set"))?
-    } else if let Some(inline) = &config.private_key {
-        inline.clone()
-    } else {
-        return Err("wireguard: no private key (set one of private_key_file, \
-                    private_key_env, private_key); a device without a key has no \
+    let Some(source) = config.private_key_source() else {
+        return Err("wireguard: no private key (set private_key: a string, \
+                    {\"env\": ..} or {\"file\": ..}); a device without a key has no \
                     identity and can complete no handshake"
             .into());
     };
+    let text = source.resolve("wireguard.private_key", &crate::prompt::terminal)?;
     Ok(StaticSecret::from(parse_key(
         "wireguard.private_key",
         &text,

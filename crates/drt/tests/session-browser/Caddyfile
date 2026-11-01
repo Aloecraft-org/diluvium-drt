@@ -1,0 +1,34 @@
+# The proxy in front of everything: the login on auth.example.test, and an
+# app on app.example.test that Caddy admits only when stdlib:session's
+# /verify says so. /admin also needs the admins group.
+{
+	admin off
+	auto_https off
+}
+
+http://auth.example.test:@PROXY@ {
+	reverse_proxy 127.0.0.1:@AUTH@
+}
+
+http://app.example.test:@PROXY@ {
+	handle /admin* {
+		forward_auth 127.0.0.1:@AUTH@ {
+			uri /verify?group=admins
+			copy_headers Remote-User Remote-Groups
+		}
+		reverse_proxy 127.0.0.1:@APP@
+	}
+	handle {
+		forward_auth 127.0.0.1:@AUTH@ {
+			uri /verify
+			copy_headers Remote-User Remote-Groups
+		}
+		reverse_proxy 127.0.0.1:@APP@
+	}
+}
+
+# The app, on any host name (the proxy passes the original Host): it says
+# who the proxy told it is asking.
+http://:@APP@ {
+	respond "user={header.Remote-User} groups={header.Remote-Groups} path={path}"
+}

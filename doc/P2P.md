@@ -120,7 +120,7 @@ does not run.
   beside a command is refused, and so is a command with no `-p`.
 - **It belongs with a call**, including a call through `--relay` or
   `--fallback`. Beside `--park`, `--listen` or `--match` it is refused.
-- **It is not a key of the `p2p` block.** It is what this invocation runs,
+- **It is not a key of the `commands.p2p` block.** It is what this invocation runs,
   not what the peer is.
 
 ### 2.2 Park
@@ -135,7 +135,7 @@ call notification stream (§5 there), polls by cursor, and answers each
 call. It is the native counterpart of `listen` in
 `drt_browser_access.js`. The one-liner is for quick use; a long-running
 device runs the same thing as `drt --config mypc.json p2p` under a
-process supervisor; a `p2p` block is not yet served by `drt start`.
+process supervisor; a `commands.p2p` block is not served by `drt start`.
 
 `--accept <cidr>` admits only callers from that range. It is an
 instruction to the signalling server, which refuses other callers before
@@ -232,8 +232,8 @@ what the profile asks of them.
   |---|---|
   | `park` | the answerer's requests for a name in the topic: claim, poll, answer, the event stream, pairing |
   | `call` | calling a name in the topic, and withdrawing that token's own call |
-  | `read` | `GET /v1/<topic>/names`: `{"topic": …, "names": [...]}`, the names present now |
-  | `write` | nothing yet; it is reserved for the topic's keys (kv, not built) |
+  | `read` | `GET /v1/<topic>/names`: `{"topic": …, "names": [...]}`, the names present now; and with `--kv`, getting, listing and watching the topic's keys |
+  | `write` | with `--kv`, putting and deleting the topic's keys |
 
   No token is 401. A token without the role, or a topic the file does not
   declare, is 403, so probing does not list topics. Inside a topic,
@@ -244,6 +244,48 @@ what the profile asks of them.
   name held, bare or in a topic. The file is read at start; a change
   needs a restart. Tokens are compared as written, so keep the file
   private.
+- **A topic can admit JWTs and map directory groups to roles.** With a
+  `jwt` block, a token the file does not list is checked as a JWT, and a
+  topic's `groups` give each group in it roles:
+
+  ```json
+  {"jwt": {"issuer": "drt-session", "audience": "match1",
+           "jwks": {"kv": "auth/jwks"}},
+   "topics": {"home": {"tokens": [],
+                       "groups": {"family": ["park", "call", "read"],
+                                  "admins": ["write"]}},
+              "auth": {"tokens": [{"token": "…", "roles": ["write"]}]}}}
+  ```
+
+  - The signature is checked with `crypto/jwt_verify {token, jwks}`
+    against the issuer's public keys: `jwks` is a JWKS written in the file
+    (`{"keys": [...]}`), or the kv key `<topic>/<key>` it is published at
+    on this server, which needs `--kv` and is read again after every kv
+    change, so rotating a key is a kv write. The server holds no key of
+    its own: its `crypto` connector is wired `verify_only` unless the
+    config wires one.
+  - Then `exp` (required) and `nbf`, `iss` equal to `issuer`, `aud`
+    holding `audience` when the file names one, and a non-empty `sub`.
+  - The token's roles in a topic are the union of the roles the topic
+    gives each name in its `groups` claim (`groups_claim` names another
+    claim). `ldap/bind` answers those names as `groups`.
+  - A token that does not verify is 401 with the reason (`signature`,
+    `expired`, `issuer`, ...); a valid one without the role is 403, the
+    same in every topic, so a JWT does not list topics either.
+  - A JWT holds a name by its `sub`, so a renewed token keeps the name and
+    a token of another subject does not take it.
+  - Listed tokens and bare names work beside JWTs as before.
+
+  `stdlib:session` (`doc/Session.md`) issues these tokens: it binds the
+  user with `ldap/bind` and signs `{iss, aud, sub, groups}` with
+  `crypto/jwt_sign` under an EdDSA key. `stdlib:jwks` publishes that
+  key's JWK in `{"keys": [...]}` at the kv key `jwks` of its topic, with a
+  token of that topic holding `read` and `write`. Limits: the header must be
+  the one `crypto/jwt_sign` writes (`{"alg":"EdDSA","typ":"JWT","kid":…}`,
+  in that order), so a token from another library is refused as `alg`;
+  only EdDSA keys are read from a JWKS; and a parked side sends the token
+  it started with, so it is refused once that token expires (renewal is
+  not built).
 - **Admission is by token, not origin**, so every reply carries
   `access-control-allow-origin: *`. A page opened from `file://` sends
   `Origin: null` and preflights because of its `Authorization` header; a
@@ -256,6 +298,12 @@ what the profile asks of them.
 - **TLS** is not built in. A page on an `https://` origin cannot call a
   plain `http://` server, so the help says to put a TLS terminator in
   front, as example 30's config does. Certificate flags can come later.
+- **`--kv <dir>`** also keeps a key-value store, in `<dir>/kv.db`, at
+  `/v1/<topic>/kv/<key>` (`doc/DRT-Signalling.md` §10); `drt kv` and the
+  `kv` connector reach it. With `--topics`, a topic's keys take its `read`
+  and `write` tokens and an undeclared topic's keys are refused; without
+  `--topics` kv takes no token, so `--host` is what narrows who may read
+  and write.
 - `--match` with `--forward`, `--relay` or `--fallback` is refused: a
   signalling server carries no session bytes (§10).
 
@@ -266,8 +314,8 @@ its public address, and every role that makes a WebRTC session takes it:
 call, park and listen. Without one, a side offers only its local address,
 which a peer reaches only on the same network or when that side's NAT
 admits packets it did not ask for. `--stun` is also the `stun` key of the
-`p2p` block, the same list the `webrtc` block takes, so every role
-gathers the same way.
+`commands.p2p` block, or of `default` for every command (§8), the same list
+the `webrtc` block takes, so every role gathers the same way.
 
 ## 3. Peer addresses
 
@@ -378,6 +426,7 @@ A caller prints `via relay` when it sees it, whatever its own flags were.
 | (absent) | the REPL, through the built-in SSH server of SPEC §9 |
 | `127.0.0.1:8080` | one TCP target |
 | `ssh://127.0.0.1:22` | one target as the named service `ssh` |
+| `127.0.0.1:3389 --forward ssh://127.0.0.1:22` | several targets; a caller names one by `host:port`, and each non-`tcp` scheme is also its named service |
 | `127.0.0.1 -P 80,8080:8090,31200` | those ports on that host |
 | `127.0.0.1 -A` | every port on that host |
 | `127.0.0.1` | an error at startup naming `-A` and `-P` |
@@ -411,6 +460,11 @@ A caller prints `via relay` when it sees it, whatever its own flags were.
 Each `--forward` target becomes a scope entry, and `ssh://` becomes the
 named service `ssh` (`doc/BrowserAccess.md` §10.3), so the host's existing
 checks enforce all of this unchanged.
+
+- **Several `--forward` targets** must each be `host:port` or
+  `scheme://host:port`. The REPL, `-`, a `drt://` peer and a bare relay are
+  each a whole forward and are refused in a list, as are `-P` and `-A`, a
+  target named twice, and two targets with one service name.
 
 ### 5.2 The REPL as the service `repl`
 
@@ -446,6 +500,8 @@ A caller's `-p` never causes an error by itself.
 |---|---|---|
 | one target, a named service the caller asked for by `drt+<service>://`, the REPL, `-`, or a `drt://` peer | goes to that target; the port is ignored | goes to that target |
 | a port set, `-P` or `-A` | goes to that port if the set holds it, else is refused as a closed port | `-P` with exactly one port: that port. Otherwise refused as a closed port |
+| several targets on one host | goes to that port if a target names it, as a `-P` set of their ports | refused as a closed port |
+| several targets on more than one host | refused: a port alone does not say which host; name `host:port` | refused likewise |
 | a relay, bare `--forward` | mirrored to the destination as it was asked, so the destination's row applies | mirrored likewise |
 
 A refusal is the Wisp `CLOSE` a blocked stream gets today. The caller
@@ -466,8 +522,8 @@ change, so nothing negotiates it.
 |---|---|---|---|
 | `--host` | listen, match | the serving process | who may connect: an address binds there; `0.0.0.0` admits anyone; a CIDR, typically a WireGuard subnet, admits that range, and binds this machine's own address inside it when it holds exactly one, everywhere otherwise |
 | `--accept` | park | the signalling server, then the parked side | which callers are passed to the parked side |
-| `--topics FILE` | match | the signalling server | which tokens may park, call or list in each topic (§2.4) |
-| `--H name=value` | call, park | sent to the signalling side only | HTTP headers; `auth=` is shorthand for `Authorization: Bearer` |
+| `--topics FILE` | match | the signalling server | which tokens, and which JWT groups, may park, call, read or write in each topic (§2.4) |
+| `--H name=value` | call, park | sent to the signalling side only | HTTP headers; `auth=` is shorthand for `Authorization: Bearer`. In the file, a value may come from a variable, a file or a prompt (§8) |
 | `--fingerprint SHA256:…` | call | the caller, locally | the answerer's DTLS fingerprint must match; `--fingerp` is the same flag |
 
 - **`--H` never reaches the peer.** The record exchange is the signalling;
@@ -548,15 +604,56 @@ unaffected.
 
 ## 8. The config block
 
-The `p2p` block replaces `tunnel`, with every flag a key under the block's
-name, and a flag and a key that disagree refused as the conflict it is, as
-`tunnel` does today. `tunnel` is read as an alias for one release, with a
-warning naming the key that replaces each of its own. `--pair` (§2.2) is
-the key `pair` under the block. A `webrtc` block has no such key: it does
-not park, its program does all its signalling, so whether to follow an
-instruction to call is the program's, and `{command = "call", peer, rtc}`
-on the block's `reply_queue` is how it does so (`doc/BrowserAccess.md`
-§8).
+Every flag is a key of `commands.p2p`, under the flag's name (`-p` is
+`ports`, `-P` `forward_ports`, `-A` `all_ports`, `--H` `headers`), and
+`--pair` (§2.2) is `pair`. `drt --config mypc.json p2p` reads it:
+
+```json
+{
+  "default": { "stun": ["stun.l.google.com:19302"] },
+  "commands": {
+    "p2p": {
+      "park": "drt://match1.example/v1/mypc",
+      "forward": ["127.0.0.1:3389", "ssh://127.0.0.1:22"],
+      "headers": {
+        "auth": { "file": "%d/answerer" },
+        "DRT-Caller-Token": { "prompt": "hidden" }
+      }
+    }
+  }
+}
+```
+
+- **Order.** `default`, then `commands.p2p`, then the command line. Each
+  replaces the one before per key, whole: a block's `stun` replaces the
+  default list, a `--stun` replaces the block's. Two roles from two
+  sources are refused, naming both.
+- **`default`** holds `stun` and `extra_roots`, and is read by the blocks
+  under `commands` only. Any other key is refused. The blocks `drt start`
+  runs (`webrtc`, `wireguard`, `netcheck`, `turn`, `stun`, `relay`) stay at
+  the top level and keep their own lists.
+- **`commands`** holds `p2p`. Any other key is refused.
+- **A header value** is a string, or one of `{"env": "NAME"}`,
+  `{"file": "/path"}` (one trailing newline dropped) and
+  `{"prompt": "hidden"}` or `{"prompt": "visible"}`. A `--H` naming the
+  same header replaces it unread. The same value shape is `turn.key` and
+  `wireguard.private_key`.
+- **A prompt** is read from the controlling terminal, never stdin, which
+  may be the session. With no terminal (a systemd unit, a Windows
+  scheduled task) it is refused at once, naming the header; it never
+  waits. `{"file": "%d/answerer"}` with systemd's `LoadCredential=` is the
+  unattended form.
+- **Deprecated, read for one release with a warning:** a top-level `p2p`
+  block (`commands.p2p`), a `tunnel` block (each key mapped to its
+  replacement), `turn.key_file` and `key_env`, and
+  `wireguard.private_key_file` and `private_key_env` (`{"file": ..}` and
+  `{"env": ..}`). Naming `commands.p2p` beside `p2p` or `tunnel` is
+  refused.
+
+A `webrtc` block has no `pair` key: it does not park, its program does all
+its signalling, so whether to follow an instruction to call is the
+program's, and `{command = "call", peer, rtc}` on the block's
+`reply_queue` is how it does so (`doc/BrowserAccess.md` §8).
 
 ## 9. From `drt tunnel`
 

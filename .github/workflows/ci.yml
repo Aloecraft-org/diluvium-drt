@@ -90,6 +90,7 @@ jobs:
           - connector-crypto
           - connector-rest
           - connector-ssmtp
+          - connector-ldap
           - connector-ssh
           - sshd
           - connector-exec
@@ -132,6 +133,24 @@ jobs:
           sudo apt-get install -y --no-install-recommends openssh-server
           sudo mkdir -p /run/sshd
           /usr/sbin/sshd -V 2>&1 || true
+      # connectors/ldap/tests/openldap.rs runs the ldap connector against a
+      # real OpenLDAP over plaintext, StartTLS and ldaps. It starts its own
+      # slapd, unprivileged, from a temporary directory; the package is only
+      # where the binary, the schema and back_mdb come from. Without it the
+      # tests report themselves skipped, which DRT_TEST_REQUIRE_LDAP below
+      # turns into a failure.
+      - name: A stock OpenLDAP slapd
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends slapd
+          /usr/sbin/slapd -VV 2>&1 || true
+      # crates/drt/tests/auth_stack.rs ends with PyJWT checking a session
+      # token from the JWKS URL alone, as a third party would. Pinned, as
+      # in the examples gate; without it that step skips, which
+      # DRT_TEST_REQUIRE_PYJWT below turns into a failure.
+      - name: PyJWT
+        run: pip install --quiet 'pyjwt[crypto]==2.15.0'
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
@@ -146,6 +165,7 @@ jobs:
         # runner, not a pass: crates/drt/tests/ssh_cli.rs panics instead.
         env:
           DRT_TEST_REQUIRE_SSH: "1"
+          DRT_TEST_REQUIRE_LDAP: "1"
         run: cargo test --workspace
       # The profile that actually covers the code: `cargo test --workspace`
       # builds `drt` with its DEFAULT feature (slim), so relay, tunnel, ssh
@@ -166,6 +186,8 @@ jobs:
       - name: Test (all features)
         env:
           DRT_TEST_REQUIRE_SSH: "1"
+          DRT_TEST_REQUIRE_LDAP: "1"
+          DRT_TEST_REQUIRE_PYJWT: "1"
         run: |
           ulimit -c unlimited
           cargo test --workspace --all-features
@@ -206,9 +228,13 @@ jobs:
       # `custom` and nothing was red, which is how two examples calling
       # removed verbs survived three CI runs.
       # `every_profile_name_is_a_feature_the_binary_probes` is the guard.
+      # PyJWT is the relying party in `examples/34-jwks`: a JWKS client that
+      # shares no code with DRT fetches the served set and verifies a token
+      # by its kid. Pinned, so a new release cannot change what it checks.
       - name: The examples gate, natively
         run: |
           set -eu
+          pip install --quiet 'pyjwt[crypto]==2.15.0'
           cargo build --release --features full
           cd examples && DRT="$GITHUB_WORKSPACE/target/release/drt" ./run-all.sh
       # tests/determinism/README.md: one expected.txt per corpus, and every
@@ -396,6 +422,36 @@ jobs:
           npx playwright install --with-deps chromium
       - name: The client's gate, against both hosts
         run: script/browser-access-client.sh --drt
+
+  session-browser:
+    # stdlib:session as a person uses it: Chromium signs in through Caddy's
+    # forward_auth to an app on another subdomain, against a real slapd and
+    # a real `drt p2p --match --kv --topics` (doc/Session.md).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: session-browser
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/drt-web/browser-test/package-lock.json
+      - name: slapd and Caddy
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends slapd caddy
+          caddy version
+      - name: Playwright, and its Chromium
+        working-directory: crates/drt-web/browser-test
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Sign in through a proxy, in Chromium
+        run: script/session-browser.sh
 
   ssh-page:
     # SSH in the browser (doc/Plan-0.8.0.md §2.2): dist/ssh.html built as

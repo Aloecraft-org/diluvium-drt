@@ -426,12 +426,14 @@ fn every_profile_name_is_a_feature_the_binary_probes() {
 #[test]
 fn profile_matches_its_manifest() {
     const PROFILES: [&str; 4] = ["full", "slim", "wasi", "web"];
-    const LEAVES: [&str; 26] = [
+    const LEAVES: [&str; 28] = [
         "cli",
         "connector-crypto",
         "connector-data",
         "connector-exec",
         "connector-fs",
+        "connector-kv",
+        "connector-ldap",
         "connector-rest",
         "connector-socket",
         "connector-sql",
@@ -533,6 +535,8 @@ fn profile_matches_its_manifest() {
     feature!("connector-data");
     feature!("connector-exec");
     feature!("connector-fs");
+    feature!("connector-kv");
+    feature!("connector-ldap");
     feature!("connector-rest");
     feature!("connector-socket");
     feature!("connector-sql");

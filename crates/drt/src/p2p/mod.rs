@@ -12,7 +12,8 @@
 //! ## surface block
 //!
 //! - Entry points: [`Args`], the command line; [`resolve`], the file's
-//!   `p2p` block and the flags merged into one [`Role`]; [`run`], that role
+//!   `default` and `commands.p2p` blocks and the flags merged into one
+//!   [`Role`]; [`run`], that role
 //!   carried out, returning the exit status (a call's command's, else 0);
 //!   [`from_tunnel`], what `drt tunnel` was given, as this verb takes it
 //!   (§9).
@@ -34,13 +35,13 @@ pub mod signal;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use drt_config::{P2pConfig, RootConfig, TunnelConfig};
+use drt_config::{ForwardTargets, P2pConfig, RootConfig, Secret, TunnelConfig};
 use drt_rtc::Cidr;
 
 use call::Dial;
 use peer::{ForwardSpec, HostSpec, Peer, PortMap};
 
-/// `drt p2p`'s command line. Each flag is one key of the `p2p` block under
+/// `drt p2p`'s command line. Each flag is one key of the `commands.p2p` block under
 /// its name (`-p` is `ports`, `-P` `forward_ports`, `-A` `all_ports`,
 /// `--H` the `headers` map); [`resolve`] merges them over the file. The
 /// command after `--` is the one exception: it is the invocation's, not
@@ -112,8 +113,10 @@ pub struct Args {
     /// this process's stdio; absent for the REPL, through the built-in SSH
     /// server (service ssh) and as raw terminal bytes (service repl).
     /// Bare --forward is a relay: the caller names the destination.
+    /// Repeatable for several host:port or scheme://host:port targets, of
+    /// which a caller names one (-p <local>:<host:port>).
     #[arg(long, value_name = "TARGET", num_args = 0..=1, default_missing_value = "")]
-    pub forward: Option<String>,
+    pub forward: Vec<String>,
     /// With --forward <host>: every port of it.
     #[arg(short = 'A')]
     pub all_ports: bool,
@@ -144,11 +147,18 @@ pub struct Args {
     #[arg(long, value_name = "NAMES")]
     pub capacity: Option<usize>,
     /// With --match: a JSON file declaring topics, each with its tokens and
-    /// their roles (park, call, read, write). A name inside a topic is
+    /// their roles (park, call, read, write), and with a jwt block the
+    /// roles each directory group in a JWT holds. A name inside a topic is
     /// drt://<server>/v1/<topic>/<name>, and every request there takes a
     /// token of that topic. Bare /v1/<name> names are unchanged.
     #[arg(long, value_name = "FILE")]
     pub topics: Option<PathBuf>,
+    /// With --match: also keep a key-value store, in a SQLite database in
+    /// this directory, at /v1/<topic>/kv/<key> (doc/DRT-Signalling.md §10).
+    /// With --topics a request takes a token of its topic with read or
+    /// write; without, whoever reaches the port may read and write.
+    #[arg(long, value_name = "DIR")]
+    pub kv: Option<PathBuf>,
     /// Trust this PEM certificate beside the public roots, for a signalling
     /// server behind an internal CA. Repeatable; added, never substituted.
     #[arg(long = "extra-root", value_name = "PEM")]
@@ -220,6 +230,8 @@ pub struct MatchRole {
     pub capacity: usize,
     /// The `--topics` file, read when the server starts.
     pub topics: Option<PathBuf>,
+    /// `--kv`: the directory the kv database lives in; none, no kv.
+    pub kv: Option<PathBuf>,
 }
 
 /// The four roles (`doc/P2P.md` §2).
@@ -247,7 +259,7 @@ enum From {
 
 fn spelled(key: &str, from: From) -> String {
     match from {
-        From::File => format!("`p2p.{key}` in the config"),
+        From::File => format!("`commands.p2p.{key}` in the config"),
         From::Flag => match key {
             "peer" => "the peer on the command line".to_string(),
             "ports" => "`-p`".to_string(),
@@ -260,29 +272,56 @@ fn spelled(key: &str, from: From) -> String {
     }
 }
 
-/// The file's `p2p` block (or its `tunnel` block, read as an alias) and
-/// the flags, merged into one [`Role`]. Flags win per key; two roles in one
-/// invocation are refused by name and source, as `drt tunnel` refused two
-/// modes.
+/// The file's `default` and `commands.p2p` blocks (or a deprecated
+/// top-level `p2p` or `tunnel` block, read as `commands.p2p`) and the
+/// flags, merged into one [`Role`], in that order: each replaces the one
+/// before per key. Two roles in one invocation are refused by name and
+/// source, as `drt tunnel` refused two modes.
 pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
-    let aliased;
-    let file: Option<&P2pConfig> = match (&config.p2p, &config.tunnel) {
-        (Some(_), Some(_)) => {
-            return Err("the config names both `p2p` and `tunnel`; `tunnel` is `p2p` now".into())
-        }
-        (Some(p), None) => Some(p),
-        (None, Some(t)) => {
+    resolve_with(config, flags, &crate::prompt::terminal)
+}
+
+/// [`resolve`], with the terminal a `{"prompt": ..}` header is read from
+/// passed in, so a test can be the person typing.
+pub fn resolve_with(
+    config: &RootConfig,
+    flags: &Args,
+    prompt: drt_config::secret::Prompter<'_>,
+) -> Result<Resolved, String> {
+    let named: Vec<&str> = [
+        config.commands.p2p.as_ref().map(|_| "`commands.p2p`"),
+        config.p2p.as_ref().map(|_| "`p2p`"),
+        config.tunnel.as_ref().map(|_| "`tunnel`"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if let [a, b, ..] = named[..] {
+        return Err(format!(
+            "the config names both {a} and {b}; both are `commands.p2p` now, so keep one"
+        ));
+    }
+    let mut f: P2pConfig = match (&config.commands.p2p, &config.p2p, &config.tunnel) {
+        (Some(p), _, _) | (None, Some(p), _) => p.clone(),
+        (None, None, Some(t)) => {
             let (block, warnings) = from_tunnel_block(t)?;
             for w in warnings {
                 eprintln!("drt p2p: {w}");
             }
-            aliased = block;
-            Some(&aliased)
+            block
         }
-        (None, None) => None,
+        (None, None, None) => P2pConfig::default(),
     };
-    let empty = P2pConfig::default();
-    let f = file.unwrap_or(&empty);
+    // `default` first: a key the block names replaces it whole.
+    let mut extra_roots_default = false;
+    if f.stun.is_empty() {
+        f.stun = config.defaults.stun.clone();
+    }
+    if f.extra_roots.is_empty() && !config.defaults.extra_roots.is_empty() {
+        f.extra_roots = config.defaults.extra_roots.clone();
+        extra_roots_default = true;
+    }
+    let f = &f;
 
     // One key, one source, the flag's when both name it.
     fn pick<T: Clone>(flag: Option<&T>, file: Option<&T>) -> Option<(T, From)> {
@@ -310,7 +349,11 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
         Some((flags.accept.clone(), From::Flag))
     };
     let pair = pick(flags.pair.as_ref(), f.pair.as_ref());
-    let forward = pick(flags.forward.as_ref(), f.forward.as_ref());
+    let forward = if flags.forward.is_empty() {
+        f.forward.as_ref().map(|t| (t.entries(), From::File))
+    } else {
+        Some((flags.forward.clone(), From::Flag))
+    };
     let all_ports = if flags.all_ports {
         Some((true, From::Flag))
     } else {
@@ -326,13 +369,16 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
     let fingerprint = pick(flags.fingerprint.as_ref(), f.fingerprint.as_ref());
     let capacity = pick(flags.capacity.as_ref(), f.capacity.as_ref());
     let topics = pick(flags.topics.as_ref(), f.topics.as_ref());
+    let kv = pick(flags.kv.as_ref(), f.kv.as_ref());
     let authorized_keys = pick(flags.authorized_keys.as_ref(), f.authorized_keys.as_ref());
     let (extra_roots, extra_roots_key) = if !flags.extra_root.is_empty() {
         (flags.extra_root.clone(), "--extra-root")
+    } else if extra_roots_default {
+        (f.extra_roots.clone(), "default.extra_roots")
     } else {
-        (f.extra_roots.clone(), "p2p.extra_roots")
+        (f.extra_roots.clone(), "commands.p2p.extra_roots")
     };
-    let headers = headers(&f.headers, &flags.header)?;
+    let headers = headers(&f.headers, &flags.header, prompt)?;
     let headers_from = if !flags.header.is_empty() {
         Some(From::Flag)
     } else if !f.headers.is_empty() {
@@ -384,12 +430,17 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
         (Some((peer, _)), None, None, None) => {
             belongs("host", "a listen or a match", from(&host))?;
             belongs("accept", "a park", accept.as_ref().map(|(_, s)| *s))?;
-            belongs("forward", "a park or a listen", from(&forward))?;
+            belongs(
+                "forward",
+                "a park or a listen",
+                forward.as_ref().map(|(_, s)| *s),
+            )?;
             belongs("all_ports", "a park or a listen", all_ports.map(|(_, s)| s))?;
             belongs("forward_ports", "a park or a listen", from(&forward_ports))?;
             belongs("signal", "a listen", signal.as_ref().map(|(_, s)| *s))?;
             belongs("capacity", "a match", capacity.as_ref().map(|(_, s)| *s))?;
             belongs("topics", "a match", topics.as_ref().map(|(_, s)| *s))?;
+            belongs("kv", "a match", kv.as_ref().map(|(_, s)| *s))?;
             belongs(
                 "authorized_keys",
                 "a park or a listen",
@@ -475,12 +526,13 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
             belongs("signal", "a listen", signal.as_ref().map(|(_, s)| *s))?;
             belongs("capacity", "a match", capacity.as_ref().map(|(_, s)| *s))?;
             belongs("topics", "a match", topics.as_ref().map(|(_, s)| *s))?;
+            belongs("kv", "a match", kv.as_ref().map(|(_, s)| *s))?;
             if relay.is_some() {
                 return Err("--relay beside --park (\"answer for me\") is not built yet; a park that cannot use UDP holds a wss:// leg instead (--park wss://…)".into());
             }
             let signalling = Peer::parse(&park).map_err(|e| format!("--park {e}"))?;
             let forward = ForwardSpec::parse(
-                forward.as_ref().map(|(f, _)| f.as_str()),
+                forward.as_ref().map(|(f, _)| f.as_slice()),
                 forward_ports.as_ref().map(|(p, _)| p.as_str()),
                 all_ports.is_some(),
             )?;
@@ -511,6 +563,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
             belongs("pair", "a park", from(&pair))?;
             belongs("capacity", "a match", capacity.as_ref().map(|(_, s)| *s))?;
             belongs("topics", "a match", topics.as_ref().map(|(_, s)| *s))?;
+            belongs("kv", "a match", kv.as_ref().map(|(_, s)| *s))?;
             belongs("relay", "a call or a park", from(&relay))?;
             if let Some(from) = headers_from {
                 return Err(format!("{} belongs with a call, a park or a match's callers; a listen sends no request", spelled("headers", from)));
@@ -520,7 +573,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
                 None => HostSpec::Addr(std::net::Ipv4Addr::LOCALHOST.into()),
             };
             let forward = ForwardSpec::parse(
-                forward.as_ref().map(|(f, _)| f.as_str()),
+                forward.as_ref().map(|(f, _)| f.as_slice()),
                 forward_ports.as_ref().map(|(p, _)| p.as_str()),
                 all_ports.is_some(),
             )?;
@@ -545,7 +598,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
             )?;
             // §2.4: a signalling server carries no session bytes.
             for (key, present) in [
-                ("forward", from(&forward)),
+                ("forward", forward.as_ref().map(|(_, s)| *s)),
                 ("relay", from(&relay)),
                 ("all_ports", all_ports.map(|(_, s)| s)),
                 ("forward_ports", from(&forward_ports)),
@@ -563,6 +616,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
                 host,
                 capacity: capacity.map(|(c, _)| c).unwrap_or(256),
                 topics: topics.map(|(t, _)| t),
+                kv: kv.map(|(dir, _)| dir),
             })
         }
         _ => {
@@ -612,10 +666,26 @@ fn command_needs_a_port(command: &[String], maps: &[PortMap]) -> Result<(), Stri
 
 /// The file's `headers` map, then each `--H` over it, a flag replacing the
 /// file's header of the same name. `auth` is `Authorization: Bearer`.
-fn headers(
-    file: &BTreeMap<String, String>,
+///
+/// A file header's value is a [`Secret`], read here: a variable, a file, or
+/// the terminal. One a flag replaces is never read, so `--H` over a
+/// `{"prompt": ..}` header asks nobody.
+pub(crate) fn headers(
+    file: &BTreeMap<String, Secret>,
     flags: &[String],
+    prompt: drt_config::secret::Prompter<'_>,
 ) -> Result<Vec<(String, String)>, String> {
+    let canonical = |name: &str| {
+        if name.trim().eq_ignore_ascii_case("auth") {
+            "authorization".to_string()
+        } else {
+            name.trim().to_ascii_lowercase()
+        }
+    };
+    let replaced: Vec<String> = flags
+        .iter()
+        .filter_map(|spec| spec.split_once('=').map(|(name, _)| canonical(name)))
+        .collect();
     let mut out: Vec<(String, String)> = Vec::new();
     let mut put = |name: &str, value: &str, how: &str| -> Result<(), String> {
         let (name, value) = if name.eq_ignore_ascii_case("auth") {
@@ -644,7 +714,12 @@ fn headers(
         Ok(())
     };
     for (name, value) in file {
-        put(name, value, "`p2p.headers` in the config")?;
+        if replaced.contains(&canonical(name)) {
+            continue;
+        }
+        let what = format!("commands.p2p.headers.{name}");
+        let value = value.resolve(&what, prompt)?;
+        put(name, &value, &format!("`{what}` in the config"))?;
     }
     for spec in flags {
         let (name, value) = spec
@@ -690,7 +765,8 @@ pub fn run(args: &Args, config: &RootConfig) -> Result<u8, String> {
 /// is a server-side shim and moves to the `relay` block.
 pub fn from_tunnel_block(t: &TunnelConfig) -> Result<(P2pConfig, Vec<String>), String> {
     let mut block = P2pConfig::default();
-    let mut warnings = vec!["`tunnel` in the config is read as `p2p` for one release".to_string()];
+    let mut warnings =
+        vec!["`tunnel` in the config is read as `commands.p2p` for one release".to_string()];
     if let Some(claim) = &t.claim {
         if let Some(rest) = claim.strip_prefix("rtc:") {
             warnings.push("`tunnel.claim` with `rtc:` is `p2p.peer`, without the `rtc:`".into());
@@ -717,13 +793,17 @@ pub fn from_tunnel_block(t: &TunnelConfig) -> Result<(P2pConfig, Vec<String>), S
     if let Some(park) = &t.park {
         warnings.push("`tunnel.park` is `p2p.park`, and `tunnel.to` is `p2p.forward`".into());
         block.park = Some(park.clone());
-        block.forward = t.to.clone();
+        block.forward = t.to.clone().map(ForwardTargets::One);
     }
     if t.listen.is_some() {
         return Err("`tunnel.listen`, the WebSocket to TCP bridge, is not a peer; it is the `relay` block's to serve now".into());
     }
     block.extra_roots = t.extra_roots.clone();
-    block.headers = t.headers.clone();
+    block.headers = t
+        .headers
+        .iter()
+        .map(|(name, value)| (name.clone(), Secret::from(value.as_str())))
+        .collect();
     Ok((block, warnings))
 }
 
@@ -766,7 +846,7 @@ pub fn from_tunnel(
         }
         Mode::Park { park, to } => {
             args.park = Some(park.clone());
-            args.forward = Some(to.clone());
+            args.forward = vec![to.clone()];
             words.extend([
                 "--park".to_string(),
                 crate::tunnel::shown(park),
@@ -878,7 +958,9 @@ mod tests {
 
     #[test]
     fn a_flag_replaces_the_file_key_it_names_and_a_role_conflict_names_both_sources() {
-        let file = cfg(r#"{"p2p":{"listen":5000,"forward":"127.0.0.1:8080","host":"0.0.0.0"}}"#);
+        let file = cfg(
+            r#"{"commands":{"p2p":{"listen":5000,"forward":"127.0.0.1:8080","host":"0.0.0.0"}}}"#,
+        );
         let Ok(Role::Listen(l)) = role(
             &file,
             Args {
@@ -899,9 +981,148 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            e.contains("`p2p.listen` in the config") && e.contains("the peer on the command line"),
+            e.contains("`commands.p2p.listen` in the config")
+                && e.contains("the peer on the command line"),
             "{e}"
         );
+    }
+
+    fn no_terminal(what: &str, _: drt_config::secret::Echo) -> Result<String, String> {
+        Err(crate::prompt::no_terminal(what))
+    }
+
+    fn resolved_with(
+        config: &RootConfig,
+        args: Args,
+        prompt: drt_config::secret::Prompter<'_>,
+    ) -> Result<Resolved, String> {
+        resolve_with(config, &args, prompt)
+    }
+
+    /// The shape the owner proposed (2026-10-31), as it is spelled now: a
+    /// `default` every command starts from, the verb's block under
+    /// `commands`, headers keyed by name with each value saying where it
+    /// comes from, and `forward` a list a caller picks from.
+    #[test]
+    fn the_proposed_shape_reads_and_resolves_to_a_park() {
+        let file = cfg(r#"{
+            "default": { "stun": ["stun.l.google.com:19302"] },
+            "commands": {
+                "p2p": {
+                    "park": "drt://match1.aloecraft.org/v1/bpi-drt",
+                    "forward": ["127.0.0.1:3389", "ssh://127.0.0.1:22"],
+                    "headers": {
+                        "auth": "bpi-drt-park",
+                        "DRT-Caller-Token": { "prompt": "hidden" },
+                        "X-From-Env": { "env": "DRT_TEST_P2P_HEADER" }
+                    }
+                }
+            }
+        }"#);
+        std::env::set_var("DRT_TEST_P2P_HEADER", "from-env");
+        let typed = |what: &str, echo: drt_config::secret::Echo| {
+            assert_eq!(what, "commands.p2p.headers.DRT-Caller-Token");
+            assert_eq!(echo, drt_config::secret::Echo::Hidden);
+            Ok("typed".to_string())
+        };
+        let Ok(Resolved {
+            role: Role::Park(p),
+            ..
+        }) = resolved_with(&file, Args::default(), &typed)
+        else {
+            panic!()
+        };
+        assert_eq!(p.stun, vec!["stun.l.google.com:19302".to_string()]);
+        assert!(matches!(&p.forward, ForwardSpec::Many(e) if e.len() == 2));
+        let header = |name: &str| {
+            p.headers
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(
+            header("Authorization").as_deref(),
+            Some("Bearer bpi-drt-park")
+        );
+        assert_eq!(header("DRT-Caller-Token").as_deref(), Some("typed"));
+        assert_eq!(header("X-From-Env").as_deref(), Some("from-env"));
+
+        // No terminal: refused at once, naming the header.
+        let e = resolved_with(&file, Args::default(), &no_terminal).unwrap_err();
+        assert!(e.contains("commands.p2p.headers.DRT-Caller-Token"), "{e}");
+        assert!(e.contains("no terminal"), "{e}");
+
+        // A flag naming the header replaces it, and nobody is asked.
+        let Ok(Resolved {
+            role: Role::Park(p),
+            ..
+        }) = resolved_with(
+            &file,
+            Args {
+                header: vec!["drt-caller-token=from-flag".into()],
+                ..Args::default()
+            },
+            &no_terminal,
+        )
+        else {
+            panic!()
+        };
+        assert!(p
+            .headers
+            .iter()
+            .any(|(n, v)| n == "drt-caller-token" && v == "from-flag"));
+    }
+
+    /// `default`, then the block, then the flag: each replaces the one
+    /// before, whole, per key.
+    #[test]
+    fn default_then_the_block_then_the_flag() {
+        let call = |file: &str, stun: Vec<String>| {
+            let Ok(Role::Call(c)) = role(
+                &cfg(file),
+                Args {
+                    peer: Some("drt://s.example/v1/a".into()),
+                    stun,
+                    ..Args::default()
+                },
+            ) else {
+                panic!("{file}")
+            };
+            c.dial.stun
+        };
+        let both = r#"{"default":{"stun":["d:1"]},"commands":{"p2p":{"stun":["b:1"]}}}"#;
+        assert_eq!(call(r#"{"default":{"stun":["d:1"]}}"#, vec![]), vec!["d:1"]);
+        assert_eq!(call(both, vec![]), vec!["b:1"]);
+        assert_eq!(call(both, vec!["f:1".into()]), vec!["f:1"]);
+
+        let r = resolve(
+            &cfg(r#"{"default":{"extra_roots":["/ca.pem"]}}"#),
+            &Args {
+                peer: Some("drt://s.example/v1/a".into()),
+                ..Args::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r.extra_roots, vec![PathBuf::from("/ca.pem")]);
+        assert_eq!(r.extra_roots_key, "default.extra_roots");
+    }
+
+    /// The deprecated top-level `p2p` still reads, as `commands.p2p`; naming
+    /// both is refused, since one would silently lose.
+    #[test]
+    fn the_old_top_level_block_reads_and_two_blocks_are_refused() {
+        let old = cfg(r#"{"p2p":{"listen":5000,"forward":"127.0.0.1:8080"}}"#);
+        assert!(matches!(role(&old, Args::default()), Ok(Role::Listen(_))));
+        for both in [
+            r#"{"p2p":{"listen":5000},"commands":{"p2p":{"listen":6000}}}"#,
+            r#"{"tunnel":{"park":"wss://r/park/a","to":"127.0.0.1:22"},"commands":{"p2p":{"listen":6000}}}"#,
+        ] {
+            let e = role(&cfg(both), Args::default()).unwrap_err();
+            assert!(
+                e.contains("`commands.p2p`") && e.contains("keep one"),
+                "{e}"
+            );
+        }
     }
 
     #[test]
@@ -1000,7 +1221,7 @@ mod tests {
             &none,
             Args {
                 match_port: Some(1),
-                forward: Some("127.0.0.1:22".into()),
+                forward: vec!["127.0.0.1:22".into()],
                 ..Args::default()
             },
         )
