@@ -547,7 +547,8 @@ function globMatches(glob, name) {
 
 /**
  * Answer every call a signalling server holds for one name
- * (doc/DRT-Signalling.md): `base` is the name's URL, `…/v1/<name>`, and
+ * (doc/DRT-Signalling.md): `base` is the name's URL, `…/v1/<name>` or
+ * `…/v1/<topic>/<name>`, and
  * `options.token` its answerer token.
  *
  * It holds the call notification stream (§5) where the runtime has an
@@ -673,7 +674,9 @@ export function listen(base, options = {}) {
         if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) init.signal = AbortSignal.timeout(left());
         let res;
         try {
-          res = await fetchFn(`${server.replace(/\/+$/, '')}/v1/${encodeURIComponent(name)}/calls`, init);
+          // A name inside a topic is `<topic>/<name>`: each part is escaped, the slash kept.
+          const path = name.split('/').map(encodeURIComponent).join('/');
+          res = await fetchFn(`${server.replace(/\/+$/, '')}/v1/${path}/calls`, init);
         } catch (e) {
           const timedOut = e?.name === 'TimeoutError' || e?.name === 'AbortError';
           throw new Error(timedOut ? `no answer within ${Math.round(budget / 1000)}s` : String(e?.message ?? e));
@@ -852,7 +855,7 @@ export function fingerprintText(f) {
  * under; `url` is where the caller's request goes, query included;
  * `service` is what a `drt+<service>://` address asks to open.
  *
- *   drt://host[:port][/v1/<name>]   https, or http when host is loopback
+ *   drt://host[:port][/v1/[<topic>/]<name>]   https, or http when host is loopback
  *   drt+<service>://…               the same, naming a service
  *   host                            drt://host
  *   http(s)://…/v1/<name>[/calls]   as written
@@ -901,7 +904,8 @@ export function canonicalPeer(address) {
   const query = qm >= 0 ? path.slice(qm + 1) : null;
   let bare = (qm >= 0 ? path.slice(0, qm) : path).replace(/\/+$/, '');
   if (bare.endsWith('/calls')) bare = bare.slice(0, -'/calls'.length);
-  const named = /^\/v1\/([^/]+)$/.exec(bare);
+  // `/v1/<name>`, or `/v1/<topic>/<name>` inside a topic (doc/P2P.md §2.4).
+  const named = /^\/v1\/([^/]+(?:\/[^/]+)?)$/.exec(bare);
   const name = named ? named[1] : null;
   const canonical = `${resolved}://${authority}${bare}`;
   const url = `${canonical}${name ? '/calls' : '/'}${query ? `?${query}` : ''}`;

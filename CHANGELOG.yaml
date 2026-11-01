@@ -169,6 +169,13 @@ releases:
           notification stream when there is one, answers each call with
           its record, and serves the same `--forward`. `--accept <cidr>`
           travels as `DRT-Accept` and is checked on the packets themselves.
+        - **Topics:** `drt p2p --match --topics <file>` declares topics,
+          namespaces with their own tokens. A name inside one is
+          `drt://<server>/v1/<topic>/<name>`; each token holds roles
+          (`park`, `call`, `read`, `write`), and `read` lists the names
+          present at `GET /v1/<topic>/names`. Bare `/v1/<name>` names,
+          their answerer token and `DRT-Caller-Token` work as before.
+          `write` is reserved for the topic's keys (kv, not built).
         - **The wire:** a Wisp `CONNECT` with an empty host asks for
           whatever the far side forwards to, at the port named or at none;
           `hello` names services and carries `scope` only when the
@@ -721,6 +728,19 @@ releases:
         alone is enough, as with `-P`; a non-`tcp` scheme is also its named
         service. A string is still one target.
     changed:
+      - |
+        **The SSH page has a setup form, connection states, and a hidden
+        caller secret.** The form picks a peer, a host record or a relay,
+        and names the user, the target on the peer (`to`), a STUN server
+        (`stun`, which a peer on another network needs) and the pins. The
+        caller secret has its own password field, and `k` in a link or a
+        `?k=` in an address moves into it and out of the address bar. A
+        ticked box remembers it per peer in this browser's IndexedDB, not a
+        cookie, which would reach whatever server serves the page. The
+        page tracks idle, calling, connecting, signing in, connected,
+        closed and error: Disconnect (Cancel while connecting), and
+        Reconnect after a logout, a lost connection or an error, work
+        without a reload, and so does an edit to the link's fragment.
       - |
         **`DRT_PREFIX` names the install prefix, not the bin directory.**
         The binary goes under `$DRT_PREFIX/bin` and `$DRT_PREFIX/share/drt`,
