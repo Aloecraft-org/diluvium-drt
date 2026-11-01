@@ -14,6 +14,7 @@
 #        DRT_WEB_PROFILE cargo profile (default: release; release-small
 #                        for the artifact that ships). Its `strip` is
 #                        overridden to none -- see the build below.
+#        DRT_WEB_OPT     0 skips wasm-opt (default: run it)
 #        CARGO_TARGET_DIR  as cargo reads it
 
 set -eu
@@ -67,4 +68,18 @@ cmp -s "$OUT/drt_web_bg.wasm" "$OUT/inline/drt_web_bg.wasm" || {
     exit 1
 }
 rm "$OUT/inline/drt_web_bg.wasm"
+
+# Shrunk with wasm-opt, as the SSH page's module is: about 5.9 MB to 2.8 MB
+# (1.38 MB to 1.11 MB gzipped, measured 2026-11-01), so drt.js and the
+# tarball carry the smaller one. After the comparison above, which is
+# between wasm-bindgen's two outputs. The features are the ones the module
+# uses; exception handling is the C core's `longjmp` (doc/doc_old/Wasm.md
+# §2.3). binaryen is pinned in crates/drt-web/browser-test/package.json.
+# DRT_WEB_OPT=0 skips it, for a quicker local build.
+if [ "${DRT_WEB_OPT:-1}" != 0 ]; then
+    (cd "$HERE/crates/drt-web/browser-test" && { [ -d node_modules ] || npm ci --silent; } &&
+     npx --no-install wasm-opt -Oz --enable-bulk-memory --enable-nontrapping-float-to-int \
+        --enable-sign-ext --enable-mutable-globals --enable-reference-types --enable-exception-handling \
+        "$OUT/drt_web_bg.wasm" -o "$OUT/drt_web_bg.wasm")
+fi
 printf 'drt-web.sh: %s (%s bytes)\n' "$OUT/drt_web_bg.wasm" "$(wc -c < "$OUT/drt_web_bg.wasm")"
