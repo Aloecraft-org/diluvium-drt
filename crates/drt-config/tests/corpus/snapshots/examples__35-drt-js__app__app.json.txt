@@ -49,5 +49,9 @@ RootConfig {
     principals: [],
     dlua_dir: None,
     entry: None,
-    args: {},
+    args: {
+        "rounds": Int(
+            0,
+        ),
+    },
 }

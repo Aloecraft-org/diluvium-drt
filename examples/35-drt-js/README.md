@@ -21,7 +21,7 @@ capabilities. **park**, **wake** and **kill** are the swarm's own verbs.
 | `terminal.js` | xterm.js with drt's line editor: each `drt ...` line is ticked to its end in the page. |
 | `inspector.js` | The panel's state: the running session's instances, twice a second. |
 | `index.html`, `style.css` | The layout, and the panel's table as Alpine markup. |
-| `app/` | The program `drt start` runs. |
+| `app/` | The program `drt start` runs: `app.json` counts until killed, `quick.json` three rounds, which is what `run-all.sh` checks. |
 
 xterm.js and Alpine come from jsdelivr. `crates/drt-web/cdn/e2e.mjs` runs
 this page in Chromium on every release.

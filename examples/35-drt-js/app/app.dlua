@@ -1,18 +1,26 @@
--- Three workers that count forever; the root prints what happens to them.
+-- Three workers that count; the root prints what happens to them, and ends
+-- when they have. `rounds` (args in the config) is how long each counts,
+-- 0.3 s a round; 0 is until it is killed.
+local _, args = queue.wait({queue.declare('args', {capacity = 1})})
+
 local worker = [[
-  local n = 0
-  while true do
+  local rounds, n, round = %d, 0, 0
+  while rounds == 0 or round < rounds do
+    round = round + 1
     for i = 1, 2000 do n = n + i end
     queue.wait({queue.lookup('inbox')}, 300)
   end
 ]]
 
 for _ = 1, 3 do
-  local w = host.spawn{code = worker, caps = {'lifecycle'}, budget = {instructions = 100000000}}
+  local w = host.spawn{code = worker:format(args.rounds), caps = {'lifecycle'},
+                       budget = {instructions = 100000000}}
   print('spawned worker ' .. w.id)
 end
 
-while true do
+local stopped = 0
+while stopped < 3 do
   local ev = host.events(60000)
   if ev then print('event: ' .. ev.event .. ' ' .. ev.id) end
+  if ev and ev.event ~= 'hibernated' and ev.event ~= 'woke' then stopped = stopped + 1 end
 end
