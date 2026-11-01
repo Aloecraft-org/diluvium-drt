@@ -187,8 +187,16 @@ fn signal(rest: &str, scheme: Option<&str>) -> Result<How, String> {
     };
     let path = path.trim_end_matches('/');
     let path = path.strip_suffix("/calls").unwrap_or(path);
+    // `/v1/<name>`, or `/v1/<topic>/<name>` for a name inside a topic
+    // (`doc/P2P.md` §2.4), whose name is `<topic>/<name>` from here on.
     let name = match path.strip_prefix("/v1/") {
-        Some(name) if !name.is_empty() && !name.contains('/') => Some(name.to_string()),
+        Some(name)
+            if !name.is_empty()
+                && name.split('/').count() <= 2
+                && name.split('/').all(|part| !part.is_empty()) =>
+        {
+            Some(name.to_string())
+        }
         _ => None,
     };
     let base = if path.is_empty() {
@@ -603,6 +611,14 @@ mod tests {
             signal("https://signal.example/v1/mypc/calls"),
             ("https://signal.example/v1/mypc".into(), Some("mypc".into()))
         );
+        assert_eq!(
+            signal("drt://signal.example/v1/home/mypc/calls"),
+            (
+                "https://signal.example/v1/home/mypc".into(),
+                Some("home/mypc".into())
+            )
+        );
+        assert_eq!(signal("drt://signal.example/v1/a/b/c").1, None);
         assert_eq!(
             signal("http://10.9.0.5:5001/v1/box"),
             ("http://10.9.0.5:5001/v1/box".into(), Some("box".into()))

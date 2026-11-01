@@ -101,3 +101,37 @@ pin once its pull request merges.
 Done: `CLEAR_SCREEN` changed; in a pty `:clear` left only the prompt.
 Learned: in @xterm/headless with scrollOnEraseInDisplay on, ED 2 moves
 the buffer base and ED 0 from home does not.
+
+## 2026-11-01 run: topics on the match server
+
+Plan: the owner asked (project thread "Add topics to drt", working
+autonomously while away) for topics: a namespace and access boundary
+grouping kv and p2p names on the signalling server, with per-topic
+tokens holding park, call, read and write, a members-only listing, and
+today's bare `/v1/<name>` URLs kept working. One step on
+claude/project-thread-2btm6m, ending in a pull request for review. The
+kv store is a sibling thread; the seam agreed with it: kv lives at
+`/v1/<topic>/kv/…`, its `kv_access(m, topic, op)` hook becomes
+`topic_access` once both land.
+
+Done:
+- `drt p2p --match --topics <file>` (and `p2p.topics`): the file is
+  checked in `matchmaker.rs` and handed to `stdlib/p2p_match.dlua` as
+  JSON text. The program routes `/v1/<a>/<b>/…` three ways: bare name,
+  topic listing (`GET /v1/<topic>/names`, read), name inside a topic.
+  `may()` is the one place a token is judged, so a JWT verifier can
+  replace it later.
+- Pairing inside a topic: the told side calls with its own token, which
+  must hold call; a bare name may not pair into a topic.
+- Callers: `drt p2p` and the browser library read
+  `drt://…/v1/<topic>/<name>`; the library escaped `lab/host` as one
+  segment when following a pair entry, fixed and caught by a new leg of
+  `pairing.mjs`.
+- Verified: fmt; clippy, workspace, all features; `cargo test
+  --workspace --all-features`; examples gate (31 ok, 2 skipped for
+  network/privilege); `script/browser-access-client.sh --drt` with the
+  new topic leg. Config corpus snapshots re-recorded: two lines,
+  `topics: None`.
+
+Next: once kv merges, wire `kv_access` to `topic_access`. Tokens are
+plain strings in the file; `Secret` values (PR #67) could carry them.

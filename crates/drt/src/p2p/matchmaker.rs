@@ -7,13 +7,16 @@
 //!
 //! ## surface block
 //!
-//! - Entry points: [`run`].
+//! - Entry points: [`run`]; [`load_topics`], the `--topics` file read and
+//!   checked into what the program is handed.
 //! - Configurable: [`CONN_DEADLINE_MS`], past the program's hold time so a
 //!   call nobody answers gets the program's 504; [`MAX_BODY`] (§6);
-//!   [`HEADERS`], what the program reads; [`RESP_HEADERS`], what it sets.
+//!   [`HEADERS`], what the program reads; [`RESP_HEADERS`], what it sets;
+//!   [`ROLES`], what a topic token may hold; [`NAME_MAX`].
 //! - Fan-out: none; one listener, one program.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use drt_config::resolve::ArgValue;
 use drt_config::{Listener, Program, RootConfig};
@@ -43,6 +46,13 @@ pub const RESP_HEADERS: &[&str] = &[
     "retry-after",
 ];
 
+/// The roles a topic token may hold (`doc/P2P.md` §2.4): `park` answers
+/// for names in the topic, `call` calls them, `read` lists them and reads
+/// the topic's keys, `write` writes its keys.
+pub const ROLES: &[&str] = &["park", "call", "read", "write"];
+/// A topic's longest name, as a parked name's (`doc/DRT-Signalling.md` §1).
+pub const NAME_MAX: usize = 64;
+
 /// The server, foreground forever, as `drt start` on the equivalent
 /// config would be. The config given is the base: its connectors and
 /// principals stand, and the listener and program are this verb's.
@@ -55,10 +65,17 @@ pub fn run(role: &MatchRole, config: &RootConfig) -> Result<(), String> {
     };
     config.root.program = Some(Program::Source(source.into()));
     config.entry = None;
-    config.args = BTreeMap::from([(
-        "capacity".to_string(),
-        ArgValue::Int(i64::try_from(role.capacity).unwrap_or(i64::MAX)),
-    )]);
+    let topics = match &role.topics {
+        Some(path) => load_topics(path)?,
+        None => String::new(),
+    };
+    config.args = BTreeMap::from([
+        (
+            "capacity".to_string(),
+            ArgValue::Int(i64::try_from(role.capacity).unwrap_or(i64::MAX)),
+        ),
+        ("topics".to_string(), ArgValue::Str(topics)),
+    ]);
     config.connectors.entry("time".to_string()).or_default();
     config.listeners = vec![Listener {
         scheme: "http".into(),
@@ -81,8 +98,138 @@ pub fn run(role: &MatchRole, config: &RootConfig) -> Result<(), String> {
     crate::start::start(&config, dispatcher)
 }
 
+// depth: the topics file
+
+/// The `--topics` file: `{"topics": {"<topic>": {"tokens": [{"token": "…",
+/// "roles": ["park", "call", "read", "write"]}]}}}`.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicsFile {
+    topics: BTreeMap<String, TopicEntry>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopicEntry {
+    tokens: Vec<TokenEntry>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TokenEntry {
+    token: String,
+    roles: Vec<String>,
+}
+
+/// Read and check the `--topics` file, and return it as the program takes
+/// it: JSON text, topic -> token -> roles, a token listed twice in a topic
+/// holding the union of its roles. Every refusal names the file and the
+/// entry.
+pub fn load_topics(path: &Path) -> Result<String, String> {
+    let shown = path.display();
+    let text = std::fs::read_to_string(path).map_err(|e| format!("--topics {shown}: {e}"))?;
+    topics_from_text(&text).map_err(|e| format!("--topics {shown}: {e}"))
+}
+
+fn topics_from_text(text: &str) -> Result<String, String> {
+    let file: TopicsFile = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    let mut out: BTreeMap<String, BTreeMap<String, BTreeSet<String>>> = BTreeMap::new();
+    for (topic, entry) in file.topics {
+        if !is_name(&topic) {
+            return Err(format!(
+                "topic '{topic}': a topic is 1 to {NAME_MAX} of a-z, 0-9, - and ."
+            ));
+        }
+        let tokens = out.entry(topic.clone()).or_default();
+        for (i, t) in entry.tokens.into_iter().enumerate() {
+            // A token rides in `Authorization: Bearer` or `?k=`, unescaped.
+            if t.token.is_empty()
+                || !t
+                    .token
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-._~+/=".contains(c))
+            {
+                return Err(format!(
+                    "topic '{topic}', token {}: a token is one or more of A-Z, a-z, 0-9 and -._~+/=",
+                    i + 1
+                ));
+            }
+            if t.roles.is_empty() {
+                return Err(format!(
+                    "topic '{topic}', token {}: no roles; give one or more of {}",
+                    i + 1,
+                    ROLES.join(", ")
+                ));
+            }
+            let roles = tokens.entry(t.token).or_default();
+            for role in t.roles {
+                if !ROLES.contains(&role.as_str()) {
+                    return Err(format!(
+                        "topic '{topic}', token {}: '{role}' is not a role; the roles are {}",
+                        i + 1,
+                        ROLES.join(", ")
+                    ));
+                }
+                roles.insert(role);
+            }
+        }
+    }
+    Ok(serde_json::to_string(&out).expect("strings encode"))
+}
+
+/// A topic: the charset of a parked name.
+fn is_name(s: &str) -> bool {
+    (1..=NAME_MAX).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.')
+}
+
 /// A listener with every default, to fill the fields above in.
 fn listener_defaults() -> Listener {
     serde_json::from_str(r#"{"scheme":"http","address":"127.0.0.1:0"}"#)
         .expect("the two required fields make a listener")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_topics_file_becomes_topic_token_roles_with_duplicates_merged() {
+        let text = r#"{"topics": {"home": {"tokens": [
+            {"token": "a", "roles": ["park"]},
+            {"token": "a", "roles": ["call", "park"]},
+            {"token": "r", "roles": ["read"]}
+        ]}, "calls": {"tokens": []}}}"#;
+        assert_eq!(
+            topics_from_text(text).unwrap(),
+            r#"{"calls":{},"home":{"a":["call","park"],"r":["read"]}}"#
+        );
+    }
+
+    #[test]
+    fn a_topics_file_refuses_what_the_server_could_not_honour() {
+        for (text, why) in [
+            (r#"{"topics":{"Home":{"tokens":[]}}}"#, "topic 'Home'"),
+            (
+                r#"{"topics":{"h":{"tokens":[{"token":"a b","roles":["park"]}]}}}"#,
+                "token 1",
+            ),
+            (
+                r#"{"topics":{"h":{"tokens":[{"token":"a","roles":[]}]}}}"#,
+                "no roles",
+            ),
+            (
+                r#"{"topics":{"h":{"tokens":[{"token":"a","roles":["admin"]}]}}}"#,
+                "'admin' is not a role",
+            ),
+            (
+                r#"{"topics":{"h":{"tokens":[],"extra":1}}}"#,
+                "unknown field",
+            ),
+        ] {
+            let e = topics_from_text(text).unwrap_err();
+            assert!(e.contains(why), "{text}: {e}");
+        }
+    }
 }
