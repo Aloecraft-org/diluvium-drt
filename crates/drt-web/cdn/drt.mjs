@@ -27,8 +27,10 @@
 //     the key-value store of doc/DRT-Signalling.md §10. Options: `token`,
 //     `headers`.
 //   - `session(options)` -> { info, token, logout }: stdlib:session's
-//     /api/session, /api/token and /logout (doc/Session.md), with the
-//     browser's cookie; `options.base` defaults to the page's origin.
+//     /api/session, /api/token and /logout, with the browser's cookie;
+//     `options.base` defaults to the page's origin, where a proxy must
+//     mount stdlib:session's /api/* (crates/drt-web/npm/README.md says
+//     why and how).
 //   - Everything drt_browser_access.js exports: offer, direct, answer,
 //     listen, canonicalPeer, parseRecord, ... (doc/BrowserAccess.md).
 // - Configurable: HOLD_MARGIN_MS, what `call` allows past a server's hold
@@ -287,7 +289,7 @@ export function kv(server, topic, options = {}) {
 export function session(options = {}) {
   const fetchFn = options.fetch ?? globalThis.fetch.bind(globalThis);
   const base = String(options.base ?? globalThis.location.origin).replace(/\/+$/, '');
-  const send = (method, path) => fetchFn(`${base}${path}`, { method, credentials: 'include' });
+  const send = (method, path, init = {}) => fetchFn(`${base}${path}`, { method, credentials: 'include', ...init });
   return {
     /** The session ({ user, groups, amr, signed_in, expires_in, ... }), or null when there is none. */
     async info() {
@@ -306,8 +308,11 @@ export function session(options = {}) {
     },
     /** Ends the session, and revokes the user's tokens when the server issues them. */
     async logout() {
-      const res = await send('POST', '/logout');
-      if (res.status >= 400) throw new SessionError('logout', res.status, await res.text());
+      // /logout answers with a redirect to the login page, which a proxy
+      // may send on to another origin; the redirect is the answer, so it
+      // is not followed.
+      const res = await send('POST', '/logout', { redirect: 'manual' });
+      if (res.type !== 'opaqueredirect' && !res.ok) throw new SessionError('logout', res.status, await res.text());
     },
   };
 }
