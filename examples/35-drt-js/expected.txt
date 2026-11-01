@@ -1,3 +1,1 @@
-drt repl — Show help: <:h+enter>
-dv> dv> 42
-dv> 
+42

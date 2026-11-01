@@ -1,7 +1,7 @@
 {
   "name": "35-drt-js",
-  "teaches": "drt.js in a page: a terminal that runs drt with no config and no files, and a panel listing what it runs. The page is checked in Chromium by crates/drt-web/cdn/e2e.mjs; this runs the same REPL natively.",
-  "cmd": "printf 'x = 41\\nprint(x + 1)\\n' | drt repl",
+  "teaches": "drt.js in a page: a terminal that runs drt with no config and no files, and a panel listing what it runs. The page is checked in Chromium by crates/drt-web/cdn/e2e.mjs; this runs the same kind of one-off code drt runs there.",
+  "cmd": "drt run -c 'x = 41; print(x + 1)'",
   "needs_network": false,
   "normalise": []
 }
