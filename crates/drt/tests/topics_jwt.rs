@@ -171,6 +171,23 @@ impl Drop for Slapd {
     }
 }
 
+/// One copy of slapd per process, at a path of its own. Ubuntu's AppArmor
+/// profile attaches to /usr/sbin/slapd and confines it to its own
+/// directories, so the installed binary cannot read this test's config
+/// and database; the same program at another path is not confined
+/// (`connectors/ldap/tests/openldap.rs` found this in CI).
+fn unconfined_copy(slapd: &Path) -> PathBuf {
+    static COPY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    COPY.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("drt-topics-jwt-bin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let copy = dir.join("slapd");
+        std::fs::copy(slapd, &copy).unwrap();
+        copy
+    })
+    .clone()
+}
+
 fn first_existing(candidates: &[&str]) -> Option<PathBuf> {
     candidates.iter().map(PathBuf::from).find(|p| p.exists())
 }
@@ -230,16 +247,28 @@ impl Slapd {
             String::from_utf8_lossy(&added.stderr)
         );
         let port = free_tcp_port();
-        let child = Command::new(&slapd)
-            .arg("-f")
-            .arg(dir.join("slapd.conf"))
-            .arg("-h")
-            .arg(format!("ldap://127.0.0.1:{port}/"))
-            .args(["-d", "0"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+        let copy = unconfined_copy(&slapd);
+        // Another test's fork can briefly hold the copy's write descriptor
+        // while it is made, and exec then fails with ETXTBSY; try again.
+        let mut tries = 0;
+        let child = loop {
+            let spawned = Command::new(&copy)
+                .arg("-f")
+                .arg(dir.join("slapd.conf"))
+                .arg("-h")
+                .arg(format!("ldap://127.0.0.1:{port}/"))
+                .args(["-d", "0"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
+            match spawned {
+                Err(e) if e.raw_os_error() == Some(26) && tries < 20 => {
+                    tries += 1;
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                other => break other.unwrap(),
+            }
+        };
         let server = Slapd { child, dir, port };
         let deadline = Instant::now() + Duration::from_secs(10);
         while TcpStream::connect(("127.0.0.1", port)).is_err() {

@@ -105,6 +105,21 @@ macro_rules! skipped {
     }};
 }
 
+/// Held across every fork in this file; see [`Slapd::start`].
+static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn unconfined_copy(slapd: &Path) -> PathBuf {
+    static COPY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    COPY.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("drt-ldap-bin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let copy = dir.join("slapd");
+        std::fs::copy(slapd, &copy).unwrap();
+        copy
+    })
+    .clone()
+}
+
 struct Slapd {
     child: Child,
     dir: PathBuf,
@@ -170,6 +185,8 @@ impl Slapd {
         );
         std::fs::write(dir.join("slapd.conf"), conf).unwrap();
         std::fs::write(dir.join("data.ldif"), LDIF).unwrap();
+        // Every fork in this file happens under this lock; see below.
+        let _spawning = SPAWN.lock().unwrap_or_else(|e| e.into_inner());
         let slapadd = slapd.with_file_name("slapadd");
         let added = Command::new(&slapadd)
             .arg("-f")
@@ -185,28 +202,47 @@ impl Slapd {
         );
 
         let (plain, tls) = (free_port(), free_port());
-        let child = Command::new(&slapd)
+        // Run a copy. Ubuntu's AppArmor profile for slapd attaches to the
+        // path /usr/sbin/slapd and lets it read only its own directories,
+        // so the real binary cannot open this test's config, certificates
+        // or database; `slapadd`, a hard link to the same file under
+        // another path, is not confined, which is why it worked. A copy
+        // at another path is the same program without the profile.
+        //
+        // One copy per process, made and run under one lock: a copy being
+        // written while another test forks leaks the write descriptor into
+        // that child, and exec of the copy then fails with ETXTBSY.
+        let copy = unconfined_copy(&slapd);
+        let log = std::fs::File::create(dir.join("slapd.log")).unwrap();
+        let child = Command::new(&copy)
             .arg("-f")
             .arg(dir.join("slapd.conf"))
             .arg("-h")
             .arg(format!(
                 "ldap://127.0.0.1:{plain}/ ldaps://127.0.0.1:{tls}/"
             ))
-            // -d keeps it in the foreground, so the child is the server.
+            // -d keeps it in the foreground, so the child is the server;
+            // `-d 1` would say more, and 0 still reports a refused start.
             .args(["-d", "0"])
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
+            .stderr(log)
             .spawn()
             .unwrap();
-        let server = Slapd {
+        let mut server = Slapd {
             child,
             dir,
             plain,
             tls,
         };
         let deadline = Instant::now() + Duration::from_secs(10);
-        while std::net::TcpStream::connect(("127.0.0.1", tls)).is_err() {
-            assert!(Instant::now() < deadline, "slapd did not listen on {tls}");
+        let listening = |port| std::net::TcpStream::connect(("127.0.0.1", port)).is_ok();
+        while !(listening(plain) && listening(tls)) {
+            let exited = server.child.try_wait().unwrap();
+            if exited.is_some() || Instant::now() > deadline {
+                let said =
+                    std::fs::read_to_string(server.dir.join("slapd.log")).unwrap_or_default();
+                panic!("slapd did not listen on {plain} and {tls} ({exited:?}):\n{said}");
+            }
             std::thread::sleep(Duration::from_millis(50));
         }
         Some(server)
