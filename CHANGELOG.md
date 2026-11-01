@@ -666,7 +666,7 @@ Underneath it the embedded core moves from 0.15.1 to
   (`-p 13389:127.0.0.1:3389`, a page's `to=`). On one host a port
   alone is enough, as with `-P`; a non-`tcp` scheme is also its named
   service. A string is still one target.
-  **TOTP and EdDSA in the crypto connector, every key still in the
+- **TOTP and EdDSA in the crypto connector, every key still in the
   host.** `crypto/totp_verify` checks an RFC 6238 code (SHA-1 or
   SHA-256, 6 to 8 digits, a period and a window) and answers the step
   it matched, which passed back as `after` refuses the code again.
