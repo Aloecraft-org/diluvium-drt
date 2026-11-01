@@ -584,6 +584,22 @@ Underneath it the embedded core moves from 0.15.1 to
   `drt p2p drt://match.example/v1/mypc -p 13389 -- xfreerdp /v:localhost:13389`.
   The command needs a bound `-p <local>`, belongs with a call only,
   and is a command-line argument, not a key of the `p2p` block.
+- **TOTP and EdDSA in the crypto connector, every key still in the
+  host.** `crypto/totp_verify` checks an RFC 6238 code (SHA-1 or
+  SHA-256, 6 to 8 digits, a period and a window) and answers the step
+  it matched, which passed back as `after` refuses the code again.
+  `crypto/totp_enroll` answers a derived label's seed as base32 and
+  an `otpauth://` URI, and `crypto/totp` the current code; each is
+  its own grant, so a verifier never holds a seed. `crypto/derive
+  {alg = "EdDSA"}` gives a label an Ed25519 key, and
+  `crypto.signing_keys` configures one from PKCS#8 PEM, given as a
+  string, `{"env"}` or `{"file"}`; `jwt_sign` signs EdDSA under
+  either, and `jwt_verify` takes the algorithm from the key the `kid`
+  names, never from the token. `crypto/public_key` answers the key's
+  JWK, for a JWKS. Checked against the RFC 4226, 6238 and 8037
+  vectors and against `totp-rs`, `jsonwebtoken`, PyJWT and pyotp.
+  `examples/32-second-factor-and-jwks` is the walkthrough. The plain
+  Diluvium host does not answer these calls.
 
 ### Changed
 
