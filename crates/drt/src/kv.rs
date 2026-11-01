@@ -154,7 +154,8 @@ impl Target {
 /// One action, and the status to exit with.
 pub fn run(args: &Args) -> u8 {
     let outcome = (|| {
-        let headers = crate::p2p::headers(&BTreeMap::new(), &args.header, &crate::prompt::terminal)?;
+        let headers =
+            crate::p2p::headers(&BTreeMap::new(), &args.header, &crate::prompt::terminal)?;
         let roots = crate::roots::load_roots_named("--extra-root", &args.extra_root)?;
         let runtime = tokio::runtime::Runtime::new().map_err(|e| format!("a runtime: {e}"))?;
         let outcome = runtime.block_on(act(&args.action, &headers, &roots));

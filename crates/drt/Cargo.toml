@@ -124,8 +124,6 @@ sha2 = "0.10"
 # The session test computes TOTP codes itself (RFC 6238 is SHA-1), so a
 # code it accepts is not the host checking its own arithmetic.
 sha1 = "0.10"
-# tests/topics_jwt.rs writes an issuer's Ed25519 key as PKCS#8 PEM.
-base64 = "0.22"
 # The tunnel test drives a real SSH session through both bridge halves.
 ego_transport = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net", "sync", "time"] }
@@ -148,6 +146,7 @@ str0m = { version = "0.23", default-features = false, features = ["rust-crypto"]
 # The JWKS test verifies tokens the way a service holding only the served
 # set does: a standard library, sharing no code with the crypto connector.
 jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
+# tests/jwks.rs and tests/topics_jwt.rs write Ed25519 keys as PKCS#8 PEM.
 base64 = "0.22"
 
 # A `{"prompt": "hidden"}` secret's blind read (`src/prompt.rs`), on the

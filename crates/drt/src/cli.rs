@@ -1023,7 +1023,8 @@ pub fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
 /// quiet kind of wrong.
 #[cfg(feature = "plugins")]
 const BUILTIN_FAMILIES: &[&str] = &[
-    "time", "fs", "sql", "crypto", "data", "ssh", "rest", "ssmtp", "ldap", "exec", "socket", "ws", "kv",
+    "time", "fs", "sql", "crypto", "data", "ssh", "rest", "ssmtp", "ldap", "exec", "socket", "ws",
+    "kv",
 ];
 
 /// Every plugin family's name, judged before anything is wired.
