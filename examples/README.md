@@ -45,11 +45,11 @@ reference. Everything here is v0.8.0.
 | [`29-browser-access`](29-browser-access) | Signalling is a program: the host answers `doc/DRT-Signalling.md`'s caller request with its own record, and the browser then reaches the host's scope directly over WebRTC. | `./demo.sh` |
 | [`30-signaling-room`](30-signaling-room) | The reference server for `doc/DRT-Signalling.md`: a caller's request is held until an answerer that cannot take requests, such as a page, reads it by cursor and answers. Its event stream says when to read. | `./demo.sh` |
 | [`31-streaming-responses`](31-streaming-responses) | Server-Sent Events from a program: a reply with `stream = true` sends the head at once, the body follows in pieces, and a client that leaves is reported back. | `./demo.sh` |
-| [`32-second-factor-and-jwks`](32-second-factor-and-jwks) | TOTP and EdDSA with every key in the host: enrol a label as an `otpauth://` URI, accept its code once, and sign a token whose public half is a JWK. | `drt run --config app.json` |
+| [`33-second-factor-and-jwks`](33-second-factor-and-jwks) | TOTP and EdDSA with every key in the host: enrol a label as an `otpauth://` URI, accept its code once, and sign a token whose public half is a JWK. | `drt run --config app.json` |
 
 `drt run` executes one program to completion and exits — no swarm, no
 listeners, no second instance — and it is what `01`–`07`, `10`, `12`, `16`,
-`18`, `23`, `25` and `32` use.
+`18`, `23`, `25` and `33` use.
 `drt start` runs the whole deployment: `08` needs it because a child has
 nowhere to live under `drt run`, and `11`, `13`, `17`, `19`, `20`, `22` and
 `24` need it because a config block that serves — `relay`, `stun`, `turn`,

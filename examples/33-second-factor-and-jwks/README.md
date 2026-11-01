@@ -1,4 +1,4 @@
-# 32-second-factor-and-jwks
+# 33-second-factor-and-jwks
 
 A second factor and a token another service can check, with the program
 naming keys and never holding one.
@@ -6,7 +6,7 @@ naming keys and never holding one.
 ## Run it
 
 ```
-cd examples/32-second-factor-and-jwks
+cd examples/33-second-factor-and-jwks
 drt run --config app.json
 ```
 

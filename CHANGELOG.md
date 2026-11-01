@@ -593,12 +593,14 @@ Underneath it the embedded core moves from 0.15.1 to
   its own grant, so a verifier never holds a seed. `crypto/derive
   {alg = "EdDSA"}` gives a label an Ed25519 key, and
   `crypto.signing_keys` configures one from PKCS#8 PEM, given as a
-  string, `{"env"}` or `{"file"}`; `jwt_sign` signs EdDSA under
+  string, `{"env"}` or `{"file"}` (not `{"prompt"}`: a connector's
+  scope is read at its first call, with no terminal to ask on);
+  `jwt_sign` signs EdDSA under
   either, and `jwt_verify` takes the algorithm from the key the `kid`
   names, never from the token. `crypto/public_key` answers the key's
   JWK, for a JWKS. Checked against the RFC 4226, 6238 and 8037
   vectors and against `totp-rs`, `jsonwebtoken`, PyJWT and pyotp.
-  `examples/32-second-factor-and-jwks` is the walkthrough. The plain
+  `examples/33-second-factor-and-jwks` is the walkthrough. The plain
   Diluvium host does not answer these calls.
 
 ### Changed
