@@ -133,8 +133,8 @@ One trait, several backings, zero distinctions at the call site:
   pattern. Config names a connector; the registry resolves it to whatever
   backing this build carries.
 - Dynamic loading is a seam, not v1: native → wasm component (WIT enters only
-  here, only later); browser → a JS function handed in at init behind a
-  `JsConnector` adapter.
+  here, only later; not built); browser → a JS function handed in at init behind a
+  `JsConnector` adapter (built: `crates/drt-web/src/js.rs`).
 - Mocks implement the same trait. Guests cannot tell — that indistinguishability
   is load-bearing (prototype against mocks, deploy against real, guest
   unchanged) and is the acceptance test.

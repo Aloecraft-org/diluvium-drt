@@ -37,6 +37,7 @@
   import { terminalFor } from './ssh-terminal.js';
   import { park } from './relay-leg.js';
   import { splice } from './stream-leg.js';
+  import { bus } from './net-bus.js';
 
   const decode = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
   // The other direction, for the SSH bridge: Playwright's exposed
@@ -300,6 +301,37 @@
       if (socket) socket.close();
       sshShells.delete(id);
       sshSockets.delete(id);
+    },
+    // Connectors the page hands in (issue #80): a fresh terminal with an
+    // in-page bus as its `net` transport and a `store` answered by a
+    // JavaScript object -- at once, through a promise, by a throw and by a
+    // rejection -- and one command run through it.
+    async backings({ files, line }) {
+      const decoder = new TextDecoder();
+      let out = '';
+      const store = {
+        call(name, args, node) {
+          switch (name) {
+            case 'store/echo': return { args, node, bytes: new Uint8Array([104, 105]) };
+            case 'store/later': return new Promise((r) => setTimeout(() => r(args.n + 1), 10));
+            case 'store/fail': throw new Error('no such key');
+            case 'store/reject': return Promise.reject(new Error('refused later'));
+            default: throw new Error(`no ${name}`);
+          }
+        },
+      };
+      const t = new DrtTerm((fd, bytes) => { out += decoder.decode(bytes, { stream: true }); }, { net: bus(), store });
+      try {
+        for (const [p, text] of Object.entries(files)) t.putFile(p, new TextEncoder().encode(text));
+        t.setCwd('/app');
+        const sh = makeShell({ term: t, write: (fd, text) => { out += text; } });
+        const status = await sh.run(line);
+        let refused = null;
+        try { new DrtTerm(() => {}, { net: { open() {} } }).free(); } catch (e) { refused = String(e); }
+        return { status, out, refused };
+      } finally {
+        t.free();
+      }
     },
     seed({ cwd, files, dirs = [] }) {
       fresh();

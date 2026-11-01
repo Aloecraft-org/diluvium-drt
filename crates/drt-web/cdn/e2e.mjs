@@ -180,7 +180,7 @@ let a;
 await check('a page on another origin imports drt.min.js served as application/javascript', async () => {
   a = await page();
   const names = await a.evaluate(() => Object.keys(window.drt).sort());
-  for (const n of ['call', 'connect', 'loadSsh', 'ssh', 'loadRuntime', 'kv', 'session', 'offer', 'direct', 'listen', 'canonicalPeer', 'VERSION']) {
+  for (const n of ['call', 'connect', 'loadSsh', 'ssh', 'loadRuntime', 'kernel', 'bus', 'kv', 'session', 'offer', 'direct', 'listen', 'canonicalPeer', 'VERSION']) {
     if (!names.includes(n)) throw new Error(`no export ${n}; it has ${names.join(', ')}`);
   }
 });
@@ -334,6 +334,31 @@ await check('the SSH module makes a key, and the browser build of drt loads, fro
   });
   if (!/^ssh-ed25519 \S+ drt\.js test$/.test(r.pub)) throw new Error(`key: ${r.pub}`);
   if (!(r.abi > 0)) throw new Error(`abiVersion: ${r.abi}`);
+  await p.close();
+});
+
+await check('kernel() with a bus() as its net transport runs a program that talks to itself', async () => {
+  const p = await page();
+  const r = await p.evaluate(async () => {
+    let out = '';
+    const decoder = new TextDecoder();
+    const k = await window.drt.kernel((fd, bytes) => { out += decoder.decode(bytes, { stream: true }); }, { net: window.drt.bus() });
+    k.putFile('/app/app.dlua', new TextEncoder().encode([
+      "local l = host.call('net/listen', {address = 'here'})",
+      "local a = host.call('net/open', {address = 'here'})",
+      "local b = host.call('net/accept', {handle = l.handle})",
+      "host.call('net/send', {handle = b.handle, data = 'over the bus'})",
+      "print(host.call('net/recv', {handle = a.handle}).data)",
+    ].join('\n')));
+    k.setCwd('/app');
+    const s = k.exec(['drt', 'run', 'app.dlua']);
+    for (;;) {
+      const step = s.tick();
+      if (step.done) { k.free(); return { status: step.status, out }; }
+      await new Promise((r) => setTimeout(r, step.sleepMs ?? 0));
+    }
+  });
+  if (r.status !== 0 || r.out !== 'over the bus\n') throw new Error(JSON.stringify(r));
   await p.close();
 });
 

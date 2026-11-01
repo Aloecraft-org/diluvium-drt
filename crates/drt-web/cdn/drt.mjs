@@ -23,6 +23,13 @@
 //     on first use. `ssh(stream | wsUrl, pinned)` is `Ssh.connect` after it.
 //   - `loadRuntime()` -> crates/drt-web's exports (DrtTerm, DrtSwarm, ...),
 //     unpacked on first use.
+//   - `kernel(sink, backings)` -> a DrtTerm: one kernel, writing to
+//     `sink(fd, bytes)`, with the connectors `backings` hands it by family
+//     (crates/drt-web/src/js.rs: `net` a transport, any other family a
+//     `{ call }` object). Each kernel takes its own; `new DrtSwarm(max,
+//     spawns, config, backings)` takes the same map.
+//   - `bus()` -> an in-page `net` transport (bus.mjs). One bus handed to
+//     several kernels lets them reach each other by name.
 //   - `kv(server, topic, options)` -> { get, put, delete, list, watch }:
 //     the key-value store of doc/DRT-Signalling.md §10. Options: `token`,
 //     `headers`.
@@ -46,6 +53,7 @@ import * as sshGlue from 'drt:ssh-glue';
 import { WEB_WASM_GZ_B64, SSH_WASM_GZ_B64, VERSION } from 'drt:wasm';
 
 export * from '../../drt-rtc/client/drt_browser_access.js';
+export { bus } from './bus.mjs';
 export { VERSION };
 
 export const HOLD_MARGIN_MS = 5000;
@@ -173,6 +181,11 @@ export function loadRuntime() {
     .then((bytes) => webGlue.default({ module_or_path: bytes }))
     .then(() => webGlue);
   return webReady;
+}
+
+export async function kernel(sink, backings) {
+  const { DrtTerm } = await loadRuntime();
+  return new DrtTerm(sink, backings);
 }
 
 // depth: the key-value store (doc/DRT-Signalling.md §10)

@@ -1491,6 +1491,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "drt-connector-net"
+version = "0.8.0"
+dependencies = [
+ "async-trait",
+ "drt-caps",
+ "drt-connector",
+ "drt-hostcall",
+ "pollster",
+ "rmpv",
+]
+
+[[package]]
 name = "drt-connector-rest"
 version = "0.8.0"
 dependencies = [
@@ -1694,18 +1706,21 @@ dependencies = [
 name = "drt-web"
 version = "0.8.0"
 dependencies = [
+ "async-trait",
  "clap",
  "console_error_panic_hook",
  "drt",
  "drt-caps",
  "drt-config",
  "drt-connector",
+ "drt-connector-net",
  "drt-platform",
  "drt-sshd",
  "drt-swarm",
  "ego_cli",
  "js-sys",
  "ring",
+ "rmpv",
  "serde_json",
  "tokio",
  "wasm-bindgen",

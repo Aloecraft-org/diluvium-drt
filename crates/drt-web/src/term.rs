@@ -12,11 +12,15 @@
 //! ## surface block
 //!
 //! - [`Term`]: the memory filesystem a page seeds, and `exec`.
+//!   [`Term::with_backings`] is the same over connectors the page hands
+//!   in ([`Backing`]), each made fresh for every command.
 //! - [`Session`]: one command, ticked to completion.
 //! - [`Step`]: what a tick asks of the page.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,7 +31,7 @@ use drt::config;
 use drt::drive::{Next, Solo};
 use drt::repl::Repl;
 use drt::start::DeployDriver;
-use drt_connector::Dispatcher;
+use drt_connector::{Connector, Dispatcher};
 use drt_platform::fs::MemFs;
 use drt_platform::stdio::{self, Fd};
 
@@ -47,7 +51,14 @@ pub enum Step {
 /// against it.
 pub struct Term {
     fs: Arc<MemFs>,
+    backings: BTreeMap<String, Backing>,
 }
+
+/// A connector the page hands in, by the family a guest calls. A maker
+/// rather than a connector, because a command is a process: each `exec`
+/// gets its own handle tables, as each `drt` invocation in a shell would,
+/// and a node id from one command can never name another's connection.
+pub type Backing = Rc<dyn Fn() -> Arc<dyn Connector>>;
 
 impl Default for Term {
     fn default() -> Self {
@@ -61,9 +72,24 @@ impl Term {
     /// and every file a command opens -- a program, a config, a granted
     /// directory -- is one the page put here.
     pub fn new() -> Self {
+        Self::with_backings(BTreeMap::new())
+    }
+
+    /// [`Term::new`], with connectors the page hands in. A family here is
+    /// wired by every command whose config names it, and by every command
+    /// with no config at all (`drt::cli::assemble_with`).
+    pub fn with_backings(backings: BTreeMap<String, Backing>) -> Self {
         let fs = Arc::new(MemFs::new());
         drt_platform::fs::install(fs.clone());
-        Term { fs }
+        Term { fs, backings }
+    }
+
+    /// One command's connectors, made from the backings.
+    fn supplied(&self) -> cli::Supplied {
+        self.backings
+            .iter()
+            .map(|(family, make)| (family.clone(), make()))
+            .collect()
     }
 
     /// The filesystem, to seed and to read back.
@@ -97,7 +123,7 @@ impl Term {
                 };
             }
         };
-        let (config, dispatcher) = match cli::assemble(&cli) {
+        let (config, dispatcher) = match cli::assemble_with(&cli, &self.supplied()) {
             Ok(pair) => pair,
             Err(e) => {
                 say(Fd::Stderr, &format!("drt: {e}\n"));
