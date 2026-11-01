@@ -40,7 +40,7 @@ export function startTerminal(drt, element) {
 
   (async () => {
     const help = [
-      'Files: app.json app.dlua',
+      'This page fetched app/app.json and app/app.dlua from its own folder into drt\'s in-memory filesystem.',
       '  drt start --config app.json   run the app; Ctrl+C stops it',
       '  drt repl                      a Diluvium REPL; Ctrl+D leaves it',
       '  drt --help                    every drt command',
