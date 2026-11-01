@@ -360,6 +360,8 @@ const a = await kernel(sinkA, { net });
 const b = await kernel(sinkB, { net });   // a and b reach each other by address
 ```
 
+`examples/37-page-connectors` is a page answering a `{ call }` family.
+
 ## The swarm exports
 
 `DrtSwarm`, beside `DrtTerm`, over the same `Deployment` a `drt start`

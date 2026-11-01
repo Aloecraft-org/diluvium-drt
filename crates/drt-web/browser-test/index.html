@@ -58,11 +58,11 @@
   let chunks = [];
   let decoders = [];
 
-  function fresh() {
+  function fresh(backings) {
     if (term) term.free();
     chunks = [];
     decoders = [null, new TextDecoder(), new TextDecoder()];
-    term = new DrtTerm((fd, bytes) => chunks.push(decoders[fd].decode(bytes, { stream: true })), { sql: SQL });
+    term = new DrtTerm((fd, bytes) => chunks.push(decoders[fd].decode(bytes, { stream: true })), { sql: SQL, ...backings });
     shell = makeShell({ term, write: (fd, text) => chunks.push(text) });
   }
 
@@ -420,8 +420,10 @@
         t.free();
       }
     },
-    seed({ cwd, files, dirs = [] }) {
-      fresh();
+    // `backings`: a module URL whose exports are the families this
+    // example's page hands in (meta.json "backings").
+    async seed({ cwd, files, dirs = [], backings = null }) {
+      fresh(backings ? { ...(await import(backings)) } : undefined);
       for (const d of dirs) term.putDir(d);
       for (const { path, data } of files) term.putFile(path, decode(data));
       term.setCwd(cwd);

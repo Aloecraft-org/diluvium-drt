@@ -69,7 +69,8 @@ Underneath it the embedded core moves from 0.15.1 to
   is a `{ call(name, args, node) }` object, answered synchronously or
   by a promise. drt.js adds `kernel(sink, backings)` and `bus()`, an
   in-page transport several kernels share. A family this build
-  carries itself cannot be handed in.
+  carries itself cannot be handed in. `examples/37-page-connectors`
+  answers a `storage` family from `localStorage`.
 - **`drt.js`, DRT in a page as one ES module a page imports from any
   origin.** The browser access client, the SSH client and the
   browser build, with both wasm modules inlined and unpacked on first

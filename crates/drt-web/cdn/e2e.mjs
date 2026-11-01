@@ -36,7 +36,7 @@ import { MAX_BYTES } from './build.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DRT = process.env.DRT ?? path.resolve(here, '../../../target/debug/drt');
 const SSHD = process.env.SSHD ?? '/usr/sbin/sshd';
-const PORTS = { sshd: 18322, match: 18330, cdn: 18331, page: 18332, example: 18333 };
+const PORTS = { sshd: 18322, match: 18330, cdn: 18331, page: 18332, example: 18333, repo: 18334 };
 const TOKENS = { host: 'cdn-host-token', caller: 'cdn-caller-token', kv: 'cdn-kv-token', reader: 'cdn-kv-reader' };
 const WAIT_MS = 20000;
 const USER = os.userInfo().username;
@@ -394,6 +394,27 @@ await check('examples/35-drt-js: the terminal starts a deployment, and the inspe
   await p.keyboard.press('Control+C');
   await until('an empty panel', async () => (await panel()).length === 0);
   await until('the prompt again', async () => (await screen()).trimEnd().endsWith('$'));
+  await p.close();
+});
+
+await check('examples/37-page-connectors: the page as a reader opens it prints expected.txt', async () => {
+  // Served from the repo root, as its README says, so main.js imports the
+  // drt.min.js this tree built.
+  const root = path.resolve(here, '../../..');
+  const types = { '.html': 'text/html', '.js': 'application/javascript', '.json': 'application/json' };
+  http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://x').pathname;
+    const file = path.join(root, url.endsWith('/') ? `${url}index.html` : url);
+    if (!file.startsWith(root + path.sep) || !fs.existsSync(file)) return res.writeHead(404).end();
+    res.writeHead(200, { 'content-type': types[path.extname(file)] ?? 'text/plain' }).end(fs.readFileSync(file));
+  }).listen(PORTS.repo, '127.0.0.1');
+  const p = await browser.newPage();
+  p.on('pageerror', (e) => pageErrors.push(`37-page-connectors: ${e.message}`));
+  await p.goto(`http://127.0.0.1:${PORTS.repo}/examples/37-page-connectors/`);
+  await p.waitForFunction(() => document.body.dataset.done === 'true', null, { timeout: WAIT_MS });
+  const got = (await p.evaluate(() => document.querySelector('pre').textContent)).trimEnd();
+  const want = fs.readFileSync(path.join(root, 'examples/37-page-connectors/expected.txt'), 'utf8').trimEnd();
+  if (got !== want) throw new Error(`the page printed:\n${got}`);
   await p.close();
 });
 

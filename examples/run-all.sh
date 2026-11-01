@@ -106,6 +106,11 @@ meta.json:
                                           # it with.
     "needs_listener": true,               # binds a port: run here and under
                                           # wasmtime, skipped in the browser
+    "backings":      "storage.js",        # the browser suite only: a module
+                                          # beside the example whose exports
+                                          # are the connector families the
+                                          # page hands its terminal.  Not
+                                          # read here.
     "normalise":     ["s|a|b|"]           # sed -e, applied to BOTH sides
   }
 
