@@ -169,6 +169,13 @@ releases:
           notification stream when there is one, answers each call with
           its record, and serves the same `--forward`. `--accept <cidr>`
           travels as `DRT-Accept` and is checked on the packets themselves.
+        - **Topics:** `drt p2p --match --topics <file>` declares topics,
+          namespaces with their own tokens. A name inside one is
+          `drt://<server>/v1/<topic>/<name>`; each token holds roles
+          (`park`, `call`, `read`, `write`), and `read` lists the names
+          present at `GET /v1/<topic>/names`. Bare `/v1/<name>` names,
+          their answerer token and `DRT-Caller-Token` work as before.
+          `write` is reserved for the topic's keys (kv, not built).
         - **The wire:** a Wisp `CONNECT` with an empty host asks for
           whatever the far side forwards to, at the port named or at none;
           `hello` names services and carries `scope` only when the

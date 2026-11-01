@@ -31,7 +31,10 @@ costs latency, never correctness.
 
 - **An answerer has a name** on a server: 1 to 64 characters of `a-z`,
   `0-9`, `-` and `.`. Callers address it by that name; the server never
-  passes a caller's record to anyone else.
+  passes a caller's record to anyone else. A server may group names in
+  **topics**: the name is then `<topic>/<name>`, each part spelled as a
+  name, and every path below begins `/v1/<topic>/<name>/`. The reference
+  server's topics and their tokens are `doc/P2P.md` §2.4.
 - **Two tokens per name**, as the relay has two keys per label
   (`doc/Relay.md`): an **answerer token**, which may read calls and answer
   them, and a **caller token**, which may only call. Each travels as

@@ -241,7 +241,8 @@ export interface Listening {
 }
 /**
  * Answer every call a signalling server holds for one name:
- * `base` is `…/v1/<name>` (doc/DRT-Signalling.md).
+ * `base` is `…/v1/<name>`, or `…/v1/<topic>/<name>` inside a topic
+ * (doc/DRT-Signalling.md).
  */
 export function listen(base: string, options?: ListenOptions): Listening;
 /** The consent rule `listen`'s `pair` option is read as; throws a TypeError on anything else. */

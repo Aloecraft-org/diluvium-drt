@@ -41,6 +41,7 @@ RootConfig {
                 fingerprint: None,
                 headers: {},
                 capacity: None,
+                topics: None,
                 extra_roots: [],
                 authorized_keys: None,
                 identity_file: None,
