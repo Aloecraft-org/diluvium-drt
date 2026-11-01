@@ -397,6 +397,22 @@ jobs:
       - name: The determinism corpus, in Chromium
         working-directory: crates/drt-web/browser-test
         run: EXAMPLES_DIR="$GITHUB_WORKSPACE/tests/determinism" node run.mjs
+      # drt.js (crates/drt-web/cdn): the two modules built above, inlined
+      # into one ES module, imported in Chromium from another origin and
+      # driven against a parked peer, sshd and the kv store.
+      - name: drt.js, across origins, in Chromium
+        run: |
+          set -eu
+          (cd crates/drt-web/cdn && npm ci)
+          DRT=$GITHUB_WORKSPACE/target/debug/drt script/drt-js-gate.sh
+      # The same file reading a stdlib:session sign-in and its JWT, through
+      # the session job's script with DRT_JS set.
+      - name: drt.js and stdlib:session, in Chromium
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends slapd caddy
+          DRT=$GITHUB_WORKSPACE/target/debug/drt DRT_JS=$GITHUB_WORKSPACE/crates/drt-web/cdn/dist script/session-browser.sh
 
   browser-access-client:
     # The browser access client library (crates/drt-rtc/client/) in

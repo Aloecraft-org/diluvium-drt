@@ -2,7 +2,8 @@
 #
 # drt-web.sh -- build the browser module and generate its glue
 # (doc/Wasm.md §4.4, §8): drt_web_bg.wasm and drt_web.js under
-# crates/drt-web/browser-test/pkg, where index.html and run.mjs load them.
+# crates/drt-web/browser-test/pkg, where index.html and run.mjs load them,
+# and inline/drt_web.js, the glue drt.js bundles (script/drt-js.sh).
 #
 # usage: script/drt-web.sh [out-dir]
 # env:   WASI_SDK_PATH   a wasi-sdk (>= 24; 27 verified): the C core and
@@ -56,4 +57,14 @@ strip_key=CARGO_PROFILE_$(printf '%s' "$PROFILE" | tr 'a-z-' 'A-Z_')_STRIP
 env "$strip_key=none"     cargo build -p drt-web --target wasm32-unknown-unknown --profile "$PROFILE"
 module=$TARGET_DIR/wasm32-unknown-unknown/$dir/drt_web.wasm
 "$WASM_BINDGEN" --target web --out-dir "$OUT" --out-name drt_web "$module"
+# The same glue with no default module path, for drt.js
+# (crates/drt-web/cdn), which hands it the bytes and must not name a
+# sibling .wasm. The module beside it is the one above, byte for byte.
+"$WASM_BINDGEN" --target web --omit-default-module-path --no-typescript \
+    --out-dir "$OUT/inline" --out-name drt_web "$module"
+cmp -s "$OUT/drt_web_bg.wasm" "$OUT/inline/drt_web_bg.wasm" || {
+    echo 'drt-web.sh: the inline glue came with another module; drt.js would not run what was tested' >&2
+    exit 1
+}
+rm "$OUT/inline/drt_web_bg.wasm"
 printf 'drt-web.sh: %s (%s bytes)\n' "$OUT/drt_web_bg.wasm" "$(wc -c < "$OUT/drt_web_bg.wasm")"

@@ -6,8 +6,9 @@
 #   OUT_DIR  written fresh: the package's files
 #   VERSION  the release's, e.g. 0.8.0 or 0.8.0-dev.17
 #
-# Expects script/drt-web.sh's output under crates/drt-web/browser-test/pkg
-# and the SSH page's module under crates/drt-ssh-web/page/pkg, and runs
+# Expects script/drt-web.sh's output under crates/drt-web/browser-test/pkg,
+# the SSH page's module under crates/drt-ssh-web/page/pkg, and drt.js
+# under crates/drt-web/cdn/dist (script/drt-js-gate.sh), and runs
 # cargo for the config schema. The release's Package step calls this and
 # tars OUT_DIR as drt_web.tar.gz; `npm pack` in OUT_DIR is the tarball
 # npm takes.
@@ -26,6 +27,8 @@ cp "$pkg/pkg/drt_web.js" "$pkg/pkg/drt_web_bg.wasm" "$pkg/pkg/drt_web.d.ts" \
    "$HERE/crates/drt-rtc/client/drt_browser_access.js" \
    "$HERE/crates/drt-rtc/client/drt_browser_access.d.ts" \
    "$HERE/crates/drt-web/npm/README.md" \
+   "$HERE/crates/drt-web/cdn/dist/drt.js" \
+   "$HERE/crates/drt-web/cdn/dist/drt.min.js" \
    "$OUT/"
 (cd "$HERE" && cargo run -q -p drt-config --features schemars --example schema) > "$OUT/config.schema.json"
 # npm wants a semver; a tag's `v` is not part of one.

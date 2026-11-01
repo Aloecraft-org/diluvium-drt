@@ -1,4 +1,4 @@
-# 35-post-quantum
+# 36-post-quantum
 
 Post-quantum signatures and encryption from aloecrypt_core. The program
 names keys and never holds one.
@@ -6,7 +6,7 @@ names keys and never holds one.
 ## Run it
 
 ```
-cd examples/35-post-quantum
+cd examples/36-post-quantum
 drt run --config app.json
 ```
 

@@ -7,6 +7,7 @@
 
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 
@@ -115,6 +116,48 @@ assert.deepEqual(claims.groups, ['admins', 'staff']);
 assert.deepEqual(claims.amr, ['pwd', 'otp']);
 assert.equal(JSON.parse(Buffer.from(token.split('.')[0], 'base64url').toString()).alg, 'EdDSA');
 ok('alice: the login page knows her, and /api/token answers an EdDSA JWT carrying her groups');
+
+// drt.js (crates/drt-web/cdn), imported from another origin by a page of
+// the app: the session and a JWT through the API the proxy mounts on the
+// app (Caddyfile). DRT_JS names the directory holding the built file;
+// without it this step says it was skipped.
+if (process.env.DRT_JS) {
+  const cdnPort = Number(PROXY) + 10;
+  const cdn = http.createServer((req, res) => {
+    const file = { '/drt.min.js': 'drt.min.js', '/drt.js': 'drt.js' }[req.url];
+    if (!file) return res.writeHead(404).end();
+    res.writeHead(200, { 'content-type': 'application/javascript', 'access-control-allow-origin': '*' })
+      .end(fs.readFileSync(path.join(process.env.DRT_JS, file)));
+  });
+  await new Promise((r) => cdn.listen(cdnPort, '127.0.0.1', r));
+  const src = `http://cdn.example.test:${cdnPort}/drt.min.js`;
+  await page.goto(`${APP}/private`);
+  const got = await page.evaluate(async (src) => {
+    const drt = await import(src);
+    const s = drt.session();
+    return { info: await s.info(), token: await s.token() };
+  }, src);
+  assert.equal(got.info.user, 'alice');
+  assert.equal(got.info.signed_in, true);
+  assert.equal(got.token.token_type, 'Bearer');
+  const jwt = JSON.parse(Buffer.from(got.token.token.split('.')[1], 'base64url').toString());
+  assert.equal(jwt.sub, 'alice');
+  assert.deepEqual(jwt.groups, ['admins', 'staff']);
+  const stranger = await (await browser.newContext()).newPage();
+  await stranger.goto(`${APP}/api/session`);
+  const none = await stranger.evaluate(async (src) => {
+    const s = (await import(src)).session();
+    let token;
+    try { await s.token(); token = 'issued'; } catch (e) { token = e.status; }
+    return { info: await s.info(), token };
+  }, src);
+  assert.deepEqual(none, { info: null, token: 401 });
+  await stranger.context().close();
+  cdn.close();
+  ok('alice: a page of the app imports drt.js from another origin, and drt.session() reads her session and a JWT with her groups; a stranger gets none');
+} else {
+  console.log('skip - drt.js: DRT_JS is not set');
+}
 
 // Bob: staff only.
 const bob = await browser.newContext();
