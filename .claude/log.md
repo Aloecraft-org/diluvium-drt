@@ -168,6 +168,7 @@ Done:
 
 Next: once kv merges, wire `kv_access` to `topic_access`. Tokens are
 plain strings in the file; `Secret` values (PR #67) could carry them.
+
 ## 2026-11-01 run: a kv store on the signalling server, and `drt kv`
 
 Plan: the owner asked, in the project thread, for a kv store served by
@@ -197,6 +198,41 @@ connections with parked peers.
 
 Next: per-topic tokens (topics thread); `host.kv.*` sugar and `kv/*` in
 the diluvium binary are diluvium's to add.
+
+## 2026-11-01 run: a JWKS from a topic's kv, `stdlib:jwks`
+
+Plan: the owner asked (project thread "Publish JWKS from topic kv", while
+away) for JWT verification keys published through a JWKS endpoint built
+on topics and kv, with rotation and kid selection, private keys never
+leaving the host, and tokens verified by a standard library. One step on
+claude/project-thread-0s4wb2, stacked on three unmerged branches merged
+in: topics (2btm6m, #68), kv (0zh3i9, #69) and crypto EdDSA +
+`public_key` (qq22id, #71). Then a pull request, not merged.
+
+Done:
+- The topics/kv seam, filled here because both are on this branch:
+  `kv_access` asks `topic_access` with the op as the role when
+  `--topics` is given; kv's dispatch sits ahead of the topic split in
+  `route()`; the docs that said kv takes no token say when it does. The
+  crypto example renumbered 32 -> 33 (kv keeps 32). `Command::P2p` boxed:
+  topics + kv flags tripped `clippy::large_enum_variant`.
+- `stdlib/jwks.dlua`: publishes each `args.keys` name's JWK under
+  `jwks/<kid>` (`~XX`-escaped) with `?ttl=`, refreshed every ttl/3, and
+  serves the topic's set at `/.well-known/jwks.json`, filtered to public
+  members, one key per kid; 503 when kv does not answer. The same set is
+  kept as one kv value under `jwks` (`args.set_key`), the contract the
+  "Tie LDAP groups to topic tokens" thread's match server reads.
+- `tests/jwks.rs` (6, jsonwebtoken), `examples/34-jwks` (PyJWT's
+  `PyJWKClient` over HTTP; CI's examples step installs PyJWT 2.15.0).
+
+Learned: `drt start` with a listener exits 0 when its root instance
+faults (start.rs, `alive == 0`), so a supervisor cannot tell a fault
+from a chosen exit. Not changed here.
+
+Next: `crypto/jwt_verify {token, jwks}` (a verifier that holds no master)
+is on the "Tie LDAP groups to topic tokens" branch (z0edkg), not this one.
+A doc of its own for the JWKS waits for the owner to ask for one.
+
 ## 2026-11-01 run: TOTP and EdDSA in the crypto connector
 
 Plan: the owner asked, through the project coordinator, for TOTP and

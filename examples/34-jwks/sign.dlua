@@ -1,0 +1,4 @@
+-- Sign with the newest key. Its name is the token's kid, which is how a
+-- verifier picks it out of the set.
+host.call("crypto/derive", {label = "issuer:2", alg = "EdDSA"})
+print(host.call("crypto/jwt_sign", {key = "issuer:2", ttl = 600, claims = {sub = "alice"}}))

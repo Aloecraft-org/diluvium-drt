@@ -154,7 +154,8 @@ pub struct Args {
     pub topics: Option<PathBuf>,
     /// With --match: also keep a key-value store, in a SQLite database in
     /// this directory, at /v1/<topic>/kv/<key> (doc/DRT-Signalling.md §10).
-    /// It takes no token yet: whoever reaches the port may read and write.
+    /// With --topics a request takes a token of its topic with read or
+    /// write; without, whoever reaches the port may read and write.
     #[arg(long, value_name = "DIR")]
     pub kv: Option<PathBuf>,
     /// Trust this PEM certificate beside the public roots, for a signalling

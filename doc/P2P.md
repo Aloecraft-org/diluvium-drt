@@ -232,8 +232,8 @@ what the profile asks of them.
   |---|---|
   | `park` | the answerer's requests for a name in the topic: claim, poll, answer, the event stream, pairing |
   | `call` | calling a name in the topic, and withdrawing that token's own call |
-  | `read` | `GET /v1/<topic>/names`: `{"topic": …, "names": [...]}`, the names present now |
-  | `write` | nothing yet; it is reserved for the topic's keys (kv, not built) |
+  | `read` | `GET /v1/<topic>/names`: `{"topic": …, "names": [...]}`, the names present now; reading the topic's kv (get, list, watch) |
+  | `write` | writing the topic's kv (put, delete) |
 
   No token is 401. A token without the role, or a topic the file does not
   declare, is 403, so probing does not list topics. Inside a topic,
@@ -258,8 +258,10 @@ what the profile asks of them.
   front, as example 30's config does. Certificate flags can come later.
 - **`--kv <dir>`** also keeps a key-value store, in `<dir>/kv.db`, at
   `/v1/<topic>/kv/<key>` (`doc/DRT-Signalling.md` §10); `drt kv` and the
-  `kv` connector reach it. It takes no token yet, so `--host` is what
-  narrows who may read and write.
+  `kv` connector reach it. With `--topics`, a kv request takes a token of
+  its topic holding `read` or `write`, and a topic the file does not
+  declare is 403. Without `--topics` it takes no token, so `--host` is
+  what narrows who may read and write.
 - `--match` with `--forward`, `--relay` or `--fallback` is refused: a
   signalling server carries no session bytes (§10).
 

@@ -1,0 +1,25 @@
+{
+  "_comment": "The JWKS: stdlib:jwks writes each key's public half to the topic's kv and serves the topic's set. The private keys stay in the crypto connector.",
+
+  "entry": "stdlib:jwks",
+  "args": { "keys": "issuer:2 issuer:1", "ttl": 86400, "max_age": 300 },
+
+  "caps": [
+    { "capability": "host:crypto/derive", "scope": ["issuer:*"] },
+    { "capability": "host:crypto/public_key" },
+    { "capability": "host:kv/put" },
+    { "capability": "host:kv/list" },
+    { "capability": "host:time/monotonic" }
+  ],
+
+  "connectors": {
+    "crypto": { "scope": { "key": "jwks-example-master-key-000000" } },
+    "kv": { "scope": "drt://127.0.0.1:18498/v1/auth" },
+    "time": {}
+  },
+
+  "listeners": [
+    { "scheme": "http", "address": "127.0.0.1:18499", "queue": "http_in", "reply_queue": "http_out",
+      "resp_headers": ["cache-control", "access-control-allow-origin"] }
+  ]
+}

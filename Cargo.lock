@@ -1306,6 +1306,7 @@ dependencies = [
  "httparse",
  "ipnetwork",
  "ldap3_proto",
+ "jsonwebtoken",
  "libc",
  "pollster",
  "rcgen 0.13.2",

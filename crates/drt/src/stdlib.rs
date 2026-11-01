@@ -67,6 +67,12 @@ pub const BROWSER_ACCESS: &str = "browser-access";
 /// under its own listener names this entry.
 pub const P2P_MATCH: &str = "p2p-match";
 
+/// A JSON Web Key Set for the tokens the crypto connector signs: each
+/// key's public JWK written to a topic's kv, and the topic's set served at
+/// `/.well-known/jwks.json`. The private keys stay in the crypto
+/// connector. `stdlib/jwks.dlua`'s surface block is the reference.
+pub const JWKS: &str = "jwks";
+
 /// One reader, four blocks.
 ///
 /// A deployment is config plus a program, and these four blocks used to be
@@ -220,6 +226,12 @@ pub fn lookup(name: &str) -> Option<Kind> {
         BROWSER_ACCESS => Some(Kind::Source(include_str!("stdlib/browser_access.dlua"))),
         #[cfg(feature = "p2p")]
         P2P_MATCH => Some(Kind::Source(include_str!("stdlib/p2p_match.dlua"))),
+        #[cfg(all(
+            feature = "connector-kv",
+            feature = "connector-crypto",
+            feature = "listen"
+        ))]
+        JWKS => Some(Kind::Source(include_str!("stdlib/jwks.dlua"))),
         _ => None,
     }
 }
@@ -267,6 +279,7 @@ pub fn names() -> Vec<&'static str> {
         WG,
         BROWSER_ACCESS,
         P2P_MATCH,
+        JWKS,
     ]
     .into_iter()
     .filter(|n| lookup(n).is_some())

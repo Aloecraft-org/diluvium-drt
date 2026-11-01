@@ -317,8 +317,10 @@ it answers every request below 404. It is plain HTTP, with
   1 to 64 of `A-Z a-z 0-9 . _ ~ -`; two topics never see each other's
   keys. A key is 1 to 256 of the same and `/`, with no empty, `.` or `..`
   segment; a value is UTF-8 text, at most 16 KiB.
-- **No tokens yet.** Whoever reaches the port may read and write. Per-topic
-  tokens are not built.
+- **Tokens are the topic's.** On a server with topics (§1), a kv request
+  takes a token of its topic: `read` for get, list and watch, `write` for
+  put and delete; none is 401, a wrong one or an undeclared topic 403. On a
+  server without topics, whoever reaches the port may read and write.
 - **Every change takes the next revision**, one counter for the whole
   server that never goes back, and a key's version is the revision that
   last wrote it. It survives a restart.
