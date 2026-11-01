@@ -106,7 +106,7 @@ dependencies = [
 [[package]]
 name = "aloecrypt_core"
 version = "0.1.0"
-source = "git+https://github.com/Aloecraft-org/aloecrypt_core?rev=cf62a17f2c3089f60ce3157a478c09b89ac34c23#cf62a17f2c3089f60ce3157a478c09b89ac34c23"
+source = "git+https://github.com/Aloecraft-org/aloecrypt_core?tag=v0.1.0-dev.1#cf62a17f2c3089f60ce3157a478c09b89ac34c23"
 dependencies = [
  "argon2",
  "chacha20poly1305",
