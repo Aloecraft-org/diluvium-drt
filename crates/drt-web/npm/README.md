@@ -39,8 +39,49 @@ const { token: jwt } = await session().token();          // stdlib:session, same
 - `loadSsh()` and `loadRuntime()` unpack each wasm module on first use.
 - A page with a Content-Security-Policy needs `'wasm-unsafe-eval'` in
   `script-src` for either module.
-- `session()` sends the browser's cookie, so the session's `/api/*` must
-  be on the page's origin, as a proxy mounts it.
+- `session()` is for a page behind `stdlib:session`; see below.
 
 `crates/drt-web/cdn/drt.mjs` lists every export; `e2e.mjs` beside it is
 the check every release passes.
+
+## session(): a page behind stdlib:session
+
+`session()` reads the signed-in user and asks for a JWT, with the cookie
+`stdlib:session` set at sign-in. The cookie is `HttpOnly` (a page cannot
+read it) and `SameSite=Lax`, and `stdlib:session` sends no CORS headers,
+so the browser only sends it, and only lets the page read the answer,
+when the request goes to **the page's own origin**. `stdlib:session` is
+usually on another host (`auth.example.com`), so the proxy in front of
+the app mounts its JSON API and `/logout` on the app's origin:
+
+```
+app.example.com {
+	@session path /api/* /logout
+	handle @session {
+		reverse_proxy 127.0.0.1:9091      # stdlib:session
+	}
+	handle {
+		forward_auth 127.0.0.1:9091 {
+			uri /verify
+		}
+		reverse_proxy 127.0.0.1:8080      # the app
+	}
+}
+```
+
+| Call | Request | Answer |
+|---|---|---|
+| `session().info()` | `GET /api/session` | `{user, groups, amr, signed_in, expires_in, ...}`, or `null` when signed out |
+| `session().token()` | `POST /api/token` | `{token, expires_in, token_type}`: an EdDSA JWT, also a topic token for `call` and `kv` |
+| `session().logout()` | `POST /logout` | ends the session and revokes the user's JWTs |
+
+`session({ base })` sends the requests to `base` instead of the page's
+origin. That works only when `base` is the same site as the page and
+answers CORS with credentials, which `stdlib:session` does not, so leave
+`base` out unless something in front of it adds them. A refusal is a
+`SessionError` carrying `status` (401: not signed in; 404 from `token()`:
+the session issues no JWTs, `jwt_key` is unset).
+
+`script/session-browser.sh` runs exactly this setup in Chromium, with
+`crates/drt/tests/session-browser/Caddyfile` as the proxy.
+
