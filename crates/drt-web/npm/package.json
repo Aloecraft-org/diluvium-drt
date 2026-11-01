@@ -18,6 +18,8 @@
     "./ssh": "./ssh-command.js",
     "./ssh-client": "./drt_ssh_web.js",
     "./ssh-client/wasm": "./drt_ssh_web_bg.wasm",
+    "./bundle": "./drt.js",
+    "./bundle.min": "./drt.min.js",
     "./config.schema.json": "./config.schema.json",
     "./package.json": "./package.json"
   },

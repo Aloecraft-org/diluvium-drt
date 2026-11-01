@@ -47,6 +47,20 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Added
 
+- **`drt.js`, DRT in a page as one ES module a page imports from any
+  origin.** The browser access client, the SSH client and the
+  browser build, with both wasm modules inlined and unpacked on first
+  use, so nothing beside the file is fetched. `call(peer, {token,
+  headers, iceServers})` makes the caller's request to a parked or
+  listening peer, or calls a record in direct mode, and adds no ICE
+  server of its own; `connect` opens a stream, `ssh` signs in over
+  one, `kv` speaks the store of doc/DRT-Signalling.md §10, and
+  `session` reads a `stdlib:session` sign-in and its JWT. Released as
+  `drt.js` and `drt.min.js` and in the npm package as
+  `drt-browser/bundle`. Gated in Chromium importing it from another
+  origin, served as `application/javascript` alone, against a peer
+  parked at `drt p2p --match`, a stock sshd and the kv store
+  (`script/drt-js-gate.sh`), and through the session check.
 - **`stdlib:session`, a login portal and forward-auth endpoint
   (`doc/Session.md`).** A dlua program on four connectors: `ldap`
   binds the user, `crypto` checks a TOTP code (enrolment by policy:

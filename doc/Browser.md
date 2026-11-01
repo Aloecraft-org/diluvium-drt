@@ -300,7 +300,10 @@ doc/Wasm.md M5 and §7 carry the question.
 kernel worker, plus the Instances panel over the swarm exports below.
 
 **Anyone else.** `drt_web.tar.gz` is a release artifact and the snippet
-above is its documentation. A p2p web app embedding a sealed runtime is
+above is its documentation. `drt.js` and `drt.min.js`, release assets
+too, carry this build, the SSH client and the browser access client as
+one ES module with both wasm modules inlined, for a page that imports it
+from any origin (`crates/drt-web/npm/README.md`). A p2p web app embedding a sealed runtime is
 not a fourth integration; it is this one.
 
 ## The swarm exports

@@ -47,6 +47,17 @@ env "$strip_key=none" cargo build -p drt-ssh-web --target wasm32-unknown-unknown
 "$WASM_BINDGEN" --target no-modules --no-typescript --out-dir "$PAGE/pkg" --out-name drt_ssh_web \
     "$TARGET_DIR/wasm32-unknown-unknown/$dir/drt_ssh_web.wasm"
 
+# The ES module glue for drt.js (crates/drt-web/cdn), with no default
+# module path: drt.js hands it the bytes. Its module must be the one the
+# page's glue came with, so drt.js can inline the same wasm-opt output.
+"$WASM_BINDGEN" --target web --omit-default-module-path --no-typescript --out-dir "$PAGE/pkg/inline" \
+    --out-name drt_ssh_web "$TARGET_DIR/wasm32-unknown-unknown/$dir/drt_ssh_web.wasm"
+cmp -s "$PAGE/pkg/drt_ssh_web_bg.wasm" "$PAGE/pkg/inline/drt_ssh_web_bg.wasm" || {
+    echo 'drt-ssh-page.sh: the ES module glue came with another module than the page'"'"'s' >&2
+    exit 1
+}
+rm "$PAGE/pkg/inline/drt_ssh_web_bg.wasm"
+
 cd "$PAGE"
 [ -d node_modules ] || npm ci --silent
 npx --no-install wasm-opt -Oz --enable-bulk-memory --enable-nontrapping-float-to-int \
