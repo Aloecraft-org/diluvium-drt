@@ -1,0 +1,9 @@
+$ drt run --config app.json
+  storage/set greeting   ok      true
+  storage/get greeting   ok      hello from the page
+  storage/get missing    error   no key 'missing'
+
+$ drt run --config locked.json
+  storage/set greeting   denied  'storage/set' is outside this instance's grants
+  storage/get greeting   denied  'storage/get' is outside this instance's grants
+  storage/get missing    denied  'storage/get' is outside this instance's grants

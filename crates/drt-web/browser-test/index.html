@@ -3,6 +3,7 @@
 <title>drt in the browser</title>
 <link rel="stylesheet" href="./node_modules/@xterm/xterm/css/xterm.css">
 <script src="./node_modules/@xterm/xterm/lib/xterm.js"></script>
+<script src="./node_modules/sql.js/dist/sql-wasm.js"></script>
 <style>
   body { margin: 0; padding: 1rem 1.25rem; background: #101418; color: #d8dee4;
          font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
@@ -37,6 +38,7 @@
   import { terminalFor } from './ssh-terminal.js';
   import { park } from './relay-leg.js';
   import { splice } from './stream-leg.js';
+  import { bus } from './net-bus.js';
 
   const decode = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
   // The other direction, for the SSH bridge: Playwright's exposed
@@ -50,20 +52,24 @@
 
   let term = null;
   let shell = null;
+  // sql.js, handed to every example's terminal as its `sql` (issue #81):
+  // what lets examples/07-sql run here unchanged against expected.txt.
+  let SQL = null;
   let chunks = [];
   let decoders = [];
 
-  function fresh() {
+  function fresh(backings) {
     if (term) term.free();
     chunks = [];
     decoders = [null, new TextDecoder(), new TextDecoder()];
-    term = new DrtTerm((fd, bytes) => chunks.push(decoders[fd].decode(bytes, { stream: true })));
+    term = new DrtTerm((fd, bytes) => chunks.push(decoders[fd].decode(bytes, { stream: true })), { sql: SQL, ...backings });
     shell = makeShell({ term, write: (fd, text) => chunks.push(text) });
   }
 
   const harness = {
-    ready: init().then(() => {
+    ready: init().then(async () => {
       setPanicHook();
+      SQL = await initSqlJs({ locateFile: (f) => `./node_modules/sql.js/dist/${f}` });
       return true;
     }),
     buildInfo: (json) => buildInfo(json),
@@ -383,8 +389,41 @@
       sshShells.delete(id);
       sshSockets.delete(id);
     },
-    seed({ cwd, files, dirs = [] }) {
-      fresh();
+    // Connectors the page hands in (issue #80): a fresh terminal with an
+    // in-page bus as its `net` transport and a `store` answered by a
+    // JavaScript object -- at once, through a promise, by a throw and by a
+    // rejection -- and one command run through it.
+    async backings({ files, line }) {
+      const decoder = new TextDecoder();
+      let out = '';
+      const store = {
+        call(name, args, node) {
+          switch (name) {
+            case 'store/echo': return { args, node, bytes: new Uint8Array([104, 105]) };
+            case 'store/later': return new Promise((r) => setTimeout(() => r(args.n + 1), 10));
+            case 'store/fail': throw new Error('no such key');
+            case 'store/reject': return Promise.reject(new Error('refused later'));
+            default: throw new Error(`no ${name}`);
+          }
+        },
+      };
+      const t = new DrtTerm((fd, bytes) => { out += decoder.decode(bytes, { stream: true }); }, { net: bus(), store });
+      try {
+        for (const [p, text] of Object.entries(files)) t.putFile(p, new TextEncoder().encode(text));
+        t.setCwd('/app');
+        const sh = makeShell({ term: t, write: (fd, text) => { out += text; } });
+        const status = await sh.run(line);
+        let refused = null;
+        try { new DrtTerm(() => {}, { net: { open() {} } }).free(); } catch (e) { refused = String(e); }
+        return { status, out, refused };
+      } finally {
+        t.free();
+      }
+    },
+    // `backings`: a module URL whose exports are the families this
+    // example's page hands in (meta.json "backings").
+    async seed({ cwd, files, dirs = [], backings = null }) {
+      fresh(backings ? { ...(await import(backings)) } : undefined);
       for (const d of dirs) term.putDir(d);
       for (const { path, data } of files) term.putFile(path, decode(data));
       term.setCwd(cwd);

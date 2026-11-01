@@ -17,7 +17,9 @@
 //! swarm — foreground, with park timeouts honoured on the host clock (see
 //! `start.rs`). `ps` is an honest stub until the control endpoint exists.
 //! [`wire_connectors`] is where a profile's feature gates meet the root
-//! config, once, for every subcommand.
+//! config, once, for every subcommand; [`wire_connectors_with`] and
+//! [`assemble_with`] are the same with backings a host hands in
+//! ([`Supplied`]), which is how a page's JavaScript connectors are wired.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -839,6 +841,30 @@ fn profile_name(features: &[&str]) -> &'static str {
 }
 
 pub fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
+    wire_connectors_with(config, &Supplied::new())
+}
+
+/// Connectors a host hands in rather than this build carrying them, by the
+/// family a guest calls: a page's JavaScript backings (SPEC.md §7's
+/// `JsConnector`, `crates/drt-web`'s `js` module). Wired like any other
+/// connector, and only when the config names the family -- a backing
+/// handed in is available, not granted.
+pub type Supplied =
+    std::collections::BTreeMap<String, std::sync::Arc<dyn drt_connector::Connector>>;
+
+/// [`wire_connectors`], with `supplied` answering for any family the config
+/// names that this build does not carry.
+///
+/// A supplied family may not be one this build carries itself. The builtin
+/// would win, silently, and a page that handed in a backing for `fs` would
+/// never learn that its backing was not the one answering.
+pub fn wire_connectors_with(config: &RootConfig, supplied: &Supplied) -> Result<Registry, String> {
+    if let Some(family) = supplied.keys().find(|f| carries_builtin(f)) {
+        return Err(format!(
+            "a backing was handed in for '{family}', which this build carries itself; \
+             one family is answered by one connector"
+        ));
+    }
     let mut registry = Registry::new();
     // The whole-config questions first: a family named twice is a mistake
     // about the config, and answering it before either loop means the
@@ -1022,15 +1048,53 @@ pub fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
                     wiring.scope.clone(),
                 )
                 .map_err(|e| e.to_string())?,
-            other => {
-                return Err(format!(
-                    "config wires connector '{other}', which this build does not carry"
-                ))
-            }
+            other => match supplied.get(other) {
+                Some(connector) => registry
+                    .wire(
+                        other,
+                        std::sync::Arc::clone(connector),
+                        wiring.scope.clone(),
+                    )
+                    .map_err(|e| e.to_string())?,
+                None if supplied.is_empty() => {
+                    return Err(format!(
+                        "config wires connector '{other}', which this build does not carry"
+                    ))
+                }
+                None => {
+                    return Err(format!(
+                        "config wires connector '{other}', which this build does not carry \
+                         and no backing was handed in for (handed in: {})",
+                        supplied.keys().cloned().collect::<Vec<_>>().join(", ")
+                    ))
+                }
+            },
         }
     }
     wire_plugins(config, &mut registry)?;
     Ok(registry)
+}
+
+/// Whether this build answers `family` itself. One line per arm of the
+/// match in [`wire_connectors_with`]; `a_supplied_backing_may_not_shadow_a_builtin`
+/// checks the two agree.
+fn carries_builtin(family: &str) -> bool {
+    let carried: [(&str, bool); 13] = [
+        ("time", cfg!(feature = "connector-time")),
+        ("fs", cfg!(feature = "connector-fs")),
+        ("sql", cfg!(feature = "connector-sql")),
+        ("crypto", cfg!(feature = "connector-crypto")),
+        ("data", cfg!(feature = "connector-data")),
+        ("ssh", cfg!(feature = "connector-ssh")),
+        ("rest", cfg!(feature = "connector-rest")),
+        ("ssmtp", cfg!(feature = "connector-ssmtp")),
+        ("ldap", cfg!(feature = "connector-ldap")),
+        ("exec", cfg!(feature = "connector-exec")),
+        ("socket", cfg!(feature = "connector-socket")),
+        ("ws", cfg!(feature = "connector-ws")),
+        ("kv", cfg!(feature = "connector-kv")),
+    ];
+    carried.iter().any(|(name, on)| *name == family && *on)
 }
 
 /// Family names the builtin connectors answer to.
@@ -1180,14 +1244,39 @@ pub fn local_defaults(config: &mut RootConfig) {
     }
 }
 
+/// The supplied half of the zero-ceremony case: every family a host
+/// handed in that needs no scope, wired without one, when there is no
+/// config to say otherwise. One that needs a scope waits for a config to
+/// name its place, as `fs` does in [`local_defaults`].
+pub fn supplied_defaults(config: &mut RootConfig, supplied: &Supplied) {
+    for (family, connector) in supplied {
+        if connector.scope_type().validate(None).is_ok() {
+            config.connectors.entry(family.clone()).or_default();
+        }
+    }
+}
+
 /// The root config and the connectors wired against it, from the command
 /// line: the one assembly every verb and every host goes through.
 pub fn assemble(cli: &Cli) -> Result<(RootConfig, drt_connector::Dispatcher), String> {
+    assemble_with(cli, &Supplied::new())
+}
+
+/// [`assemble`], with backings a host handed in. With no config file the
+/// supplied families that need no scope are wired as `time` is: handing
+/// one in is the host's deliberate act, as writing a config is. With a
+/// config, the config decides, and a family it does not name stays
+/// unwired.
+pub fn assemble_with(
+    cli: &Cli,
+    supplied: &Supplied,
+) -> Result<(RootConfig, drt_connector::Dispatcher), String> {
     let mut config = config::load(cli.config.as_deref())?;
     if cli.config.is_none() {
         local_defaults(&mut config);
+        supplied_defaults(&mut config, supplied);
     }
-    let registry = wire_connectors(&config)?;
+    let registry = wire_connectors_with(&config, supplied)?;
     // By name, at startup: never a mystifying `denied` at first call, and
     // never a server that binds and then refuses everything in silence.
     config::validate(&config)?;
