@@ -43,6 +43,9 @@ serde_json = "1"
 drt-connector-net = { workspace = true }
 async-trait = { workspace = true }
 rmpv = { workspace = true }
+# sql in a page (src/sqljs.rs) reads its scope and arguments with the same
+# derive the native sql connector does.
+serde = { workspace = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 # PINNED, and it must stay pinned: the wasm-bindgen ABI is unstable across

@@ -47,6 +47,16 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Added
 
+- **`sql` in a page, over sql.js (#81).** A page that hands in a
+  sql.js module (`{ sql: await initSqlJs() }`) gets `sql/query` and
+  `sql/exec` with the native connector's scope, bounds, refusals and
+  words: SQLite's own classification refuses a writing query, one
+  statement per call, text back as bytes, a transaction left open
+  rolled back by name. Each database is a SQLite file in the page's
+  filesystem inside the granted directory, written back after every
+  write outside a transaction, so the page and later commands see
+  it. examples/07-sql runs unchanged in the browser suite. Bundled
+  SQLite for the browser is not built.
 - **Connectors a page hands in, and `net` over them (#80).** `new
   DrtTerm(sink, backings)` and `new DrtSwarm(..., backings)` take
   `{ family: object }`, wired like any builtin when the config names

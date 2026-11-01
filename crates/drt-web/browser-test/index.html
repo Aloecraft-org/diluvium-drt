@@ -3,6 +3,7 @@
 <title>drt in the browser</title>
 <link rel="stylesheet" href="./node_modules/@xterm/xterm/css/xterm.css">
 <script src="./node_modules/@xterm/xterm/lib/xterm.js"></script>
+<script src="./node_modules/sql.js/dist/sql-wasm.js"></script>
 <style>
   body { margin: 0; padding: 1rem 1.25rem; background: #101418; color: #d8dee4;
          font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
@@ -51,6 +52,9 @@
 
   let term = null;
   let shell = null;
+  // sql.js, handed to every example's terminal as its `sql` (issue #81):
+  // what lets examples/07-sql run here unchanged against expected.txt.
+  let SQL = null;
   let chunks = [];
   let decoders = [];
 
@@ -58,13 +62,14 @@
     if (term) term.free();
     chunks = [];
     decoders = [null, new TextDecoder(), new TextDecoder()];
-    term = new DrtTerm((fd, bytes) => chunks.push(decoders[fd].decode(bytes, { stream: true })));
+    term = new DrtTerm((fd, bytes) => chunks.push(decoders[fd].decode(bytes, { stream: true })), { sql: SQL });
     shell = makeShell({ term, write: (fd, text) => chunks.push(text) });
   }
 
   const harness = {
-    ready: init().then(() => {
+    ready: init().then(async () => {
       setPanicHook();
+      SQL = await initSqlJs({ locateFile: (f) => `./node_modules/sql.js/dist/${f}` });
       return true;
     }),
     buildInfo: (json) => buildInfo(json),

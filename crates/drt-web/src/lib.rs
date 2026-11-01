@@ -37,6 +37,8 @@
 //! - `js` (browser only): connectors the page hands in -- a `net`
 //!   transport, or any family as a `{ call }` object (SPEC.md §7's
 //!   `JsConnector`) -- by kernel, through `Term::with_backings`.
+//! - `sqljs` (browser only): `sql/*` over a sql.js module the page hands
+//!   in, with the native connector's contract.
 
 pub mod term;
 
@@ -48,6 +50,8 @@ pub mod editor;
 pub mod js;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod raw;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod sqljs;
 /// The SSH server, `drt-sshd`, under the name this crate has always used.
 pub use drt_sshd as ssh;
 pub mod swarm;

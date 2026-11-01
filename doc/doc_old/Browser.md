@@ -313,8 +313,10 @@ builtin, a family is wired only when the config names it (or always, with
 no config), and each command gets a fresh connector over the object. A
 family this build carries itself (`fs`, `time`, `crypto`) cannot be
 handed in. `net` is a transport for the net vocabulary
-(`connectors/net/src/lib.rs`); any other family is a `{ call(name, args,
-node) }` object. The shapes are in `crates/drt-web/src/js.rs`'s surface
+(`connectors/net/src/lib.rs`); `sql` is a sql.js module (`await
+initSqlJs()`), answering `sql/*` with the native connector's contract
+over databases kept as files in the page's filesystem; any other family
+is a `{ call(name, args, node) }` object. The shapes are in `crates/drt-web/src/js.rs`'s surface
 block, and `cdn/bus.mjs` is an in-page transport:
 
 ```js

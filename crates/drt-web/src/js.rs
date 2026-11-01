@@ -23,6 +23,9 @@
 //!       rejection is the guest's `error`.
 //!     - `close(conn)`, once per conn or listener, never for one already
 //!       reported closed.
+//!   - `sql`: a sql.js module (`await initSqlJs()`), under `sqljs`: the
+//!     native sql connector's calls, scope and words, with each database
+//!     a file in the terminal's filesystem inside the granted directory.
 //!   - anything else: a generic backing, `{ call(name, args, node) }`,
 //!     answering every call of its family. `args` is the request's value
 //!     as plain JavaScript (maps as objects, bytes as `Uint8Array`), the
@@ -62,6 +65,8 @@ compile_error!("drt-web's js module assumes one thread; a build with atomics nee
 
 /// The family a handed-in object is a transport for.
 pub const NET: &str = "net";
+/// The family a handed-in sql.js module answers.
+pub const SQL: &str = "sql";
 
 /// A page's backings: every own enumerable key of `object`, each to the
 /// maker its family's row of the fan-out names. `undefined` and `null`
@@ -93,6 +98,19 @@ pub fn backings(object: &JsValue) -> Result<BTreeMap<String, Backing>, String> {
                     Arc::new(NetConnector::new(JsTransport {
                         object: value.clone(),
                     })) as Arc<dyn Connector>
+                })
+            }
+            SQL => {
+                method_of(&value, "Database")
+                    .map_err(|e| format!("the '{family}' backing is not a sql.js module: {e}"))?;
+                let value = Local(value);
+                // The filesystem is the one installed when the command is
+                // assembled: the terminal's own.
+                Rc::new(move || {
+                    Arc::new(crate::sqljs::SqlJs::new(
+                        value.0.clone(),
+                        drt_platform::fs::host(),
+                    )) as Arc<dyn Connector>
                 })
             }
             _ => {
