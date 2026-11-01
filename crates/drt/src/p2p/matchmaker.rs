@@ -10,10 +10,13 @@
 //! - Entry points: [`run`]; [`load_topics`], the `--topics` file read and
 //!   checked into what the program is handed.
 //! - Configurable: [`CONN_DEADLINE_MS`], past the program's hold time so a
-//!   call nobody answers gets the program's 504; [`MAX_BODY`] (§6);
-//!   [`HEADERS`], what the program reads; [`RESP_HEADERS`], what it sets;
-//!   [`ROLES`], what a topic token may hold; [`NAME_MAX`].
-//! - Fan-out: none; one listener, one program.
+//!   call nobody answers gets the program's 504; [`MAX_BODY`] (§6), and
+//!   [`KV_MAX_BODY`] when `--kv` is on (§10); [`HEADERS`], what the program
+//!   reads; [`RESP_HEADERS`], what it sets; [`KV_DB`], the database's name
+//!   inside the `--kv` directory; [`ROLES`], what a topic token may hold;
+//!   [`NAME_MAX`].
+//! - Fan-out: none; one listener, one program. `--kv` adds the `sql`
+//!   connector, scoped to its directory, and the grants the program needs.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -28,12 +31,19 @@ use super::MatchRole;
 pub const CONN_DEADLINE_MS: u64 = 30_000;
 /// A request body: a record is 512 bytes, the profile allows 1 KiB.
 pub const MAX_BODY: usize = 1024;
+/// A request body with `--kv` on: a value is at most 16 KiB (the program's
+/// `KV_VALUE_MAX`), so a body past that is refused by the program by name.
+pub const KV_MAX_BODY: usize = 17 * 1024;
+/// The database `--kv <dir>` keeps, inside that directory.
+pub const KV_DB: &str = "kv.db";
 /// The request headers the program is handed.
 pub const HEADERS: &[&str] = &[
     "authorization",
     "last-event-id",
     "drt-accept",
     "drt-caller-token",
+    "if-match",
+    "if-none-match",
 ];
 /// The response headers the program may set.
 pub const RESP_HEADERS: &[&str] = &[
@@ -42,6 +52,7 @@ pub const RESP_HEADERS: &[&str] = &[
     "access-control-allow-headers",
     "access-control-expose-headers",
     "cache-control",
+    "etag",
     "location",
     "retry-after",
 ];
@@ -77,11 +88,18 @@ pub fn run(role: &MatchRole, config: &RootConfig) -> Result<(), String> {
         ("topics".to_string(), ArgValue::Str(topics)),
     ]);
     config.connectors.entry("time".to_string()).or_default();
+    if let Some(dir) = &role.kv {
+        wire_kv(&mut config, dir)?;
+    }
     config.listeners = vec![Listener {
         scheme: "http".into(),
         address: address.to_string(),
         conn_deadline_ms: CONN_DEADLINE_MS,
-        max_body: MAX_BODY,
+        max_body: if role.kv.is_some() {
+            KV_MAX_BODY
+        } else {
+            MAX_BODY
+        },
         streaming: true,
         headers: HEADERS.iter().map(|h| h.to_string()).collect(),
         resp_headers: RESP_HEADERS.iter().map(|h| h.to_string()).collect(),
@@ -182,6 +200,37 @@ fn is_name(s: &str) -> bool {
     (1..=NAME_MAX).contains(&s.len())
         && s.bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.')
+}
+
+/// `--kv <dir>`: the directory made if absent, the `sql` connector scoped
+/// to it with write access and WAL, the program told the database's name,
+/// and the grants for `sql` and the wall clock (a TTL outlives a restart,
+/// so it is kept in wall time, not monotonic).
+fn wire_kv(config: &mut RootConfig, dir: &std::path::Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("--kv {}: {e}", dir.display()))?;
+    let scope = serde_json::json!({
+        "scope": dir,
+        "access": "readwrite",
+        "create": true,
+        "journal_mode": "wal",
+    });
+    let scope: drt_caps::Scope = serde_json::from_value(scope).map_err(|e| format!("--kv: {e}"))?;
+    config.connectors.insert(
+        "sql".to_string(),
+        drt_config::ConnectorWiring {
+            backing: None,
+            scope: Some(scope),
+        },
+    );
+    config
+        .args
+        .insert("kv".to_string(), ArgValue::Str(KV_DB.to_string()));
+    for cap in ["host:sql/*", "host:time", "host:time/*"] {
+        if !config.root.caps.iter().any(|g| g.capability == cap) {
+            config.root.caps.push(drt_caps::Grant::grant(cap));
+        }
+    }
+    Ok(())
 }
 
 /// A listener with every default, to fill the fields above in.

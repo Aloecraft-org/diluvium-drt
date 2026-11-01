@@ -1,0 +1,8 @@
+{
+  "_comment": "The program names keys; the deployment names the topic, and so which server and which credential.",
+  "program": { "path": "app.dlua" },
+  "caps": [ { "capability": "host:kv/*" } ],
+  "connectors": {
+    "kv": { "scope": "drt://127.0.0.1:18497/v1/home" }
+  }
+}

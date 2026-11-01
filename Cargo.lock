@@ -1264,6 +1264,7 @@ dependencies = [
  "drt-connector-data",
  "drt-connector-exec",
  "drt-connector-fs",
+ "drt-connector-kv",
  "drt-connector-rest",
  "drt-connector-socket",
  "drt-connector-sql",
@@ -1425,6 +1426,20 @@ dependencies = [
  "rmpv",
  "serde",
  "tempfile",
+]
+
+[[package]]
+name = "drt-connector-kv"
+version = "0.8.0"
+dependencies = [
+ "async-trait",
+ "drt-caps",
+ "drt-connector",
+ "drt-connector-rest",
+ "pollster",
+ "rmpv",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

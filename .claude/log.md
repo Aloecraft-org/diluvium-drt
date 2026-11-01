@@ -135,3 +135,32 @@ Done:
 
 Next: once kv merges, wire `kv_access` to `topic_access`. Tokens are
 plain strings in the file; `Secret` values (PR #67) could carry them.
+## 2026-11-01 run: a kv store on the signalling server, and `drt kv`
+
+Plan: the owner asked, in the project thread, for a kv store served by
+`drt p2p --match`, with topics and LDAP as sibling threads. One step on
+claude/project-thread-0zh3i9: the store in `stdlib:p2p-match` on the
+`sql` connector (opt-in `--kv <dir>`), a `kv` connector over rest's
+HTTP client, a `drt kv` verb, tests through the real server, an example,
+docs and the changelog; then a pull request, not merged. The seam with
+the topics thread (claude/project-thread-2btm6m): kv lives at
+`/v1/<topic>/kv/...`, rows keyed by (topic, key), one `kv_route` call
+from `route()`, and `kv_access(m, topic, op)` as the one admission point,
+which topics fills in. No tokens here.
+
+Done:
+- `p2p_match.dlua`: kv tables, revision and the last 1024 changes kept in
+  SQLite in one transaction per change; get/put/delete/list, If-Match and
+  If-None-Match, wall-clock TTL with a sweep, watch as a stream and as a
+  held poll, both resumable.
+- `connectors/kv` on `drt_connector_rest::request` (new, public);
+  `drt kv` on `p2p::http` (new `request_limited`).
+- `tests/kv.rs` 14 passed, `connectors/kv` 4 passed, `examples/32-kv`
+  ok; fmt and clippy with all features clean.
+
+Learned: a browser's fetch folds `a/../b` before sending, so `.` and `..`
+key segments are refused. Held polls and streams share the listener's 64
+connections with parked peers.
+
+Next: per-topic tokens (topics thread); `host.kv.*` sugar and `kv/*` in
+the diluvium binary are diluvium's to add.

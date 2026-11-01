@@ -90,7 +90,7 @@ releases:
     diluvium: 97bb9f9d28974e3b4124a2a015e5b06da54a0c98
     diluvium_version: "0.17.2"
     connectors:
-      full: [time, fs, crypto, sql, ssh, rest, ssmtp, exec, data, socket, ws, listen]
+      full: [time, fs, crypto, sql, ssh, rest, ssmtp, exec, data, socket, ws, kv, listen]
       slim: [time, fs, crypto, listen]
       wasi: [time, fs, crypto, sql, listen]
       web: [time, fs, crypto]
@@ -115,6 +115,27 @@ releases:
       `doc/Plan-0.8.0.md`; the wires are `doc/BrowserAccess.md`,
       `doc/P2P.md` and `doc/DRT-Signalling.md`.
     added:
+      - |
+        **A key-value store on the signalling server, and `drt kv`
+        (`doc/DRT-Signalling.md` §10).** `drt p2p --match <port> --kv
+        <dir>` keeps one in SQLite at `/v1/<topic>/kv/<key>`, over plain
+        HTTP with CORS: UTF-8 values up to 16 KiB, prefix listing by page,
+        a version on every key (the server's revision) with
+        compare-and-set through `If-Match` and `If-None-Match: *`, TTL keys
+        that expire in wall time across restarts, and watch as an event
+        stream or a held poll that resumes over the last 1024 changes, kept
+        across restarts. There are no tokens yet: whoever reaches the port
+        may read and write, and the server says so when it starts.
+        - **`drt kv get|put|rm|ls|watch <drt://…/v1/<topic>/kv/<key>>`**,
+          with `--if-version`, `--ttl` and `--H`; exit 1 is a refusal (an
+          absent key, a lost race), 2 no answer.
+        - **The `kv` connector** (`full`): `host:kv/get|put|delete|list|
+          watch` against the one topic URL its scope names, with an
+          optional `token` sent as a bearer the program never sees. A lost
+          race answers `{conflict = true, version}` rather than raising.
+          A program reaches it with `host.call`; the diluvium binary does
+          not answer `kv/*` itself.
+        - `examples/32-kv`.
       - |
         **`drt p2p`: one verb for peer-to-peer sessions (`doc/P2P.md`).**
         With no `--relay` and no `--fallback`, no machine other than the
