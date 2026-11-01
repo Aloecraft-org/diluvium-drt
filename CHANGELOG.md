@@ -624,6 +624,18 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Changed
 
+- **The SSH page has a setup form, connection states, and a hidden
+  caller secret.** The form picks a peer, a host record or a relay,
+  and names the user, the target on the peer (`to`), a STUN server
+  (`stun`, which a peer on another network needs) and the pins. The
+  caller secret has its own password field, and `k` in a link or a
+  `?k=` in an address moves into it and out of the address bar. A
+  ticked box remembers it per peer in this browser's IndexedDB, not a
+  cookie, which would reach whatever server serves the page. The
+  page tracks idle, calling, connecting, signing in, connected,
+  closed and error: Disconnect (Cancel while connecting), and
+  Reconnect after a logout, a lost connection or an error, work
+  without a reload, and so does an edit to the link's fragment.
 - **`DRT_PREFIX` names the install prefix, not the bin directory.**
   The binary goes under `$DRT_PREFIX/bin` and `$DRT_PREFIX/share/drt`,
   and `--prefix` says the same. An install from before this release
