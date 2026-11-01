@@ -71,6 +71,9 @@ pub mod sshd;
 // `drt ssh` and the REPL's `:ssh`: an interactive shell on another host.
 #[cfg(feature = "connector-ssh")]
 pub mod ssh;
+// `drt ldap` and the one wiring per process of an ldap scope.
+#[cfg(feature = "connector-ldap")]
+pub mod ldap;
 // `drt p2p`: one verb for peer-to-peer sessions (doc/P2P.md).
 #[cfg(feature = "p2p")]
 pub mod p2p;
