@@ -13,6 +13,7 @@
 //! crypto/hmac            {data, key?, expect?}     -> hex, or {valid}
 //! crypto/jwt_sign        {claims, ttl?, key?}      -> a JWT string; `key` names a label or a signing key, carried as `kid`
 //! crypto/jwt_verify      {token}                   -> {valid, claims?|reason}; `kid` selects the key, the key fixes `alg`
+//! crypto/jwt_verify      {token, jwks}             -> the same, against the EdDSA public keys of `jwks` and no key of this host's
 //! crypto/public_key      {key}                     -> the EdDSA key's public half as a JWK, for a JWKS
 //! crypto/turn_credential {user, ttl?}              -> {username, password, …}
 //! crypto/derive          {label, alg?}             -> nothing; `label` now names a key, `alg` HS256 (default) or EdDSA
@@ -31,7 +32,13 @@
 //! crypto.signing_keys[]   a configured EdDSA key: jwt_sign, jwt_verify, public_key
 //! crypto.secrets[]        a peer's raw bytes: hmac, totp, totp_verify; refused by jwt_sign and totp_enroll
 //! a derived label         this caller's: hmac, jwt (its alg), totp*, public_key when EdDSA
+//! args.jwks               public keys the caller hands in: jwt_verify only, EdDSA only
 //! ```
+//!
+//! The scope `{"verify_only": true}` wires the family with no key at all,
+//! for a service that only checks tokens another issuer signed: it answers
+//! `random`, `hash` and `jwt_verify {token, jwks}`, and refuses every other
+//! call by name.
 //!
 //! Randomness through the hostcall log is the canonical replay win: the
 //! bytes arrive as a reply, so they are in the log, so a replay reproduces
@@ -126,6 +133,28 @@
 //!   with one master derive one keypair, and rotation is a new label, with
 //!   the old one's JWK served beside the new one until its tokens expire.
 //!
+//! ## jwks: checking another issuer's tokens with the public half only
+//!
+//! - **A verifier needs no secret.** A service that admits tokens a
+//!   separate issuer signed (the signalling server admitting a session's
+//!   JWT) holds that issuer's JWKS, which is public. `jwt_verify {token,
+//!   jwks}` checks against those keys and **only** those: the host's own
+//!   keys and labels are not consulted, so which keys count is the
+//!   caller's explicit choice, never a fall-through.
+//! - **The same header rule.** The token must name a `kid`; the one key in
+//!   the set with that `kid` that is an Ed25519 OKP key (`alg`, if given,
+//!   `EdDSA`; `use`, if given, `sig`) is taken, the header that key's
+//!   tokens carry is rebuilt and compared byte for byte, and the strict
+//!   Ed25519 check runs before the payload is parsed. A key of another
+//!   type in the set is skipped, since a JWKS may serve other consumers; a
+//!   `kid` two usable keys share matches neither. A token's `alg` is still
+//!   never read.
+//! - **Passing keys in is not a bypass.** Public keys are not secret, and a
+//!   program that hands in a key of its own choosing fools only itself:
+//!   the answer is a verdict for that program, not a credential anyone
+//!   else accepts. Issuer and audience are the caller's to check in the
+//!   claims, as with every token here.
+//!
 //! ## TOTP: verify by name, and enroll is the grant that sees a seed
 //!
 //! - RFC 6238 over RFC 4226's truncation, SHA-1 (what every authenticator
@@ -198,6 +227,9 @@ const KEY_MIN: usize = 16;
 const JWT_MAX_TOKEN: usize = 8192;
 const JWT_MAX_JSON: usize = 6144;
 const JSON_MAX_DEPTH: usize = 32;
+/// `jwt_verify {jwks}`: a key set is a short list, not a directory.
+const JWKS_MAX_KEYS: usize = 64;
+const JWKS_MAX_JSON: usize = 65_536;
 const RANDOM_MAX: usize = 1024;
 const RANDOM_DEFAULT: usize = 32;
 /// RFC 8489 caps TURN's USERNAME at 513 bytes; 256 for the user part leaves
@@ -615,6 +647,29 @@ fn clamp_ttl(ttl: Option<i64>) -> Option<i64> {
     }
 }
 
+/// Whether the scope is `{"verify_only": true}`, the wiring that holds no
+/// key (the module notes). The marker stands alone: beside a key it would
+/// leave unclear which of the two was meant, so that is refused.
+fn verify_only(scope: Option<&Scope>) -> Result<bool, String> {
+    let Some(Scope(rmpv::Value::Map(entries))) = scope else {
+        return Ok(false);
+    };
+    let Some((_, marker)) = entries
+        .iter()
+        .find(|(k, _)| as_str(k) == Some("verify_only"))
+    else {
+        return Ok(false);
+    };
+    if entries.len() != 1 || marker.as_bool() != Some(true) {
+        return Err(
+            "verify_only: the scope is exactly {\"verify_only\": true}, a verifier with no key; \
+             a scope with a key checks tokens with jwt_verify {token, jwks} already"
+                .into(),
+        );
+    }
+    Ok(true)
+}
+
 fn parse_scope(scope: Option<&Scope>) -> Result<CryptoScope, String> {
     let Some(Scope(value)) = scope else {
         return Err("scope is required: name the signing key (key_file, key_env or key)".into());
@@ -626,7 +681,8 @@ struct CryptoScopeType;
 
 impl ScopeType for CryptoScopeType {
     fn describe(&self) -> &str {
-        "a signing key: { key_file | key_env | key, default_ttl?, turn?, secrets?, signing_keys?, jwt? }"
+        "a signing key: { key_file | key_env | key, default_ttl?, turn?, secrets?, signing_keys?, jwt? }, \
+         or { verify_only: true }"
     }
 
     fn validate(&self, scope: Option<&Scope>) -> Result<(), String> {
@@ -634,6 +690,9 @@ impl ScopeType for CryptoScopeType {
         // the terminal: an unreadable key_file or an unset key_env is a
         // configuration mistake, and discovering it at the first jwt_sign
         // is discovering it in production.
+        if verify_only(scope)? {
+            return Ok(());
+        }
         Keys::derive(&parse_scope(scope)?).map(|_| ())
     }
 }
@@ -1045,6 +1104,12 @@ fn kid_header_b64(key: &JwtKey, name: &str) -> String {
         JwtKey::Hs256(_) => JWT_HEADER_KID_PREFIX,
         JwtKey::EdDsa(_) => JWT_HEADER_EDDSA_KID_PREFIX,
     };
+    header_with_kid_b64(prefix, name)
+}
+
+/// The header `prefix` and the name make, base64url: [`kid_header_b64`]'s
+/// body, shared with `jwt_verify {jwks}`, whose keys are public only.
+fn header_with_kid_b64(prefix: &str, name: &str) -> String {
     let mut header = String::with_capacity(prefix.len() + name.len() + 3);
     header.push_str(prefix);
     header.push_str(&serde_json::Value::String(name.to_string()).to_string());
@@ -1100,20 +1165,23 @@ fn jwt_signature_ok(key: &JwtKey, input: &[u8], sig: &str) -> bool {
                     expect.as_bytes(),
                 ))
         }
-        JwtKey::EdDsa(k) => {
-            let Ok(bytes) = B64URL.decode(sig) else {
-                return false;
-            };
-            let Ok(bytes) = <[u8; 64]>::try_from(bytes.as_slice()) else {
-                return false;
-            };
-            if B64URL.encode(bytes) != sig {
-                return false;
-            }
-            let signature = ed25519_dalek::Signature::from_bytes(&bytes);
-            k.verifying_key().verify_strict(input, &signature).is_ok()
-        }
+        JwtKey::EdDsa(k) => eddsa_signature_ok(&k.verifying_key(), input, sig),
     }
+}
+
+/// [`jwt_signature_ok`]'s EdDSA arm, for a public key alone.
+fn eddsa_signature_ok(key: &ed25519_dalek::VerifyingKey, input: &[u8], sig: &str) -> bool {
+    let Ok(bytes) = B64URL.decode(sig) else {
+        return false;
+    };
+    let Ok(bytes) = <[u8; 64]>::try_from(bytes.as_slice()) else {
+        return false;
+    };
+    if B64URL.encode(bytes) != sig {
+        return false;
+    }
+    let signature = ed25519_dalek::Signature::from_bytes(&bytes);
+    key.verify_strict(input, &signature).is_ok()
 }
 
 fn do_jwt_sign(
@@ -1226,19 +1294,9 @@ fn do_jwt_verify(
     caller: Caller,
     args: Option<&rmpv::Value>,
 ) -> CallResult {
-    let token = field(args, "token")
-        .and_then(as_str)
-        .ok_or_else(|| CallError::new("crypto/jwt_verify: args.token must be a string"))?;
-    if token.len() > JWT_MAX_TOKEN {
-        return verify_fail("oversized");
-    }
-
-    // Structure: exactly two dots.
-    let Some(dot1) = token.find('.') else {
-        return verify_fail("malformed");
-    };
-    let Some(dot2) = token[dot1 + 1..].find('.').map(|i| dot1 + 1 + i) else {
-        return verify_fail("malformed");
+    let (token, dot1, dot2) = match token_parts(args)? {
+        Ok(parts) => parts,
+        Err(verdict) => return verdict,
     };
     let header = &token[..dot1];
 
@@ -1280,7 +1338,35 @@ fn do_jwt_verify(
     if !jwt_signature_ok(&key, &token.as_bytes()[..dot2], &token[dot2 + 1..]) {
         return verify_fail("signature");
     }
+    verified_claims(token, dot1, dot2)
+}
 
+/// `args.token` and its two dots, or the verdict for a token too large or
+/// not three segments. `Err` is a call error: no string token at all.
+#[allow(clippy::type_complexity)]
+fn token_parts(
+    args: Option<&rmpv::Value>,
+) -> Result<Result<(&str, usize, usize), CallResult>, CallError> {
+    let token = field(args, "token")
+        .and_then(as_str)
+        .ok_or_else(|| CallError::new("crypto/jwt_verify: args.token must be a string"))?;
+    if token.len() > JWT_MAX_TOKEN {
+        return Ok(Err(verify_fail("oversized")));
+    }
+    // Structure: exactly two dots.
+    let Some(dot1) = token.find('.') else {
+        return Ok(Err(verify_fail("malformed")));
+    };
+    let Some(dot2) = token[dot1 + 1..].find('.').map(|i| dot1 + 1 + i) else {
+        return Ok(Err(verify_fail("malformed")));
+    };
+    Ok(Ok((token, dot1, dot2)))
+}
+
+/// The claims of a token whose header and signature have been checked:
+/// the payload parsed, then `exp` (required) and `nbf` against the host
+/// clock. Never called before the signature check.
+fn verified_claims(token: &str, dot1: usize, dot2: usize) -> CallResult {
     let Ok(payload) = B64URL.decode(&token[dot1 + 1..dot2]) else {
         return verify_fail("payload");
     };
@@ -1312,6 +1398,99 @@ fn do_jwt_verify(
         ("valid", rmpv::Value::Boolean(true)),
         ("claims", from_json(&serde_json::Value::Object(claims))),
     ]))
+}
+
+/// `crypto/jwt_verify {token, jwks}`: the token against the EdDSA public
+/// keys of a JWKS the caller hands in, and nothing else (the module notes,
+/// "jwks"). A `jwks` that is not a key set is a call error, since it is the
+/// program's input rather than the token's; a token no usable key matches
+/// is the verdict `kid`.
+fn do_jwt_verify_jwks(args: Option<&rmpv::Value>) -> CallResult {
+    let keys = jwks_keys(field(args, "jwks"))?;
+    let (token, dot1, dot2) = match token_parts(args)? {
+        Ok(parts) => parts,
+        Err(verdict) => return verdict,
+    };
+    let header = &token[..dot1];
+    // An EdDSA token always names its key: no kid, no key.
+    let Some(kid) = header_kid(header) else {
+        return verify_fail("kid");
+    };
+    let mut found = keys.iter().filter(|(k, _)| k == &kid).map(|(_, v)| v);
+    let (Some(key), None) = (found.next(), found.next()) else {
+        return verify_fail("kid");
+    };
+    if header != header_with_kid_b64(JWT_HEADER_EDDSA_KID_PREFIX, &kid) {
+        return verify_fail("alg");
+    }
+    if !eddsa_signature_ok(key, &token.as_bytes()[..dot2], &token[dot2 + 1..]) {
+        return verify_fail("signature");
+    }
+    verified_claims(token, dot1, dot2)
+}
+
+/// The usable keys of `args.jwks` (a map, or its JSON text): each Ed25519
+/// OKP key with a string `kid`, whose `alg` and `use`, when present, are
+/// `EdDSA` and `sig`, and whose `x` is the one base64url spelling of a
+/// valid point that is not of small order. Every other entry is skipped.
+fn jwks_keys(
+    jwks: Option<&rmpv::Value>,
+) -> Result<Vec<(String, ed25519_dalek::VerifyingKey)>, CallError> {
+    const SHAPE: &str =
+        "crypto/jwt_verify: args.jwks must be a JWKS, {keys = {...}}, or its JSON text";
+    let value: serde_json::Value = match jwks {
+        Some(v) if as_str(v).is_some() => {
+            let text = as_str(v).unwrap_or_default();
+            if text.len() > JWKS_MAX_JSON {
+                return Err(CallError::new("crypto/jwt_verify: args.jwks is too large"));
+            }
+            serde_json::from_str(text).map_err(|_| CallError::new(SHAPE))?
+        }
+        Some(v @ rmpv::Value::Map(_)) => to_json(v, 0).map_err(|()| CallError::new(SHAPE))?,
+        _ => return Err(CallError::new(SHAPE)),
+    };
+    let Some(entries) = value.get("keys").and_then(|k| k.as_array()) else {
+        return Err(CallError::new(SHAPE));
+    };
+    if entries.len() > JWKS_MAX_KEYS {
+        return Err(CallError::new(format!(
+            "crypto/jwt_verify: args.jwks holds more than {JWKS_MAX_KEYS} keys"
+        )));
+    }
+    let text = |k: &serde_json::Value, name: &str| {
+        k.get(name).and_then(|v| v.as_str()).map(str::to_string)
+    };
+    let mut out = Vec::new();
+    for k in entries {
+        let (Some(kid), Some(x)) = (text(k, "kid"), text(k, "x")) else {
+            continue;
+        };
+        if text(k, "kty").as_deref() != Some("OKP")
+            || text(k, "crv").as_deref() != Some("Ed25519")
+            || k.get("alg").is_some_and(|a| a.as_str() != Some("EdDSA"))
+            || k.get("use").is_some_and(|u| u.as_str() != Some("sig"))
+        {
+            continue;
+        }
+        let Some(bytes) = B64URL
+            .decode(&x)
+            .ok()
+            .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok())
+        else {
+            continue;
+        };
+        if B64URL.encode(bytes) != x {
+            continue;
+        }
+        let Ok(key) = ed25519_dalek::VerifyingKey::from_bytes(&bytes) else {
+            continue;
+        };
+        if key.is_weak() {
+            continue;
+        }
+        out.push((kid, key));
+    }
+    Ok(out)
 }
 
 /// `crypto/public_key {key}`: the public half of an EdDSA key as a JWK
@@ -1903,7 +2082,25 @@ impl Connector for CryptoConnector {
         let args = args.as_ref();
         // hash and random need no key, but the wiring is still the gate:
         // a build that wires no crypto scope answers nothing in the family.
+        // A verify_only scope is wiring with no key: it answers what needs
+        // none, and jwt_verify against keys the caller names.
+        let verify_only = verify_only(scope).map_err(CallError::new)?;
+        let jwks = call == "crypto/jwt_verify" && field(args, "jwks").is_some();
+        if verify_only {
+            return match call {
+                "crypto/random" => do_random(args),
+                "crypto/hash" => do_hash(args),
+                _ if jwks => do_jwt_verify_jwks(args),
+                other => Err(CallError::new(format!(
+                    "{other}: this crypto connector is wired verify_only and holds no key; \
+                     it answers crypto/random, crypto/hash and crypto/jwt_verify with args.jwks"
+                ))),
+            };
+        }
         let keys = self.keys(scope)?;
+        if jwks {
+            return do_jwt_verify_jwks(args);
+        }
         match call {
             "crypto/random" => do_random(args),
             "crypto/hash" => do_hash(args),

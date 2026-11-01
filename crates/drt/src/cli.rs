@@ -65,8 +65,8 @@ const PROFILE_FULL: &[&str] = &[
     "connector-data",
     "connector-exec",
     "connector-fs",
-    "connector-ldap",
     "connector-kv",
+    "connector-ldap",
     "connector-rest",
     "connector-socket",
     "connector-sql",
@@ -776,8 +776,8 @@ fn enabled_features() -> Vec<&'static str> {
     feature!("cli");
     feature!("connector-crypto");
     feature!("connector-fs");
-    feature!("connector-ldap");
     feature!("connector-kv");
+    feature!("connector-ldap");
     feature!("connector-rest");
     feature!("connector-sql");
     feature!("connector-ssh");

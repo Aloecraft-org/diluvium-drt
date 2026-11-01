@@ -828,12 +828,13 @@ fn the_match_server_admits_a_topic_by_its_tokens_roles() {
     assert_eq!(server.get("/v1/elsewhere/names?k=home-read").0, 403);
 
     // Another park token may not take the held name; a token without park
-    // may not park at all; a reserved word is not a name. `kv` after a
-    // topic is the topic's kv store, which this server, without --kv, does
-    // not keep; `names` takes only GET.
+    // may not park at all; a reserved word is not a name: `kv` is the
+    // topic's key-value store, which this server, without --kv, keeps not.
     assert_eq!(server.get("/v1/home/laptop/calls?k=other-park").0, 403);
     assert_eq!(server.get("/v1/home/desk/calls?k=home-call").0, 403);
-    assert_eq!(server.get("/v1/home/kv/calls?k=home-park").0, 404);
+    let (status, body) = server.get("/v1/home/kv/calls?k=home-park");
+    assert_eq!(status, 404, "{body}");
+    assert!(body.contains("keeps no kv"), "{body}");
     assert_eq!(server.get("/v1/home/names/calls?k=home-park").0, 400);
 
     // Pairing stays inside the topic: the told side calls with its own

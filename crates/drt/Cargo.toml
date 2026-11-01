@@ -124,6 +124,8 @@ sha2 = "0.10"
 # The session test computes TOTP codes itself (RFC 6238 is SHA-1), so a
 # code it accepts is not the host checking its own arithmetic.
 sha1 = "0.10"
+# tests/topics_jwt.rs writes an issuer's Ed25519 key as PKCS#8 PEM.
+base64 = "0.22"
 # The tunnel test drives a real SSH session through both bridge halves.
 ego_transport = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net", "sync", "time"] }

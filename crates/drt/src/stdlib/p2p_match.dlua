@@ -10,20 +10,25 @@
 -- - Entry point: the verb runs it with an http listener on --host:<port>,
 --   `args.capacity` the names held at once, `args.topics` the --topics
 --   file as the verb checked it (JSON text: topic -> token -> roles), or
---   '' for none.
+--   '' for none; `args.groups` the file's group maps (JSON text: topic ->
+--   group -> roles) and `args.jwt` its jwt block (JSON text: issuer,
+--   audience, groups_claim, and jwks or jwks_kv), or '' for none;
+--   `args.kv` the database `drt p2p --match --kv <dir>` names, or nil for
+--   no kv.
 -- - Configurable: HOLD_MS (§3), PRESENT_MS (§4.2), WAITING_CAP (§6),
 --   RECORD_MAX (§1), KEEPALIVE_MS (§5), the CORS headers; RESERVED, the
---   second path segments that are not a name inside a topic.
--- - Fan-out: `route`, which splits /v1/<a>/<b>/… three ways (a bare name,
---   a topic's listing, a name inside a topic); `routes`, the five requests
---   of §2 and the two of §6.2 (pairing), each with whose token it takes
---   (`TOPIC_ROLE` names that token's role inside a topic); `claim`, how a
---   name is held.
---   `kv_route`, the kv requests (doc/DRT-Signalling.md §10), one call from
---   `route`, and `kv_access`, the one place a kv request is admitted.
--- - kv (only with `args.kv`, the database `drt p2p --match --kv <dir>`
---   names): KV_VALUE_MAX, KV_KEY_MAX, KV_TOPIC_MAX, KV_LIST_DEFAULT,
---   KV_LIST_MAX, KV_TTL_MAX, KV_EVENTS_KEPT, KV_POLL_MS.
+--   second path segments that are not a name inside a topic; kv's
+--   KV_VALUE_MAX, KV_KEY_MAX, KV_TOPIC_MAX, KV_LIST_DEFAULT, KV_LIST_MAX,
+--   KV_TTL_MAX, KV_EVENTS_KEPT, KV_POLL_MS.
+-- - Fan-out: `route`, which splits /v1/<a>/<b>/… four ways (a topic's kv,
+--   a bare name, a topic's listing, a name inside a topic); `routes`, the
+--   five requests of §2 and the two of §6.2 (pairing), each with whose
+--   token it takes (`TOPIC_ROLE` names that token's role inside a topic);
+--   `claim`, how a name is held; `principal`, the one place a topic token
+--   is judged, by two kinds (a static token the file lists, or a JWT whose
+--   groups the file maps); `kv_route`, the kv requests
+--   (doc/DRT-Signalling.md §10), and `kv_access`, the one place a kv
+--   request is admitted.
 --
 -- Topics (doc/P2P.md §2.4): /v1/<topic>/<name>/… is a name inside a topic
 -- the --topics file declares, and every request there takes a token the
@@ -33,6 +38,13 @@
 -- name, untouched by topics: claimed on first use, with an optional
 -- DRT-Caller-Token. Inside a topic DRT-Caller-Token is not read; the
 -- topic's call tokens admit.
+--
+-- JWTs (doc/P2P.md §2.5): with a jwt block, a token that is not one the
+-- file lists is checked as a JWT with crypto/jwt_verify against the
+-- issuer's JWKS (the file's own, or a key in this server's kv), then for
+-- `iss`, `aud` and `sub`. Its roles in a topic are the union of the roles
+-- the topic maps to each name in its groups claim. A JWT holds a name by
+-- its `sub`, so a renewed token keeps the name.
 --
 -- Admission is by token, not origin: every reply carries
 -- access-control-allow-origin: *, so a page opened from file:// (Origin:
@@ -82,6 +94,22 @@ if type(args.topics) == 'string' and args.topics ~= '' then
     end
   end
 end
+-- topic -> group -> {role = true}: what a JWT's groups hold in each topic.
+local GROUPS = {}
+if type(args.groups) == 'string' and args.groups ~= '' then
+  for topic, groups in pairs(json.decode(args.groups)) do
+    GROUPS[topic] = {}
+    for group, roles in pairs(groups) do
+      local set = {}
+      for _, role in ipairs(roles) do set[role] = true end
+      GROUPS[topic][group] = set
+    end
+  end
+end
+-- The jwt block as the verb checked it, or nil: {issuer, audience?,
+-- groups_claim, jwks = JSON text} or {..., jwks_kv = {topic, key}}.
+local JWT = nil
+if type(args.jwt) == 'string' and args.jwt ~= '' then JWT = json.decode(args.jwt) end
 local KV_DB    = args.kv   -- a database name inside the sql scope, or nil: no kv
 
 -- depth: replies
@@ -206,26 +234,86 @@ local function valid_name(s)
   return #s >= 1 and #s <= NAME_MAX and s:match('^[a-z0-9.%-]+$') ~= nil and not RESERVED[s]
 end
 
--- Whether `token` holds `role` in `topic`. The one place a topic token is
--- judged: every request inside a topic, kv's included, asks here, so a
--- token that carries its own claims (a JWT with directory groups) replaces
--- this body and nothing else.
-local function may(topic, token, role)
-  local tokens = TOPICS and TOPICS[topic]
-  local roles = tokens and token and tokens[token]
-  return roles ~= nil and roles[role] == true
+-- The JWKS text a JWT is checked against, or nil while none is
+-- published: the file's own, or the kv key the file names, read again
+-- only after the kv has changed. `kv_jwks` is assigned once the kv
+-- storage below is defined.
+local kv_jwks
+local function current_jwks()
+  if JWT.jwks then return JWT.jwks end
+  return kv_jwks()
 end
 
--- The token check for a request inside `topic`: true, or false after
--- replying 401 (no token) or 403 (a token that may not, or a topic the
--- file does not declare: the two look alike, so a stranger cannot list
--- topics by probing). kv's routes call this with role read or write.
+-- A JWT's claims, or nil and why: crypto/jwt_verify against the JWKS
+-- (signature, kid, exp, nbf; the header is rebuilt from the key, so a
+-- token cannot pick its algorithm), then `iss`, `aud` when the file names
+-- one, and a `sub` to hold names by.
+local function jwt_claims(token)
+  local jwks = current_jwks()
+  if not jwks then return nil, 'no signing keys are published' end
+  local ok, v = pcall(host.call, 'crypto/jwt_verify', {token = token, jwks = jwks})
+  if not ok then
+    print('p2p match: jwt: the signing keys do not read as a JWKS: ' .. tostring(v))
+    return nil, 'the signing keys do not read as a JWKS'
+  end
+  if not v.valid then return nil, v.reason end
+  local c = v.claims
+  if c.iss ~= JWT.issuer then return nil, 'issuer' end
+  if JWT.audience then
+    local held = c.aud == JWT.audience
+    if type(c.aud) == 'table' then
+      for _, a in ipairs(c.aud) do if a == JWT.audience then held = true end end
+    end
+    if not held then return nil, 'audience' end
+  end
+  if type(c.sub) ~= 'string' or c.sub == '' then return nil, 'subject' end
+  return c
+end
+
+-- Who `token` is and the roles it holds in `topic`, judged by kind: a
+-- token the file lists for the topic; else, with a jwt block, a JWT,
+-- whose roles are what the topic maps its groups to; else nobody, with no
+-- roles. A JWT that does not verify is nil and why. Every request inside
+-- a topic, kv's included, asks here and nowhere else. A JWT is judged the
+-- same whatever the topic, so a refusal does not say which topics exist.
+local function principal(topic, token)
+  local tokens = TOPICS and TOPICS[topic]
+  local listed = tokens and tokens[token]
+  if listed then return {id = 'token:' .. token, roles = listed} end
+  if not JWT or not token:match('^[%w_%-]+%.[%w_%-]+%.[%w_%-]+$') then
+    return {id = 'token:' .. token, roles = {}}
+  end
+  local claims, why = jwt_claims(token)
+  if not claims then return nil, why end
+  local held, map = {}, GROUPS[topic] or {}
+  local groups = claims[JWT.groups_claim]
+  if type(groups) == 'table' then
+    for _, g in ipairs(groups) do
+      for role in pairs(type(g) == 'string' and map[g] or {}) do held[role] = true end
+    end
+  end
+  return {id = 'jwt:' .. claims.sub, roles = held}
+end
+
+-- Whether `token` holds `role` in `topic`.
+local function may(topic, token, role)
+  local p = token and principal(topic, token)
+  return p ~= nil and p.roles[role] == true
+end
+
+-- The token check for a request inside `topic`: the principal, or nil
+-- after replying 401 (no token, or a JWT that does not verify) or 403 (a
+-- token that may not, or a topic the file does not declare: the two look
+-- alike, so a stranger cannot list topics by probing). kv's routes call
+-- this with role read or write.
 local function topic_access(m, topic, role)
   local _, params = split(m.path)
   local token = token_of(m, params)
-  if not token then fail(m.conn, 401, 'a token for this topic is needed'); return false end
-  if not may(topic, token, role) then fail(m.conn, 403, 'this token may not ' .. role .. ' in this topic'); return false end
-  return true
+  if not token then fail(m.conn, 401, 'a token for this topic is needed'); return nil end
+  local p, why = principal(topic, token)
+  if not p then fail(m.conn, 401, 'the token does not verify: ' .. why); return nil end
+  if not p.roles[role] then fail(m.conn, 403, 'this token may not ' .. role .. ' in this topic'); return nil end
+  return p
 end
 
 -- depth: names, claimed on first use
@@ -241,24 +329,30 @@ local function present(r, now)
   return (r.polled and now - r.polled < PRESENT_MS) or next(r.streams) ~= nil
 end
 
--- The answerer's claim: a free name is taken by the first answerer token to
--- poll it, held while that token is present, and shared by every holder of
--- the same token. A name past the cap is 429; another token's name is 403.
--- Returns the name's record, or nil after replying.
+-- The answerer's claim: a free name is taken by the first answerer to
+-- poll it, held while that answerer is present, and shared by every
+-- request from the same answerer. A name past the cap is 429; another
+-- answerer's name is 403. Returns the name's record, or nil after
+-- replying.
 -- `name` is the key names[] holds it under: `<name>`, or `<topic>/<name>`
 -- inside a topic, where the topic's call tokens admit callers instead of a
--- DRT-Caller-Token.
-local function claim(m, name, token, now, topic)
+-- DRT-Caller-Token. `holder` is who the answerer is: its token for a bare
+-- name, its principal's id inside a topic (a JWT's `sub`, so a renewed
+-- token keeps the name). `r.token` is the holder's latest token, which a
+-- pairing checks and hands on.
+local function claim(m, name, token, now, topic, holder)
+  holder = holder or token
   local r = names[name]
   if r and not present(r, now) then names[name] = nil; r = nil end
-  if r and r.token ~= token then fail(m.conn, 403, 'this name is held by another answerer'); return nil end
+  if r and r.holder ~= holder then fail(m.conn, 403, 'this name is held by another answerer'); return nil end
   if not r then
     if held_count() >= CAPACITY then
       fail(m.conn, 429, 'no room for another name', {['retry-after'] = '30'}); return nil
     end
-    r = {token = token, topic = topic, streams = {}, calls = {}, pairs = {}, last = 0}
+    r = {holder = holder, topic = topic, streams = {}, calls = {}, pairs = {}, last = 0}
     names[name] = r
   end
+  r.token = token
   local h = m.headers or {}
   if h['drt-caller-token'] and not topic then r.caller = h['drt-caller-token'] end
   if h['drt-accept'] then r.accept = h['drt-accept'] end
@@ -295,7 +389,9 @@ local function notify(r, cursor, now, kind)
 end
 
 -- The caller's one request (§3): held until answered, or refused now.
-local function call(m, name, token, now)
+-- `by` is who may withdraw the call: the caller's token, or inside a
+-- topic its principal's id.
+local function call(m, name, token, now, by)
   local r = names[name]
   if not r or not present(r, now) then return fail(m.conn, 503, 'no answerer is present') end
   if not r.topic and r.caller and token ~= r.caller then
@@ -310,7 +406,7 @@ local function call(m, name, token, now)
   if not checked(m) then return end
   if waiting(r) >= WAITING_CAP then return fail(m.conn, 429, 'too many calls waiting', {['retry-after'] = '5'}) end
   r.last = r.last + 1
-  r.calls[r.last] = {record = m.body, conn = m.conn, ends = now + HOLD_MS, by = token}
+  r.calls[r.last] = {record = m.body, conn = m.conn, ends = now + HOLD_MS, by = by or token}
   notify(r, r.last, now)
 end
 
@@ -432,9 +528,9 @@ end
 -- depth: kv admission, the seam topics fills in
 
 -- Whether this request may `op` ('read' or 'write') the kv of `topic`;
--- false after replying. With --topics, a token of the topic with that
--- role. Without topics there is no token to check: the verb says so when
--- kv is on, and --host is what narrows who reaches it.
+-- false after replying. With topics, a token of the topic holding that
+-- role. Without topics there is no token to check: the server says so
+-- when kv is on, and --host is what narrows who reaches it.
 local function kv_access(m, topic, op)
   if not TOPICS then return true end
   return topic_access(m, topic, op)
@@ -473,6 +569,22 @@ local function kv_row(topic, key, wall)
                         topic, key).rows[1]
   if not r or (r[3] > 0 and r[3] <= wall) then return nil end
   return {value = r[1], version = r[2], expires = r[3]}
+end
+
+-- The jwt block's jwks_kv: that key's value, read again only after the
+-- kv has changed. A value with a TTL is absent the moment it expires,
+-- before the sweep records the change, so a publisher that stops fails
+-- closed.
+local jwks_seen = {revision = -1, text = nil, expires = 0}
+kv_jwks = function()
+  if not kv.db then return nil end
+  local wall = host.time()
+  if jwks_seen.revision ~= kv.revision then
+    local row = kv_row(JWT.jwks_kv.topic, JWT.jwks_kv.key, wall)
+    jwks_seen = {revision = kv.revision, text = row and row.value, expires = row and row.expires or 0}
+  end
+  if jwks_seen.expires > 0 and jwks_seen.expires <= wall then return nil end
+  return jwks_seen.text
 end
 
 -- One change, `e` = {topic, key, op, value?}: the row, the revision and the
@@ -777,6 +889,7 @@ local function name_route(m, key, topic, rest, params, now)
     local id = pattern:find('(', 1, true) and matched or nil
     if m.method == method and matched then
       local token = token_of(m, params)
+      local holder = nil
       if topic then
         -- Inside a topic: a caller's token holds call, an answerer's park;
         -- DELETE is either, so a call token withdraws its own call only.
@@ -784,13 +897,15 @@ local function name_route(m, key, topic, rest, params, now)
         if who == 'either' then
           role = may(topic, token, 'park') and 'park' or 'call'
         end
-        if not topic_access(m, topic, role) then return end
+        local p = topic_access(m, topic, role)
+        if not p then return end
+        holder = p.id
         if role == 'call' then
-          if i == 1 then return call(m, key, token, now) end
+          if i == 1 then return call(m, key, token, now, holder) end
           local r, c = names[key], nil
           local _n
           if r then _n, c = find(r, id) end
-          if not c or c.by ~= token then return fail(m.conn, 404, 'no such call') end
+          if not c or c.by ~= holder then return fail(m.conn, 404, 'no such call') end
           return withdraw(m, r, id)
         end
       else
@@ -799,7 +914,7 @@ local function name_route(m, key, topic, rest, params, now)
         local r = names[key]
         if who == 'either' and r and r.caller == token then return withdraw(m, r, id) end
       end
-      local r = claim(m, key, token, now, topic)
+      local r = claim(m, key, token, now, topic, holder)
       if not r then return end
       if i == 2 then return list(m, r, params, now) end
       if i == 3 then return answer(m, r, id, '/v1/' .. key .. '/calls/') end
@@ -812,9 +927,10 @@ local function name_route(m, key, topic, rest, params, now)
   fail(m.conn, 404, 'no such request')
 end
 
--- /v1/<a>/<b><rest>, three ways: <b> one of calls, events, pair is the
--- bare name <a>; <b> = names is topic <a>'s listing; any other <b> is the
--- name <b> inside topic <a>.
+-- /v1/<a>/<b><rest>, four ways: <b> = kv is topic <a>'s kv (with or
+-- without --topics); <b> one of calls, events, pair is the bare name <a>;
+-- <b> = names is topic <a>'s listing; any other <b> is the name <b> inside
+-- topic <a>.
 local function route(m, now)
   local path, params = split(m.path)
   if m.method == 'OPTIONS' then return json(m.conn, 204, '') end
@@ -876,6 +992,11 @@ if KV_DB then
   print('p2p match: kv in ' .. KV_DB .. ' at revision ' .. kv.revision
     .. (TOPICS and '; kv takes a token of its topic with read or write'
         or '; kv takes no token without --topics, so whoever reaches this port may read and write it'))
+end
+if JWT then
+  print('p2p match: topics also admit JWTs from issuer ' .. JWT.issuer .. ', checked against '
+    .. (JWT.jwks and 'the keys in the topics file'
+        or ('the JWKS in kv ' .. JWT.jwks_kv.topic .. '/' .. JWT.jwks_kv.key)))
 end
 while true do
   local _, m = queue.wait({requests}, 1000)

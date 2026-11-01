@@ -102,6 +102,68 @@ Done: `CLEAR_SCREEN` changed; in a pty `:clear` left only the prompt.
 Learned: in @xterm/headless with scrollOnEraseInDisplay on, ED 2 moves
 the buffer base and ED 0 from home does not.
 
+## 2026-11-01 run: topics on the match server
+
+Plan: the owner asked (project thread "Add topics to drt", working
+autonomously while away) for topics: a namespace and access boundary
+grouping kv and p2p names on the signalling server, with per-topic
+tokens holding park, call, read and write, a members-only listing, and
+today's bare `/v1/<name>` URLs kept working. One step on
+claude/project-thread-2btm6m, ending in a pull request for review. The
+kv store is a sibling thread; the seam agreed with it: kv lives at
+`/v1/<topic>/kv/…`, its `kv_access(m, topic, op)` hook becomes
+`topic_access` once both land.
+
+Done:
+- `drt p2p --match --topics <file>` (and `p2p.topics`): the file is
+  checked in `matchmaker.rs` and handed to `stdlib/p2p_match.dlua` as
+  JSON text. The program routes `/v1/<a>/<b>/…` three ways: bare name,
+  topic listing (`GET /v1/<topic>/names`, read), name inside a topic.
+  `may()` is the one place a token is judged, so a JWT verifier can
+  replace it later.
+- Pairing inside a topic: the told side calls with its own token, which
+  must hold call; a bare name may not pair into a topic.
+- Callers: `drt p2p` and the browser library read
+  `drt://…/v1/<topic>/<name>`; the library escaped `lab/host` as one
+  segment when following a pair entry, fixed and caught by a new leg of
+  `pairing.mjs`.
+- Verified: fmt; clippy, workspace, all features; `cargo test
+  --workspace --all-features`; examples gate (31 ok, 2 skipped for
+  network/privilege); `script/browser-access-client.sh --drt` with the
+  new topic leg. Config corpus snapshots re-recorded: two lines,
+  `topics: None`.
+
+Next: once kv merges, wire `kv_access` to `topic_access`. Tokens are
+plain strings in the file; `Secret` values (PR #67) could carry them.
+## 2026-11-01 run: a kv store on the signalling server, and `drt kv`
+
+Plan: the owner asked, in the project thread, for a kv store served by
+`drt p2p --match`, with topics and LDAP as sibling threads. One step on
+claude/project-thread-0zh3i9: the store in `stdlib:p2p-match` on the
+`sql` connector (opt-in `--kv <dir>`), a `kv` connector over rest's
+HTTP client, a `drt kv` verb, tests through the real server, an example,
+docs and the changelog; then a pull request, not merged. The seam with
+the topics thread (claude/project-thread-2btm6m): kv lives at
+`/v1/<topic>/kv/...`, rows keyed by (topic, key), one `kv_route` call
+from `route()`, and `kv_access(m, topic, op)` as the one admission point,
+which topics fills in. No tokens here.
+
+Done:
+- `p2p_match.dlua`: kv tables, revision and the last 1024 changes kept in
+  SQLite in one transaction per change; get/put/delete/list, If-Match and
+  If-None-Match, wall-clock TTL with a sweep, watch as a stream and as a
+  held poll, both resumable.
+- `connectors/kv` on `drt_connector_rest::request` (new, public);
+  `drt kv` on `p2p::http` (new `request_limited`).
+- `tests/kv.rs` 14 passed, `connectors/kv` 4 passed, `examples/32-kv`
+  ok; fmt and clippy with all features clean.
+
+Learned: a browser's fetch folds `a/../b` before sending, so `.` and `..`
+key segments are refused. Held polls and streams share the listener's 64
+connections with parked peers.
+
+Next: per-topic tokens (topics thread); `host.kv.*` sugar and `kv/*` in
+the diluvium binary are diluvium's to add.
 ## 2026-11-01 run: the `ldap` client connector
 
 Plan: the owner asked, in the project thread, for an LDAP client
@@ -295,3 +357,39 @@ fetch. `drt start` exits 0 when the root program faults.
 
 Next: JWKS (the public key is `crypto/public_key` on `jwt_key`), the
 JWT-to-topic-token tie-in, and serving more than one request at a time.
+## 2026-11-01 run: LDAP groups as topic roles, through JWTs
+
+Plan: the owner asked (via the project coordinator, while away) to tie
+JWT to LDAP and LDAP to topics for kv and p2p. One step on
+claude/project-thread-z0edkg, stacked on every unmerged branch it needs:
+merge topics (#68), kv (#69), config and ldap (#67, #70) and crypto
+(#71); give crypto a public-key-only verify; let the match server's one
+token judge (`may`) admit a JWT whose groups the topics file maps to
+roles; test end to end against a real slapd; open a pull request.
+
+Done:
+- Merges, with the two seams the sibling PRs named: `kv_access` asks
+  `topic_access`, and `route()` sends kv first. Two merge faults found
+  by tests and fixed: a lost `end` in `topic_names`, and `Command::P2p`
+  tipping clippy's large_enum_variant (boxed).
+- `crypto/jwt_verify {token, jwks}` and the `{"verify_only": true}`
+  scope; 8 tests in `connectors/crypto/tests/jwks.rs`.
+- `principal(topic, token)` in `p2p_match.dlua`: a listed token, else a
+  JWT checked against the JWKS (inline, or a kv key re-read per kv
+  revision), `iss`, `aud`, `sub`; roles are the union over its groups.
+  Names are held by principal (`jwt:<sub>`), so a renewed token keeps
+  the name.
+- `tests/topics_jwt.rs`: slapd, a dlua issuer under `drt run`, real
+  park/call and kv by group, rotation by kv write, forged and tampered
+  tokens, issuer/audience/expiry. A mutation granting every JWT every
+  role fails it.
+
+Learned: naming any grant for the root makes its grants explicit, so
+the match server must name `host:time` beside `host:crypto/jwt_verify`
+(kv already did). The kv merge also turned `/v1/<topic>/kv/...` into
+kv's path even without `--kv`, so the topics test now expects 404 there.
+
+Next: the session framework issues these tokens with claims `iss`,
+`aud`, `sub` (the LDAP username) and `groups` (`ldap/bind`'s answer),
+and publishes `crypto/public_key` as `{"keys": [...]}` at a kv key.
+Renewal on a parked side is not built.

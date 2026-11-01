@@ -147,7 +147,8 @@ pub struct Args {
     #[arg(long, value_name = "NAMES")]
     pub capacity: Option<usize>,
     /// With --match: a JSON file declaring topics, each with its tokens and
-    /// their roles (park, call, read, write). A name inside a topic is
+    /// their roles (park, call, read, write), and with a jwt block the
+    /// roles each directory group in a JWT holds. A name inside a topic is
     /// drt://<server>/v1/<topic>/<name>, and every request there takes a
     /// token of that topic. Bare /v1/<name> names are unchanged.
     #[arg(long, value_name = "FILE")]
