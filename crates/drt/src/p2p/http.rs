@@ -6,7 +6,8 @@
 //!
 //! ## surface block
 //!
-//! - Entry points: [`request`], one request and its whole reply;
+//! - Entry points: [`request`], one request and its whole reply, and
+//!   [`request_limited`], the same with another bound on the reply;
 //!   [`stream`], one request whose body keeps coming (`text/event-stream`).
 //! - Configurable: [`MAX_REPLY`], [`MAX_HEAD`], [`TIMEOUT`], [`REFUSALS`].
 //! - Fan-out: [`Body`], the three ways a reply's length is known
@@ -96,6 +97,19 @@ pub async fn request(
     body: Option<&str>,
     extra_roots: &[CertificateDer<'static>],
 ) -> Result<Response, String> {
+    request_limited(method, url, headers, body, extra_roots, MAX_REPLY).await
+}
+
+/// [`request`], with a reply bounded by `max` rather than by a record:
+/// a kv listing (DRT-Signalling §10) is pages of values, not one record.
+pub async fn request_limited(
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+    body: Option<&str>,
+    extra_roots: &[CertificateDer<'static>],
+    max: usize,
+) -> Result<Response, String> {
     let (mut head, mut reader) =
         tokio::time::timeout(TIMEOUT, stream(method, url, headers, body, extra_roots))
             .await
@@ -111,8 +125,8 @@ pub async fn request(
         let mut all = Vec::new();
         while let Some(chunk) = reader.next().await? {
             all.extend_from_slice(&chunk);
-            if all.len() > MAX_REPLY {
-                return Err(format!("{shown} answered more than a record"));
+            if all.len() > max {
+                return Err(format!("{shown} answered more than {max} bytes"));
             }
         }
         Ok(all)
@@ -160,7 +174,7 @@ pub async fn stream(
         "{method} {path} HTTP/1.1\r\nhost: {authority}\r\nuser-agent: drt-p2p\r\n\
          accept: */*\r\nconnection: close\r\n"
     );
-    if !body.is_empty() || method == "POST" {
+    if !body.is_empty() || method == "POST" || method == "PUT" {
         request.push_str(&format!(
             "content-type: text/plain;charset=utf-8\r\ncontent-length: {}\r\n",
             body.len()

@@ -1110,6 +1110,10 @@ pub struct P2pConfig {
     /// `--capacity`: names a `match` server holds at once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capacity: Option<usize>,
+    /// `--kv`: the directory a `match` server keeps its kv database in
+    /// (`doc/DRT-Signalling.md` §10). Absent, the server keeps no kv.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kv: Option<PathBuf>,
     /// `--extra-root`: PEM files trusted beside the public roots.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_roots: Vec<PathBuf>,

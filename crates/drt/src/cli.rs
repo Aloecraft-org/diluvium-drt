@@ -65,6 +65,7 @@ const PROFILE_FULL: &[&str] = &[
     "connector-data",
     "connector-exec",
     "connector-fs",
+    "connector-kv",
     "connector-rest",
     "connector-socket",
     "connector-sql",
@@ -357,6 +358,13 @@ pub enum Command {
     /// ports are bound, and the call ends when it exits, with its status.
     #[cfg(feature = "p2p")]
     P2p(crate::p2p::Args),
+    /// The key-value store a signalling server keeps (`drt p2p --match
+    /// <port> --kv <dir>`, doc/DRT-Signalling.md §10): get, put, rm, ls
+    /// and watch a key at drt://host[:port]/v1/<topic>/kv/<key>. Values are
+    /// UTF-8 text up to 16 KiB; every key has a version, and --if-version
+    /// makes a write compare-and-set.
+    #[cfg(feature = "p2p")]
+    Kv(crate::kv::Args),
     /// Alias of `drt p2p` for one release: a call or a park prints the
     /// `drt p2p` form of what it was given and runs as that. SSH over WSS,
     /// as a dumb pipe. With a URL: bridge this process's stdio to it, the
@@ -558,6 +566,7 @@ pub enum Command {
         feature = "connector-exec",
         feature = "connector-socket",
         feature = "connector-ws",
+        feature = "connector-kv",
         feature = "connector-data",
         feature = "netcheck"
     )),
@@ -608,6 +617,9 @@ pub fn buildinfo(json: bool) -> String {
     if cfg!(feature = "connector-ws") {
         connectors.push("ws");
     }
+    if cfg!(feature = "connector-kv") {
+        connectors.push("kv");
+    }
     if cfg!(feature = "listen") {
         connectors.push("listen");
     }
@@ -634,6 +646,7 @@ pub fn buildinfo(json: bool) -> String {
     }
     if cfg!(feature = "p2p") {
         verbs.push("p2p");
+        verbs.push("kv");
     }
     // `relay`, `stun` and `turn` were verbs here and are not any more: each
     // is a config block plus `stdlib:<name>` under `start`. `wg` stays,
@@ -747,6 +760,7 @@ fn enabled_features() -> Vec<&'static str> {
     feature!("cli");
     feature!("connector-crypto");
     feature!("connector-fs");
+    feature!("connector-kv");
     feature!("connector-rest");
     feature!("connector-sql");
     feature!("connector-ssh");
@@ -948,6 +962,17 @@ pub fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
                     wiring.scope.clone(),
                 )
                 .map_err(|e| e.to_string())?,
+            // One topic of a signalling server's kv store: the scope names
+            // the topic URL and carries the token, so a program names keys
+            // and never the server, another topic, or the credential.
+            #[cfg(feature = "connector-kv")]
+            "kv" => registry
+                .wire(
+                    "kv",
+                    std::sync::Arc::new(drt_connector_kv::KvConnector::new()),
+                    wiring.scope.clone(),
+                )
+                .map_err(|e| e.to_string())?,
             other => {
                 return Err(format!(
                     "config wires connector '{other}', which this build does not carry"
@@ -969,7 +994,7 @@ pub fn wire_connectors(config: &RootConfig) -> Result<Registry, String> {
 /// quiet kind of wrong.
 #[cfg(feature = "plugins")]
 const BUILTIN_FAMILIES: &[&str] = &[
-    "time", "fs", "sql", "crypto", "data", "ssh", "rest", "ssmtp", "exec", "socket", "ws",
+    "time", "fs", "sql", "crypto", "data", "ssh", "rest", "ssmtp", "exec", "socket", "ws", "kv",
 ];
 
 /// Every plugin family's name, judged before anything is wired.
@@ -1986,6 +2011,8 @@ pub fn main(cli: Cli) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        #[cfg(feature = "p2p")]
+        Command::Kv(ref args) => ExitCode::from(crate::kv::run(args)),
         #[cfg(feature = "connector-ssh")]
         Command::Ssh(ref args) => match crate::ssh::run(args) {
             // The remote shell's status is this command's, as with `ssh`.

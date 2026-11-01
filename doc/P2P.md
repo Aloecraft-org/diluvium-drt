@@ -227,6 +227,10 @@ what the profile asks of them.
 - **TLS** is not built in. A page on an `https://` origin cannot call a
   plain `http://` server, so the help says to put a TLS terminator in
   front, as example 30's config does. Certificate flags can come later.
+- **`--kv <dir>`** also keeps a key-value store, in `<dir>/kv.db`, at
+  `/v1/<topic>/kv/<key>` (`doc/DRT-Signalling.md` §10); `drt kv` and the
+  `kv` connector reach it. It takes no token yet, so `--host` is what
+  narrows who may read and write.
 - `--match` with `--forward`, `--relay` or `--fallback` is refused: a
   signalling server carries no session bytes (§10).
 

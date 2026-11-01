@@ -566,6 +566,13 @@
             "null"
           ]
         },
+        "kv": {
+          "description": "`--kv`: the directory a `match` server keeps its kv database in\n(`doc/DRT-Signalling.md` §10). Absent, the server keeps no kv.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "listen": {
           "description": "`--listen`: the UDP port to serve on, with a fixed record.",
           "type": [

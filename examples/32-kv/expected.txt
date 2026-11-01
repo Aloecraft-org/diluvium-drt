@@ -1,0 +1,14 @@
+$ drt kv put $K/bpi/info "fingerprint=SHA256:..."
+1
+$ drt kv put --if-version 7 $K/bpi/info "someone else"
+drt kv: the key is at version 1, not that one
+$ curl -s $K/bpi/info
+fingerprint=SHA256:...
+$ drt run --config app.json
+visits	1
+visits	2
+present	presence/pi	up	30s
+$ drt kv ls $K
+bpi/info	v1
+presence/pi	v4, expires in 30s
+visits	v3

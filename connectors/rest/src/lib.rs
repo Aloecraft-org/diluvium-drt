@@ -547,10 +547,52 @@ struct PostArgs {
 /// Schema has to use — same value, one less encoding for the guest to
 /// undo, and what the C host's msgpack reply also carries.
 #[derive(Debug)]
-struct Response {
-    status: u16,
-    headers: Vec<(String, String)>,
-    body: Vec<u8>,
+pub struct Response {
+    pub status: u16,
+    /// Names lowercased, bounded as [`limits`] says.
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+impl Response {
+    /// The first header of this name (lowercase), if any.
+    pub fn header(&self, lower: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(n, _)| n == lower)
+            .map(|(_, v)| v.as_str())
+    }
+}
+
+/// One request to a granted origin, as `rest/get` and `rest/post` make it:
+/// the scope's allowlist, injected headers, private-address rule and extra
+/// roots all apply, and `timeout` bounds the whole exchange. For a
+/// connector that speaks a protocol over HTTP to an origin its operator
+/// named (`connectors/kv`), so there is one HTTP client and one grant
+/// shape rather than two. Runs on the caller's runtime, or on this
+/// connector's own when the caller has none, as [`RestConnector`] does.
+pub async fn request(
+    url: &Url,
+    method: &str,
+    headers: &Option<Headers>,
+    body: Option<&[u8]>,
+    scope: &RestScope,
+    timeout: Duration,
+) -> Result<Response, String> {
+    let Some(entry) = scope.matching(url) else {
+        return Err(format!(
+            "'{}' is outside this instance's granted origins",
+            url.origin()
+        ));
+    };
+    let work = async {
+        tokio::time::timeout(timeout, fetch(url, method, headers, body, scope, entry)).await
+    };
+    let outcome = match tokio::runtime::Handle::try_current() {
+        Ok(_) => work.await,
+        Err(_) => own_runtime().block_on(work),
+    };
+    outcome.map_err(|_| "timeout".to_string())?
 }
 
 pub struct RestConnector;
