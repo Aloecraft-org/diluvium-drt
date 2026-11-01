@@ -1,0 +1,5 @@
+scan    otpauth://totp/Example:alice?secret=QAJ2VBMUC7RQLXKP54REGMZSEGQY6VQ7&issuer=Example&algorithm=SHA1&digits=6&period=30
+verify  true
+again   false replayed
+token   true for alice
+jwk     OKP Ed25519 kid=issuer:1 x=UDrOiG8_EmCw-Ka7xucvIWMtxalQ-18b_G8WQMedOAc
