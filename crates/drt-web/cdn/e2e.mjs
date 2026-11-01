@@ -338,11 +338,12 @@ await check('the SSH module makes a key, and the browser build of drt loads, fro
 });
 
 await check('examples/35-drt-js: the terminal starts a deployment, and the inspector lists, parks and kills its instances', async () => {
-  const dir = path.resolve(here, '../../../examples/35-drt-js');
+  // Served from the repo root, as its README says: main.js imports ../../crates/drt-web/cdn/dist/drt.min.js.
+  const root = path.resolve(here, '../../..');
   const types = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css' };
   http.createServer((req, res) => {
-    const name = req.url === '/' ? 'index.html' : req.url.slice(1);
-    const file = name === 'drt.min.js' ? path.join(here, 'dist/drt.min.js') : path.join(dir, name);
+    const name = req.url.endsWith('/') ? `${req.url.slice(1)}index.html` : req.url.slice(1);
+    const file = path.join(root, name);
     if (name.includes('..') || !fs.existsSync(file)) return res.writeHead(404).end();
     res.writeHead(200, { 'content-type': types[path.extname(file)] ?? 'text/plain' }).end(fs.readFileSync(file));
   }).listen(PORTS.example, '127.0.0.1');
@@ -352,7 +353,7 @@ await check('examples/35-drt-js: the terminal starts a deployment, and the inspe
     const type = url.endsWith('.css') ? 'text/css' : 'application/javascript';
     await p.route(url, (r) => r.fulfill({ contentType: type, body: fs.readFileSync(path.join(here, file)) }));
   }
-  await p.goto(`http://127.0.0.1:${PORTS.example}/`);
+  await p.goto(`http://127.0.0.1:${PORTS.example}/examples/35-drt-js/`);
   const screen = () => p.evaluate(() => document.querySelector('.xterm-rows')?.innerText ?? '');
   const panel = () => p.evaluate(() => [...document.querySelectorAll('aside tr')].slice(1).map((tr) => tr.innerText.replace(/\s+/g, ' ').trim()));
   await until('the prompt', async () => (await screen()).includes('$'));
