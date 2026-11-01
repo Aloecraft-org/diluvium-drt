@@ -21,11 +21,19 @@
         "$ref": "#/$defs/Grant"
       }
     },
+    "commands": {
+      "description": "One block per verb, keyed by the verb.",
+      "$ref": "#/$defs/CommandsConfig"
+    },
     "connectors": {
       "type": "object",
       "additionalProperties": {
         "$ref": "#/$defs/ConnectorWiring"
       }
+    },
+    "default": {
+      "description": "Values every block under `commands` starts from.",
+      "$ref": "#/$defs/DefaultConfig"
     },
     "dlua_dir": {
       "description": "Where this profile's source lives, relative to the root. Local\nauthoring; `init/` is delivered content and `live/` is what runs.\n\nOn `RootConfig` and **not** on [`InstanceConfig`], with `entry` and\n`args`, because §5's keystone is one config shape at every depth and a\nspawn request carries source rather than a path. Resolution turns\n`dlua_dir` + `entry` into the [`Program::Source`] the root instance\nloads; `program` stays the instance-level field it always was.",
@@ -69,6 +77,7 @@
       "$ref": "#/$defs/Numeric"
     },
     "p2p": {
+      "description": "Deprecated: `commands.p2p`, which this is read as for one release.",
       "anyOf": [
         {
           "$ref": "#/$defs/P2pConfig"
@@ -132,6 +141,7 @@
       ]
     },
     "tunnel": {
+      "description": "Deprecated: `commands.p2p`, which this is read as for one release.",
       "anyOf": [
         {
           "$ref": "#/$defs/TunnelConfig"
@@ -219,6 +229,23 @@
       },
       "additionalProperties": false
     },
+    "CommandsConfig": {
+      "description": "`commands`: one block per verb, keyed by the verb's name, holding the\nverb's flags as keys (`doc/P2P.md` §8).\n\nOnly `p2p` today. The blocks `drt start` runs as part of a deployment\n(`relay`, `stun`, `turn`, `wireguard`, `webrtc`, `netcheck`) stay at the\ntop level: they describe a service, not one invocation. A verb not named\nhere is refused, as an unknown key is anywhere.",
+      "type": "object",
+      "properties": {
+        "p2p": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/P2pConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "ConnectorWiring": {
       "description": "How one connector is wired for this process: which backing this build\nresolves the name to, and the *scope* the host grants it — a place (a\ndirectory for `fs`, a directory for `sql`, a key), never the\napplication's filenames. Programs name resources within the scope.",
       "type": "object",
@@ -243,6 +270,42 @@
       },
       "additionalProperties": false
     },
+    "DefaultConfig": {
+      "description": "`default`: values every command block starts from (`doc/P2P.md` §8).\n\nThe order is `default`, then the command's block under `commands`, then\nthe command line, each replacing the one before per key: a command block\nthat names `stun` replaces the default list rather than adding to it, as\na flag replaces the block's. Only keys more than one command reads\nbelong here, and a key this block does not know is refused, as\neverywhere else, so a default never silently fails to apply.\n\nRead by the commands under `commands` only. The deployment blocks a\n`drt start` runs (`webrtc`, `wireguard`, `netcheck`) keep their own\nlists, because an empty list there means \"do not measure\".",
+      "type": "object",
+      "properties": {
+        "extra_roots": {
+          "description": "PEM files trusted beside the public roots, for a command block that\nnames none.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "stun": {
+          "description": "`host:port` STUN servers, for a command block that names none.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Echo": {
+      "description": "Whether a prompted value is shown as it is typed.",
+      "oneOf": [
+        {
+          "description": "Typed blind, as a password is.",
+          "type": "string",
+          "const": "hidden"
+        },
+        {
+          "description": "Shown as typed: a name, not a secret, that should still not live in\nthe file.",
+          "type": "string",
+          "const": "visible"
+        }
+      ]
+    },
     "Effect": {
       "description": "Grant or deny. `dvs.c` has grants only; `deny` is the Capabilities.md\nextension, and attenuation treats it asymmetrically: allows may only\nshrink, denies may only grow.",
       "type": "string",
@@ -254,6 +317,22 @@
     "Entry": {
       "description": "A program: a path relative to dlua_dir, or stdlib:<name> for one of drt's own.",
       "type": "string"
+    },
+    "ForwardTargets": {
+      "description": "`p2p.forward`: one target as a string, or a list of them.",
+      "anyOf": [
+        {
+          "description": "One target, as `--forward` takes it.",
+          "type": "string"
+        },
+        {
+          "description": "Several, each one `host:port` or `scheme://host:port`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
     },
     "Grant": {
       "description": "A grant is `effect × capability × scope` (Capabilities.md §1). Scope is\noptional with a sane default on purpose: mandatory scope on every grant is\nfriction, and friction is what gets hacked around.",
@@ -480,7 +559,7 @@
       "additionalProperties": false
     },
     "P2pConfig": {
-      "description": "`drt p2p`, from a file: `drt --config mypc.json p2p` (`doc/P2P.md` §8).\n\nEvery flag of the verb is a key here under the flag's name (`-p` is\n`ports`, `-P` is `forward_ports`, `-A` is `all_ports`, `--H` is the\n`headers` map), so a credential -- a signalling token in `headers`, a\ncaller token -- lives in a 0600 file and not in `ps` or a paste. Which\nrole this is (call, park, listen, match) is told by which keys are\npresent, exactly as the flags tell it, and two roles in one block are\nrefused by name. Flags merge over the file per key: a flag naming a key\nthe file also names replaces it, and a flag naming a different role than\nthe file is the conflict two flags would be.\n\nOne key has no flag: `identity_file`, the ICE credentials and DTLS\ncertificate a listening or parked peer keeps so its record and\nfingerprint survive a restart (`~/.drt/p2p/identity.json` when absent).\n`authorized_keys` is also the `--authorized-keys` flag.\n\n`tunnel` is read as an alias of this block for one release, each of its\nkeys mapped to its replacement here with a warning naming both.",
+      "description": "`drt p2p`, from a file: `commands.p2p` in `drt --config mypc.json p2p`\n(`doc/P2P.md` §8).\n\nEvery flag of the verb is a key here under the flag's name (`-p` is\n`ports`, `-P` is `forward_ports`, `-A` is `all_ports`, `--H` is the\n`headers` map), so a credential -- a signalling token in `headers`, a\ncaller token -- lives in a 0600 file, an environment variable, a\ncredential file or a prompt, and not in `ps` or a paste. Which\nrole this is (call, park, listen, match) is told by which keys are\npresent, exactly as the flags tell it, and two roles in one block are\nrefused by name. Flags merge over the file per key: a flag naming a key\nthe file also names replaces it, and a flag naming a different role than\nthe file is the conflict two flags would be.\n\nOne key has no flag: `identity_file`, the ICE credentials and DTLS\ncertificate a listening or parked peer keeps so its record and\nfingerprint survive a restart (`~/.drt/p2p/identity.json` when absent).\n`authorized_keys` is also the `--authorized-keys` flag.\n\nThe same block at the top level (`\"p2p\": {..}`) is read for one release\nwith a warning, and so is `tunnel`, each of its keys mapped to its\nreplacement here with a warning naming both.",
       "type": "object",
       "properties": {
         "accept": {
@@ -491,7 +570,7 @@
           }
         },
         "all_ports": {
-          "description": "`-A`: every port of the `forward` host.",
+          "description": "`-A`: every port of a one-entry `forward` that names a host only.",
           "type": "boolean"
         },
         "authorized_keys": {
@@ -532,24 +611,28 @@
           ]
         },
         "forward": {
-          "description": "`--forward`: what a serving peer serves (`doc/P2P.md` §5). An empty\nstring is a bare `--forward`: a relay.",
-          "type": [
-            "string",
-            "null"
+          "description": "`--forward`, repeatable: what a serving peer serves (`doc/P2P.md`\n§5). A list of `host:port` or `scheme://host:port` targets, of which\na caller names one (`-p <local>:<host:port>`, a page's `to=`); one\nentry is today's single forward, and a string is that one entry.\n`[\"\"]` is a bare `--forward`: a relay.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ForwardTargets"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "forward_ports": {
-          "description": "`-P`: the ports of the `forward` host, `80,8080:8090,31200`.",
+          "description": "`-P`: ports of a one-entry `forward` that names a host only,\n`80,8080:8090,31200`. For ranges; a few single ports read better as\n`forward` entries.",
           "type": [
             "string",
             "null"
           ]
         },
         "headers": {
-          "description": "`--H`, by name: HTTP headers for the signalling side. `auth` is\nshorthand for `Authorization: Bearer <value>`.",
+          "description": "`--H`, by name: HTTP headers for the signalling side. `auth` is\nshorthand for `Authorization: Bearer <value>`. Each value is a\n[`Secret`]: a string, or where to read it (`{\"env\": ..}`,\n`{\"file\": ..}`, `{\"prompt\": \"hidden\"}`).",
           "type": "object",
           "additionalProperties": {
-            "type": "string"
+            "$ref": "#/$defs/Secret"
           }
         },
         "host": {
@@ -819,6 +902,63 @@
     "Scope": {
       "description": "What a grant applies to: a value whose shape the capability declares (Capabilities.md)."
     },
+    "Secret": {
+      "description": "A credential, as a config field holds it: the value, or where to find\nit. See the module for the shape.",
+      "anyOf": [
+        {
+          "description": "The value, as written.",
+          "type": "string"
+        },
+        {
+          "description": "Somewhere else: exactly one of `env`, `file`, `prompt`.",
+          "$ref": "#/$defs/Source"
+        }
+      ]
+    },
+    "Source": {
+      "description": "Where a [`Secret`] that is not written in the file comes from.",
+      "oneOf": [
+        {
+          "description": "The named environment variable, read once when the value is needed.\nUnset is a refusal naming the variable.",
+          "type": "object",
+          "properties": {
+            "env": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "env"
+          ]
+        },
+        {
+          "description": "A file's contents, less one trailing newline. Relative to the\nworking directory, as every other path a secret names has been.",
+          "type": "object",
+          "properties": {
+            "file": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "file"
+          ]
+        },
+        {
+          "description": "Ask on the controlling terminal. With none (a systemd unit, a\nWindows scheduled task, a pipeline) the read is refused at once,\nnaming the field; it never waits.",
+          "type": "object",
+          "properties": {
+            "prompt": {
+              "$ref": "#/$defs/Echo"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "prompt"
+          ]
+        }
+      ]
+    },
     "SshPrincipal": {
       "description": "Authorized keys → capability grant sets: an SSH principal is an attenuated\nnode in the provenance tree.",
       "type": "object",
@@ -939,21 +1079,25 @@
           "type": "string"
         },
         "key": {
-          "description": "The shared secret, inline. The same three knobs as\n`connectors.crypto.turn`, resolved in the same order (file, then\nenv, then inline), because it is the same secret; one of the three\nis required, and none is an open relay, which refuses to bind.",
-          "type": [
-            "string",
-            "null"
+          "description": "The shared secret: a string, or `{\"env\": ..}`, `{\"file\": ..}` or\n`{\"prompt\": ..}` ([`Secret`]). Required: none is an open relay,\nwhich refuses to bind.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Secret"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "key_env": {
-          "description": "The shared secret, from the named environment variable, read once\nat startup; unset is a refusal by name there.",
+          "description": "Deprecated: `\"key\": {\"env\": ..}`. Read as `key_file` is.",
           "type": [
             "string",
             "null"
           ]
         },
         "key_file": {
-          "description": "The shared secret, from a file; one trailing newline is trimmed.",
+          "description": "Deprecated: `\"key\": {\"file\": ..}`. Read for one release with a\nwarning, and before `key_env` and `key` when more than one is set,\nas it always was ([`TurnConfig::key_source`]).",
           "type": [
             "string",
             "null"
@@ -1168,21 +1312,25 @@
           }
         },
         "private_key": {
-          "description": "This peer's private key, base64, inline. The same three knobs as\nevery other secret in this config, resolved file, then env, then\ninline; one is required, since a device without a key has no\nidentity and can complete no handshake.",
-          "type": [
-            "string",
-            "null"
+          "description": "This peer's private key, base64: a string, or `{\"env\": ..}`,\n`{\"file\": ..}` or `{\"prompt\": ..}` ([`Secret`]). Required, since a\ndevice without a key has no identity and can complete no handshake.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Secret"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "private_key_env": {
-          "description": "This peer's private key, base64, from the named environment\nvariable, read once at startup.",
+          "description": "Deprecated: `\"private_key\": {\"env\": ..}`. Read as `private_key_file`\nis.",
           "type": [
             "string",
             "null"
           ]
         },
         "private_key_file": {
-          "description": "This peer's private key, base64, from a file -- `wg genkey`'s own\noutput, one trailing newline trimmed.",
+          "description": "Deprecated: `\"private_key\": {\"file\": ..}`. Read for one release with\na warning, and before `private_key_env` and `private_key` when more\nthan one is set, as it always was\n([`WireguardConfig::private_key_source`]).",
           "type": [
             "string",
             "null"

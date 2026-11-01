@@ -1,0 +1,797 @@
+-- stdlib:session -- a login portal and forward-auth endpoint (doc/Session.md).
+--
+-- A user signs in with their directory password (the `ldap` connector),
+-- passes a second factor (TOTP through `crypto`, or a webhook through
+-- `rest`), and holds a session: a record in one topic of a signalling
+-- server's kv store (the `kv` connector), with a TTL, named by a cookie. A
+-- reverse proxy asks `/verify` before each request it forwards and gets 200
+-- with Remote-User and Remote-Groups, or 401. `/api/token` issues a JWT
+-- from the session. Passwords stay in the directory: nothing here hashes or
+-- stores one.
+--
+-- surface block
+--
+-- - Entry points: `ROUTES`, every request this program answers.
+-- - Configurable values: `DEFAULTS`, every argument the deployment may set
+--   and its default (doc/Session.md lists them); `KV_PREFIX`, the key
+--   families in the kv topic; `FACTORS`, the second factors there are;
+--   `ENROLL_POLICIES`, who may enrol TOTP.
+-- - Fan-out: `ROUTES` (method + path -> a name in `handlers`); `FACTORS`
+--   (a factor name -> `usable`, whether this user may use it now); the
+--   session `level`: 1 is a password only (pending), 2 is signed in.
+--
+-- One request is served at a time, as every program on the http listener
+-- is: each host call is a round trip (the directory, the kv server, a
+-- webhook), so a slow one delays the rest. `webhook_timeout_ms` bounds the
+-- webhook's share.
+
+local DEFAULTS = {
+  issuer             = 'drt',          -- JWT `iss`, and the TOTP issuer an app shows
+  cookie_name        = 'drt_session',
+  cookie_domain      = '',             -- '' is host-only; 'example.com' covers its subdomains
+  cookie_secure      = true,           -- false only for plain-http testing on loopback
+  session_ttl        = 43200,          -- seconds a signed-in session lives, from sign-in
+  pending_ttl        = 300,            -- seconds between the password and the second factor
+  login_url          = '',             -- set, /verify sends a browser here (302) rather than 401
+  default_redirect   = '',             -- where a sign-in without `rd` lands; '' shows a page
+  second_factor      = 'totp',         -- 'totp', 'webhook', 'totp,webhook', or 'none'
+  totp_enroll        = 'off',          -- see ENROLL_POLICIES
+  webhook_url        = '',             -- the webhook factor's endpoint, granted in rest's scope
+  webhook_timeout_ms = 5000,
+  webhook_wait       = 120,            -- seconds a webhook challenge stays open
+  jwt_key            = '',             -- an EdDSA label for /api/token; '' turns it off
+  jwt_ttl            = 300,
+  jwt_audience       = '',             -- the token's `aud`; '' sends none
+  max_retries        = 5,              -- failures (password or second factor) before a ban
+  find_time          = 120,            -- seconds a failure counts toward max_retries
+  ban_time           = 300,
+  username_attr      = 'uid',          -- the directory attribute that is Remote-User
+  name_attr          = 'cn',           -- Remote-Name
+  email_attr         = 'mail',         -- Remote-Email
+}
+
+-- The kv topic holds four families of keys, each under its prefix.
+local KV_PREFIX = {
+  session = 'session/',  -- session/<sha256 of the cookie>: the session, TTL = its life
+  totp    = 'totp/',     -- totp/<user>: {label, step}, the enrolled seed's label and last step used
+  fail    = 'fail/',     -- fail/<user>: failures counted toward max_retries, TTL find_time
+  ban     = 'ban/',      -- ban/<user>: present while the user is banned, TTL ban_time
+}
+
+-- Who may enrol TOTP, for a user with none on file.
+local ENROLL_POLICIES = {
+  off         = true,  -- nobody here; a user without TOTP uses another factor
+  first_login = true,  -- whoever has the password, once (trust on first use)
+  webhook     = true,  -- whoever has the password and passes the webhook first
+}
+
+-- Every request answered: method and path -> the handler's name in
+-- `handlers` below. /verify also answers any other method, since the
+-- method is the proxy's choice.
+local ROUTES = {
+  ['GET /']             = 'root',           -- the login form, or who is signed in
+  ['POST /login']       = 'login',          -- username + password -> a pending session
+  ['GET /2fa']          = 'second_factor',  -- the factors a pending session may use
+  ['POST /2fa/totp']    = 'totp',           -- a TOTP code
+  ['POST /2fa/enroll']  = 'enroll',         -- the first code from a new TOTP enrolment
+  ['POST /2fa/webhook'] = 'webhook_start',  -- ask the webhook, or pass it a code
+  ['GET /2fa/webhook']  = 'webhook_poll',   -- the waiting page, asking the webhook again
+  ['POST /logout']      = 'logout',
+  ['GET /verify']       = 'verify',         -- forward auth: 200 + Remote-*, 401, 403 or 302
+  ['HEAD /verify']      = 'verify',
+  ['GET /api/session']  = 'session',        -- the session as JSON
+  ['POST /api/token']   = 'token',          -- a JWT from the session
+}
+
+-- The second factors, by the name `second_factor` uses. Each is offered
+-- to a pending session when `usable` (below) says so.
+local FACTORS = {
+  totp    = 'a code from an authenticator app, checked by crypto/totp_verify',
+  webhook = 'an approval (or a code) from webhook_url, asked over rest/post',
+}
+
+local SESSION_ID_BYTES = 32
+local CHALLENGE_BYTES  = 16
+local LABEL_BYTES      = 8
+local POLL_SECONDS     = 2    -- how often the webhook waiting page asks again
+
+-- depth: arguments
+
+local requests = queue.declare('http_in', {capacity = 64})
+local replies  = queue.declare('http_out', {capacity = 64, exported = true})
+local _, given = queue.wait({queue.declare('args', {capacity = 1})}, 2000)
+given = type(given) == 'table' and given or {}
+
+local A = {}
+for k, v in pairs(DEFAULTS) do
+  local g = given[k]
+  if g == nil then A[k] = v
+  elseif type(v) == 'number' then
+    A[k] = tonumber(g) or error('session: ' .. k .. ' is a number of seconds or ms, not ' .. tostring(g), 0)
+  elseif type(v) == 'boolean' then
+    if type(g) == 'boolean' then A[k] = g
+    elseif g == 'true' or g == 'false' then A[k] = (g == 'true')
+    else error('session: ' .. k .. ' is true or false, not ' .. tostring(g), 0) end
+  elseif type(g) == 'table' then A[k] = table.concat(g, ',')
+  else A[k] = tostring(g) end
+end
+for k in pairs(given) do
+  -- `from` is the envelope every delivered message carries, not an argument.
+  if DEFAULTS[k] == nil and k ~= 'from' then error('session: ' .. k .. ' is not an argument this program takes', 0) end
+end
+
+local FACTOR_LIST = {}
+for f in A.second_factor:gmatch('[^,%s]+') do FACTOR_LIST[#FACTOR_LIST + 1] = f end
+local ONE_FACTOR = (#FACTOR_LIST == 1 and FACTOR_LIST[1] == 'none')
+local function factor_on(name)
+  for _, f in ipairs(FACTOR_LIST) do if f == name then return true end end
+  return false
+end
+for _, f in ipairs(FACTOR_LIST) do
+  if not FACTORS[f] and not ONE_FACTOR then
+    error('session: second_factor is totp, webhook, both, or none, not ' .. A.second_factor, 0)
+  end
+end
+if #FACTOR_LIST == 0 then error('session: second_factor is empty; say none for a password alone', 0) end
+if factor_on('webhook') and A.webhook_url == '' then
+  error('session: second_factor names webhook and webhook_url is not set', 0)
+end
+if A.totp_enroll == 'webhook' and not factor_on('webhook') then
+  error('session: totp_enroll webhook needs webhook in second_factor', 0)
+end
+if not ENROLL_POLICIES[A.totp_enroll] then
+  error('session: totp_enroll is off, first_login or webhook, not ' .. A.totp_enroll, 0)
+end
+
+-- depth: small helpers
+
+local function html_escape(s)
+  return (tostring(s):gsub('[&<>"\']', {['&'] = '&amp;', ['<'] = '&lt;', ['>'] = '&gt;',
+                                        ['"'] = '&quot;', ["'"] = '&#39;'}))
+end
+
+local function url_decode(s)
+  s = s:gsub('%+', ' ')
+  return (s:gsub('%%(%x%x)', function(h) return string.char(tonumber(h, 16)) end))
+end
+
+local function url_encode(s)
+  return (s:gsub('[^%w%-%._~]', function(c) return string.format('%%%02X', c:byte()) end))
+end
+
+-- 'a=1&b=x+y' -> {a = '1', b = 'x y'}; the first of a repeated name wins.
+local function form(text)
+  local out = {}
+  for pair in (text or ''):gmatch('[^&]+') do
+    local k, v = pair:match('^([^=]*)=?(.*)$')
+    k = url_decode(k)
+    if out[k] == nil then out[k] = url_decode(v) end
+  end
+  return out
+end
+
+local function split_target(target)
+  local path, query = target:match('^([^?]*)%??(.*)$')
+  return path, form(query)
+end
+
+local function cookie_of(m)
+  local header = m.headers and m.headers.cookie
+  if not header then return nil end
+  for pair in header:gmatch('[^;]+') do
+    local k, v = pair:match('^%s*([^=]+)=(.-)%s*$')
+    if k == A.cookie_name and v:match('^%x+$') then return v end
+  end
+  return nil
+end
+
+local function now_ms() return host.time() end
+
+local function seconds_left(expires)
+  return math.max(1, math.ceil((expires - now_ms()) / 1000))
+end
+
+-- A user, as a kv key: kept as written when it is plain, else hex behind a
+-- `~`, which a plain name cannot hold, so two users never share a key.
+local function user_key(user)
+  user = user:lower()
+  if user:match('^[%w%._%-]+$') then return user end
+  return '~' .. (user:gsub('.', function(c) return string.format('%02x', c:byte()) end))
+end
+
+local function first_attr(attrs, name)
+  local v = attrs and attrs[name]
+  if type(v) == 'table' then return v[1] end
+  return v
+end
+
+-- depth: replies
+
+local HTML_HEADERS = {
+  ['cache-control']           = 'no-store',
+  ['x-frame-options']         = 'DENY',
+  ['referrer-policy']         = 'no-referrer',
+  ['content-security-policy'] = "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+}
+
+local function reply(conn, status, body, content_type, headers)
+  queue.push(replies, {conn = conn, status = status, body = body or '',
+                       content_type = content_type, headers = headers})
+end
+
+local function with(base, extra)
+  local h = {}
+  for k, v in pairs(base or {}) do h[k] = v end
+  for k, v in pairs(extra or {}) do h[k] = v end
+  return h
+end
+
+local function set_cookie(sid, max_age)
+  local parts = {A.cookie_name .. '=' .. sid, 'Path=/', 'HttpOnly', 'SameSite=Lax', 'Max-Age=' .. max_age}
+  if A.cookie_domain ~= '' then parts[#parts + 1] = 'Domain=' .. A.cookie_domain end
+  if A.cookie_secure then parts[#parts + 1] = 'Secure' end
+  return table.concat(parts, '; ')
+end
+
+local function clear_cookie() return set_cookie('', 0) end
+
+local STYLE = [[
+body{font-family:system-ui,sans-serif;max-width:26rem;margin:4rem auto;padding:0 1rem;color:#222}
+h1{font-size:1.3rem}form{margin:1rem 0}label{display:block;margin:.6rem 0 .2rem}
+input{width:100%;padding:.5rem;box-sizing:border-box;font-size:1rem}
+button{margin-top:.8rem;padding:.5rem 1rem;font-size:1rem}
+.error{color:#a00}.secret{font-family:monospace;word-break:break-all;background:#f3f3f3;padding:.5rem}
+]]
+
+local function page(conn, status, title, body, headers, extra_head)
+  local doc = '<!doctype html><html><head><meta charset="utf-8">'
+    .. '<meta name="viewport" content="width=device-width,initial-scale=1">'
+    .. (extra_head or '')
+    .. '<title>' .. html_escape(title) .. '</title><style>' .. STYLE .. '</style></head><body>'
+    .. '<h1>' .. html_escape(title) .. '</h1>' .. body .. '</body></html>'
+  reply(conn, status, doc, 'text/html; charset=utf-8', with(HTML_HEADERS, headers))
+end
+
+local function redirect(conn, location, headers)
+  reply(conn, 303, '', nil, with({['location'] = location, ['cache-control'] = 'no-store'}, headers))
+end
+
+local function json_reply(conn, status, value, headers)
+  reply(conn, status, json.encode(value), 'application/json',
+        with({['cache-control'] = 'no-store'}, headers))
+end
+
+local function error_line(text)
+  if not text or text == '' then return '' end
+  return '<p class="error" role="alert">' .. html_escape(text) .. '</p>'
+end
+
+local function hidden(name, value)
+  if not value or value == '' then return '' end
+  return '<input type="hidden" name="' .. html_escape(name) .. '" value="' .. html_escape(value) .. '">'
+end
+
+-- depth: where a sign-in may send the browser
+--
+-- `rd` is the address the user was going to, and the one thing in a login
+-- an attacker most wants to choose (an open redirect hands their phishing
+-- page our domain). A relative path is always allowed; an absolute URL only
+-- when its host is the cookie's domain or under it, and https unless the
+-- cookie is not Secure.
+
+local function safe_redirect(rd)
+  if type(rd) ~= 'string' or rd == '' or #rd > 2048 or rd:find('[%c\\]') then return nil end
+  if rd:sub(1, 1) == '/' then
+    if rd:sub(2, 2) == '/' then return nil end
+    return rd
+  end
+  local scheme, host = rd:match('^(https?)://([^/?#]+)')
+  if not scheme then return nil end
+  if scheme ~= 'https' and A.cookie_secure then return nil end
+  if host:find('@', 1, true) then return nil end
+  host = host:gsub(':%d+$', ''):lower()
+  local domain = A.cookie_domain:lower():gsub('^%.', '')
+  if domain == '' then return nil end
+  if host == domain or host:sub(-(#domain + 1)) == '.' .. domain then return rd end
+  return nil
+end
+
+-- depth: the kv store
+
+local function kv_get(key)
+  local r = host.call('kv/get', {key = key})
+  if r == nil then return nil end
+  return r.value, r.version
+end
+
+local function kv_put(key, value, ttl, version)
+  return host.call('kv/put', {key = key, value = value, ttl = ttl, version = version})
+end
+
+local function kv_delete(key) host.call('kv/delete', {key = key}) end
+
+local function session_key(sid) return KV_PREFIX.session .. host.call('crypto/hash', {data = sid}) end
+
+local function load_session(m)
+  local sid = cookie_of(m)
+  if not sid then return nil end
+  local value = kv_get(session_key(sid))
+  if not value then return nil end
+  local ok, s = pcall(json.decode, value)
+  if not ok or type(s) ~= 'table' or (s.expires or 0) <= now_ms() then return nil end
+  s.sid = sid
+  return s
+end
+
+local function store_session(s)
+  local sid = s.sid
+  local record = with(s)
+  record.sid = nil
+  kv_put(session_key(sid), json.encode(record), seconds_left(s.expires))
+end
+
+local function new_sid() return host.call('crypto/random', {bytes = SESSION_ID_BYTES}) end
+
+-- depth: regulation (failures per user, RFC 4226 §7.3)
+--
+-- Kept in the kv store so every replica counts the same failures. The
+-- count is compare-and-set, so concurrent failures are all counted.
+
+local function banned(ukey) return kv_get(KV_PREFIX.ban .. ukey) ~= nil end
+
+local function count_failure(ukey)
+  for _ = 1, 4 do
+    local value, version = kv_get(KV_PREFIX.fail .. ukey)
+    local n = (tonumber(value) or 0) + 1
+    local r = kv_put(KV_PREFIX.fail .. ukey, tostring(n), A.find_time, version or 0)
+    if not r.conflict then
+      if n >= A.max_retries then
+        kv_put(KV_PREFIX.ban .. ukey, '1', A.ban_time)
+        print('session: ' .. ukey .. ' is banned for ' .. A.ban_time .. ' s after ' .. n .. ' failures')
+      end
+      return
+    end
+  end
+end
+
+local function clear_failures(ukey) host.call('kv/delete', {key = KV_PREFIX.fail .. ukey}) end
+
+-- depth: TOTP
+
+local function totp_record(ukey)
+  local value, version = kv_get(KV_PREFIX.totp .. ukey)
+  if not value then return nil end
+  local ok, t = pcall(json.decode, value)
+  if not ok or type(t) ~= 'table' or type(t.label) ~= 'string' then return nil end
+  t.version = version
+  return t
+end
+
+-- A code against the user's enrolled label, single-use: the step it
+-- matched is written back over the version read, so of two requests
+-- carrying one code only one is accepted.
+local function check_totp(s, code)
+  local t = totp_record(s.ukey)
+  if not t then return false, 'no TOTP is enrolled for you' end
+  host.call('crypto/derive', {label = t.label})
+  local r = host.call('crypto/totp_verify', {key = t.label, code = code, after = t.step})
+  if not r.valid then return false, r.reason == 'replayed' and 'that code was already used' or 'wrong code' end
+  local w = kv_put(KV_PREFIX.totp .. s.ukey, json.encode({label = t.label, step = r.step}), nil, t.version)
+  if w.conflict then return false, 'that code was already used' end
+  return true
+end
+
+-- depth: the webhook factor
+--
+-- POST webhook_url with JSON {event, challenge, purpose, user, name, email,
+-- groups, remote_addr, user_agent, code?}. The answer is JSON {decision}:
+-- "approve", "deny", or "pending" (ask again). Anything else approves
+-- nothing. `event` is "challenge" the first time, "poll" each time the
+-- waiting page asks again, and "code" when the user typed one (an SMS or
+-- mail code the webhook sent, say).
+
+local function ask_webhook(s, event, m, code)
+  local body = {
+    event = event, challenge = s.challenge, purpose = s.purpose or 'login',
+    user = s.user, name = s.name, email = s.email,
+    groups = msgpack.as_array(s.groups or {}),
+    remote_addr = s.remote_addr, user_agent = m.headers and m.headers['user-agent'],
+    code = code,
+  }
+  local r, status, detail = host.try('rest/post', {
+    url = A.webhook_url, body = json.encode(body),
+    headers = {['content-type'] = 'application/json'},
+    timeout_ms = A.webhook_timeout_ms,
+  }, A.webhook_timeout_ms + 2000)
+  if status ~= 'ok' then
+    print('session: webhook: ' .. tostring(status) .. ': ' .. tostring(detail))
+    return 'error', 'the second-factor service did not answer'
+  end
+  if r.status < 200 or r.status > 299 then
+    print('session: webhook answered ' .. r.status)
+    return 'error', 'the second-factor service answered ' .. r.status
+  end
+  local ok, v = pcall(json.decode, r.body or '')
+  local decision = ok and type(v) == 'table' and v.decision
+  if decision == 'approve' or decision == 'deny' or decision == 'pending' then return decision end
+  return 'error', 'the second-factor service gave no decision'
+end
+
+-- depth: factors
+
+-- Whether this pending session may use a factor now: it is on here, and
+-- the user has what it needs.
+local usable = {
+  totp = function(s) return factor_on('totp') and totp_record(s.ukey) ~= nil end,
+  webhook = function(s) return factor_on('webhook') end,
+}
+
+-- May this pending session enrol TOTP now: TOTP is a factor here, the user
+-- has none on file, and the policy allows it for what they have passed.
+local function may_enroll(s)
+  if not factor_on('totp') or totp_record(s.ukey) then return false end
+  if A.totp_enroll == 'first_login' then return true end
+  if A.totp_enroll == 'webhook' then return s.webhook_ok == true end
+  return false
+end
+
+-- depth: signing in
+
+-- Where the browser is, as the webhook is told it: the proxy's first
+-- X-Forwarded-For hop, or the peer. Reported, never trusted for a decision.
+local function remote_addr(m)
+  local fwd = m.headers and m.headers['x-forwarded-for']
+  if fwd then return fwd:match('^%s*([^,%s]+)') end
+  local peer = m.peer or ''
+  return peer:match('^%[(.*)%]:%d+$') or peer:match('^([^:]+):%d+$') or peer
+end
+
+-- The pending session becomes a signed-in one under a new id, so a cookie
+-- seen before the second factor is worth nothing after it.
+local function sign_in(m, s, amr)
+  kv_delete(session_key(s.sid))
+  clear_failures(s.ukey)
+  local full = {
+    sid = new_sid(), user = s.user, ukey = s.ukey, name = s.name, email = s.email,
+    groups = s.groups, level = 2, amr = amr, created = now_ms(),
+    expires = now_ms() + A.session_ttl * 1000, remote_addr = s.remote_addr,
+  }
+  store_session(full)
+  print('session: ' .. full.user .. ' signed in (' .. table.concat(amr, '+') .. ')')
+  local cookie = {['set-cookie'] = set_cookie(full.sid, A.session_ttl)}
+  local to = safe_redirect(s.rd) or safe_redirect(A.default_redirect)
+  if to then return redirect(m.conn, to, cookie) end
+  redirect(m.conn, '/', cookie)
+end
+
+local function login_page(conn, status, why, rd, username)
+  page(conn, status, 'Sign in',
+    error_line(why)
+    .. '<form method="post" action="/login">' .. hidden('rd', rd)
+    .. '<label for="username">Username</label>'
+    .. '<input id="username" name="username" autocomplete="username" required value="' .. html_escape(username or '') .. '">'
+    .. '<label for="password">Password</label>'
+    .. '<input id="password" name="password" type="password" autocomplete="current-password" required>'
+    .. '<button type="submit">Sign in</button></form>')
+end
+
+local function second_factor_page(m, s, status, why)
+  local body = error_line(why)
+  local offered = 0
+  if usable.totp(s) then
+    offered = offered + 1
+    body = body .. '<form method="post" action="/2fa/totp">'
+      .. '<label for="code">Code from your authenticator app</label>'
+      .. '<input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6,8}" required>'
+      .. '<button type="submit">Verify</button></form>'
+  elseif may_enroll(s) then
+    offered = offered + 1
+    if not s.enroll_label then
+      s.enroll_label = 'totp:' .. s.ukey .. ':' .. host.call('crypto/random', {bytes = LABEL_BYTES})
+      store_session(s)
+    end
+    host.call('crypto/derive', {label = s.enroll_label})
+    local e = host.call('crypto/totp_enroll', {key = s.enroll_label, account = s.user, issuer = A.issuer})
+    body = body .. '<p>Add this account to your authenticator app, then enter the code it shows.</p>'
+      .. '<p>Secret: <span class="secret" id="totp-secret">' .. html_escape(e.secret) .. '</span></p>'
+      .. '<p>Or open: <a class="secret" id="totp-uri" href="' .. html_escape(e.uri) .. '">' .. html_escape(e.uri) .. '</a></p>'
+      .. '<form method="post" action="/2fa/enroll">'
+      .. '<label for="code">Code</label>'
+      .. '<input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6,8}" required>'
+      .. '<button type="submit">Enrol</button></form>'
+  end
+  if usable.webhook(s) and not (s.webhook_ok and may_enroll(s)) then
+    offered = offered + 1
+    body = body .. '<form method="post" action="/2fa/webhook">'
+      .. '<button type="submit" id="webhook">' .. (offered > 1 and 'Or approve' or 'Approve')
+      .. ' this sign-in elsewhere</button></form>'
+  end
+  if offered == 0 then
+    body = body .. error_line('No second factor is set up for you here. Ask whoever runs this sign-in to enrol one.')
+  end
+  page(m.conn, status, 'Second factor', body
+    .. '<form method="post" action="/logout"><button type="submit">Cancel</button></form>')
+end
+
+local function webhook_page(m, s, status, why)
+  page(m.conn, status, 'Waiting for approval',
+    error_line(why)
+    .. '<p>Approve this sign-in where you were asked to. This page checks again every '
+    .. POLL_SECONDS .. ' seconds.</p>'
+    .. '<form method="post" action="/2fa/webhook"><label for="code">Or enter the code you were sent</label>'
+    .. '<input id="code" name="code" autocomplete="one-time-code">'
+    .. '<button type="submit">Send</button></form>'
+    .. '<form method="post" action="/logout"><button type="submit">Cancel</button></form>',
+    nil, '<meta http-equiv="refresh" content="' .. POLL_SECONDS .. ';url=/2fa/webhook">')
+end
+
+-- depth: the handlers, by the names ROUTES gives them
+
+local handlers = {}
+
+function handlers.root(m, params)
+  local s = load_session(m)
+  if s and s.level == 2 then
+    return page(m.conn, 200, 'Signed in',
+      '<p>Signed in as <strong id="user">' .. html_escape(s.user) .. '</strong>.</p>'
+      .. '<form method="post" action="/logout"><button type="submit">Sign out</button></form>')
+  end
+  if s and s.level == 1 then return redirect(m.conn, '/2fa') end
+  login_page(m.conn, 200, nil, params.rd)
+end
+
+function handlers.login(m)
+  local f = form(m.body)
+  local username = (f.username or ''):match('^%s*(.-)%s*$')
+  local typed = user_key(username)
+  if username == '' or (f.password or '') == '' then
+    return login_page(m.conn, 400, 'Enter a username and a password.', f.rd, username)
+  end
+  if banned(typed) then
+    return login_page(m.conn, 429, 'Too many failed attempts. Try again later.', f.rd, username)
+  end
+  local who = host.call('ldap/bind', {user = username, password = f.password,
+                                      attrs = {A.username_attr, A.name_attr, A.email_attr}})
+  if not who.ok then
+    count_failure(typed)
+    print('session: a failed sign-in as ' .. typed)
+    return login_page(m.conn, 401, 'Wrong username or password.', f.rd, username)
+  end
+  local user = first_attr(who.attrs, A.username_attr) or username:lower()
+  local ukey = user_key(user)
+  if ukey ~= typed and banned(ukey) then
+    return login_page(m.conn, 429, 'Too many failed attempts. Try again later.', f.rd, username)
+  end
+  local s = {
+    sid = new_sid(), user = user, ukey = ukey,
+    name = first_attr(who.attrs, A.name_attr), email = first_attr(who.attrs, A.email_attr),
+    groups = who.groups or {}, level = 1, created = now_ms(),
+    expires = now_ms() + A.pending_ttl * 1000, remote_addr = remote_addr(m), rd = f.rd,
+  }
+  if ONE_FACTOR then return sign_in(m, s, {'pwd'}) end
+  store_session(s)
+  redirect(m.conn, '/2fa', {['set-cookie'] = set_cookie(s.sid, A.pending_ttl)})
+end
+
+local function pending(m)
+  local s = load_session(m)
+  if not s then
+    login_page(m.conn, 401, 'Your sign-in expired. Start again.')
+    return nil
+  end
+  if s.level ~= 1 then
+    redirect(m.conn, '/')
+    return nil
+  end
+  if banned(s.ukey) then
+    kv_delete(session_key(s.sid))
+    login_page(m.conn, 429, 'Too many failed attempts. Try again later.')
+    return nil
+  end
+  return s
+end
+
+function handlers.second_factor(m)
+  local s = pending(m)
+  if s then second_factor_page(m, s, 200) end
+end
+
+function handlers.totp(m)
+  local s = pending(m)
+  if not s then return end
+  local code = (form(m.body).code or ''):gsub('%s', '')
+  local ok, why = check_totp(s, code)
+  if not ok then
+    count_failure(s.ukey)
+    return second_factor_page(m, s, 401, why)
+  end
+  sign_in(m, s, {'pwd', 'otp'})
+end
+
+function handlers.enroll(m)
+  local s = pending(m)
+  if not s then return end
+  if not s.enroll_label or not may_enroll(s) then
+    return second_factor_page(m, s, 409, 'Enrolment is not open for you now.')
+  end
+  local code = (form(m.body).code or ''):gsub('%s', '')
+  host.call('crypto/derive', {label = s.enroll_label})
+  local r = host.call('crypto/totp_verify', {key = s.enroll_label, code = code})
+  if not r.valid then
+    count_failure(s.ukey)
+    return second_factor_page(m, s, 401, 'Wrong code. Check the app shows this account, and try the next code.')
+  end
+  -- version 0: only where none is on file, so two enrolments cannot both win.
+  local w = kv_put(KV_PREFIX.totp .. s.ukey, json.encode({label = s.enroll_label, step = r.step}), nil, 0)
+  if w.conflict then
+    s.enroll_label = nil
+    store_session(s)
+    return second_factor_page(m, s, 409, 'TOTP was enrolled for you meanwhile. Use that app.')
+  end
+  print('session: ' .. s.user .. ' enrolled TOTP')
+  local amr = s.webhook_ok and {'pwd', 'mca', 'otp'} or {'pwd', 'otp'}
+  sign_in(m, s, amr)
+end
+
+-- The webhook's decision, applied: approve signs in (or, when it was
+-- asked so the user may enrol, opens enrolment); deny ends the attempt.
+local function webhook_decided(m, s, decision, why)
+  if decision == 'approve' then
+    s.challenge = nil
+    if s.purpose == 'enroll' then
+      s.webhook_ok = true
+      store_session(s)
+      return redirect(m.conn, '/2fa')
+    end
+    return sign_in(m, s, {'pwd', 'mca'})
+  elseif decision == 'deny' then
+    count_failure(s.ukey)
+    kv_delete(session_key(s.sid))
+    return login_page(m.conn, 401, 'The sign-in was denied.', s.rd)
+  elseif decision == 'pending' then
+    return webhook_page(m, s, 200)
+  end
+  webhook_page(m, s, 502, why)
+end
+
+function handlers.webhook_start(m)
+  local s = pending(m)
+  if not s then return end
+  if not usable.webhook(s) then return second_factor_page(m, s, 409, 'The webhook factor is off here.') end
+  local code = form(m.body).code
+  if s.challenge and s.challenge_expires > now_ms() and code and code ~= '' then
+    return webhook_decided(m, s, ask_webhook(s, 'code', m, code))
+  end
+  s.challenge = host.call('crypto/random', {bytes = CHALLENGE_BYTES})
+  s.challenge_expires = now_ms() + A.webhook_wait * 1000
+  -- With totp_enroll = webhook, a user with no TOTP passes the webhook to
+  -- open enrolment, not to sign in.
+  s.purpose = (A.totp_enroll == 'webhook' and factor_on('totp') and not totp_record(s.ukey))
+              and 'enroll' or 'login'
+  store_session(s)
+  webhook_decided(m, s, ask_webhook(s, 'challenge', m))
+end
+
+function handlers.webhook_poll(m)
+  local s = pending(m)
+  if not s then return end
+  if not s.challenge then return redirect(m.conn, '/2fa') end
+  if s.challenge_expires <= now_ms() then
+    s.challenge = nil
+    store_session(s)
+    return second_factor_page(m, s, 408, 'Nobody approved the sign-in in time.')
+  end
+  webhook_decided(m, s, ask_webhook(s, 'poll', m))
+end
+
+function handlers.logout(m)
+  local sid = cookie_of(m)
+  if sid then kv_delete(session_key(sid)) end
+  redirect(m.conn, '/', {['set-cookie'] = clear_cookie()})
+end
+
+local function is_member(s, wanted)
+  if not wanted or wanted == '' then return true end
+  for g in wanted:gmatch('[^,]+') do
+    for _, have in ipairs(s.groups or {}) do if have == g then return true end end
+  end
+  return false
+end
+
+-- The address the proxied request was for, from what the proxy sends:
+-- Caddy and Traefik send X-Forwarded-{Proto,Host,Uri}, nginx X-Original-URL.
+local function original_url(h)
+  if h['x-original-url'] then return h['x-original-url'] end
+  if h['x-forwarded-host'] then
+    return (h['x-forwarded-proto'] or 'https') .. '://' .. h['x-forwarded-host'] .. (h['x-forwarded-uri'] or '/')
+  end
+  return nil
+end
+
+function handlers.verify(m, params)
+  local s = load_session(m)
+  local h = m.headers or {}
+  if s and s.level == 2 then
+    if not is_member(s, params.group) then
+      return reply(m.conn, 403, 'forbidden', 'text/plain', {['cache-control'] = 'no-store'})
+    end
+    return reply(m.conn, 200, '', nil, {
+      ['remote-user'] = s.user,
+      ['remote-groups'] = table.concat(s.groups or {}, ','),
+      ['remote-name'] = s.name,
+      ['remote-email'] = s.email,
+      ['cache-control'] = 'no-store',
+    })
+  end
+  local method = h['x-forwarded-method'] or h['x-original-method']
+  if A.login_url ~= '' and (method == 'GET' or method == 'HEAD') then
+    local to = A.login_url
+    local back = original_url(h)
+    if back then to = to .. (to:find('?', 1, true) and '&' or '?') .. 'rd=' .. url_encode(back) end
+    return reply(m.conn, 302, '', nil, {['location'] = to, ['cache-control'] = 'no-store'})
+  end
+  reply(m.conn, 401, 'unauthorized', 'text/plain', {['cache-control'] = 'no-store'})
+end
+
+function handlers.session(m)
+  local s = load_session(m)
+  if not s then return json_reply(m.conn, 401, {error = 'no session'}) end
+  json_reply(m.conn, 200, {
+    user = s.user, name = s.name, email = s.email, groups = msgpack.as_array(s.groups or {}),
+    level = s.level, signed_in = s.level == 2, amr = msgpack.as_array(s.amr or {}),
+    expires_in = seconds_left(s.expires),
+  })
+end
+
+function handlers.token(m)
+  if A.jwt_key == '' then return json_reply(m.conn, 404, {error = 'this sign-in issues no tokens; set jwt_key'}) end
+  local s = load_session(m)
+  if not s or s.level ~= 2 then return json_reply(m.conn, 401, {error = 'not signed in'}) end
+  -- A token outlives nothing: at most what is left of the session.
+  local ttl = math.min(A.jwt_ttl, seconds_left(s.expires))
+  -- The claims a match server's topics file checks (iss, aud, sub,
+  -- groups), so a token here is also a topic token there.
+  local claims = {iss = A.issuer, sub = s.user, amr = msgpack.as_array(s.amr or {})}
+  if A.jwt_audience ~= '' then claims.aud = A.jwt_audience end
+  if s.groups and #s.groups > 0 then claims.groups = s.groups end
+  if s.email then claims.email = s.email end
+  if s.name then claims.name = s.name end
+  local token = host.call('crypto/jwt_sign', {key = A.jwt_key, claims = claims, ttl = ttl})
+  json_reply(m.conn, 200, {token = token, expires_in = ttl, token_type = 'Bearer'})
+end
+
+-- depth: routing
+
+local warned_headers = false
+
+local function route(m)
+  if not m.headers then
+    -- The listener passes no headers, so there is no cookie to read.
+    if not warned_headers then
+      print('session: the listener passes no request headers; give it the list in doc/Session.md')
+      warned_headers = true
+    end
+    return reply(m.conn, 500, 'this sign-in is misconfigured: its listener passes no headers', 'text/plain')
+  end
+  local path, params = split_target(m.path)
+  local name = ROUTES[m.method .. ' ' .. path] or (path == '/verify' and 'verify')
+  if not name then return reply(m.conn, 404, 'not found', 'text/plain') end
+  local handler = handlers[name]
+  local ok, err = pcall(handler, m, params)
+  if not ok then
+    print('session: ' .. m.method .. ' ' .. path .. ': ' .. tostring(err))
+    if path == '/verify' then return reply(m.conn, 500, 'error', 'text/plain') end
+    page(m.conn, 500, 'Something went wrong', '<p>The sign-in service failed. Its log says why.</p>')
+  end
+end
+
+-- depth: startup
+
+if A.jwt_key ~= '' then host.call('crypto/derive', {label = A.jwt_key, alg = 'EdDSA'}) end
+print('session: serving; second factor ' .. A.second_factor .. ', totp enrolment ' .. A.totp_enroll
+  .. (A.jwt_key ~= '' and (', tokens under ' .. A.jwt_key) or ''))
+
+while true do
+  local _, m = queue.wait({requests})
+  if m and m.conn and not m.event then route(m) end
+end

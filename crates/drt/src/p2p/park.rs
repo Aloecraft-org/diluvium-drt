@@ -502,7 +502,7 @@ async fn park_ws(
     }
     // The REPL or stdio on a leg: the same loop, with the in-process service
     // opened when the leg is claimed.
-    let (forward, _, done) = super::serve::sinks(&role.forward, &role.settings, config, roots)?;
+    let (forward, _, done, _) = super::serve::sinks(&role.forward, &role.settings, config, roots)?;
     let drt_rtc::Forward::One(drt_rtc::Sink::Local(service)) = forward else {
         unreachable!("ws_sink admits only one-target forwards");
     };

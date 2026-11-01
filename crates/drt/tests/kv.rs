@@ -80,7 +80,7 @@ impl Server {
         s
     }
 
-    /// A server with kv on and `--topics` given this file's text.
+    /// A server with `--kv` and `--topics`, the file being `topics`.
     fn with_topics(topics: &str) -> Server {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("topics.json");
@@ -245,6 +245,61 @@ impl Stream {
 const BASE: &str = "/v1/home/kv";
 
 // depth: the requests of §7
+
+#[test]
+fn with_topics_a_topics_keys_take_its_read_and_write_tokens() {
+    let s = Server::with_topics(
+        r#"{"topics": {"home": {"tokens": [
+            {"token": "home-rw", "roles": ["read", "write"]},
+            {"token": "home-r", "roles": ["read"]},
+            {"token": "home-park", "roles": ["park"]}]},
+          "work": {"tokens": [{"token": "work-rw", "roles": ["read", "write"]}]}}}"#,
+    );
+    let rw = [("authorization", "Bearer home-rw")];
+    let r = [("authorization", "Bearer home-r")];
+    assert_eq!(s.send("PUT", "/v1/home/kv/a", &rw, b"1").status, 201);
+    // No token is 401; a token without the role, another topic's token and
+    // an undeclared topic are all 403.
+    assert_eq!(s.get("/v1/home/kv/a").status, 401);
+    assert_eq!(s.put("/v1/home/kv/a", "2").status, 401);
+    assert_eq!(s.send("PUT", "/v1/home/kv/a", &r, b"2").status, 403);
+    assert_eq!(s.send("DELETE", "/v1/home/kv/a", &r, b"").status, 403);
+    assert_eq!(
+        s.send(
+            "GET",
+            "/v1/home/kv/a",
+            &[("authorization", "Bearer home-park")],
+            b""
+        )
+        .status,
+        403
+    );
+    assert_eq!(
+        s.send(
+            "GET",
+            "/v1/home/kv/a",
+            &[("authorization", "Bearer work-rw")],
+            b""
+        )
+        .status,
+        403
+    );
+    assert_eq!(s.send("GET", "/v1/elsewhere/kv/a", &rw, b"").status, 403);
+    // read gets, lists and watches; ?k= is the same token, for a page.
+    let got = s.send("GET", "/v1/home/kv/a", &r, b"");
+    assert_eq!((got.status, got.body.as_str()), (200, "1"));
+    assert_eq!(
+        s.send("GET", "/v1/home/kv?prefix=", &r, b"").json()["keys"][0]["key"],
+        "a"
+    );
+    assert_eq!(s.get("/v1/home/kv/a?k=home-r").status, 200);
+    assert_eq!(
+        s.send("GET", "/v1/home/kv?watch=poll&since=0&wait=0", &r, b"")
+            .status,
+        200
+    );
+    assert_eq!(s.send("DELETE", "/v1/home/kv/a", &rw, b"").status, 204);
+}
 
 #[test]
 fn a_server_without_kv_says_how_to_turn_it_on() {
@@ -446,78 +501,6 @@ fn a_listing_pages_by_prefix_and_topics_do_not_see_each_other() {
     assert_eq!(s.get(&format!("{BASE}/a/1")).body, "a/1");
     assert_eq!(s.get(&format!("{BASE}?limit=0")).status, 400);
     assert_eq!(s.get(&format!("{BASE}?limit=1001")).status, 400);
-}
-
-#[test]
-fn with_topics_a_read_token_reads_a_write_token_writes_and_neither_crosses_topics() {
-    let s = Server::with_topics(
-        r#"{"topics": {
-            "home": {"tokens": [
-                {"token": "reader", "roles": ["read"]},
-                {"token": "writer", "roles": ["write"]},
-                {"token": "both", "roles": ["read", "write"]},
-                {"token": "parker", "roles": ["park", "call"]}]},
-            "work": {"tokens": [{"token": "w-both", "roles": ["read", "write"]}]}}}"#,
-    );
-    let bearer = |t: &'static str| ("Authorization", format!("Bearer {t}"));
-    let send = |method: &str, path: &str, token: Option<&'static str>, body: &[u8]| {
-        let h = token.map(bearer);
-        let headers: Vec<(&str, &str)> = h.iter().map(|(n, v)| (*n, v.as_str())).collect();
-        s.send(method, path, &headers, body)
-    };
-    let k = "/v1/home/kv/door";
-    // No token is 401; a token without the role, or of another topic, 403.
-    assert_eq!(send("PUT", k, None, b"x").status, 401);
-    assert_eq!(send("GET", k, None, b"").status, 401);
-    assert_eq!(send("PUT", k, Some("reader"), b"x").status, 403);
-    assert_eq!(send("PUT", k, Some("parker"), b"x").status, 403);
-    assert_eq!(send("PUT", k, Some("w-both"), b"x").status, 403);
-    assert_eq!(
-        send("PUT", "/v1/nowhere/kv/door", Some("both"), b"x").status,
-        403
-    );
-    // write writes and deletes, but cannot read back or list.
-    assert_eq!(send("PUT", k, Some("writer"), b"open").status, 201);
-    assert_eq!(send("GET", k, Some("writer"), b"").status, 403);
-    assert_eq!(send("GET", "/v1/home/kv", Some("writer"), b"").status, 403);
-    assert_eq!(
-        send(
-            "GET",
-            "/v1/home/kv?watch=poll&since=0&wait=0",
-            Some("writer"),
-            b""
-        )
-        .status,
-        403
-    );
-    // read reads, lists and watches, but cannot write or delete.
-    let r = send("GET", k, Some("reader"), b"");
-    assert_eq!((r.status, r.body.as_str()), (200, "open"));
-    assert_eq!(
-        send("GET", "/v1/home/kv", Some("reader"), b"").json()["keys"][0]["key"],
-        "door"
-    );
-    let r = send(
-        "GET",
-        "/v1/home/kv?watch=poll&since=0&wait=0",
-        Some("reader"),
-        b"",
-    );
-    assert_eq!(r.json()["events"][0]["key"], "door");
-    assert_eq!(send("DELETE", k, Some("reader"), b"").status, 403);
-    // A page's EventSource sends no header: the token rides in ?k=.
-    let r = s.get("/v1/home/kv/door?k=reader");
-    assert_eq!((r.status, r.body.as_str()), (200, "open"));
-    assert_eq!(s.get("/v1/home/kv/door?k=writer").status, 403);
-    // Another topic's token reads and writes only its own topic.
-    assert_eq!(
-        send("PUT", "/v1/work/kv/door", Some("w-both"), b"shut").status,
-        201
-    );
-    assert_eq!(send("GET", k, Some("w-both"), b"").status, 403);
-    assert_eq!(send("GET", k, Some("both"), b"").body, "open");
-    assert_eq!(send("DELETE", k, Some("writer"), b"").status, 204);
-    assert_eq!(send("GET", k, Some("both"), b"").status, 404);
 }
 
 #[test]

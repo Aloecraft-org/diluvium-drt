@@ -33,7 +33,7 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Connectors
 
-- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `data`, `socket`, `ws`, `kv`, `listen`
+- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `ldap`, `exec`, `data`, `socket`, `ws`, `kv`, `listen`
 - `slim`: `time`, `fs`, `crypto`, `listen`
 - `wasi`: `time`, `fs`, `crypto`, `sql`, `listen`
 - `web`: `time`, `fs`, `crypto`
@@ -47,6 +47,81 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Added
 
+- **`stdlib:session`, a login portal and forward-auth endpoint
+  (`doc/Session.md`).** A dlua program on four connectors: `ldap`
+  binds the user, `crypto` checks a TOTP code (enrolment by policy:
+  off, on first sign-in, or after the webhook) or `rest` asks a
+  webhook to approve, deny or wait, and `kv` keeps the session in
+  one topic with a TTL, named by an `HttpOnly; SameSite=Lax` cookie
+  that may cover a parent domain. `/verify` answers a reverse proxy
+  200 with `Remote-User`, `Remote-Groups`, `Remote-Name` and
+  `Remote-Email`, 403 outside `?group=`, a 302 to the login for a
+  browser, or 401. `/api/token` signs an EdDSA JWT from the session.
+  A TOTP code works once across replicas, failures ban the user for
+  a while, and a sign-in redirects only inside the cookie's domain.
+  Tested against OpenLDAP, and in Chromium through Caddy's
+  `forward_auth` (`script/session-browser.sh`, a CI job).
+- **A JWKS for the tokens DRT signs: `stdlib:jwks`.** A deployment
+  running it under `drt start` asks the crypto connector for each
+  key's public JWK (`crypto/public_key`; the private key never leaves
+  it), writes it to a topic's kv under `jwks/<kid>` (`~XX`-escaped) with a
+  TTL, and
+  serves every key the topic holds at `/.well-known/jwks.json`, with
+  `Cache-Control` and CORS. `args.keys` lists the keys, old and new
+  together for a rotation; each is refreshed every `ttl / 3`, so a key
+  taken out of the list leaves the set within `ttl`. What is served is
+  filtered: only public members of an `OKP`, `EC` or `RSA` key, never
+  a symmetric key or one holding a private member, and one key per
+  `kid`. The same set is also kept as one value under the kv key
+  `args.set_key` (`jwks`), rewritten when it changes, for a reader
+  that wants one key. A store that does not answer is 503, not an
+  empty set.
+  Verified against `jsonwebtoken` and PyJWT's `PyJWKClient`;
+  `examples/34-jwks`. Under `drt` only: the plain `diluvium` host has
+  no `kv` connector and no EdDSA.
+- **`crypto/jwt_verify {token, jwks}` checks another issuer's tokens
+  with its public keys alone, and a `{"verify_only": true}` scope
+  holds no key.** The token must name a `kid`; the one usable Ed25519
+  key in the set with that `kid` is taken, its header rebuilt and
+  compared, and the strict signature check runs before the payload
+  is parsed. The host's own keys are not consulted when `jwks` is
+  given. `verify_only` answers `random`, `hash` and this call, and
+  refuses every other by name.
+- **TOTP and EdDSA in the crypto connector, every key still in the
+  host.** `crypto/totp_verify` checks an RFC 6238 code (SHA-1 or
+  SHA-256, 6 to 8 digits, a period and a window) and answers the step
+  it matched, which passed back as `after` refuses the code again.
+  `crypto/totp_enroll` answers a derived label's seed as base32 and
+  an `otpauth://` URI, and `crypto/totp` the current code; each is
+  its own grant, so a verifier never holds a seed. `crypto/derive
+  {alg = "EdDSA"}` gives a label an Ed25519 key, and
+  `crypto.signing_keys` configures one from PKCS#8 PEM, given as a
+  string, `{"env"}` or `{"file"}` (not `{"prompt"}`: a connector's
+  scope is read at its first call, with no terminal to ask on);
+  `jwt_sign` signs EdDSA under
+  either, and `jwt_verify` takes the algorithm from the key the `kid`
+  names, never from the token. `crypto/public_key` answers the key's
+  JWK, for a JWKS. Checked against the RFC 4226, 6238 and 8037
+  vectors and against `totp-rs`, `jsonwebtoken`, PyJWT and pyotp.
+  `examples/33-second-factor-and-jwks` is the walkthrough. The plain
+  Diluvium host does not answer these calls.
+- **The `ldap` connector: `host:ldap/bind`, `host:ldap/groups` and
+  `host:ldap/search` against one directory, and `drt ldap`.** `full`
+  only, on the `ldap3` crate over rustls. The scope names the server
+  (`ldaps://`, or `ldap://` with StartTLS on by default), the
+  `base_dn` every call stays inside, and a service account whose
+  `bind_password` takes a string, `{"env"}`, `{"file"}` or
+  `{"prompt"}`, resolved once at startup and never shown to the
+  program. `ldap/bind {user, password}` finds the user with
+  `user_filter`, binds as them and answers `{ok, dn, groups,
+  group_dns}`; a wrong password, an unknown user and an ambiguous one
+  all answer a bare `{ok = false}`, and an empty password is refused
+  without reaching the server, since LDAP treats it as an anonymous
+  bind. `ldap/groups {user}` is the group lookup alone. Plaintext is
+  refused unless the server is on loopback. `drt ldap search`, `bind`
+  and `groups` call the same connector from the config's
+  `connectors.ldap`. Tested against OpenLDAP over plaintext, StartTLS
+  and ldaps.
 - **A key-value store on the signalling server, and `drt kv`
   (`doc/DRT-Signalling.md` §10).** `drt p2p --match <port> --kv
   <dir>` keeps one in SQLite at `/v1/<topic>/kv/<key>`, over plain
@@ -55,9 +130,10 @@ Underneath it the embedded core moves from 0.15.1 to
   compare-and-set through `If-Match` and `If-None-Match: *`, TTL keys
   that expire in wall time across restarts, and watch as an event
   stream or a held poll that resumes over the last 1024 changes, kept
-  across restarts. With `--topics` a kv request takes a token of its
-  topic, `read` to get, list or watch and `write` to put or delete;
-  without, it takes none, and the server says so when it starts.
+  across restarts. With `--topics`, a topic's keys take its tokens:
+  `read` to get, list and watch, `write` to put and delete. Without
+  it whoever reaches the port may read and write, and the server
+  says so when it starts.
   - **`drt kv get|put|rm|ls|watch <drt://…/v1/<topic>/kv/<key>>`**,
     with `--if-version`, `--ttl` and `--H`; exit 1 is a refusal (an
     absent key, a lost race), 2 no answer.
@@ -68,6 +144,26 @@ Underneath it the embedded core moves from 0.15.1 to
     A program reaches it with `host.call`; the diluvium binary does
     not answer `kv/*` itself.
   - `examples/32-kv`.
+- **A config file has `default` and `commands` (`doc/P2P.md` §8).**
+  `commands.p2p` is `drt p2p`'s block, one key per flag, and
+  `default` holds `stun` and `extra_roots` for every block under
+  `commands`. The order is `default`, then the command's block,
+  then the command line, each replacing the one before per key. An
+  unknown key in either is refused, as everywhere else.
+- **A credential in the config can come from a variable, a file or a
+  prompt.** Any secret-valued field takes a string, as before, or one
+  of `{"env": "NAME"}`, `{"file": "/path"}` and
+  `{"prompt": "hidden"|"visible"}`: `commands.p2p.headers` values,
+  `turn.key` and `wireguard.private_key`. `{"file": "%d/name"}` is
+  systemd's `LoadCredential=`. A prompt reads the controlling
+  terminal, never stdin, and with no terminal (a systemd unit, a
+  Windows scheduled task) it is refused at once, naming the field.
+- **`drt p2p --forward` takes several targets.** Repeat the flag, or
+  give `commands.p2p.forward` a list: each entry is `host:port` or
+  `scheme://host:port`, and a caller names one by its address
+  (`-p 13389:127.0.0.1:3389`, a page's `to=`). On one host a port
+  alone is enough, as with `-P`; a non-`tcp` scheme is also its named
+  service. A string is still one target.
 - **`drt p2p`: one verb for peer-to-peer sessions (`doc/P2P.md`).**
   With no `--relay` and no `--fallback`, no machine other than the
   two ends carries a byte of the session; when no such path exists it
@@ -109,7 +205,23 @@ Underneath it the embedded core moves from 0.15.1 to
     (`park`, `call`, `read`, `write`), and `read` lists the names
     present at `GET /v1/<topic>/names`. Bare `/v1/<name>` names,
     their answerer token and `DRT-Caller-Token` work as before.
-    `read` and `write` also open the topic's keys with `--kv`.
+    `write` writes the topic's keys when the server keeps kv.
+  - **Topics admit JWTs, and directory groups decide the roles
+    (`doc/P2P.md` §2.4).** A `jwt` block in the topics file names an
+    issuer, an optional audience and its JWKS, written in the file or
+    kept at a kv key on the same server (re-read after every kv
+    change, so rotating a key is a kv write). A topic's `groups` map
+    each name in a token's `groups` claim (what `ldap/bind` answers)
+    to roles, so membership decides who parks, calls, reads and
+    writes. The signature is EdDSA, checked against the public keys
+    only; then `exp`, `nbf`, `iss`, `aud` and `sub`. A token that
+    does not verify is 401 with the reason, one without the role
+    403, alike in every topic. A JWT holds a name by its `sub`.
+    Listed tokens and bare names are unchanged. Tested end to end
+    against OpenLDAP: tokens issued by a dlua program from
+    `ldap/bind` and `crypto/jwt_sign`, then a real park and call and
+    kv reads and writes, each allowed and refused by group. Not
+    built: renewing a parked side's token.
   - **The wire:** a Wisp `CONNECT` with an empty host asks for
     whatever the far side forwards to, at the port named or at none;
     `hello` names services and carries `scope` only when the
@@ -678,6 +790,19 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Deprecated
 
+- **A top-level `p2p` block is read as `commands.p2p` for one
+  release**, with a warning. `turn.key_file` and `turn.key_env` are
+  `turn.key` as `{"file": ..}` and `{"env": ..}`, and
+  `wireguard.private_key_file` and `private_key_env` are
+  `wireguard.private_key` the same way; each still reads, in the
+  order it always did, with a warning naming its replacement.
+  Examples 11, 19, 20, 21 and 22 use the new spellings.
+- **The `tunnel` config block is read as `commands.p2p` for one release**,
+  each key warned about with its replacement: `claim` is `relay` (or
+  `peer`, without the `rtc:`), `bind` is `ports` (the port only, on
+  127.0.0.1), `to` is `forward`, `park` stays `park`. A
+  `tunnel.listen` key is refused by `drt p2p`. Examples 11, 14 and 19
+  are spelled with the verb and the block.
 - **`drt tunnel` is `drt p2p` now, and goes away in a release.** A
   call (`drt tunnel wss://…`, `--local`) or a park (`--park … --to`)
   prints the `drt p2p` form of what it was given on stderr and runs

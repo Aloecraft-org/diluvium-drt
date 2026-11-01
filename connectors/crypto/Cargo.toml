@@ -27,6 +27,13 @@ subtle = "2"
 # bytes a signature is checked over is exactly the wrong place to save a
 # dependency. `drt` already carries serde_json for the root config.
 serde_json = "1"
+# EdDSA for `jwt_sign` under an EdDSA key, and the JWK `public_key` returns.
+# Already in every native build through `drt-config`'s consent signatures,
+# with the same features off: no `fast` tables, because slim and web exist
+# to not spend that binary size. `pkcs8` and `pem` read a configured key in
+# the shape `openssl genpkey -algorithm ed25519` writes; a hand-rolled DER
+# reader is the wrong place to save a dependency.
+ed25519-dalek = { version = "3", default-features = false, features = ["zeroize", "pkcs8", "pem"] }
 
 [dev-dependencies]
 drt-hostcall = { workspace = true }
@@ -37,3 +44,9 @@ sha2 = "0.10"
 sha1 = "0.10"
 hmac = "0.12"
 base64 = "0.22"
+# Interop: the tokens, the JWKs and the enrolment URIs are checked by
+# libraries that share no code with this crate's TOTP or JWT assembly. A
+# test that asked the connector to grade its own output would pass a
+# connector that is wrong the same way on both sides.
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
+totp-rs = { version = "6", default-features = false, features = ["std", "otpauth"] }

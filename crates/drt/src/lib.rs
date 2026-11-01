@@ -37,6 +37,9 @@ pub mod modules;
 /// `drt netcheck`: the NAT diagnostic. The verdict table is pure and
 /// always compiled; the measurements that need STUN are behind `stun`.
 pub mod netcheck;
+/// The terminal a `{"prompt": ..}` secret is read from, and the refusal
+/// when there is none.
+pub mod prompt;
 /// The reflect fetch `drt netcheck --reflect` uses. Behind `netcheck`
 /// because it is the half that links a TLS stack.
 #[cfg(feature = "netcheck")]
@@ -68,6 +71,9 @@ pub mod sshd;
 // `drt ssh` and the REPL's `:ssh`: an interactive shell on another host.
 #[cfg(feature = "connector-ssh")]
 pub mod ssh;
+// `drt ldap` and the one wiring per process of an ldap scope.
+#[cfg(feature = "connector-ldap")]
+pub mod ldap;
 // `drt p2p`: one verb for peer-to-peer sessions (doc/P2P.md).
 #[cfg(feature = "p2p")]
 pub mod p2p;

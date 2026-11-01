@@ -10,7 +10,7 @@
     "_relay_address": "The address peers are told to send to.",
     "relay_address": "127.0.0.1",
 
-    "_key": "The same secret as `connectors.crypto.turn` in app.json, and that is the whole deployment: this server verifies what that connector mints. Real ones come from `openssl rand -hex 32`; from a file or an environment variable in anything but an example (key_file, key_env).",
+    "_key": "The same secret as `connectors.crypto.turn` in app.json, and that is the whole deployment: this server verifies what that connector mints. Real ones come from `openssl rand -hex 32`; from a file or an environment variable in anything but an example ({\"file\": ..} or {\"env\": ..}).",
     "key": "the-coturn-static-auth-secret-1",
 
     "realm": "example",

@@ -204,7 +204,7 @@ fn a_missing_secret_and_a_wildcard_bind_with_no_relay_address_refuse_by_name() {
         let mut none = config("127.0.0.1:0");
         none.key = None;
         let err = refusal(&none).await;
-        assert!(err.contains("key_file, key_env, key"), "{err}");
+        assert!(err.contains("set key: a string"), "{err}");
         assert!(err.contains("open relay"), "{err}");
 
         let mut unset = config("127.0.0.1:0");
@@ -280,7 +280,7 @@ fn the_turn_block_loads_and_binds_and_reports_a_close_with_its_principal() {
     assert_eq!(turn.realm, "drt");
     assert_eq!(turn.queue, "turn_in");
     assert_eq!(turn.max_allocations, 256);
-    assert_eq!(turn.key.as_deref(), Some(SECRET));
+    assert_eq!(turn.key.as_ref().and_then(|k| k.literal()), Some(SECRET));
 
     let mut bridge = drt::turn::TurnBridge::start(&turn).unwrap();
     let addr = bridge.addr();

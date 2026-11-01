@@ -429,7 +429,7 @@ fn scope(key: Option<&str>) -> WireguardConfig {
         mtu: 1420,
         turn_fallback: false,
         stun: Vec::new(),
-        private_key: key.map(str::to_string),
+        private_key: key.map(Into::into),
         private_key_file: None,
         private_key_env: None,
         peers: Vec::new(),
@@ -482,14 +482,22 @@ fn a_key_that_is_not_a_key_is_refused_by_name() {
         Err(e) => e,
     };
     let err = refusal(&scope(None));
-    assert!(
-        err.contains("private_key_file, private_key_env, private_key"),
-        "{err}"
-    );
+    assert!(err.contains("set private_key: a string"), "{err}");
     let mut unset = scope(None);
     unset.private_key_env = Some("DRT_TEST_WG_KEY_THAT_IS_NOT_SET".into());
     let err = refusal(&unset);
     assert!(err.contains("DRT_TEST_WG_KEY_THAT_IS_NOT_SET"), "{err}");
+
+    // The same, spelled as the one `private_key` field.
+    let mut unset = scope(None);
+    unset.private_key = Some(drt_config::Secret::From(drt_config::secret::Source::Env(
+        "DRT_TEST_WG_KEY_THAT_IS_NOT_SET".into(),
+    )));
+    let err = refusal(&unset);
+    assert!(
+        err.contains("wireguard.private_key") && err.contains("DRT_TEST_WG_KEY_THAT_IS_NOT_SET"),
+        "{err}"
+    );
 }
 
 /// The public key `drt wg` prints is the one a peer must be given, and it

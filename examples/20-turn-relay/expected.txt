@@ -9,5 +9,5 @@ expires  <now + ttl>
 uri      turn:127.0.0.1:18493?transport=udp
 
 $ drt start --config open.json
-drt start: turn: the key is missing or shorter than 16 bytes (set one of key_file, key_env, key); a relay with nothing to verify against is an open relay, and is refused
+drt start: turn: the key is missing or shorter than 16 bytes (set key: a string, {"env": ..} or {"file": ..}); a relay with nothing to verify against is an open relay, and is refused
 exit 1

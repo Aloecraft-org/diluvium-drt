@@ -49,6 +49,7 @@ pub mod peer;
 pub mod project;
 pub mod realm;
 pub mod resolve;
+pub mod secret;
 pub mod time;
 pub mod version;
 
@@ -62,6 +63,8 @@ pub mod consent;
 pub mod gsr;
 #[cfg(feature = "consent")]
 pub mod sign;
+
+pub use secret::Secret;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -636,17 +639,17 @@ pub struct TurnConfig {
     /// The authentication realm, echoed to clients.
     #[serde(default = "default_turn_realm")]
     pub realm: String,
-    /// The shared secret, inline. The same three knobs as
-    /// `connectors.crypto.turn`, resolved in the same order (file, then
-    /// env, then inline), because it is the same secret; one of the three
-    /// is required, and none is an open relay, which refuses to bind.
+    /// The shared secret: a string, or `{"env": ..}`, `{"file": ..}` or
+    /// `{"prompt": ..}` ([`Secret`]). Required: none is an open relay,
+    /// which refuses to bind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key: Option<String>,
-    /// The shared secret, from a file; one trailing newline is trimmed.
+    pub key: Option<Secret>,
+    /// Deprecated: `"key": {"file": ..}`. Read for one release with a
+    /// warning, and before `key_env` and `key` when more than one is set,
+    /// as it always was ([`TurnConfig::key_source`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_file: Option<PathBuf>,
-    /// The shared secret, from the named environment variable, read once
-    /// at startup; unset is a refusal by name there.
+    /// Deprecated: `"key": {"env": ..}`. Read as `key_file` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_env: Option<String>,
     /// Hard cap on simultaneous allocations. Past it a request is refused
@@ -888,18 +891,19 @@ pub struct WireguardConfig {
     /// hand it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expose: Vec<WireguardExpose>,
-    /// This peer's private key, base64, inline. The same three knobs as
-    /// every other secret in this config, resolved file, then env, then
-    /// inline; one is required, since a device without a key has no
-    /// identity and can complete no handshake.
+    /// This peer's private key, base64: a string, or `{"env": ..}`,
+    /// `{"file": ..}` or `{"prompt": ..}` ([`Secret`]). Required, since a
+    /// device without a key has no identity and can complete no handshake.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub private_key: Option<String>,
-    /// This peer's private key, base64, from a file -- `wg genkey`'s own
-    /// output, one trailing newline trimmed.
+    pub private_key: Option<Secret>,
+    /// Deprecated: `"private_key": {"file": ..}`. Read for one release with
+    /// a warning, and before `private_key_env` and `private_key` when more
+    /// than one is set, as it always was
+    /// ([`WireguardConfig::private_key_source`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub private_key_file: Option<PathBuf>,
-    /// This peer's private key, base64, from the named environment
-    /// variable, read once at startup.
+    /// Deprecated: `"private_key": {"env": ..}`. Read as `private_key_file`
+    /// is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub private_key_env: Option<String>,
     /// The peers. May be empty: a deployment that learns its peers at
@@ -1028,12 +1032,14 @@ pub struct TunnelConfig {
     pub headers: BTreeMap<String, String>,
 }
 
-/// `drt p2p`, from a file: `drt --config mypc.json p2p` (`doc/P2P.md` §8).
+/// `drt p2p`, from a file: `commands.p2p` in `drt --config mypc.json p2p`
+/// (`doc/P2P.md` §8).
 ///
 /// Every flag of the verb is a key here under the flag's name (`-p` is
 /// `ports`, `-P` is `forward_ports`, `-A` is `all_ports`, `--H` is the
 /// `headers` map), so a credential -- a signalling token in `headers`, a
-/// caller token -- lives in a 0600 file and not in `ps` or a paste. Which
+/// caller token -- lives in a 0600 file, an environment variable, a
+/// credential file or a prompt, and not in `ps` or a paste. Which
 /// role this is (call, park, listen, match) is told by which keys are
 /// present, exactly as the flags tell it, and two roles in one block are
 /// refused by name. Flags merge over the file per key: a flag naming a key
@@ -1045,8 +1051,9 @@ pub struct TunnelConfig {
 /// fingerprint survive a restart (`~/.drt/p2p/identity.json` when absent).
 /// `authorized_keys` is also the `--authorized-keys` flag.
 ///
-/// `tunnel` is read as an alias of this block for one release, each of its
-/// keys mapped to its replacement here with a warning naming both.
+/// The same block at the top level (`"p2p": {..}`) is read for one release
+/// with a warning, and so is `tunnel`, each of its keys mapped to its
+/// replacement here with a warning naming both.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
@@ -1083,14 +1090,19 @@ pub struct P2pConfig {
     /// parked at, or `drt://<server>/v1/<glob>`. Absent, no one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pair: Option<String>,
-    /// `--forward`: what a serving peer serves (`doc/P2P.md` §5). An empty
-    /// string is a bare `--forward`: a relay.
+    /// `--forward`, repeatable: what a serving peer serves (`doc/P2P.md`
+    /// §5). A list of `host:port` or `scheme://host:port` targets, of which
+    /// a caller names one (`-p <local>:<host:port>`, a page's `to=`); one
+    /// entry is today's single forward, and a string is that one entry.
+    /// `[""]` is a bare `--forward`: a relay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub forward: Option<String>,
-    /// `-A`: every port of the `forward` host.
+    pub forward: Option<ForwardTargets>,
+    /// `-A`: every port of a one-entry `forward` that names a host only.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub all_ports: bool,
-    /// `-P`: the ports of the `forward` host, `80,8080:8090,31200`.
+    /// `-P`: ports of a one-entry `forward` that names a host only,
+    /// `80,8080:8090,31200`. For ranges; a few single ports read better as
+    /// `forward` entries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forward_ports: Option<String>,
     /// `--signal`: a listening peer's own signalling port; 0 for one the
@@ -1104,20 +1116,22 @@ pub struct P2pConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fingerprint: Option<String>,
     /// `--H`, by name: HTTP headers for the signalling side. `auth` is
-    /// shorthand for `Authorization: Bearer <value>`.
+    /// shorthand for `Authorization: Bearer <value>`. Each value is a
+    /// [`Secret`]: a string, or where to read it (`{"env": ..}`,
+    /// `{"file": ..}`, `{"prompt": "hidden"}`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub headers: BTreeMap<String, String>,
+    pub headers: BTreeMap<String, Secret>,
     /// `--capacity`: names a `match` server holds at once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capacity: Option<usize>,
-    /// `--kv`: the directory a `match` server keeps its kv database in
-    /// (`doc/DRT-Signalling.md` §10). Absent, the server keeps no kv.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kv: Option<PathBuf>,
     /// `--topics`: a `match` server's topics file, each topic with its
     /// tokens and their roles (`doc/P2P.md` §2.4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topics: Option<PathBuf>,
+    /// `--kv`: the directory a `match` server keeps its kv database in
+    /// (`doc/DRT-Signalling.md` §10). Absent, the server keeps no kv.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kv: Option<PathBuf>,
     /// `--extra-root`: PEM files trusted beside the public roots.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_roots: Vec<PathBuf>,
@@ -1128,6 +1142,79 @@ pub struct P2pConfig {
     /// The ICE credentials and DTLS certificate a serving peer keeps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity_file: Option<PathBuf>,
+}
+
+/// `p2p.forward`: one target as a string, or a list of them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(untagged)]
+pub enum ForwardTargets {
+    /// One target, as `--forward` takes it.
+    One(String),
+    /// Several, each one `host:port` or `scheme://host:port`.
+    List(Vec<String>),
+}
+
+impl ForwardTargets {
+    /// The entries, a string being a list of one.
+    pub fn entries(&self) -> Vec<String> {
+        match self {
+            ForwardTargets::One(one) => vec![one.clone()],
+            ForwardTargets::List(list) => list.clone(),
+        }
+    }
+}
+
+/// `default`: values every command block starts from (`doc/P2P.md` §8).
+///
+/// The order is `default`, then the command's block under `commands`, then
+/// the command line, each replacing the one before per key: a command block
+/// that names `stun` replaces the default list rather than adding to it, as
+/// a flag replaces the block's. Only keys more than one command reads
+/// belong here, and a key this block does not know is refused, as
+/// everywhere else, so a default never silently fails to apply.
+///
+/// Read by the commands under `commands` only. The deployment blocks a
+/// `drt start` runs (`webrtc`, `wireguard`, `netcheck`) keep their own
+/// lists, because an empty list there means "do not measure".
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct DefaultConfig {
+    /// `host:port` STUN servers, for a command block that names none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stun: Vec<String>,
+    /// PEM files trusted beside the public roots, for a command block that
+    /// names none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_roots: Vec<PathBuf>,
+}
+
+impl DefaultConfig {
+    fn is_empty(&self) -> bool {
+        *self == DefaultConfig::default()
+    }
+}
+
+/// `commands`: one block per verb, keyed by the verb's name, holding the
+/// verb's flags as keys (`doc/P2P.md` §8).
+///
+/// Only `p2p` today. The blocks `drt start` runs as part of a deployment
+/// (`relay`, `stun`, `turn`, `wireguard`, `webrtc`, `netcheck`) stay at the
+/// top level: they describe a service, not one invocation. A verb not named
+/// here is refused, as an unknown key is anywhere.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct CommandsConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p2p: Option<P2pConfig>,
+}
+
+impl CommandsConfig {
+    fn is_empty(&self) -> bool {
+        *self == CommandsConfig::default()
+    }
 }
 
 /// Process identity. The host key doubles as the node identity and the
@@ -1324,6 +1411,16 @@ fn default_webrtc_reply_queue() -> String {
 pub struct RootConfig {
     #[serde(flatten)]
     pub root: InstanceConfig,
+    /// Values every block under `commands` starts from.
+    #[serde(
+        default,
+        rename = "default",
+        skip_serializing_if = "DefaultConfig::is_empty"
+    )]
+    pub defaults: DefaultConfig,
+    /// One block per verb, keyed by the verb.
+    #[serde(default, skip_serializing_if = "CommandsConfig::is_empty")]
+    pub commands: CommandsConfig,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub connectors: BTreeMap<String, ConnectorWiring>,
     /// Plugin families, by the family name a guest calls. Separate from
@@ -1345,8 +1442,10 @@ pub struct RootConfig {
     pub turn: Option<TurnConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wireguard: Option<WireguardConfig>,
+    /// Deprecated: `commands.p2p`, which this is read as for one release.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tunnel: Option<TunnelConfig>,
+    /// Deprecated: `commands.p2p`, which this is read as for one release.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub p2p: Option<P2pConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1389,6 +1488,69 @@ pub struct RootConfig {
 impl Identity {
     fn is_default(&self) -> bool {
         *self == Identity::default()
+    }
+}
+
+impl RootConfig {
+    /// One line per deprecated spelling this config uses, naming the
+    /// spelling that replaces it. The loader prints them; each still reads
+    /// as it did, for one release.
+    pub fn deprecations(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.p2p.is_some() {
+            out.push("`p2p` at the top level is `commands.p2p` now".to_string());
+        }
+        if let Some(turn) = &self.turn {
+            if turn.key_file.is_some() {
+                out.push("`turn.key_file` is `turn.key` as {\"file\": ..} now".to_string());
+            }
+            if turn.key_env.is_some() {
+                out.push("`turn.key_env` is `turn.key` as {\"env\": ..} now".to_string());
+            }
+        }
+        if let Some(wg) = &self.wireguard {
+            if wg.private_key_file.is_some() {
+                out.push(
+                    "`wireguard.private_key_file` is `wireguard.private_key` as {\"file\": ..} now"
+                        .to_string(),
+                );
+            }
+            if wg.private_key_env.is_some() {
+                out.push(
+                    "`wireguard.private_key_env` is `wireguard.private_key` as {\"env\": ..} now"
+                        .to_string(),
+                );
+            }
+        }
+        out
+    }
+}
+
+impl TurnConfig {
+    /// The shared secret's one source: `key_file`, then `key_env`, then
+    /// `key`, the order the three knobs always resolved in.
+    pub fn key_source(&self) -> Option<Secret> {
+        if let Some(path) = &self.key_file {
+            return Some(Secret::From(secret::Source::File(path.clone())));
+        }
+        if let Some(var) = &self.key_env {
+            return Some(Secret::From(secret::Source::Env(var.clone())));
+        }
+        self.key.clone()
+    }
+}
+
+impl WireguardConfig {
+    /// The private key's one source, in the order [`TurnConfig::key_source`]
+    /// gives for the same reason.
+    pub fn private_key_source(&self) -> Option<Secret> {
+        if let Some(path) = &self.private_key_file {
+            return Some(Secret::From(secret::Source::File(path.clone())));
+        }
+        if let Some(var) = &self.private_key_env {
+            return Some(Secret::From(secret::Source::Env(var.clone())));
+        }
+        self.private_key.clone()
     }
 }
 
@@ -1602,6 +1764,59 @@ mod tests {
             .filter_map(|(k, _)| k.as_str())
             .collect();
         assert!(!keys.contains(&"numeric"), "got {keys:?}");
+    }
+
+    /// `default` and `commands` refuse a key they do not know, as every
+    /// block does: a default that silently failed to apply, or a verb's
+    /// block that no verb reads, is issue #31 again.
+    #[test]
+    fn default_and_commands_refuse_an_unknown_key() {
+        let read = |json: &str| serde_json::from_str::<RootConfig>(json).map_err(|e| e.to_string());
+        assert!(read(r#"{"default":{"stun":["s:1"]},"commands":{"p2p":{}}}"#).is_ok());
+        let e = read(r#"{"default":{"stunn":["s:1"]}}"#).unwrap_err();
+        assert!(e.contains("stunn"), "{e}");
+        let e = read(r#"{"commands":{"p2pp":{}}}"#).unwrap_err();
+        assert!(e.contains("p2pp"), "{e}");
+    }
+
+    /// Each deprecated spelling is named with its replacement, and still
+    /// reads as the one secret it always was, in the order it always was.
+    #[test]
+    fn deprecated_spellings_are_named_and_still_read() {
+        let old: RootConfig = serde_json::from_str(
+            r#"{
+                "p2p": {},
+                "turn": {"bind": "0.0.0.0:3478", "key": "inline", "key_env": "TURN_KEY"},
+                "wireguard": {"private_key_file": "/k", "private_key": "inline"}
+            }"#,
+        )
+        .unwrap();
+        let warnings = old.deprecations().join("\n");
+        for spelled in [
+            "`p2p` at the top level is `commands.p2p`",
+            "`turn.key_env` is `turn.key`",
+            "`wireguard.private_key_file` is `wireguard.private_key`",
+        ] {
+            assert!(warnings.contains(spelled), "{warnings}");
+        }
+        assert_eq!(
+            old.turn.unwrap().key_source(),
+            Some(Secret::From(secret::Source::Env("TURN_KEY".into())))
+        );
+        assert_eq!(
+            old.wireguard.unwrap().private_key_source(),
+            Some(Secret::From(secret::Source::File("/k".into())))
+        );
+
+        let new: RootConfig = serde_json::from_str(
+            r#"{"commands": {"p2p": {}}, "turn": {"bind": "0.0.0.0:3478", "key": {"file": "%d/turn"}}}"#,
+        )
+        .unwrap();
+        assert!(new.deprecations().is_empty());
+        assert_eq!(
+            new.turn.unwrap().key_source(),
+            Some(Secret::From(secret::Source::File("%d/turn".into())))
+        );
     }
 
     #[test]
