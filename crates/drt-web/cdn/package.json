@@ -1,0 +1,16 @@
+{
+  "name": "drt-js",
+  "private": true,
+  "description": "drt.js: the browser access client, the SSH client and the browser build of drt, with both wasm modules inlined, as one ES module a page imports from any origin; and its end-to-end check",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node e2e.mjs"
+  },
+  "devDependencies": {
+    "@xterm/xterm": "5.5.0",
+    "alpinejs": "3.14.9",
+    "esbuild": "0.28.2",
+    "playwright": "1.64.1"
+  }
+}

@@ -12,7 +12,10 @@
 # Needs slapd, caddy, node 22 and Playwright with Chromium (PLAYWRIGHT names
 # the package directory, as for script/browser-access-client.sh; CHROMIUM
 # an executable to launch instead of Playwright's own). DRT names the
-# binary; the default builds one with --features full.
+# binary; the default builds one with --features full. DRT_JS names a
+# directory holding drt.js and drt.min.js (script/drt-js.sh): a page of
+# the app then imports it from another origin and reads the session and a
+# JWT with it; without it that check says it was skipped.
 set -eu
 cd "$(dirname "$0")/.."
 ROOT=$PWD

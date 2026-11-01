@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>drt.js: a terminal and a kernel inspector</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+<script type="module" src="main.js"></script>
+
+<main>
+  <section id="terminal"></section>
+
+  <aside x-data="inspector">
+    <h2>Instances <small x-text="note"></small></h2>
+    <table>
+      <tr><th>id</th><th>parent</th><th>state</th><th>instructions</th><th>caps</th><th></th></tr>
+      <template x-for="row in rows" :key="row.id">
+        <tr>
+          <td x-text="row.id"></td>
+          <td x-text="row.parent ?? '-'"></td>
+          <td x-text="row.resident ? 'resident' : 'parked'"></td>
+          <td x-text="row.instructions"></td>
+          <td x-text="row.caps"></td>
+          <td>
+            <button @click="act('hibernate', row.id)" x-show="row.resident">park</button>
+            <button @click="act('wake', row.id)" x-show="!row.resident">wake</button>
+            <button @click="act('kill', row.id)">kill</button>
+          </td>
+        </tr>
+      </template>
+    </table>
+  </aside>
+</main>

@@ -1,0 +1,7 @@
+{
+  "name": "35-drt-js",
+  "teaches": "drt.js in a page: the program the page's terminal starts, here with each worker counting three rounds so it ends. The page itself is checked in Chromium by crates/drt-web/cdn/e2e.mjs.",
+  "cmd": "drt start --config app/quick.json",
+  "needs_network": false,
+  "normalise": []
+}
