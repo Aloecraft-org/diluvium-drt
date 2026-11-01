@@ -52,6 +52,8 @@ listing, and a watcher (`drt kv watch`) is told it expired.
 
 **The program names keys; the deployment names the topic.** `app.json`
 wires the `kv` connector to one topic URL, so the program cannot reach
-another topic or server. There are no tokens yet: whoever reaches the
-port may read and write, so keep `--host` at its loopback default.
+another topic or server. This server has no `--topics`, so it takes no
+tokens: whoever reaches the port may read and write, and `--host` stays
+at its loopback default. With `--topics`, the connector's `token` is a
+`read`/`write` token of the topic.
 `doc/DRT-Signalling.md` §10 is the whole protocol.

@@ -357,7 +357,7 @@ pub enum Command {
     /// `p2p` block in --config. A command after -- runs once a call's -p
     /// ports are bound, and the call ends when it exits, with its status.
     #[cfg(feature = "p2p")]
-    P2p(crate::p2p::Args),
+    P2p(Box<crate::p2p::Args>),
     /// The key-value store a signalling server keeps (`drt p2p --match
     /// <port> --kv <dir>`, doc/DRT-Signalling.md §10): get, put, rm, ls
     /// and watch a key at drt://host[:port]/v1/<topic>/kv/<key>. Values are

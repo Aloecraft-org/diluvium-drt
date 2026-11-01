@@ -124,8 +124,9 @@ releases:
         compare-and-set through `If-Match` and `If-None-Match: *`, TTL keys
         that expire in wall time across restarts, and watch as an event
         stream or a held poll that resumes over the last 1024 changes, kept
-        across restarts. There are no tokens yet: whoever reaches the port
-        may read and write, and the server says so when it starts.
+        across restarts. With `--topics` a kv request takes a token of its
+        topic, `read` to get, list or watch and `write` to put or delete;
+        without, it takes none, and the server says so when it starts.
         - **`drt kv get|put|rm|ls|watch <drt://…/v1/<topic>/kv/<key>>`**,
           with `--if-version`, `--ttl` and `--H`; exit 1 is a refusal (an
           absent key, a lost race), 2 no answer.
@@ -172,6 +173,13 @@ releases:
           notification stream when there is one, answers each call with
           its record, and serves the same `--forward`. `--accept <cidr>`
           travels as `DRT-Accept` and is checked on the packets themselves.
+        - **Topics:** `drt p2p --match --topics <file>` declares topics,
+          namespaces with their own tokens. A name inside one is
+          `drt://<server>/v1/<topic>/<name>`; each token holds roles
+          (`park`, `call`, `read`, `write`), and `read` lists the names
+          present at `GET /v1/<topic>/names`. Bare `/v1/<name>` names,
+          their answerer token and `DRT-Caller-Token` work as before.
+          `read` and `write` also open the topic's keys with `--kv`.
         - **The wire:** a Wisp `CONNECT` with an empty host asks for
           whatever the far side forwards to, at the port named or at none;
           `hello` names services and carries `scope` only when the

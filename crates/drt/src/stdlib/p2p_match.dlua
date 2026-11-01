@@ -2,22 +2,38 @@
 -- doc/DRT-Signalling.md (doc/P2P.md §2.4), grown from
 -- examples/30-signaling-room with what the example leaves out: names
 -- claimed on first use, a caller token and an admission range set by the
--- answerer when it claims, and a cap on names held at once. The example
--- stays its readable core; this is the whole server.
+-- answerer when it claims, a cap on names held at once, and topics. The
+-- example stays its readable core; this is the whole server.
 --
 -- ## surface block
 --
 -- - Entry point: the verb runs it with an http listener on --host:<port>,
---   `args.capacity` the names held at once.
+--   `args.capacity` the names held at once, `args.topics` the --topics
+--   file as the verb checked it (JSON text: topic -> token -> roles), or
+--   '' for none.
 -- - Configurable: HOLD_MS (§3), PRESENT_MS (§4.2), WAITING_CAP (§6),
---   RECORD_MAX (§1), KEEPALIVE_MS (§5), the CORS headers.
--- - Fan-out: `routes`, the five requests of §2 and the two of §6.2
---   (pairing), each with whose token it takes; `claim`, how a name is held;
---   `kv_route`, the kv requests (doc/DRT-Signalling.md §10), one call from
---   `route`, and `kv_access`, the one place a kv request is admitted.
+--   RECORD_MAX (§1), KEEPALIVE_MS (§5), the CORS headers; RESERVED, the
+--   second path segments that are not a name inside a topic.
+-- - Fan-out: `route`, which splits /v1/<a>/<b>/… three ways (a bare name,
+--   a topic's listing, a name inside a topic); `routes`, the five requests
+--   of §2 and the two of §6.2 (pairing), each with whose token it takes
+--   (`TOPIC_ROLE` names that token's role inside a topic); `claim`, how a
+--   name is held.
+--
+-- Topics (doc/P2P.md §2.4): /v1/<topic>/<name>/… is a name inside a topic
+-- the --topics file declares, and every request there takes a token the
+-- file gives that topic, with the role the request needs: park (the
+-- answerer's requests), call (the caller's), read (the topic's listing,
+-- GET /v1/<topic>/names). write is kv's. A bare /v1/<name>/… is today's
+-- name, untouched by topics: claimed on first use, with an optional
+-- DRT-Caller-Token. Inside a topic DRT-Caller-Token is not read; the
+-- topic's call tokens admit.
 -- - kv (only with `args.kv`, the database `drt p2p --match --kv <dir>`
 --   names): KV_VALUE_MAX, KV_KEY_MAX, KV_TOPIC_MAX, KV_LIST_DEFAULT,
---   KV_LIST_MAX, KV_TTL_MAX, KV_EVENTS_KEPT, KV_POLL_MS.
+--   KV_LIST_MAX, KV_TTL_MAX, KV_EVENTS_KEPT, KV_POLL_MS; `kv_route`, the
+--   kv requests (doc/DRT-Signalling.md §10), one call from `route` ahead
+--   of the three ways, and `kv_access`, the one place a kv request is
+--   admitted (a read or write token of the topic, with --topics).
 --
 -- Admission is by token, not origin: every reply carries
 -- access-control-allow-origin: *, so a page opened from file:// (Origin:
@@ -28,6 +44,12 @@ local PRESENT_MS   = 30000
 local WAITING_CAP  = 16
 local RECORD_MAX   = 512
 local KEEPALIVE_MS = 25000
+local NAME_MAX     = 64
+-- After /v1/<a>/, these mean `a` is a bare name (calls, events, pair) or
+-- name a topic's own resource (names, kv), never a name inside topic `a`.
+local RESERVED = {calls = true, events = true, pair = true, names = true, kv = true}
+-- A request's `who` (below) as the role its token needs inside a topic.
+local TOPIC_ROLE = {caller = 'call', answerer = 'park'}
 -- kv: values are small text, not files; a listing is a page, not a dump.
 local KV_VALUE_MAX    = 16384
 local KV_KEY_MAX      = 256
@@ -49,6 +71,19 @@ local replies  = queue.declare('http_out', {capacity = 128, exported = true})
 local _, args  = queue.wait({queue.declare('args', {capacity = 1})})
 local CAPACITY = tonumber(args.capacity) or 256
 local KV_DB    = args.kv   -- a database name inside the sql scope, or nil: no kv
+-- topic -> token -> {role = true}; nil when the server has no --topics.
+local TOPICS = nil
+if type(args.topics) == 'string' and args.topics ~= '' then
+  TOPICS = {}
+  for topic, tokens in pairs(json.decode(args.topics)) do
+    TOPICS[topic] = {}
+    for token, roles in pairs(tokens) do
+      local set = {}
+      for _, role in ipairs(roles) do set[role] = true end
+      TOPICS[topic][token] = set
+    end
+  end
+end
 
 -- depth: replies
 
@@ -164,6 +199,36 @@ local function token_of(m, params)
   return bearer or params.k
 end
 
+-- depth: topics
+
+-- A topic, or a name inside one: 1 to 64 of a-z, 0-9, - and ., and not a
+-- word RESERVED gives a meaning after /v1/<topic>/.
+local function valid_name(s)
+  return #s >= 1 and #s <= NAME_MAX and s:match('^[a-z0-9.%-]+$') ~= nil and not RESERVED[s]
+end
+
+-- Whether `token` holds `role` in `topic`. The one place a topic token is
+-- judged: every request inside a topic, kv's included, asks here, so a
+-- token that carries its own claims (a JWT with directory groups) replaces
+-- this body and nothing else.
+local function may(topic, token, role)
+  local tokens = TOPICS and TOPICS[topic]
+  local roles = tokens and token and tokens[token]
+  return roles ~= nil and roles[role] == true
+end
+
+-- The token check for a request inside `topic`: true, or false after
+-- replying 401 (no token) or 403 (a token that may not, or a topic the
+-- file does not declare: the two look alike, so a stranger cannot list
+-- topics by probing). kv's routes call this with role read or write.
+local function topic_access(m, topic, role)
+  local _, params = split(m.path)
+  local token = token_of(m, params)
+  if not token then fail(m.conn, 401, 'a token for this topic is needed'); return false end
+  if not may(topic, token, role) then fail(m.conn, 403, 'this token may not ' .. role .. ' in this topic'); return false end
+  return true
+end
+
 -- depth: names, claimed on first use
 
 local names = {}   -- name -> {token, caller, accept, polled, streams, calls, last}
@@ -181,7 +246,10 @@ end
 -- poll it, held while that token is present, and shared by every holder of
 -- the same token. A name past the cap is 429; another token's name is 403.
 -- Returns the name's record, or nil after replying.
-local function claim(m, name, token, now)
+-- `name` is the key names[] holds it under: `<name>`, or `<topic>/<name>`
+-- inside a topic, where the topic's call tokens admit callers instead of a
+-- DRT-Caller-Token.
+local function claim(m, name, token, now, topic)
   local r = names[name]
   if r and not present(r, now) then names[name] = nil; r = nil end
   if r and r.token ~= token then fail(m.conn, 403, 'this name is held by another answerer'); return nil end
@@ -189,11 +257,11 @@ local function claim(m, name, token, now)
     if held_count() >= CAPACITY then
       fail(m.conn, 429, 'no room for another name', {['retry-after'] = '30'}); return nil
     end
-    r = {token = token, streams = {}, calls = {}, pairs = {}, last = 0}
+    r = {token = token, topic = topic, streams = {}, calls = {}, pairs = {}, last = 0}
     names[name] = r
   end
   local h = m.headers or {}
-  if h['drt-caller-token'] then r.caller = h['drt-caller-token'] end
+  if h['drt-caller-token'] and not topic then r.caller = h['drt-caller-token'] end
   if h['drt-accept'] then r.accept = h['drt-accept'] end
   return r
 end
@@ -231,7 +299,7 @@ end
 local function call(m, name, token, now)
   local r = names[name]
   if not r or not present(r, now) then return fail(m.conn, 503, 'no answerer is present') end
-  if r.caller and token ~= r.caller then
+  if not r.topic and r.caller and token ~= r.caller then
     return fail(m.conn, token and 403 or 401, token and 'this token may not call' or 'this name takes a caller token')
   end
   -- The answerer's DRT-Accept (§6.1): a caller outside it is refused here,
@@ -243,7 +311,7 @@ local function call(m, name, token, now)
   if not checked(m) then return end
   if waiting(r) >= WAITING_CAP then return fail(m.conn, 429, 'too many calls waiting', {['retry-after'] = '5'}) end
   r.last = r.last + 1
-  r.calls[r.last] = {record = m.body, conn = m.conn, ends = now + HOLD_MS}
+  r.calls[r.last] = {record = m.body, conn = m.conn, ends = now + HOLD_MS, by = token}
   notify(r, r.last, now)
 end
 
@@ -293,16 +361,32 @@ end
 -- `POST /v1/<name>/pair {"name": other}`, with <name>'s answerer token: the
 -- server tells `other` to call <name>, with <name>'s caller token. `other`
 -- must be present. The entry shares the cursor with calls, so a poll by
--- cursor sees it once.
+-- cursor sees it once. Inside a topic `other` is a name in the same topic,
+-- the entry names <topic>/<name> so the told side's request lands there,
+-- and the token it carries is the told side's own, which must hold call.
 local function ask_pair(m, r, name, now)
   local body = json_body(m.body)
   local other = type(body) == 'table' and body.name
   if type(other) ~= 'string' or other == '' then return fail(m.conn, 400, 'the body names whom to tell: {"name": "…"}') end
+  if r.topic then
+    if not valid_name(other) then return fail(m.conn, 400, 'a name inside a topic is 1 to 64 of a-z, 0-9, - and .') end
+    other = r.topic .. '/' .. other
+  elseif other:find('/', 1, true) then
+    -- A bare name may not reach into a topic, nor learn who is in one.
+    return fail(m.conn, 400, 'a bare name pairs with bare names')
+  end
   if other == name then return fail(m.conn, 400, 'a name does not call itself') end
   local o = names[other]
   if not o or not present(o, now) then return fail(m.conn, 503, 'no answerer is present under that name') end
+  local token = r.caller
+  if r.topic then
+    if not may(r.topic, o.token, 'call') then
+      return fail(m.conn, 403, 'the told name\'s token may not call in this topic')
+    end
+    token = o.token
+  end
   o.last = o.last + 1
-  o.pairs[o.last] = {name = name, token = r.caller, ends = now + HOLD_MS, asked_by = name}
+  o.pairs[o.last] = {name = name, token = token, ends = now + HOLD_MS, asked_by = name}
   notify(o, o.last, now, 'pair')
   json(m.conn, 202, '{"id":"p' .. o.last .. '"}')
 end
@@ -334,13 +418,27 @@ local function events(m, r, now)
   if seen and seen < r.last then queue.push(replies, {conn = m.conn, chunk = event(r.last)}) end
 end
 
--- depth: kv admission, the seam topics fills in
+-- `GET /v1/<topic>/names`, with a read token: the names parked in the
+-- topic now, for its members only.
+local function topic_names(m, topic, now)
+  if not topic_access(m, topic, 'read') then return end
+  local out = {}
+  for key, r in pairs(names) do
+    if r.topic == topic and present(r, now) then out[#out + 1] = key:sub(#topic + 2) end
+  end
+  table.sort(out)
+  json(m.conn, 200, '{"topic":' .. json_text(topic) .. ',"names":' .. (#out > 0 and json_text(out) or '[]') .. '}')
+end
+
+-- depth: kv admission
 
 -- Whether this request may `op` ('read' or 'write') the kv of `topic`;
--- false after replying. Without topics there is no token to check: the
--- verb says so when kv is on, and --host is what narrows who reaches it.
+-- false after replying. With --topics it takes a token of the topic with
+-- that role (`topic_access`). Without topics there is no token to check:
+-- the server says so when kv is on, and --host narrows who reaches it.
 local function kv_access(m, topic, op)
-  return true
+  if not TOPICS then return true end
+  return topic_access(m, topic, op)
 end
 
 -- depth: kv storage, one SQLite database (doc/DRT-Signalling.md §10)
@@ -659,16 +757,66 @@ end
 
 -- depth: the five requests of §2
 
+-- Paths after /v1/<name>, the same for a bare name and a name inside a
+-- topic.
 local routes = {
-  {'POST',   '^/v1/([^/]+)/calls$',                'caller'},
-  {'GET',    '^/v1/([^/]+)/calls$',                'answerer'},
-  {'POST',   '^/v1/([^/]+)/calls/([^/]+)/answer$', 'answerer'},
-  {'DELETE', '^/v1/([^/]+)/calls/([^/]+)$',        'either'},
-  {'GET',    '^/v1/([^/]+)/events$',               'answerer'},
-  {'POST',   '^/v1/([^/]+)/pair$',                 'answerer'},
-  {'POST',   '^/v1/([^/]+)/pair/([^/]+)/result$',  'answerer'},
+  {'POST',   '^/calls$',                'caller'},
+  {'GET',    '^/calls$',                'answerer'},
+  {'POST',   '^/calls/([^/]+)/answer$', 'answerer'},
+  {'DELETE', '^/calls/([^/]+)$',        'either'},
+  {'GET',    '^/events$',               'answerer'},
+  {'POST',   '^/pair$',                 'answerer'},
+  {'POST',   '^/pair/([^/]+)/result$',  'answerer'},
 }
 
+-- One request to `key` (`<name>`, or `<topic>/<name>` with `topic` set),
+-- `rest` the path after it.
+local function name_route(m, key, topic, rest, params, now)
+  for i, rt in ipairs(routes) do
+    local method, pattern, who = table.unpack(rt)
+    local matched = rest:match(pattern)
+    local id = pattern:find('(', 1, true) and matched or nil
+    if m.method == method and matched then
+      local token = token_of(m, params)
+      if topic then
+        -- Inside a topic: a caller's token holds call, an answerer's park;
+        -- DELETE is either, so a call token withdraws its own call only.
+        local role = TOPIC_ROLE[who]
+        if who == 'either' then
+          role = may(topic, token, 'park') and 'park' or 'call'
+        end
+        if not topic_access(m, topic, role) then return end
+        if role == 'call' then
+          if i == 1 then return call(m, key, token, now) end
+          local r, c = names[key], nil
+          local _n
+          if r then _n, c = find(r, id) end
+          if not c or c.by ~= token then return fail(m.conn, 404, 'no such call') end
+          return withdraw(m, r, id)
+        end
+      else
+        if i == 1 then return call(m, key, token, now) end
+        if not token then return fail(m.conn, 401, 'an answerer token is needed') end
+        local r = names[key]
+        if who == 'either' and r and r.caller == token then return withdraw(m, r, id) end
+      end
+      local r = claim(m, key, token, now, topic)
+      if not r then return end
+      if i == 2 then return list(m, r, params, now) end
+      if i == 3 then return answer(m, r, id, '/v1/' .. key .. '/calls/') end
+      if i == 4 then return withdraw(m, r, id) end
+      if i == 6 then return ask_pair(m, r, key, now) end
+      if i == 7 then m.name = key; return pair_result(m, r, id, now) end
+      return events(m, r, now)
+    end
+  end
+  fail(m.conn, 404, 'no such request')
+end
+
+-- /v1/<a>/kv… is topic <a>'s kv, first and with or without --topics.
+-- Then /v1/<a>/<b><rest>, three ways: <b> one of calls, events, pair is
+-- the bare name <a>; <b> = names is topic <a>'s listing; any other <b> is
+-- the name <b> inside topic <a>.
 local function route(m, now)
   local path, params = split(m.path)
   if m.method == 'OPTIONS' then return json(m.conn, 204, '') end
@@ -683,26 +831,18 @@ local function route(m, now)
     end
     return
   end
-  for i, rt in ipairs(routes) do
-    local method, pattern, who = table.unpack(rt)
-    local name, id = path:match(pattern)
-    if m.method == method and name then
-      local token = token_of(m, params)
-      if i == 1 then return call(m, name, token, now) end
-      if not token then return fail(m.conn, 401, 'an answerer token is needed') end
-      local r = names[name]
-      if who == 'either' and r and r.caller == token then return withdraw(m, r, id) end
-      r = claim(m, name, token, now)
-      if not r then return end
-      if i == 2 then return list(m, r, params, now) end
-      if i == 3 then return answer(m, r, id, '/v1/' .. name .. '/calls/') end
-      if i == 4 then return withdraw(m, r, id) end
-      if i == 6 then return ask_pair(m, r, name, now) end
-      if i == 7 then m.name = name; return pair_result(m, r, id, now) end
-      return events(m, r, now)
-    end
+  local a, b, rest = path:match('^/v1/([^/]+)/([^/]+)(.*)$')
+  if not a then return fail(m.conn, 404, 'no such request') end
+  if b == 'calls' or b == 'events' or b == 'pair' then
+    return name_route(m, a, nil, '/' .. b .. rest, params, now)
   end
-  fail(m.conn, 404, 'no such request')
+  if not TOPICS then return fail(m.conn, 404, 'this server has no topics; a name is /v1/<name>') end
+  if not valid_name(a) then return fail(m.conn, 400, 'a topic is 1 to 64 of a-z, 0-9, - and .') end
+  if b == 'names' and rest == '' and m.method == 'GET' then return topic_names(m, a, now) end
+  if not valid_name(b) then
+    return fail(m.conn, 400, 'a name inside a topic is 1 to 64 of a-z, 0-9, - and ., and not one of calls, events, pair, names, kv')
+  end
+  return name_route(m, a .. '/' .. b, a, rest, params, now)
 end
 
 local function closed(conn)
@@ -728,11 +868,16 @@ local function housekeep(now)
   end
 end
 
-print('p2p match: serving ' .. CAPACITY .. ' name(s) at most; admission is by token, not origin')
+local topic_count = 0
+for _ in pairs(TOPICS or {}) do topic_count = topic_count + 1 end
+print('p2p match: serving ' .. CAPACITY .. ' name(s) at most'
+  .. (TOPICS and (', ' .. topic_count .. ' topic(s)') or '')
+  .. '; admission is by token, not origin')
 if KV_DB then
   kv_open()
   print('p2p match: kv in ' .. KV_DB .. ' at revision ' .. kv.revision
-    .. '; kv takes no token yet, so whoever reaches this port may read and write it')
+    .. (TOPICS and '; kv takes a read or write token of its topic'
+        or '; kv takes no token without --topics, so whoever reaches this port may read and write it'))
 end
 while true do
   local _, m = queue.wait({requests}, 1000)

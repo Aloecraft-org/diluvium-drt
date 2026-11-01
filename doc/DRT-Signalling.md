@@ -32,7 +32,10 @@ costs latency, never correctness.
 
 - **An answerer has a name** on a server: 1 to 64 characters of `a-z`,
   `0-9`, `-` and `.`. Callers address it by that name; the server never
-  passes a caller's record to anyone else.
+  passes a caller's record to anyone else. A server may group names in
+  **topics**: the name is then `<topic>/<name>`, each part spelled as a
+  name, and every path below begins `/v1/<topic>/<name>/`. The reference
+  server's topics and their tokens are `doc/P2P.md` §2.4.
 - **Two tokens per name**, as the relay has two keys per label
   (`doc/Relay.md`): an **answerer token**, which may read calls and answer
   them, and a **caller token**, which may only call. Each travels as
@@ -314,8 +317,12 @@ it answers every request below 404. It is plain HTTP, with
   1 to 64 of `A-Z a-z 0-9 . _ ~ -`; two topics never see each other's
   keys. A key is 1 to 256 of the same and `/`, with no empty, `.` or `..`
   segment; a value is UTF-8 text, at most 16 KiB.
-- **No tokens yet.** Whoever reaches the port may read and write. Per-topic
-  tokens are not built.
+- **Tokens come from topics.** With `--topics` (`doc/P2P.md` §2.4) a kv
+  request takes a token of its topic, as `Authorization: Bearer` or
+  `?k=`: `read` for a get, a listing or a watch, `write` for a put or a
+  delete. No token is 401; a token without the role, or a topic the file
+  does not declare, is 403. Without `--topics` there are no tokens, and
+  whoever reaches the port may read and write.
 - **Every change takes the next revision**, one counter for the whole
   server that never goes back, and a key's version is the revision that
   last wrote it. It survives a restart.

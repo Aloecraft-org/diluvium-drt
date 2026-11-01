@@ -145,9 +145,16 @@ pub struct Args {
     pub capacity: Option<usize>,
     /// With --match: also keep a key-value store, in a SQLite database in
     /// this directory, at /v1/<topic>/kv/<key> (doc/DRT-Signalling.md §10).
-    /// It takes no token yet: whoever reaches the port may read and write.
+    /// With --topics it takes the topic's read and write tokens; without,
+    /// whoever reaches the port may read and write.
     #[arg(long, value_name = "DIR")]
     pub kv: Option<PathBuf>,
+    /// With --match: a JSON file declaring topics, each with its tokens and
+    /// their roles (park, call, read, write). A name inside a topic is
+    /// drt://<server>/v1/<topic>/<name>, and every request there takes a
+    /// token of that topic. Bare /v1/<name> names are unchanged.
+    #[arg(long, value_name = "FILE")]
+    pub topics: Option<PathBuf>,
     /// Trust this PEM certificate beside the public roots, for a signalling
     /// server behind an internal CA. Repeatable; added, never substituted.
     #[arg(long = "extra-root", value_name = "PEM")]
@@ -219,6 +226,8 @@ pub struct MatchRole {
     pub capacity: usize,
     /// `--kv`: the directory the kv database lives in; none, no kv.
     pub kv: Option<PathBuf>,
+    /// The `--topics` file, read when the server starts.
+    pub topics: Option<PathBuf>,
 }
 
 /// The four roles (`doc/P2P.md` §2).
@@ -325,6 +334,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
     let fingerprint = pick(flags.fingerprint.as_ref(), f.fingerprint.as_ref());
     let capacity = pick(flags.capacity.as_ref(), f.capacity.as_ref());
     let kv = pick(flags.kv.as_ref(), f.kv.as_ref());
+    let topics = pick(flags.topics.as_ref(), f.topics.as_ref());
     let authorized_keys = pick(flags.authorized_keys.as_ref(), f.authorized_keys.as_ref());
     let (extra_roots, extra_roots_key) = if !flags.extra_root.is_empty() {
         (flags.extra_root.clone(), "--extra-root")
@@ -389,6 +399,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
             belongs("signal", "a listen", signal.as_ref().map(|(_, s)| *s))?;
             belongs("capacity", "a match", capacity.as_ref().map(|(_, s)| *s))?;
             belongs("kv", "a match", kv.as_ref().map(|(_, s)| *s))?;
+            belongs("topics", "a match", topics.as_ref().map(|(_, s)| *s))?;
             belongs(
                 "authorized_keys",
                 "a park or a listen",
@@ -474,6 +485,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
             belongs("signal", "a listen", signal.as_ref().map(|(_, s)| *s))?;
             belongs("capacity", "a match", capacity.as_ref().map(|(_, s)| *s))?;
             belongs("kv", "a match", kv.as_ref().map(|(_, s)| *s))?;
+            belongs("topics", "a match", topics.as_ref().map(|(_, s)| *s))?;
             if relay.is_some() {
                 return Err("--relay beside --park (\"answer for me\") is not built yet; a park that cannot use UDP holds a wss:// leg instead (--park wss://…)".into());
             }
@@ -510,6 +522,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
             belongs("pair", "a park", from(&pair))?;
             belongs("capacity", "a match", capacity.as_ref().map(|(_, s)| *s))?;
             belongs("kv", "a match", kv.as_ref().map(|(_, s)| *s))?;
+            belongs("topics", "a match", topics.as_ref().map(|(_, s)| *s))?;
             belongs("relay", "a call or a park", from(&relay))?;
             if let Some(from) = headers_from {
                 return Err(format!("{} belongs with a call, a park or a match's callers; a listen sends no request", spelled("headers", from)));
@@ -562,6 +575,7 @@ pub fn resolve(config: &RootConfig, flags: &Args) -> Result<Resolved, String> {
                 host,
                 capacity: capacity.map(|(c, _)| c).unwrap_or(256),
                 kv: kv.map(|(dir, _)| dir),
+                topics: topics.map(|(t, _)| t),
             })
         }
         _ => {

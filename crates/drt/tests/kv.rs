@@ -62,6 +62,7 @@ struct Server {
     port: u16,
     dir: tempfile::TempDir,
     kv: Option<PathBuf>,
+    topics: Option<PathBuf>,
 }
 
 impl Server {
@@ -73,6 +74,23 @@ impl Server {
             port: free_port(),
             dir,
             kv,
+            topics: None,
+        };
+        s.spawn();
+        s
+    }
+
+    /// A server with kv on and `--topics` given this file's text.
+    fn with_topics(topics: &str) -> Server {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("topics.json");
+        std::fs::write(&file, topics).unwrap();
+        let mut s = Server {
+            child: None,
+            port: free_port(),
+            kv: Some(dir.path().join("kv")),
+            topics: Some(file),
+            dir,
         };
         s.spawn();
         s
@@ -85,6 +103,7 @@ impl Server {
             port: free_port(),
             dir: tempfile::tempdir().unwrap(),
             kv: None,
+            topics: None,
         };
         s.spawn();
         s
@@ -95,6 +114,9 @@ impl Server {
         cmd.arg("p2p").arg("--match").arg(self.port.to_string());
         if let Some(kv) = &self.kv {
             cmd.arg("--kv").arg(kv);
+        }
+        if let Some(topics) = &self.topics {
+            cmd.arg("--topics").arg(topics);
         }
         let mut child = cmd
             .stdin(Stdio::null())
@@ -327,6 +349,7 @@ fn of_many_writers_racing_on_one_version_exactly_one_wins() {
                     port,
                     dir: tempfile::tempdir().unwrap(),
                     kv: None,
+                    topics: None,
                 };
                 let body = format!("writer {i}");
                 s.send(
@@ -426,6 +449,78 @@ fn a_listing_pages_by_prefix_and_topics_do_not_see_each_other() {
 }
 
 #[test]
+fn with_topics_a_read_token_reads_a_write_token_writes_and_neither_crosses_topics() {
+    let s = Server::with_topics(
+        r#"{"topics": {
+            "home": {"tokens": [
+                {"token": "reader", "roles": ["read"]},
+                {"token": "writer", "roles": ["write"]},
+                {"token": "both", "roles": ["read", "write"]},
+                {"token": "parker", "roles": ["park", "call"]}]},
+            "work": {"tokens": [{"token": "w-both", "roles": ["read", "write"]}]}}}"#,
+    );
+    let bearer = |t: &'static str| ("Authorization", format!("Bearer {t}"));
+    let send = |method: &str, path: &str, token: Option<&'static str>, body: &[u8]| {
+        let h = token.map(bearer);
+        let headers: Vec<(&str, &str)> = h.iter().map(|(n, v)| (*n, v.as_str())).collect();
+        s.send(method, path, &headers, body)
+    };
+    let k = "/v1/home/kv/door";
+    // No token is 401; a token without the role, or of another topic, 403.
+    assert_eq!(send("PUT", k, None, b"x").status, 401);
+    assert_eq!(send("GET", k, None, b"").status, 401);
+    assert_eq!(send("PUT", k, Some("reader"), b"x").status, 403);
+    assert_eq!(send("PUT", k, Some("parker"), b"x").status, 403);
+    assert_eq!(send("PUT", k, Some("w-both"), b"x").status, 403);
+    assert_eq!(
+        send("PUT", "/v1/nowhere/kv/door", Some("both"), b"x").status,
+        403
+    );
+    // write writes and deletes, but cannot read back or list.
+    assert_eq!(send("PUT", k, Some("writer"), b"open").status, 201);
+    assert_eq!(send("GET", k, Some("writer"), b"").status, 403);
+    assert_eq!(send("GET", "/v1/home/kv", Some("writer"), b"").status, 403);
+    assert_eq!(
+        send(
+            "GET",
+            "/v1/home/kv?watch=poll&since=0&wait=0",
+            Some("writer"),
+            b""
+        )
+        .status,
+        403
+    );
+    // read reads, lists and watches, but cannot write or delete.
+    let r = send("GET", k, Some("reader"), b"");
+    assert_eq!((r.status, r.body.as_str()), (200, "open"));
+    assert_eq!(
+        send("GET", "/v1/home/kv", Some("reader"), b"").json()["keys"][0]["key"],
+        "door"
+    );
+    let r = send(
+        "GET",
+        "/v1/home/kv?watch=poll&since=0&wait=0",
+        Some("reader"),
+        b"",
+    );
+    assert_eq!(r.json()["events"][0]["key"], "door");
+    assert_eq!(send("DELETE", k, Some("reader"), b"").status, 403);
+    // A page's EventSource sends no header: the token rides in ?k=.
+    let r = s.get("/v1/home/kv/door?k=reader");
+    assert_eq!((r.status, r.body.as_str()), (200, "open"));
+    assert_eq!(s.get("/v1/home/kv/door?k=writer").status, 403);
+    // Another topic's token reads and writes only its own topic.
+    assert_eq!(
+        send("PUT", "/v1/work/kv/door", Some("w-both"), b"shut").status,
+        201
+    );
+    assert_eq!(send("GET", k, Some("w-both"), b"").status, 403);
+    assert_eq!(send("GET", k, Some("both"), b"").body, "open");
+    assert_eq!(send("DELETE", k, Some("writer"), b"").status, 204);
+    assert_eq!(send("GET", k, Some("both"), b"").status, 404);
+}
+
+#[test]
 fn what_is_not_a_key_or_a_value_is_refused_by_name() {
     let s = Server::start();
     for bad in [
@@ -484,6 +579,7 @@ fn a_held_watch_answers_with_the_change_that_ends_it() {
             port,
             dir: tempfile::tempdir().unwrap(),
             kv: None,
+            topics: None,
         };
         let started = Instant::now();
         let r = s.get(&format!("{BASE}?watch=poll&since=1&prefix=cfg/"));
