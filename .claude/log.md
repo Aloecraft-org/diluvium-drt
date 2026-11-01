@@ -196,9 +196,9 @@ Learned: `drt start` with a listener exits 0 when its root instance
 faults (start.rs, `alive == 0`), so a supervisor cannot tell a fault
 from a chosen exit. Not changed here.
 
-Next: `crypto/jwt_verify` against a JWKS (a verifier that holds no
-master) is not built; nor is a doc of its own for the JWKS, which waits
-for the owner to ask for one.
+Next: `crypto/jwt_verify {token, jwks}` (a verifier that holds no master)
+is on the "Tie LDAP groups to topic tokens" branch (z0edkg), not this one.
+A doc of its own for the JWKS waits for the owner to ask for one.
 
 ## 2026-11-01 run: TOTP and EdDSA in the crypto connector
 
