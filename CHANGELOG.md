@@ -47,6 +47,20 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Added
 
+- **`stdlib:session`, a login portal and forward-auth endpoint
+  (`doc/Session.md`).** A dlua program on four connectors: `ldap`
+  binds the user, `crypto` checks a TOTP code (enrolment by policy:
+  off, on first sign-in, or after the webhook) or `rest` asks a
+  webhook to approve, deny or wait, and `kv` keeps the session in
+  one topic with a TTL, named by an `HttpOnly; SameSite=Lax` cookie
+  that may cover a parent domain. `/verify` answers a reverse proxy
+  200 with `Remote-User`, `Remote-Groups`, `Remote-Name` and
+  `Remote-Email`, 403 outside `?group=`, a 302 to the login for a
+  browser, or 401. `/api/token` signs an EdDSA JWT from the session.
+  A TOTP code works once across replicas, failures ban the user for
+  a while, and a sign-in redirects only inside the cookie's domain.
+  Tested against OpenLDAP, and in Chromium through Caddy's
+  `forward_auth` (`script/session-browser.sh`, a CI job).
 - **The `ldap` connector: `host:ldap/bind`, `host:ldap/groups` and
   `host:ldap/search` against one directory, and `drt ldap`.** `full`
   only, on the `ldap3` crate over rustls. The scope names the server

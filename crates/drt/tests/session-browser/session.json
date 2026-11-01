@@ -1,0 +1,43 @@
+{
+  "_comment": "stdlib:session for script/session-browser.sh. The @NAMES@ are ports the script fills in. cookie_secure is false only because this proxy speaks plain http on loopback.",
+  "entry": "stdlib:session",
+  "args": {
+    "issuer": "Example",
+    "cookie_domain": "example.test",
+    "cookie_secure": false,
+    "login_url": "http://auth.example.test:@PROXY@/",
+    "second_factor": "totp",
+    "totp_enroll": "first_login",
+    "jwt_key": "session:1"
+  },
+  "caps": [
+    { "capability": "host:ldap/bind" },
+    { "capability": "host:kv/*" },
+    { "capability": "host:time" },
+    { "capability": "host:crypto/random" },
+    { "capability": "host:crypto/hash" },
+    { "capability": "host:crypto/derive", "scope": ["totp:*", "session:*"] },
+    { "capability": "host:crypto/totp_verify" },
+    { "capability": "host:crypto/totp_enroll" },
+    { "capability": "host:crypto/jwt_sign" }
+  ],
+  "connectors": {
+    "time": {},
+    "crypto": { "scope": { "key": "session-browser-master-key-0123456789" } },
+    "ldap": { "scope": {
+      "url": "ldap://127.0.0.1:@LDAP@", "starttls": false,
+      "base_dn": "dc=example,dc=com", "group_base": "ou=groups,dc=example,dc=com"
+    } },
+    "kv": { "scope": { "url": "http://127.0.0.1:@KV@/v1/auth", "token": "browser-kv-token" } }
+  },
+  "listeners": [{
+    "scheme": "http",
+    "address": "127.0.0.1:@AUTH@",
+    "headers": ["cookie", "content-type", "user-agent", "x-forwarded-for", "x-forwarded-proto",
+                "x-forwarded-host", "x-forwarded-uri", "x-forwarded-method", "x-original-url",
+                "x-original-method"],
+    "resp_headers": ["set-cookie", "location", "cache-control", "remote-user", "remote-groups",
+                     "remote-name", "remote-email", "x-frame-options", "content-security-policy",
+                     "referrer-policy"]
+  }]
+}

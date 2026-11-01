@@ -67,6 +67,13 @@ pub const BROWSER_ACCESS: &str = "browser-access";
 /// under its own listener names this entry.
 pub const P2P_MATCH: &str = "p2p-match";
 
+/// The session framework (`doc/Session.md`): a login portal on the `ldap`
+/// connector, a second factor through `crypto` (TOTP) or `rest` (a
+/// webhook), sessions in a `kv` topic, a forward-auth `/verify` for a
+/// reverse proxy, and a JWT from the session. A config names it as its
+/// entry and supplies the listener and the connectors.
+pub const SESSION: &str = "session";
+
 /// One reader, four blocks.
 ///
 /// A deployment is config plus a program, and these four blocks used to be
@@ -220,6 +227,14 @@ pub fn lookup(name: &str) -> Option<Kind> {
         BROWSER_ACCESS => Some(Kind::Source(include_str!("stdlib/browser_access.dlua"))),
         #[cfg(feature = "p2p")]
         P2P_MATCH => Some(Kind::Source(include_str!("stdlib/p2p_match.dlua"))),
+        #[cfg(all(
+            feature = "connector-ldap",
+            feature = "connector-kv",
+            feature = "connector-crypto",
+            feature = "connector-time",
+            feature = "listen"
+        ))]
+        SESSION => Some(Kind::Source(include_str!("stdlib/session.dlua"))),
         _ => None,
     }
 }
@@ -267,6 +282,7 @@ pub fn names() -> Vec<&'static str> {
         WG,
         BROWSER_ACCESS,
         P2P_MATCH,
+        SESSION,
     ]
     .into_iter()
     .filter(|n| lookup(n).is_some())

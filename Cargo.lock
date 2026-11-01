@@ -1313,6 +1313,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_path_to_error",
+ "sha1 0.10.7",
  "sha2 0.10.9",
  "smoltcp",
  "str0m",
