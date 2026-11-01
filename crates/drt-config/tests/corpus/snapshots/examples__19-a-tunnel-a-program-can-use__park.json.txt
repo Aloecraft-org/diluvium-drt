@@ -46,6 +46,7 @@ RootConfig {
             headers: {},
             capacity: None,
             topics: None,
+            kv: None,
             extra_roots: [],
             authorized_keys: None,
             identity_file: None,

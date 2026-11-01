@@ -33,7 +33,7 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Connectors
 
-- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `data`, `socket`, `ws`, `listen`
+- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `data`, `socket`, `ws`, `kv`, `listen`
 - `slim`: `time`, `fs`, `crypto`, `listen`
 - `wasi`: `time`, `fs`, `crypto`, `sql`, `listen`
 - `web`: `time`, `fs`, `crypto`
@@ -47,6 +47,27 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Added
 
+- **A key-value store on the signalling server, and `drt kv`
+  (`doc/DRT-Signalling.md` §10).** `drt p2p --match <port> --kv
+  <dir>` keeps one in SQLite at `/v1/<topic>/kv/<key>`, over plain
+  HTTP with CORS: UTF-8 values up to 16 KiB, prefix listing by page,
+  a version on every key (the server's revision) with
+  compare-and-set through `If-Match` and `If-None-Match: *`, TTL keys
+  that expire in wall time across restarts, and watch as an event
+  stream or a held poll that resumes over the last 1024 changes, kept
+  across restarts. With `--topics`, a kv request takes a token of its
+  topic holding `read` or `write`; without, whoever reaches the port
+  may read and write, and the server says so when it starts.
+  - **`drt kv get|put|rm|ls|watch <drt://…/v1/<topic>/kv/<key>>`**,
+    with `--if-version`, `--ttl` and `--H`; exit 1 is a refusal (an
+    absent key, a lost race), 2 no answer.
+  - **The `kv` connector** (`full`): `host:kv/get|put|delete|list|
+    watch` against the one topic URL its scope names, with an
+    optional `token` sent as a bearer the program never sees. A lost
+    race answers `{conflict = true, version}` rather than raising.
+    A program reaches it with `host.call`; the diluvium binary does
+    not answer `kv/*` itself.
+  - `examples/32-kv`.
 - **`drt p2p`: one verb for peer-to-peer sessions (`doc/P2P.md`).**
   With no `--relay` and no `--fallback`, no machine other than the
   two ends carries a byte of the session; when no such path exists it

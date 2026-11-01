@@ -1114,6 +1114,10 @@ pub struct P2pConfig {
     /// tokens and their roles (`doc/P2P.md` §2.4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topics: Option<PathBuf>,
+    /// `--kv`: the directory a `match` server keeps its kv database in
+    /// (`doc/DRT-Signalling.md` §10). Absent, the server keeps no kv.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kv: Option<PathBuf>,
     /// `--extra-root`: PEM files trusted beside the public roots.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_roots: Vec<PathBuf>,
