@@ -47,6 +47,18 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Added
 
+- **A kernel's filesystem on an aloelite volume.** `new DrtTerm(sink,
+  { fs })` reads programs, configs and every granted directory
+  through a page object instead of an empty memory filesystem, and
+  kernels handed the same object share its files, each with its own
+  working directory. drt.js's `aloelite.open(engine, {store, name})`
+  opens a volume file from aloelite-wasm, in memory or in OPFS
+  (`busy` by name when another Worker holds it, a full pool named
+  with `addCapacity`, `export`), and `aloelite.attach(file, {volume,
+  mountPoint, access})` mounts a volume as that object. The page
+  loads aloelite-wasm; drt.js does not carry it. A memory file has
+  no export or seed, and aloelite as a native `fs` backend is not
+  built.
 - **`sql` in a page, over sql.js (#81).** A page that hands in a
   sql.js module (`{ sql: await initSqlJs() }`) gets `sql/query` and
   `sql/exec` with the native connector's scope, bounds, refusals and

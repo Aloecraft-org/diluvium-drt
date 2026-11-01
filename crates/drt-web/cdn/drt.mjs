@@ -25,11 +25,15 @@
 //     unpacked on first use.
 //   - `kernel(sink, backings)` -> a DrtTerm: one kernel, writing to
 //     `sink(fd, bytes)`, with the connectors `backings` hands it by family
-//     (crates/drt-web/src/js.rs: `net` a transport, any other family a
-//     `{ call }` object). Each kernel takes its own; `new DrtSwarm(max,
+//     (crates/drt-web/src/js.rs: `fs` the kernel's filesystem, `net` a
+//     transport, any other family a `{ call }` object). Each kernel takes its own; `new DrtSwarm(max,
 //     spawns, config, backings)` takes the same map.
 //   - `bus()` -> an in-page `net` transport (bus.mjs). One bus handed to
 //     several kernels lets them reach each other by name.
+//   - `aloelite.open(engine, options)` and `aloelite.attach(file,
+//     options)` -> a kernel's filesystem on an aloelite volume, handed in
+//     as `{ fs }` (fs.mjs). One attach handed to several kernels is one
+//     filesystem they share. The page loads aloelite-wasm itself.
 //   - `kv(server, topic, options)` -> { get, put, delete, list, watch }:
 //     the key-value store of doc/DRT-Signalling.md §10. Options: `token`,
 //     `headers`.
@@ -56,6 +60,7 @@ import { WEB_WASM_GZ_B64, SSH_WASM_GZ_B64, VERSION } from 'drt:wasm';
 
 export * from '../../drt-rtc/client/drt_browser_access.js';
 export { bus } from './bus.mjs';
+export * as aloelite from './fs.mjs';
 export { VERSION };
 
 export const HOLD_MARGIN_MS = 5000;
