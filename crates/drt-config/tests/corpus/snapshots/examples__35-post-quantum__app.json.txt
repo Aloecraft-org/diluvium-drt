@@ -1,0 +1,132 @@
+parsed to:
+RootConfig {
+    root: InstanceConfig {
+        program: Some(
+            Path(
+                "<corpus>/app.dlua",
+            ),
+        ),
+        caps: [
+            Grant {
+                effect: Grant,
+                capability: "host:aloecrypt/public_key",
+                scope: None,
+            },
+            Grant {
+                effect: Grant,
+                capability: "host:aloecrypt/sign",
+                scope: Some(
+                    Scope(
+                        Array(
+                            [
+                                String(
+                                    Utf8String {
+                                        s: Ok(
+                                            "release:*",
+                                        ),
+                                    },
+                                ),
+                            ],
+                        ),
+                    ),
+                ),
+            },
+            Grant {
+                effect: Grant,
+                capability: "host:aloecrypt/verify",
+                scope: None,
+            },
+            Grant {
+                effect: Grant,
+                capability: "host:aloecrypt/encrypt",
+                scope: None,
+            },
+            Grant {
+                effect: Grant,
+                capability: "host:aloecrypt/decrypt",
+                scope: Some(
+                    Scope(
+                        Array(
+                            [
+                                String(
+                                    Utf8String {
+                                        s: Ok(
+                                            "inbox:*",
+                                        ),
+                                    },
+                                ),
+                            ],
+                        ),
+                    ),
+                ),
+            },
+            Grant {
+                effect: Grant,
+                capability: "host:aloecrypt/hash",
+                scope: None,
+            },
+        ],
+        budget: Budget {
+            instructions: None,
+            memory_kb: None,
+        },
+        numeric: Numeric {
+            max_elements: None,
+            max_tier: None,
+        },
+    },
+    defaults: DefaultConfig {
+        stun: [],
+        extra_roots: [],
+    },
+    commands: CommandsConfig {
+        p2p: None,
+    },
+    connectors: {
+        "aloecrypt": ConnectorWiring {
+            backing: None,
+            scope: Some(
+                Scope(
+                    Map(
+                        [
+                            (
+                                String(
+                                    Utf8String {
+                                        s: Ok(
+                                            "key",
+                                        ),
+                                    },
+                                ),
+                                String(
+                                    Utf8String {
+                                        s: Ok(
+                                            "post-quantum-example-master-key-000000",
+                                        ),
+                                    },
+                                ),
+                            ),
+                        ],
+                    ),
+                ),
+            ),
+        },
+    },
+    plugins: {},
+    listeners: [],
+    residency: None,
+    relay: None,
+    stun: None,
+    turn: None,
+    wireguard: None,
+    tunnel: None,
+    p2p: None,
+    netcheck: None,
+    webrtc: None,
+    identity: Identity {
+        host_key_path: None,
+    },
+    principals: [],
+    dlua_dir: None,
+    entry: None,
+    args: {},
+}
