@@ -1,5 +1,6 @@
 # Every published release of Aloecraft-org/diluvium-drt, newest first: tag, channel, date.
 # Written by release.yml on every publish; do not edit by hand.
+v0.8.0-dev.43	dev	2026-11-01
 v0.8.0-dev.42	dev	2026-11-01
 v0.8.0-dev.41	dev	2026-10-31
 v0.8.0-dev.40	dev	2026-10-31
@@ -9,7 +10,6 @@ v0.8.0-dev.35	dev	2026-10-27
 v0.8.0-dev.36	dev	2026-10-27
 v0.8.0-dev.34	dev	2026-10-27
 v0.8.0-dev.33	dev	2026-10-27
-v0.8.0-dev.32	dev	2026-10-27
 v0.7.0	stable	2026-09-21
 v0.7.0-rc.2	rc	2026-09-17
 v0.7.0-rc.1	rc	2026-09-14
