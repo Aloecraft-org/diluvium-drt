@@ -90,6 +90,7 @@ jobs:
           - connector-crypto
           - connector-rest
           - connector-ssmtp
+          - connector-ldap
           - connector-ssh
           - sshd
           - connector-exec
@@ -132,6 +133,18 @@ jobs:
           sudo apt-get install -y --no-install-recommends openssh-server
           sudo mkdir -p /run/sshd
           /usr/sbin/sshd -V 2>&1 || true
+      # connectors/ldap/tests/openldap.rs runs the ldap connector against a
+      # real OpenLDAP over plaintext, StartTLS and ldaps. It starts its own
+      # slapd, unprivileged, from a temporary directory; the package is only
+      # where the binary, the schema and back_mdb come from. Without it the
+      # tests report themselves skipped, which DRT_TEST_REQUIRE_LDAP below
+      # turns into a failure.
+      - name: A stock OpenLDAP slapd
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends slapd
+          /usr/sbin/slapd -VV 2>&1 || true
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
@@ -146,6 +159,7 @@ jobs:
         # runner, not a pass: crates/drt/tests/ssh_cli.rs panics instead.
         env:
           DRT_TEST_REQUIRE_SSH: "1"
+          DRT_TEST_REQUIRE_LDAP: "1"
         run: cargo test --workspace
       # The profile that actually covers the code: `cargo test --workspace`
       # builds `drt` with its DEFAULT feature (slim), so relay, tunnel, ssh
@@ -166,6 +180,7 @@ jobs:
       - name: Test (all features)
         env:
           DRT_TEST_REQUIRE_SSH: "1"
+          DRT_TEST_REQUIRE_LDAP: "1"
         run: |
           ulimit -c unlimited
           cargo test --workspace --all-features

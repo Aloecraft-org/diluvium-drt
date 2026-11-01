@@ -33,7 +33,7 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Connectors
 
-- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `exec`, `data`, `socket`, `ws`, `listen`
+- `full`: `time`, `fs`, `crypto`, `sql`, `ssh`, `rest`, `ssmtp`, `ldap`, `exec`, `data`, `socket`, `ws`, `listen`
 - `slim`: `time`, `fs`, `crypto`, `listen`
 - `wasi`: `time`, `fs`, `crypto`, `sql`, `listen`
 - `web`: `time`, `fs`, `crypto`
@@ -47,6 +47,23 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Added
 
+- **The `ldap` connector: `host:ldap/bind`, `host:ldap/groups` and
+  `host:ldap/search` against one directory, and `drt ldap`.** `full`
+  only, on the `ldap3` crate over rustls. The scope names the server
+  (`ldaps://`, or `ldap://` with StartTLS on by default), the
+  `base_dn` every call stays inside, and a service account whose
+  `bind_password` takes a string, `{"env"}`, `{"file"}` or
+  `{"prompt"}`, resolved once at startup and never shown to the
+  program. `ldap/bind {user, password}` finds the user with
+  `user_filter`, binds as them and answers `{ok, dn, groups,
+  group_dns}`; a wrong password, an unknown user and an ambiguous one
+  all answer a bare `{ok = false}`, and an empty password is refused
+  without reaching the server, since LDAP treats it as an anonymous
+  bind. `ldap/groups {user}` is the group lookup alone. Plaintext is
+  refused unless the server is on loopback. `drt ldap search`, `bind`
+  and `groups` call the same connector from the config's
+  `connectors.ldap`. Tested against OpenLDAP over plaintext, StartTLS
+  and ldaps.
 - **`drt p2p`: one verb for peer-to-peer sessions (`doc/P2P.md`).**
   With no `--relay` and no `--fallback`, no machine other than the
   two ends carries a byte of the session; when no such path exists it
