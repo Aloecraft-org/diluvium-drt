@@ -579,8 +579,7 @@ first second of life.
 - **A `v*-dev.*` tag**, pushed or dispatched with `publish=true` → the dev
   fast path (`doc/ALIGNMENT.md` §7): the suite, the Linux build and the
   web build (`drt_web.tar.gz`), the browser access client
-  (`drt_browser_access.js` and `.d.ts`), the SSH page (`ssh.html`),
-  `drt.js` and `drt.min.js` (`crates/drt-web/cdn`), no
+  (`drt_browser_access.js` and `.d.ts`), the SSH page (`ssh.html`), no
   changelog entry, always a prerelease, and the ten newest dev releases
   kept. Its body is the newest entry's overview (the tree it was cut
   from) and the commits since the dev build before it, with the whole
