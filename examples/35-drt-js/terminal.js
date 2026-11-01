@@ -39,11 +39,18 @@ export function startTerminal(drt, element) {
   }
 
   (async () => {
-    terminal.write('Files: app.json app.dlua\nRun:   drt start --config app.json\nStop:  Ctrl+C\n');
+    const help = [
+      'Files: app.json app.dlua',
+      '  drt start --config app.json   run the app; Ctrl+C stops it',
+      '  drt repl                      a Diluvium REPL; Ctrl+D leaves it',
+      '  drt --help                    every drt command',
+      '',
+    ].join('\n');
+    terminal.write(help);
     for (;;) {
       const argv = ((await ask('$ ')) ?? '').trim().split(/\s+/);
       if (argv[0] === 'drt') await run(argv);
-      else if (argv[0]) terminal.write(`${argv[0]}: only drt runs here\n`);
+      else if (argv[0]) terminal.write(`${argv[0]}: not a command here. Only drt runs.\n${help}`);
     }
   })();
   return cli;

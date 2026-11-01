@@ -13,7 +13,7 @@ Open `http://localhost:8000/examples/35-drt-js/` and type `drt start --config ap
 root spawns three workers, and the panel lists all four with their parent,
 whether they are resident, the instructions each has spent and their
 capabilities. **park**, **wake** and **kill** are the swarm's own verbs.
-^C stops the deployment.
+^C stops the deployment. `drt repl` opens a Diluvium REPL in the same page.
 
 | File | What it is |
 |---|---|

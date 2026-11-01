@@ -337,7 +337,7 @@ await check('the SSH module makes a key, and the browser build of drt loads, fro
   await p.close();
 });
 
-await check('examples/35-drt-js: the terminal starts a deployment, and the inspector lists, parks and kills its instances', async () => {
+await check('examples/35-drt-js: the terminal starts a deployment, the inspector lists, parks and kills its instances, and drt repl evaluates', async () => {
   // Served from the repo root, as its README says: main.js imports ../../crates/drt-web/cdn/dist/drt.min.js.
   const root = path.resolve(here, '../../..');
   const types = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css' };
@@ -370,6 +370,15 @@ await check('examples/35-drt-js: the terminal starts a deployment, and the inspe
   await p.keyboard.press('Control+C');
   await until('an empty panel', async () => (await panel()).length === 0);
   await until('the prompt again', async () => (await screen()).trimEnd().endsWith('$'));
+  await p.keyboard.type('a=123\r');
+  await until('the help for a line that is not drt', async () => (await screen()).includes('a=123: not a command here'));
+  await p.keyboard.type('drt repl\r');
+  await until('the REPL prompt', async () => (await screen()).trimEnd().endsWith('dv>'));
+  await p.keyboard.type('a = 123\r');
+  await p.keyboard.type('print(a + 1)\r');
+  await until('the REPL evaluates', async () => /^124$/m.test(await screen()));
+  await p.keyboard.press('Control+D');
+  await until('the prompt after the REPL', async () => (await screen()).trimEnd().endsWith('$'));
   await p.close();
 });
 
