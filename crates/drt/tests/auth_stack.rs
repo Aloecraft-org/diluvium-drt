@@ -778,12 +778,15 @@ fn pyjwt(jwks_url: &str, token: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// A token with one byte of its signature changed.
+/// A token with the first character of its signature changed. Not the
+/// last: an Ed25519 signature is 64 bytes, so its last base64url character
+/// carries four padding bits, and a lenient decoder (PyJWT's) reads some
+/// changes there as the same signature.
 fn tampered(token: &str) -> String {
-    let mut t = token.to_string();
-    let last = t.pop().unwrap();
-    t.push(if last == 'A' { 'B' } else { 'A' });
-    t
+    let at = token.rfind('.').unwrap() + 1;
+    let first = token.as_bytes()[at];
+    let swapped = if first == b'A' { 'B' } else { 'A' };
+    format!("{}{swapped}{}", &token[..at], &token[at + 1..])
 }
 
 // depth: the test
