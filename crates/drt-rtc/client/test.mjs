@@ -34,6 +34,9 @@ test('canonicalPeer gives every spelling of a peer one form, as drt p2p --show d
   const p = canonicalPeer('drt+ssh://signal.example/v1/mypc?k=tok');
   assert.deepEqual([p.kind, p.service, p.name, p.url], ['signal', 'ssh', 'mypc', 'https://signal.example/v1/mypc/calls?k=tok']);
   assert.equal(canonicalPeer('drt://localhost').url, 'http://localhost/');
+  const t = canonicalPeer('drt://signal.example/v1/home/mypc');
+  assert.deepEqual([t.name, t.url], ['home/mypc', 'https://signal.example/v1/home/mypc/calls']);
+  assert.equal(canonicalPeer('drt://signal.example/v1/a/b/c').name, null);
   const r = canonicalPeer(vectors.records[0].rtc);
   assert.equal(r.kind, 'record');
   assert.equal(r.canonical, `record:${fingerprintText(parseRecord(vectors.records[0].rtc).f)}`);

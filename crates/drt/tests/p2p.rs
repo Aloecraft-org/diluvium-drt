@@ -492,6 +492,10 @@ struct Match {
 
 impl Match {
     fn start(capacity: usize) -> Match {
+        Match::start_with(capacity, &[])
+    }
+
+    fn start_with(capacity: usize, args: &[&str]) -> Match {
         let port = free_port();
         let mut child = drt()
             .arg("p2p")
@@ -499,6 +503,7 @@ impl Match {
             .arg(port.to_string())
             .arg("--capacity")
             .arg(capacity.to_string())
+            .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -525,23 +530,33 @@ impl Match {
     }
 
     fn request(&self, method: &str, path: &str, body: &str) -> (u16, String) {
-        let mut conn = TcpStream::connect(self.base.trim_start_matches("http://")).unwrap();
-        conn.set_read_timeout(Some(WAIT)).unwrap();
-        conn.write_all(
-            format!(
-                "{method} {path} HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\
-                 Content-Type: text/plain;charset=utf-8\r\nContent-Length: {}\r\n\r\n{body}",
-                body.len()
-            )
-            .as_bytes(),
-        )
-        .unwrap();
-        let mut reply = String::new();
-        conn.read_to_string(&mut reply).unwrap();
-        let status = reply.split_whitespace().nth(1).unwrap().parse().unwrap();
-        let body = reply.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
-        (status, body)
+        request_at(&self.base, method, path, body)
     }
+}
+
+/// One plain HTTP request to `base`, answered whole.
+fn request_at(base: &str, method: &str, path: &str, body: &str) -> (u16, String) {
+    request_with(base, method, path, "", body)
+}
+
+/// As [`request_at`], with `headers` (`Name: value\r\n` lines) added.
+fn request_with(base: &str, method: &str, path: &str, headers: &str, body: &str) -> (u16, String) {
+    let mut conn = TcpStream::connect(base.trim_start_matches("http://")).unwrap();
+    conn.set_read_timeout(Some(WAIT)).unwrap();
+    conn.write_all(
+        format!(
+            "{method} {path} HTTP/1.1\r\nHost: t\r\nConnection: close\r\n{headers}\
+             Content-Type: text/plain;charset=utf-8\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    let mut reply = String::new();
+    conn.read_to_string(&mut reply).unwrap();
+    let status = reply.split_whitespace().nth(1).unwrap().parse().unwrap();
+    let body = reply.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+    (status, body)
 }
 
 impl Drop for Match {
@@ -710,6 +725,239 @@ fn the_match_server_pairs_two_parked_peers_when_one_asks() {
     assert_eq!(
         server.post("/v1/asker/pair?k=asker-token", "not json").0,
         400
+    );
+}
+
+/// Topics (doc/P2P.md §2.4): a name inside a topic is parked, called,
+/// listed and paired only with that topic's tokens, each by its role, while
+/// a bare name beside it works as it always has.
+#[test]
+fn the_match_server_admits_a_topic_by_its_tokens_roles() {
+    let dir = tempfile::tempdir().unwrap();
+    let topics = dir.path().join("topics.json");
+    std::fs::write(
+        &topics,
+        r#"{"topics": {"home": {"tokens": [
+            {"token": "home-park", "roles": ["park", "call"]},
+            {"token": "home-call", "roles": ["call"]},
+            {"token": "home-read", "roles": ["read"]},
+            {"token": "other-park", "roles": ["park"]}
+        ]}}}"#,
+    )
+    .unwrap();
+    let server = Match::start_with(8, &["--topics", topics.to_str().unwrap()]);
+    let laptop = format!("{}/v1/home/laptop", server.base);
+    let _parked = Parked::start(&server, "home/laptop", &["--H", "auth=home-park"]);
+
+    // A call token of the topic calls; no token, or one without call, does not.
+    let (out, errs) = call(&laptop, &["--H", "auth=home-call"], b"in a topic\n");
+    assert_eq!(out, "in a topic\n", "{errs}");
+    let (_, errs) = call(&laptop, &[], b"x\n");
+    assert!(errs.contains("401"), "{errs}");
+    let (_, errs) = call(&laptop, &["--H", "auth=home-read"], b"x\n");
+    assert!(errs.contains("403"), "{errs}");
+
+    // The listing is for read tokens of the topic only, and an undeclared
+    // topic looks like a token that may not.
+    assert_eq!(
+        server.get("/v1/home/names?k=home-read"),
+        (200, r#"{"topic":"home","names":["laptop"]}"#.to_string())
+    );
+    assert_eq!(server.get("/v1/home/names?k=home-call").0, 403);
+    assert_eq!(server.get("/v1/home/names").0, 401);
+    assert_eq!(server.get("/v1/elsewhere/names?k=home-read").0, 403);
+
+    // Another park token may not take the held name; a token without park
+    // may not park at all; a reserved word is not a name.
+    assert_eq!(server.get("/v1/home/laptop/calls?k=other-park").0, 403);
+    assert_eq!(server.get("/v1/home/desk/calls?k=home-call").0, 403);
+    assert_eq!(server.get("/v1/home/kv/calls?k=home-park").0, 400);
+
+    // Pairing stays inside the topic: the told side calls with its own
+    // token, which holds call.
+    let mut desk = Parked::start(
+        &server,
+        "home/desk",
+        &["--H", "auth=home-park", "--pair", "*"],
+    );
+    let (status, body) = server.post("/v1/home/laptop/pair?k=home-park", r#"{"name":"desk"}"#);
+    assert_eq!((status, body.as_str()), (202, r#"{"id":"p1"}"#));
+    let lines = desk.until("pair p1: connected");
+    assert!(
+        lines.contains("pair p1: calling home/laptop at "),
+        "{lines}"
+    );
+
+    // A bare name beside the topics is claimed and called as before.
+    assert_eq!(server.get("/v1/mypc/calls?k=anyone").0, 200);
+}
+
+/// Every role of a topic token, allowed where it applies and refused where
+/// it does not, over the profile's own requests: park answers, call calls
+/// and withdraws only its own call, read lists, and write (kv's role)
+/// opens none of them.
+#[test]
+fn each_topic_role_opens_only_its_own_requests() {
+    let dir = tempfile::tempdir().unwrap();
+    let topics = dir.path().join("topics.json");
+    std::fs::write(
+        &topics,
+        r#"{"topics": {
+            "home": {"tokens": [
+                {"token": "p", "roles": ["park"]},
+                {"token": "c", "roles": ["call"]},
+                {"token": "c2", "roles": ["call"]},
+                {"token": "r", "roles": ["read"]},
+                {"token": "w", "roles": ["write"]}
+            ]},
+            "work": {"tokens": [{"token": "wp", "roles": ["park", "call", "read"]}]}
+        }}"#,
+    )
+    .unwrap();
+    let server = Match::start_with(8, &["--topics", topics.to_str().unwrap()]);
+
+    // park: only a park token claims a name and polls it.
+    for token in ["c", "r", "w", "wp"] {
+        let path = format!("/v1/home/box/calls?k={token}");
+        assert_eq!(server.get(&path).0, 403, "{token} parked");
+    }
+    assert_eq!(server.get("/v1/home/box/calls").0, 401);
+    let (status, body) = server.get("/v1/home/box/calls?k=p");
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains(r#""calls":[]"#), "{body}");
+    // The topic is a namespace: the same name in another topic, and the
+    // bare name, are other names, free to claim.
+    assert_eq!(server.get("/v1/work/box/calls?k=wp").0, 200);
+    assert_eq!(server.get("/v1/box/calls?k=bare").0, 200);
+
+    // read: only a read token lists, and sees only its own topic's names.
+    for token in ["p", "c", "w", "wp"] {
+        let path = format!("/v1/home/names?k={token}");
+        assert_eq!(server.get(&path).0, 403, "{token} listed");
+    }
+    assert_eq!(
+        server.get("/v1/home/names?k=r"),
+        (200, r#"{"topic":"home","names":["box"]}"#.to_string())
+    );
+    assert_eq!(
+        server.get("/v1/work/names?k=wp"),
+        (200, r#"{"topic":"work","names":["box"]}"#.to_string())
+    );
+
+    // call: only a call token calls; it is held until answered or withdrawn.
+    for token in ["p", "r", "w", "wp"] {
+        let path = format!("/v1/home/box/calls?k={token}");
+        assert_eq!(server.post(&path, "{}").0, 403, "{token} called");
+    }
+    let base = server.base.clone();
+    let held =
+        std::thread::spawn(move || request_at(&base, "POST", "/v1/home/box/calls?k=c", "{}"));
+    let start = Instant::now();
+    loop {
+        let (_, body) = server.get("/v1/home/box/calls?k=p");
+        if body.contains(r#""id":"c1""#) {
+            break;
+        }
+        assert!(start.elapsed() < WAIT, "the call never arrived: {body}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // Another call token may not withdraw it, nor may a token without call;
+    // its own caller may.
+    assert_eq!(
+        server.request("DELETE", "/v1/home/box/calls/c1?k=c2", "").0,
+        404
+    );
+    assert_eq!(
+        server.request("DELETE", "/v1/home/box/calls/c1?k=w", "").0,
+        403
+    );
+    assert_eq!(
+        server.request("DELETE", "/v1/home/box/calls/c1?k=c", "").0,
+        204
+    );
+    assert_eq!(held.join().unwrap().0, 410);
+
+    // Pairing inside a topic: the told side calls with its own token, so a
+    // told name whose token holds park but not call is refused at the ask,
+    // and a name outside the topic is not a name to tell.
+    assert_eq!(server.get("/v1/home/other/calls?k=p").0, 200);
+    let (status, body) = server.post("/v1/home/box/pair?k=p", r#"{"name":"other"}"#);
+    assert_eq!(status, 403, "{body}");
+    assert!(body.contains("may not call"), "{body}");
+    assert_eq!(
+        server
+            .post("/v1/home/box/pair?k=p", r#"{"name":"work/box"}"#)
+            .0,
+        400
+    );
+    // Nor does a bare name reach into a topic, or learn who is present there.
+    assert_eq!(
+        server
+            .post("/v1/box/pair?k=bare", r#"{"name":"home/box"}"#)
+            .0,
+        400
+    );
+
+    // A DRT-Caller-Token sent at the claim is not read inside a topic: the
+    // header's token does not admit a caller, and the topic's call token is
+    // still the one that gets through (to a hold no one answers: 504 is
+    // past the test's patience, so the withdraw ends it).
+    let claimed = request_with(
+        &server.base,
+        "GET",
+        "/v1/home/hdr/calls?k=p",
+        "DRT-Caller-Token: side-door\r\n",
+        "",
+    );
+    assert_eq!(claimed.0, 200);
+    assert_eq!(server.post("/v1/home/hdr/calls?k=side-door", "{}").0, 403);
+    let base = server.base.clone();
+    let held =
+        std::thread::spawn(move || request_at(&base, "POST", "/v1/home/hdr/calls?k=c", "{}"));
+    let start = Instant::now();
+    while !server
+        .get("/v1/home/hdr/calls?k=p")
+        .1
+        .contains(r#""id":"c1""#)
+    {
+        assert!(
+            start.elapsed() < WAIT,
+            "the topic's caller was not admitted"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(
+        server.request("DELETE", "/v1/home/hdr/calls/c1?k=p", "").0,
+        204
+    );
+    assert_eq!(held.join().unwrap().0, 410);
+}
+
+/// Without --topics a topic's path is refused by name, and a topics file
+/// the server could not honour stops it before it listens.
+#[test]
+fn a_match_server_without_topics_says_so_and_a_bad_file_stops_it() {
+    let server = Match::start(2);
+    let (status, body) = server.get("/v1/home/laptop/calls?k=t");
+    assert_eq!((status, body.contains("no topics")), (404, true), "{body}");
+    drop(server);
+
+    let dir = tempfile::tempdir().unwrap();
+    let bad = dir.path().join("topics.json");
+    std::fs::write(
+        &bad,
+        r#"{"topics":{"home":{"tokens":[{"token":"t","roles":["admin"]}]}}}"#,
+    )
+    .unwrap();
+    let out = drt()
+        .args(["p2p", "--match", "0", "--topics", bad.to_str().unwrap()])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && err.contains("'admin' is not a role"),
+        "{err}"
     );
 }
 

@@ -161,7 +161,7 @@ pub async fn run(
     match &role.signalling.how {
         How::Ws(url) => park_ws(url, role, config, roots).await,
         How::Signal { name: None, .. } => Err(format!(
-            "--park {} names no answerer: drt://host[:port]/v1/<name>",
+            "--park {} names no answerer: drt://host[:port]/v1/<name>, or /v1/<topic>/<name> inside a topic",
             role.signalling.shown()
         )),
         How::Record(_) => Err("--park takes a signalling server, not a record".into()),

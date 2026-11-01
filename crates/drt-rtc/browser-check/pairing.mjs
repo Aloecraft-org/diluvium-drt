@@ -6,7 +6,9 @@
 // server tells the page; the page calls with the caller token the entry
 // carries, reaches the host's `ssh` over the session, and reports
 // `connected`. A second page without consent is told the same and
-// declines, and the server hears that too.
+// declines, and the server hears that too. The same again inside a topic
+// (doc/P2P.md §2.4): a host and a page parked at /v1/lab/<name>, where the
+// told page calls with its own topic token.
 //
 //   cargo build -p drt --features full
 //   PLAYWRIGHT=$(npm root -g)/playwright node pairing.mjs
@@ -18,12 +20,13 @@
 //   name who may do what at the match server.
 // - Fan-out: the checks, in order: the page is present, the ask is taken,
 //   the told page connects and reaches `ssh`, the server records the
-//   outcome, a page without consent declines.
+//   outcome, a page without consent declines; then the ask and the told
+//   page's connection inside the topic `lab`.
 
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -38,6 +41,14 @@ const HOST_TOKEN = 'host-token';
 const HOST_CALLER = 'host-caller';
 const PAGE_TOKEN = 'page-token';
 const DEAF_TOKEN = 'deaf-token';
+// Inside the topic `lab`, each side's own token holds park and call: the
+// told side calls with it.
+const LAB_HOST_TOKEN = 'lab-host-token';
+const LAB_PAGE_TOKEN = 'lab-page-token';
+const TOPICS = { topics: { lab: { tokens: [
+  { token: LAB_HOST_TOKEN, roles: ['park', 'call'] },
+  { token: LAB_PAGE_TOKEN, roles: ['park', 'call'] },
+] } } };
 const children = [];
 const homes = [];
 const cleanup = () => {
@@ -100,13 +111,22 @@ await new Promise((r) => echo.listen(0, '127.0.0.1', r));
 const echoPort = echo.address().port;
 const matchPort = await freePort();
 const base = `http://127.0.0.1:${matchPort}`;
-const match = run(['p2p', '--match', String(matchPort), '--capacity', '8'], 'match');
+const topicsDir = mkdtempSync(path.join(os.tmpdir(), 'drt-pairing-topics-'));
+homes.push(topicsDir);
+const topicsFile = path.join(topicsDir, 'topics.json');
+writeFileSync(topicsFile, JSON.stringify(TOPICS));
+const match = run(['p2p', '--match', String(matchPort), '--capacity', '8', '--topics', topicsFile], 'match');
 await until('the match server', () => match.lines.some((l) => l.includes('admission is by token')));
 const host = run([
   'p2p', '--park', `${base}/v1/host`, '--H', `auth=${HOST_TOKEN}`, '--H', `DRT-Caller-Token=${HOST_CALLER}`,
   '--forward', `ssh://127.0.0.1:${echoPort}`,
 ], 'host');
 await until('the host present', () => host.lines.some((l) => l.includes('present at ')));
+const labHost = run([
+  'p2p', '--park', `${base}/v1/lab/host`, '--H', `auth=${LAB_HOST_TOKEN}`,
+  '--forward', `ssh://127.0.0.1:${echoPort}`,
+], 'lab-host');
+await until('the lab host present', () => labHost.lines.some((l) => l.includes('present at ')));
 
 // depth: the pages
 
@@ -138,12 +158,44 @@ async function page(name, options) {
 }
 const told = await page('page', { token: PAGE_TOKEN, pair: '*', label: 'page' });
 const deaf = await page('deaf', { token: DEAF_TOKEN, label: 'deaf' });
+const labTold = await page('lab/page', { token: LAB_PAGE_TOKEN, pair: '*', label: 'lab-page' });
 
-const ask = async (name) => {
-  const res = await fetch(`${base}/v1/host/pair?k=${HOST_TOKEN}`, {
+const ask = async (name, asker = 'host', token = HOST_TOKEN) => {
+  const res = await fetch(`${base}/v1/${asker}/pair?k=${token}`, {
     method: 'POST', headers: { 'content-type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ name }),
   });
   return { status: res.status, body: await res.text() };
+};
+
+// The told page's first report, and what it echoed over `ssh` when connected.
+const followed = (p) => p.evaluate(async (waitMs) => {
+  const t0 = Date.now();
+  while (window.reports.length === 0) {
+    if (Date.now() - t0 > waitMs) throw new Error(`no report; errors: ${window.errors.join(' | ')}`);
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  const [report] = window.reports;
+  if (report.outcome !== 'connected') return { outcome: report.outcome, why: report.why, errors: window.errors };
+  const s = report.session.connect('ssh');
+  const w = s.writable.getWriter();
+  await w.write(new TextEncoder().encode('ping over pairing'));
+  const reader = s.readable.getReader();
+  let got = '';
+  const giveUp = new Promise((_, reject) => setTimeout(() => reject(new Error(`echoed only ${JSON.stringify(got)}`)), waitMs));
+  while (got.length < 'ping over pairing'.length) {
+    const { value, done } = await Promise.race([reader.read(), giveUp]);
+    if (done) break;
+    got += new TextDecoder().decode(value);
+  }
+  s.close();
+  return { outcome: report.outcome, why: report.why, hello: report.session.hello, got, errors: window.errors };
+}, WAIT_MS);
+
+const connectedOverSsh = (r) => {
+  if (r.outcome !== 'connected') throw new Error(`outcome ${r.outcome}: ${r.why}; ${r.errors.join(' | ')}`);
+  if (!r.hello.services?.includes('ssh')) throw new Error(`hello names ${JSON.stringify(r.hello.services)}`);
+  if (r.got !== 'ping over pairing') throw new Error(`echoed ${JSON.stringify(r.got)}`);
+  if (r.errors.length) throw new Error(`errors: ${r.errors.join(' | ')}`);
 };
 
 await check('the host asks the server for a call from the page: 202, an id', async () => {
@@ -153,32 +205,7 @@ await check('the host asks the server for a call from the page: 202, an id', asy
 });
 
 await check('the told page calls with the host\'s caller token, connects, and reaches the service ssh', async () => {
-  const r = await told.evaluate(async (waitMs) => {
-    const t0 = Date.now();
-    while (window.reports.length === 0) {
-      if (Date.now() - t0 > waitMs) throw new Error(`no report; errors: ${window.errors.join(' | ')}`);
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    const [report] = window.reports;
-    if (report.outcome !== 'connected') return { outcome: report.outcome, why: report.why, errors: window.errors };
-    const s = report.session.connect('ssh');
-    const w = s.writable.getWriter();
-    await w.write(new TextEncoder().encode('ping over pairing'));
-    const reader = s.readable.getReader();
-    let got = '';
-    const giveUp = new Promise((_, reject) => setTimeout(() => reject(new Error(`echoed only ${JSON.stringify(got)}`)), waitMs));
-    while (got.length < 'ping over pairing'.length) {
-      const { value, done } = await Promise.race([reader.read(), giveUp]);
-      if (done) break;
-      got += new TextDecoder().decode(value);
-    }
-    s.close();
-    return { outcome: report.outcome, why: report.why, hello: report.session.hello, got, errors: window.errors };
-  }, WAIT_MS);
-  if (r.outcome !== 'connected') throw new Error(`outcome ${r.outcome}: ${r.why}; ${r.errors.join(' | ')}`);
-  if (!r.hello.services?.includes('ssh')) throw new Error(`hello names ${JSON.stringify(r.hello.services)}`);
-  if (r.got !== 'ping over pairing') throw new Error(`echoed ${JSON.stringify(r.got)}`);
-  if (r.errors.length) throw new Error(`errors: ${r.errors.join(' | ')}`);
+  connectedOverSsh(await followed(told));
 });
 
 await check('the host saw the page\'s call as a session and a stream to ssh', async () => {
@@ -203,6 +230,17 @@ await check('a page without consent declines, and the server hears why', async (
   }, WAIT_MS);
   if (r.outcome !== 'declined' || r.why !== 'no pair') throw new Error(`${r.outcome}: ${r.why}`);
   await until('the server\'s line', () => match.lines.some((l) => l.includes('host asked for a call from deaf: declined (no pair)')));
+});
+
+await check('inside the topic lab, the lab host asks for a call from the lab page: 202', async () => {
+  const { status, body } = await ask('page', 'lab/host', LAB_HOST_TOKEN);
+  if (status !== 202) throw new Error(`asked: ${status} ${body}`);
+});
+
+await check('the told lab page calls /v1/lab/host with its own topic token and reaches ssh', async () => {
+  connectedOverSsh(await followed(labTold));
+  await until('the lab host\'s session', () => labHost.lines.some((l) => /drt p2p: c\d+: connected/.test(l)));
+  await until('the server\'s line', () => match.lines.some((l) => l.includes('lab/host asked for a call from lab/page: connected')));
 });
 
 await check('no page errors', async () => {
