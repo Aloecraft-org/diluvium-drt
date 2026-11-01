@@ -17,6 +17,9 @@
 //
 // - Entry point: `node e2e.mjs`.
 // - Configurable: DRT and SSHD (env), PORTS, TOKENS, WAIT_MS.
+// - Configurable: EXAMPLE_CDN, the URLs examples/35-drt-js names, each
+//   answered from this directory's node_modules so the check needs no
+//   network.
 // - Fan-out: the checks at the bottom, one `check(name, fn)` each; the
 //   last one fails if any page raised an uncaught error along the way.
 
@@ -33,10 +36,15 @@ import { MAX_BYTES } from './build.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DRT = process.env.DRT ?? path.resolve(here, '../../../target/debug/drt');
 const SSHD = process.env.SSHD ?? '/usr/sbin/sshd';
-const PORTS = { sshd: 18322, match: 18330, cdn: 18331, page: 18332 };
+const PORTS = { sshd: 18322, match: 18330, cdn: 18331, page: 18332, example: 18333 };
 const TOKENS = { host: 'cdn-host-token', caller: 'cdn-caller-token', kv: 'cdn-kv-token', reader: 'cdn-kv-reader' };
 const WAIT_MS = 20000;
 const USER = os.userInfo().username;
+const EXAMPLE_CDN = {
+  'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css': 'node_modules/@xterm/xterm/css/xterm.css',
+  'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js': 'node_modules/@xterm/xterm/lib/xterm.js',
+  'https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/module.esm.js': 'node_modules/alpinejs/dist/module.esm.js',
+};
 
 const { chromium } = await import(process.env.PLAYWRIGHT ? path.join(process.env.PLAYWRIGHT, 'index.mjs') : 'playwright');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'drt-js-e2e-'));
@@ -326,6 +334,41 @@ await check('the SSH module makes a key, and the browser build of drt loads, fro
   });
   if (!/^ssh-ed25519 \S+ drt\.js test$/.test(r.pub)) throw new Error(`key: ${r.pub}`);
   if (!(r.abi > 0)) throw new Error(`abiVersion: ${r.abi}`);
+  await p.close();
+});
+
+await check('examples/35-drt-js: the terminal starts a deployment, and the inspector lists, parks and kills its instances', async () => {
+  const dir = path.resolve(here, '../../../examples/35-drt-js');
+  const types = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css' };
+  http.createServer((req, res) => {
+    const name = req.url === '/' ? 'index.html' : req.url.slice(1);
+    const file = name === 'drt.min.js' ? path.join(here, 'dist/drt.min.js') : path.join(dir, name);
+    if (name.includes('..') || !fs.existsSync(file)) return res.writeHead(404).end();
+    res.writeHead(200, { 'content-type': types[path.extname(file)] ?? 'text/plain' }).end(fs.readFileSync(file));
+  }).listen(PORTS.example, '127.0.0.1');
+  const p = await browser.newPage();
+  p.on('pageerror', (e) => pageErrors.push(`35-drt-js: ${e.message}`));
+  for (const [url, file] of Object.entries(EXAMPLE_CDN)) {
+    const type = url.endsWith('.css') ? 'text/css' : 'application/javascript';
+    await p.route(url, (r) => r.fulfill({ contentType: type, body: fs.readFileSync(path.join(here, file)) }));
+  }
+  await p.goto(`http://127.0.0.1:${PORTS.example}/`);
+  const screen = () => p.evaluate(() => document.querySelector('.xterm-rows')?.innerText ?? '');
+  const panel = () => p.evaluate(() => [...document.querySelectorAll('aside tr')].slice(1).map((tr) => tr.innerText.replace(/\s+/g, ' ').trim()));
+  await until('the prompt', async () => (await screen()).includes('$'));
+  await p.click('#terminal');
+  await p.keyboard.type('drt start --config app.json\r');
+  await until('three workers', async () => (await screen()).includes('spawned worker 4'));
+  const rows = await until('four instances', async () => { const r = await panel(); return r.length === 4 && r; });
+  if (!rows.every((r) => /^\d+ \d+ resident \d+ lifecycle park kill$/.test(r))) throw new Error(`rows: ${JSON.stringify(rows)}`);
+  await p.click('aside tr:nth-child(3) button:has-text("park")');
+  await until('a parked worker', async () => (await panel()).some((r) => / parked - lifecycle wake kill$/.test(r)));
+  await p.click('aside tr:nth-child(4) button:has-text("kill")');
+  await until('three instances', async () => (await panel()).length === 3);
+  await p.click('#terminal');
+  await p.keyboard.press('Control+C');
+  await until('an empty panel', async () => (await panel()).length === 0);
+  await until('the prompt again', async () => (await screen()).trimEnd().endsWith('$'));
   await p.close();
 });
 

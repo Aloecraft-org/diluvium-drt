@@ -61,6 +61,9 @@ Underneath it the embedded core moves from 0.15.1 to
   origin, served as `application/javascript` alone, against a peer
   parked at `drt p2p --match`, a stock sshd and the kv store
   (`script/drt-js-gate.sh`), and through the session check.
+  `examples/35-drt-js` is a page on it: an xterm.js terminal that
+  runs `drt start`, and an Alpine panel listing the instances it
+  spawned, with park, wake and kill.
 - **`stdlib:session`, a login portal and forward-auth endpoint
   (`doc/Session.md`).** A dlua program on four connectors: `ldap`
   binds the user, `crypto` checks a TOTP code (enrolment by policy:

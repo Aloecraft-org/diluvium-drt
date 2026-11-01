@@ -1,0 +1,5 @@
+{
+  "program": {"path": "app.dlua"},
+  "caps": [{"capability": "lifecycle"}],
+  "budget": {"instructions": 1000000000}
+}
