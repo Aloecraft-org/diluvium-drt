@@ -1,0 +1,22 @@
+{
+  "_comment": "The whole deployment: one master key, and the grants that let this program name labels under it.",
+
+  "program": { "path": "app.dlua" },
+
+  "_caps": "Each verb is its own grant. A login program would hold totp_verify and jwt_sign, and not totp_enroll or totp, which answer a seed and a live code.",
+  "caps": [
+    { "capability": "host:crypto/derive", "scope": ["totp:*", "issuer:*"] },
+    { "capability": "host:crypto/totp_enroll" },
+    { "capability": "host:crypto/totp" },
+    { "capability": "host:crypto/totp_verify" },
+    { "capability": "host:crypto/jwt_sign" },
+    { "capability": "host:crypto/jwt_verify" },
+    { "capability": "host:crypto/public_key" }
+  ],
+
+  "connectors": {
+    "crypto": {
+      "scope": { "key": "second-factor-example-master-key-0" }
+    }
+  }
+}
