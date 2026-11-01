@@ -1,0 +1,7 @@
+{
+  "name": "32-second-factor-and-jwks",
+  "teaches": "TOTP and EdDSA tokens with every key in the host: a derived label is enrolled as an otpauth URI, its code is accepted once and refused as replayed, and an EdDSA label signs a token whose public half is a JWK for a JWKS. Each verb is its own grant.",
+  "cmd": "drt run --config app.json",
+  "needs_network": false,
+  "normalise": []
+}

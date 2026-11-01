@@ -46,9 +46,17 @@ outside everything this file promises.
 
 `host:crypto/*` gives a program the right to *ask* for a signature. The key
 is never in the reply, never in the guest heap, and never in a snapshot, and
-the two working subkeys are derived so that a `crypto/hmac` grant cannot be
-used as an oracle to forge a JWT. That is the whole of the promise, and it is
-about the **guest boundary**.
+the working subkeys are derived so that a `crypto/hmac` grant cannot be used
+as an oracle to forge a JWT. An EdDSA private key, derived or configured
+under `signing_keys`, is held the same way; `crypto/public_key` answers its
+public half only. That is the whole of the promise, and it is about the
+**guest boundary**.
+
+Two calls are the exception by design. `crypto/totp_enroll` answers a TOTP
+seed, because an authenticator has to hold it, and `crypto/totp` answers a
+live code, which is as good as the seed for one period. Each is its own
+grant: the program that checks codes holds `crypto/totp_verify`, which
+answers a verdict and nothing else.
 
 It is not about the host. The key sits in this process's memory for the
 process's life, and if the config names it inline it sits in a file on disk.
@@ -59,12 +67,14 @@ are the control. Prefer `key_file` or `key_env` over an inline `key`, and do
 not grant a program a scope containing either.
 
 Two narrower limits, stated rather than implied. The constant-time compares
-cover the MAC verdicts (`jwt_verify`, `crypto/hmac` with `expect`) and
-nothing else claims side-channel resistance. And `crypto/turn_credential`
-signs with **HMAC-SHA1** under the **raw** configured secret, because
-coturn's `use-auth-secret` scheme fixes both; it is the one call that does
-not use a derived subkey, and the primitive is there for interop, not
-because it was chosen.
+cover the MAC and code verdicts (`jwt_verify` under HS256, `crypto/hmac`
+with `expect`, `crypto/totp_verify`) and nothing else claims side-channel
+resistance; an EdDSA signature is checked by `ed25519-dalek`'s strict
+verification. And `crypto/turn_credential` signs with **HMAC-SHA1** under
+the **raw** configured secret, because coturn's `use-auth-secret` scheme
+fixes both; the primitive is there for interop, not because it was chosen.
+TOTP defaults to HMAC-SHA1 for the same reason: it is what an authenticator
+assumes when an enrolment names nothing else.
 
 ## `sshd` is a deliberate front-door exposure
 
