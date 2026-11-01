@@ -317,8 +317,12 @@ it answers every request below 404. It is plain HTTP, with
   1 to 64 of `A-Z a-z 0-9 . _ ~ -`; two topics never see each other's
   keys. A key is 1 to 256 of the same and `/`, with no empty, `.` or `..`
   segment; a value is UTF-8 text, at most 16 KiB.
-- **No tokens yet.** Whoever reaches the port may read and write. Per-topic
-  tokens are not built.
+- **Tokens are the topics file's.** With `--topics`, reading a topic's keys
+  (get, list, watch) takes a token of that topic holding `read`, and
+  writing them (put, delete) one holding `write`; a listed token or a JWT
+  whose groups the file maps (`doc/P2P.md` §2.4). No token is 401, and a
+  token without the role, or a topic the file does not declare, is 403.
+  Without `--topics`, whoever reaches the port may read and write.
 - **Every change takes the next revision**, one counter for the whole
   server that never goes back, and a key's version is the revision that
   last wrote it. It survives a restart.

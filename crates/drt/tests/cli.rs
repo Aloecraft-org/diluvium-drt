@@ -426,7 +426,7 @@ fn every_profile_name_is_a_feature_the_binary_probes() {
 #[test]
 fn profile_matches_its_manifest() {
     const PROFILES: [&str; 4] = ["full", "slim", "wasi", "web"];
-    const LEAVES: [&str; 27] = [
+    const LEAVES: [&str; 28] = [
         "cli",
         "connector-crypto",
         "connector-data",

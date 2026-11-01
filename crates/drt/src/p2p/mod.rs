@@ -147,14 +147,16 @@ pub struct Args {
     #[arg(long, value_name = "NAMES")]
     pub capacity: Option<usize>,
     /// With --match: a JSON file declaring topics, each with its tokens and
-    /// their roles (park, call, read, write). A name inside a topic is
+    /// their roles (park, call, read, write), and with a jwt block the
+    /// roles each directory group in a JWT holds. A name inside a topic is
     /// drt://<server>/v1/<topic>/<name>, and every request there takes a
     /// token of that topic. Bare /v1/<name> names are unchanged.
     #[arg(long, value_name = "FILE")]
     pub topics: Option<PathBuf>,
     /// With --match: also keep a key-value store, in a SQLite database in
     /// this directory, at /v1/<topic>/kv/<key> (doc/DRT-Signalling.md §10).
-    /// It takes no token yet: whoever reaches the port may read and write.
+    /// With --topics a topic's keys take its read and write tokens; without
+    /// it, whoever reaches the port may read and write.
     #[arg(long, value_name = "DIR")]
     pub kv: Option<PathBuf>,
     /// Trust this PEM certificate beside the public roots, for a signalling

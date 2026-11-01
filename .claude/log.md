@@ -226,3 +226,40 @@ cannot widen); grant labels by name or by a prefix like `issuer:*`.
 
 Next: the plain Diluvium host (`dhost_crypto.c`) answers none of these
 calls; TOTP there is cheap (dhash.h has HMAC-SHA1), EdDSA is not.
+
+## 2026-11-01 run: LDAP groups as topic roles, through JWTs
+
+Plan: the owner asked (via the project coordinator, while away) to tie
+JWT to LDAP and LDAP to topics for kv and p2p. One step on
+claude/project-thread-z0edkg, stacked on every unmerged branch it needs:
+merge topics (#68), kv (#69), config and ldap (#67, #70) and crypto
+(#71); give crypto a public-key-only verify; let the match server's one
+token judge (`may`) admit a JWT whose groups the topics file maps to
+roles; test end to end against a real slapd; open a pull request.
+
+Done:
+- Merges, with the two seams the sibling PRs named: `kv_access` asks
+  `topic_access`, and `route()` sends kv first. Two merge faults found
+  by tests and fixed: a lost `end` in `topic_names`, and `Command::P2p`
+  tipping clippy's large_enum_variant (boxed).
+- `crypto/jwt_verify {token, jwks}` and the `{"verify_only": true}`
+  scope; 8 tests in `connectors/crypto/tests/jwks.rs`.
+- `principal(topic, token)` in `p2p_match.dlua`: a listed token, else a
+  JWT checked against the JWKS (inline, or a kv key re-read per kv
+  revision), `iss`, `aud`, `sub`; roles are the union over its groups.
+  Names are held by principal (`jwt:<sub>`), so a renewed token keeps
+  the name.
+- `tests/topics_jwt.rs`: slapd, a dlua issuer under `drt run`, real
+  park/call and kv by group, rotation by kv write, forged and tampered
+  tokens, issuer/audience/expiry. A mutation granting every JWT every
+  role fails it.
+
+Learned: naming any grant for the root makes its grants explicit, so
+the match server must name `host:time` beside `host:crypto/jwt_verify`
+(kv already did). The kv merge also turned `/v1/<topic>/kv/...` into
+kv's path even without `--kv`, so the topics test now expects 404 there.
+
+Next: the session framework issues these tokens with claims `iss`,
+`aud`, `sub` (the LDAP username) and `groups` (`ldap/bind`'s answer),
+and publishes `crypto/public_key` as `{"keys": [...]}` at a kv key.
+Renewal on a parked side is not built.

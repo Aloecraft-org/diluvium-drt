@@ -232,8 +232,8 @@ what the profile asks of them.
   |---|---|
   | `park` | the answerer's requests for a name in the topic: claim, poll, answer, the event stream, pairing |
   | `call` | calling a name in the topic, and withdrawing that token's own call |
-  | `read` | `GET /v1/<topic>/names`: `{"topic": …, "names": [...]}`, the names present now |
-  | `write` | nothing yet; it is reserved for the topic's keys (kv, not built) |
+  | `read` | `GET /v1/<topic>/names`: `{"topic": …, "names": [...]}`, the names present now; and with `--kv`, getting, listing and watching the topic's keys |
+  | `write` | with `--kv`, putting and deleting the topic's keys |
 
   No token is 401. A token without the role, or a topic the file does not
   declare, is 403, so probing does not list topics. Inside a topic,
@@ -244,6 +244,48 @@ what the profile asks of them.
   name held, bare or in a topic. The file is read at start; a change
   needs a restart. Tokens are compared as written, so keep the file
   private.
+- **A topic can admit JWTs and map directory groups to roles.** With a
+  `jwt` block, a token the file does not list is checked as a JWT, and a
+  topic's `groups` give each group in it roles:
+
+  ```json
+  {"jwt": {"issuer": "drt-session", "audience": "match1",
+           "jwks": {"kv": "auth/jwks"}},
+   "topics": {"home": {"tokens": [],
+                       "groups": {"family": ["park", "call", "read"],
+                                  "admins": ["write"]}},
+              "auth": {"tokens": [{"token": "…", "roles": ["write"]}]}}}
+  ```
+
+  - The signature is checked with `crypto/jwt_verify {token, jwks}`
+    against the issuer's public keys: `jwks` is a JWKS written in the file
+    (`{"keys": [...]}`), or the kv key `<topic>/<key>` it is published at
+    on this server, which needs `--kv` and is read again after every kv
+    change, so rotating a key is a kv write. The server holds no key of
+    its own: its `crypto` connector is wired `verify_only` unless the
+    config wires one.
+  - Then `exp` (required) and `nbf`, `iss` equal to `issuer`, `aud`
+    holding `audience` when the file names one, and a non-empty `sub`.
+  - The token's roles in a topic are the union of the roles the topic
+    gives each name in its `groups` claim (`groups_claim` names another
+    claim). `ldap/bind` answers those names as `groups`.
+  - A token that does not verify is 401 with the reason (`signature`,
+    `expired`, `issuer`, ...); a valid one without the role is 403, the
+    same in every topic, so a JWT does not list topics either.
+  - A JWT holds a name by its `sub`, so a renewed token keeps the name and
+    a token of another subject does not take it.
+  - Listed tokens and bare names work beside JWTs as before.
+
+  A program issues these tokens by binding the user with `ldap/bind` and
+  signing `{iss, aud, sub, groups}` with `crypto/jwt_sign` under an EdDSA
+  key, and publishes `crypto/public_key`'s JWK as `{"keys": [...]}` at the
+  kv key with a `write` token of that topic. Limits: the header must be
+  the one `crypto/jwt_sign` writes (`{"alg":"EdDSA","typ":"JWT","kid":…}`,
+  in that order), so a token from another library is refused as `alg`;
+  only EdDSA keys are read from a JWKS; a parked side sends the token it
+  started with, so it is refused once that token expires (renewal is not
+  built); and the session framework that logs a browser in and issues the
+  token is not built.
 - **Admission is by token, not origin**, so every reply carries
   `access-control-allow-origin: *`. A page opened from `file://` sends
   `Origin: null` and preflights because of its `Authorization` header; a
@@ -258,8 +300,10 @@ what the profile asks of them.
   front, as example 30's config does. Certificate flags can come later.
 - **`--kv <dir>`** also keeps a key-value store, in `<dir>/kv.db`, at
   `/v1/<topic>/kv/<key>` (`doc/DRT-Signalling.md` §10); `drt kv` and the
-  `kv` connector reach it. It takes no token yet, so `--host` is what
-  narrows who may read and write.
+  `kv` connector reach it. With `--topics`, a topic's keys take its `read`
+  and `write` tokens and an undeclared topic's keys are refused; without
+  `--topics` kv takes no token, so `--host` is what narrows who may read
+  and write.
 - `--match` with `--forward`, `--relay` or `--fallback` is refused: a
   signalling server carries no session bytes (§10).
 
@@ -478,7 +522,7 @@ change, so nothing negotiates it.
 |---|---|---|---|
 | `--host` | listen, match | the serving process | who may connect: an address binds there; `0.0.0.0` admits anyone; a CIDR, typically a WireGuard subnet, admits that range, and binds this machine's own address inside it when it holds exactly one, everywhere otherwise |
 | `--accept` | park | the signalling server, then the parked side | which callers are passed to the parked side |
-| `--topics FILE` | match | the signalling server | which tokens may park, call or list in each topic (§2.4) |
+| `--topics FILE` | match | the signalling server | which tokens, and which JWT groups, may park, call, read or write in each topic (§2.4) |
 | `--H name=value` | call, park | sent to the signalling side only | HTTP headers; `auth=` is shorthand for `Authorization: Bearer`. In the file, a value may come from a variable, a file or a prompt (§8) |
 | `--fingerprint SHA256:…` | call | the caller, locally | the answerer's DTLS fingerprint must match; `--fingerp` is the same flag |
 
