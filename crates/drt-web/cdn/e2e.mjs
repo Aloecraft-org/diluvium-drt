@@ -337,7 +337,7 @@ await check('the SSH module makes a key, and the browser build of drt loads, fro
   await p.close();
 });
 
-await check('examples/35-drt-js: the terminal starts a deployment, the inspector lists, parks and kills its instances, and drt repl evaluates', async () => {
+await check('examples/35-drt-js: bare drt prints its usage, drt repl evaluates, and the panel says nothing is running', async () => {
   // Served from the repo root, as its README says: main.js imports ../../crates/drt-web/cdn/dist/drt.min.js.
   const root = path.resolve(here, '../../..');
   const types = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css' };
@@ -356,27 +356,17 @@ await check('examples/35-drt-js: the terminal starts a deployment, the inspector
   await p.goto(`http://127.0.0.1:${PORTS.example}/examples/35-drt-js/`);
   const screen = () => p.evaluate(() => document.querySelector('.xterm-rows')?.innerText ?? '');
   const panel = () => p.evaluate(() => [...document.querySelectorAll('aside tr')].slice(1).map((tr) => tr.innerText.replace(/\s+/g, ' ').trim()));
-  await until('the prompt', async () => (await screen()).includes('$'));
+  await until('bare drt: its usage, then the prompt', async () => { const t = await screen(); return t.includes('Print version') && t.trimEnd().endsWith('$'); });
   await p.click('#terminal');
-  await p.keyboard.type('drt start --config app.json\r');
-  await until('three workers', async () => (await screen()).includes('spawned worker 4'));
-  const rows = await until('four instances', async () => { const r = await panel(); return r.length === 4 && r; });
-  if (!rows.every((r) => /^\d+ \d+ resident \d+ lifecycle park kill$/.test(r))) throw new Error(`rows: ${JSON.stringify(rows)}`);
-  await p.click('aside tr:nth-child(3) button:has-text("park")');
-  await until('a parked worker', async () => (await panel()).some((r) => / parked - lifecycle wake kill$/.test(r)));
-  await p.click('aside tr:nth-child(4) button:has-text("kill")');
-  await until('three instances', async () => (await panel()).length === 3);
-  await p.click('#terminal');
-  await p.keyboard.press('Control+C');
-  await until('an empty panel', async () => (await panel()).length === 0);
-  await until('the prompt again', async () => (await screen()).trimEnd().endsWith('$'));
-  await p.keyboard.type('a=123\r');
-  await until('the help for a line that is not drt', async () => (await screen()).includes('a=123: not a command here'));
+  await p.keyboard.type('ls\r');
+  await until('a line that is not drt', async () => (await screen()).includes('ls: command not found'));
   await p.keyboard.type('drt repl\r');
   await until('the REPL prompt', async () => (await screen()).trimEnd().endsWith('dv>'));
-  await p.keyboard.type('a = 123\r');
-  await p.keyboard.type('print(a + 1)\r');
-  await until('the REPL evaluates', async () => /^124$/m.test(await screen()));
+  // Only `drt start` drives a swarm, and it needs a config and a program file this page has none of.
+  await until('the panel says nothing is running', async () => (await p.innerText('aside h2')).includes('nothing running') && (await panel()).length === 0);
+  await p.keyboard.type('x = 41\r');
+  await p.keyboard.type('print(x + 1)\r');
+  await until('the REPL evaluates', async () => /^42$/m.test(await screen()));
   await p.keyboard.press('Control+D');
   await until('the prompt after the REPL', async () => (await screen()).trimEnd().endsWith('$'));
   await p.close();

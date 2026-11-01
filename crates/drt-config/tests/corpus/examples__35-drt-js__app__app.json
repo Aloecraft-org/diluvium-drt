@@ -1,6 +1,0 @@
-{
-  "program": {"path": "app.dlua"},
-  "args": {"rounds": 0},
-  "caps": [{"capability": "lifecycle"}],
-  "budget": {"instructions": 1000000000}
-}

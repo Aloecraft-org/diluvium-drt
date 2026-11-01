@@ -38,19 +38,13 @@ export function startTerminal(drt, element) {
     session.free();
   }
 
+  // A shell with one program on its path: drt, with no config and no files.
   (async () => {
-    const help = [
-      'This page fetched app/app.json and app/app.dlua from its own folder into drt\'s in-memory filesystem.',
-      '  drt start --config app.json   run the app; Ctrl+C stops it',
-      '  drt repl                      a Diluvium REPL; Ctrl+D leaves it',
-      '  drt --help                    every drt command',
-      '',
-    ].join('\n');
-    terminal.write(help);
+    await run(['drt']);
     for (;;) {
       const argv = ((await ask('$ ')) ?? '').trim().split(/\s+/);
       if (argv[0] === 'drt') await run(argv);
-      else if (argv[0]) terminal.write(`${argv[0]}: not a command here. Only drt runs.\n${help}`);
+      else if (argv[0]) terminal.write(`${argv[0]}: command not found\n`);
     }
   })();
   return cli;

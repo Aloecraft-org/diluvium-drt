@@ -1,7 +1,7 @@
 {
   "name": "35-drt-js",
-  "teaches": "drt.js in a page: the program the page's terminal starts, here with each worker counting three rounds so it ends. The page itself is checked in Chromium by crates/drt-web/cdn/e2e.mjs.",
-  "cmd": "drt start --config app/quick.json",
+  "teaches": "drt.js in a page: a terminal that runs drt with no config and no files, and a panel listing what it runs. The page is checked in Chromium by crates/drt-web/cdn/e2e.mjs; this runs the same REPL natively.",
+  "cmd": "printf 'x = 41\\nprint(x + 1)\\n' | drt repl",
   "needs_network": false,
   "normalise": []
 }

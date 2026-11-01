@@ -133,8 +133,8 @@ releases:
         The browser build's module is now shrunk with wasm-opt, as the SSH
         page's is (5.9 MB to 2.8 MB), so `drt.js` is about 2.1 MB.
         `examples/35-drt-js` is a page on it: an xterm.js terminal that
-        runs `drt start`, and an Alpine panel listing the instances it
-        spawned, with park, wake and kill.
+        runs `drt` with no config and no files, and an Alpine panel for
+        the instances of what it runs.
       - |
         **`stdlib:session`, a login portal and forward-auth endpoint
         (`doc/Session.md`).** A dlua program on four connectors: `ldap`
