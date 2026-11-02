@@ -79,12 +79,16 @@ Underneath it the embedded core moves from 0.15.1 to
   Pages site that every publish now redeploys with each release's
   drt.js. Nothing in this repository loads drt that way; examples
   use the drt.js the checkout builds.
-- **`script/wasi-sdk.sh` fetches the wasi-sdk the browser build
-  compiles the C core with.** `script/drt-web.sh` no longer needs
-  `WASI_SDK_PATH` set: unset, it fetches the pinned wasi-sdk 27 into
-  `~/.cache/drt/` once and uses it from there. Set, the variable
-  still wins. The native build never needed one, which is why
-  there was nothing for the browser build to borrow.
+- **The page builds fetch their own tools.** `script/drt-web.sh`
+  no longer needs `WASI_SDK_PATH` set: unset, `script/wasi-sdk.sh`
+  fetches the pinned wasi-sdk 27 into `~/.cache/drt/` once and uses
+  it from there. Set, the variable still wins. The native build
+  never needed one, which is why there was nothing for the browser
+  build to borrow. Likewise the wasm-bindgen CLI: `drt-web.sh` and
+  `drt-ssh-page.sh` use the one on PATH when it is the version the
+  crate pins, and otherwise `script/wasm-bindgen.sh` fetches that
+  release beside the SDK, so another project's wasm-bindgen stays
+  where it is.
 - **`terminal(id)` in drt.js: the drt CLI live in an element.**
   `await terminal('cli')` renders an xterm.js terminal in that
   element with a `$ ` prompt whose command is the real `drt`, the
