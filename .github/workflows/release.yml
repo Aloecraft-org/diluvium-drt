@@ -899,7 +899,7 @@ jobs:
               else
                 legs="the Linux build"
               fi
-              echo "Commit \`$SHA\` on \`$BRANCH\`: the suite, $legs, the web build (\`drt_web.tar.gz\`), the browser access client (\`drt_browser_access.js\`), the SSH page (\`ssh.html\`) and \`drt.js\` with \`drt.min.js\`. Not a release: \`BUILDINFO.txt\` says what is inside, the ten newest dev builds are kept, and the newest changelog entry below describes the tree this is cut from, not this build."
+              echo "Commit \`$SHA\` on \`$BRANCH\`: the suite, $legs, the web build (\`drt_web.tar.gz\`), the browser access client (\`drt_browser_access.js\`), the SSH page (\`ssh.html\`) \`drt.js\` with \`drt.min.js\`, and \`get-drt.js\`, which loads it into a page. Not a release: \`BUILDINFO.txt\` says what is inside, the ten newest dev builds are kept, and the newest changelog entry below describes the tree this is cut from, not this build."
               echo
               echo "## $since ($n commit(s))"
               echo
@@ -984,6 +984,21 @@ jobs:
               }
             done
           done
+          # get-drt.js is get-drt.sh for a page: it loads this release's
+          # drt.js (from the mirror, else the Pages site the `pages` job
+          # below deploys) unless the page names another. Stamped like the
+          # installers, for the same reason, and asked for its stamp back.
+          sed -e "s|^const STAMPED_VERSION = .*|const STAMPED_VERSION = '$STAMP_TAG';|" \
+              ../crates/drt-web/cdn/get-drt.js > get-drt.js
+          grep -qx "const STAMPED_VERSION = '$STAMP_TAG';" get-drt.js || {
+            echo "::error::get-drt.js was not stamped with '$STAMP_TAG'" >&2
+            exit 1
+          }
+          cp get-drt.js "$RUNNER_TEMP/get-drt.mjs"
+          [ "$(node --input-type=module -e "const m = await import('$RUNNER_TEMP/get-drt.mjs'); console.log(m.version)")" = "$STAMP_TAG" ] || {
+            echo "::error::get-drt.js does not export version '$STAMP_TAG'" >&2
+            exit 1
+          }
           # Asked of the artifact rather than guessed in YAML. The linux
           # x86_64 binaries are native here, so they can report the dv ABI
           # they actually speak and the connectors actually compiled in;
@@ -1104,7 +1119,7 @@ jobs:
           else
             ../script/changelog.py buildinfo-check --tag '${{ needs.preflight.outputs.tag }}' --file BUILDINFO.txt
           fi
-          # Every other asset, the sixteen installers and the web buildinfo included
+          # Every other asset, the sixteen installers, get-drt.js and the web buildinfo included
           # (doc/ALIGNMENT.md §6): the mirror verifies each file it carries
           # against this, and a file it cannot find here is one it cannot
           # vouch for. Generated last, so it does not list itself.
@@ -1190,3 +1205,62 @@ jobs:
             git push -q origin release-log \
               || echo "::warning::release-log was not pushed; the next publish rewrites it"
           fi
+
+  # get-drt.js loads drt.js into a page, and a page cannot fetch a GitHub
+  # release asset: neither github.com's redirect nor the asset host behind
+  # it sends Access-Control-Allow-Origin. The mirror does, but carries no
+  # dev builds (doc/doc_old/ALIGNMENT.md §7). So every publish redeploys
+  # GitHub Pages, which sends `access-control-allow-origin: *`, with
+  # <tag>/{drt.js, drt.min.js, get-drt.js, SHA256SUMS.txt} for every
+  # release on the Releases page that carries drt.js. Rebuilt whole from
+  # the page after the prune above, so it serves what GitHub still keeps
+  # and nothing is committed anywhere. Needs Pages enabled with source
+  # "GitHub Actions" in the repository settings.
+  pages:
+    name: drt.js on GitHub Pages
+    needs: [preflight, publish]
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    # One deploy at a time; each gathers every release, so the newest wins.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - name: Gather every release's drt.js
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          mkdir -p site
+          touch site/.nojekyll
+          gh release list --limit 1000 --exclude-drafts --json tagName --jq '.[].tagName' > tags
+          while read -r t; do
+            mkdir -p "site/$t"
+            # Releases before drt.js have none of these but the sums; a
+            # pattern that matches nothing is not an error worth stopping on.
+            gh release download "$t" -D "site/$t" \
+              -p drt.js -p drt.min.js -p get-drt.js -p SHA256SUMS.txt < /dev/null 2>/dev/null || true
+            if [ -f "site/$t/drt.min.js" ]; then
+              echo "$t"
+            else
+              rm -rf "site/$t"
+            fi
+          done < tags
+          [ -f "site/${{ needs.preflight.outputs.tag }}/drt.min.js" ] || {
+            echo "::error::${{ needs.preflight.outputs.tag }} has no drt.min.js to serve" >&2
+            exit 1
+          }
+          (cd site && find . -type f | sort)
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v4

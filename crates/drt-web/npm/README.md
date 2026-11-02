@@ -47,6 +47,28 @@ const { token: jwt } = await session().token();          // stdlib:session, same
 `crates/drt-web/cdn/drt.mjs` lists every export; `e2e.mjs` beside it is
 the check every release passes.
 
+## get-drt.js: a release's drt.js
+
+For a page built on a published release. Each release ships `get-drt.js`,
+stamped with that release, as `get-drt.sh` is:
+
+```js
+import { getDrt } from 'https://software.aloecraft.org/releases/diluvium-drt/latest/get-drt.js';
+
+const drt = await getDrt();            // the release this copy came from
+const dev = await getDrt('dev');       // or 'latest', '0.8.0', 'v0.8.0-dev.59'
+```
+
+- `list()`, `listAll()`, `resolve(v)` and `version` are `list`,
+  `list-all`, a VERSION and `--version` alone; `{ min: false }` loads
+  drt.js instead of drt.min.js.
+- It reads the release mirror, then `aloecraft-org.github.io/diluvium-drt/<tag>/`,
+  which carries dev builds. A GitHub release download cannot be fetched
+  by a page: it sends no CORS header.
+- The bytes are checked against the release's `SHA256SUMS.txt` and run
+  from a `blob:` URL, so a page with a CSP needs `blob:` in `script-src`.
+- Releases before v0.8.0 carry no drt.js.
+
 ## terminal(): the drt CLI in an element
 
 ```js
