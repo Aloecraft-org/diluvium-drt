@@ -37,7 +37,7 @@ use drt_swarm::swarm::Swarm;
 use drt_swarm::InstanceId;
 
 const STEPS: usize = 256;
-const DILUVIUM_VERIFIED: &str = "f59bc77b2f51b2025dd7c220ca469035143e6101";
+const DILUVIUM_VERIFIED: &str = "da9bbdf77a48b2603fc2d9a72201c3a4efbfa079";
 
 /// Held by every test for its whole body: two tests counting one
 /// process's descriptors at once would read each other's sockets.

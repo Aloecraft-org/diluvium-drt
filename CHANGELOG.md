@@ -14,7 +14,7 @@ carries in the release. See `doc/Release.md`.
 
 ## [0.8.0] - unreleased
 
-`v0.8.0` &middot; dv ABI 2 &middot; diluvium `f59bc77b2f51` (v0.17.4)
+`v0.8.0` &middot; dv ABI 2 &middot; diluvium `da9bbdf77a48` (v0.17.4)
 
 **A browser reaches a DRT host directly, two machines reach each
 other with nothing in between, and the core is diluvium 0.17.4.**

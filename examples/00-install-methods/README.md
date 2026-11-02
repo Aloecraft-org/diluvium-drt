@@ -19,7 +19,7 @@ version: 0.8.0
 profile: full
 dv_abi: 2
 dv_abi_expected: 2
-diluvium: f59bc77b2f51b2025dd7c220ca469035143e6101
+diluvium: da9bbdf77a48b2603fc2d9a72201c3a4efbfa079
 diluvium_version: 0.17.4
 features: regex,json,msgpack,snapshot,numeric
 connectors: time,fs,crypto,aloecrypt,sql,ssh,rest,ssmtp,ldap,exec,data,socket,ws,kv,listen
