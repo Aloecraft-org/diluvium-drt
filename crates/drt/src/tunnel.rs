@@ -65,7 +65,8 @@
 //!   [`ws_to_tcp`] and [`park`], which `run` dispatches to and a test
 //!   drives directly. [`serve_local`] and [`serve_ws_bridge`] are the
 //!   accept loops behind two of them, over a listener the caller bound.
-//! - Configurable: [`CHUNK`], how much is moved per read.
+//! - Configurable: [`CHUNK`], how much is moved per read; and
+//!   [`SUBPROTOCOL`], the one subprotocol the listen half answers to.
 //! - Fan-out: [`Mode`], the four things a tunnel can be, and the one
 //!   match on it in [`run`]. [`Flags`] is the command line as typed and
 //!   `drt_config::TunnelConfig` is the file; `resolve` is the only place
@@ -97,6 +98,15 @@ pub type WsClient = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 /// How much is moved per read. A throughput knob and nothing more.
 const CHUNK: usize = 64 * 1024;
 
+/// The subprotocol the listen half answers to when a client offers it:
+/// raw bytes in binary frames, websockify's `binary`. Emscripten's socket
+/// layer offers it on every connection (FreeRDP's browser build is one
+/// such client), and Chromium fails a handshake that offered a
+/// subprotocol and got none back. A client that offers nothing gets no
+/// header, as before. websockify's older `base64` is not spoken: its
+/// frames are text, and this bridge moves binary frames only.
+pub const SUBPROTOCOL: &str = "binary";
+
 /// The four things a tunnel can be. Which one is told by which keys are
 /// present -- in the file, on the command line, or merged from both --
 /// and never by a mode flag of its own.
@@ -108,7 +118,8 @@ pub enum Mode {
     /// accepted connection.
     Local { claim: String, bind: String },
     /// `drt tunnel --listen <addr> --to <target>`: WebSockets in, TCP out,
-    /// in front of any sshd.
+    /// in front of any sshd, or any TCP service a browser client reaches
+    /// the websockify way (see [`SUBPROTOCOL`]).
     Listen { listen: String, to: String },
     /// `drt tunnel --park <url> --to <target>`: the device side of the
     /// relay, dialing `to` lazily when a caller claims the leg.
@@ -579,7 +590,7 @@ pub async fn serve_ws_bridge(
             // Each way a connection ends is said, by peer. A bridge in
             // front of an sshd that dropped a caller for a reason it kept
             // to itself was indistinguishable from one that was broken.
-            let ws = match tokio_tungstenite::accept_async(conn).await {
+            let ws = match tokio_tungstenite::accept_hdr_async(conn, answer_subprotocol).await {
                 Ok(ws) => ws,
                 Err(e) => {
                     eprintln!("drt tunnel: {peer}: not a websocket handshake: {e}");
@@ -604,6 +615,44 @@ pub async fn serve_ws_bridge(
             eprintln!("drt tunnel: {peer}: session ended");
         });
     }
+}
+
+/// The handshake callback behind [`serve_ws_bridge`]: answer
+/// [`SUBPROTOCOL`] when the client's `Sec-WebSocket-Protocol` offers it,
+/// and leave the response alone otherwise. Nothing is refused here: a
+/// client offering only other subprotocols gets no header, which a
+/// browser then refuses on its own side, and the log line says so.
+#[allow(clippy::result_large_err)]
+fn answer_subprotocol(
+    request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+    mut response: tokio_tungstenite::tungstenite::handshake::server::Response,
+) -> Result<
+    tokio_tungstenite::tungstenite::handshake::server::Response,
+    tokio_tungstenite::tungstenite::handshake::server::ErrorResponse,
+> {
+    use tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
+    use tokio_tungstenite::tungstenite::http::HeaderValue;
+    let offered: Vec<&str> = request
+        .headers()
+        .get_all(SEC_WEBSOCKET_PROTOCOL)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    if offered.contains(&SUBPROTOCOL) {
+        response.headers_mut().insert(
+            SEC_WEBSOCKET_PROTOCOL,
+            HeaderValue::from_static(SUBPROTOCOL),
+        );
+    } else if !offered.is_empty() {
+        eprintln!(
+            "drt tunnel: a client offered subprotocols {offered:?}; only `{SUBPROTOCOL}` is \
+             spoken, so none is answered"
+        );
+    }
+    Ok(response)
 }
 
 /// The program-shaped caller half (issue #13): a local TCP listener where

@@ -417,7 +417,8 @@ pub enum Command {
         /// file supplies.
         #[arg(long, value_name = "HOST:PORT")]
         local: Option<String>,
-        /// Serve the other half: accept WebSockets here…
+        /// Serve the other half: accept WebSockets here, on any path,
+        /// answering websockify's `binary` subprotocol when offered…
         #[arg(long)]
         listen: Option<String>,
         /// …and bridge each connection to this host:port (used by both

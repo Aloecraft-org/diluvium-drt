@@ -1206,6 +1206,15 @@ releases:
       are in.
     fixed:
       - |
+        **`drt tunnel --listen` answers websockify's `binary` subprotocol.**
+        A browser client built with Emscripten (FreeRDP's wasm build is
+        one) opens `new WebSocket(url, ['binary'])`, and Chromium fails a
+        handshake that offered a subprotocol and got none back, so the
+        bridge refused every such page. It now answers `binary` when
+        offered and sends no header otherwise, which makes
+        `drt tunnel --listen <addr> --to <host:port>` a drop-in for
+        websockify in front of one fixed target. `base64` is not spoken.
+      - |
         **A release commit gets no dev build beside its release.** The
         merge of a release-prep PR reached `main` before its tag, so
         `dev-build.yml` cut a dev tag on the same commit the real Release
