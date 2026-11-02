@@ -9,9 +9,10 @@
 # env:   WASI_SDK_PATH   a wasi-sdk (>= 24; 27 verified): the C core and
 #                        wasi-libc are compiled and linked from it. Unset,
 #                        script/wasi-sdk.sh fetches the pinned one.
-#        WASM_BINDGEN    the wasm-bindgen CLI (default: on PATH). Its
-#                        version must equal the crate's pin in
-#                        crates/drt-web/Cargo.toml; the check is below.
+#        WASM_BINDGEN    the wasm-bindgen CLI, at the crate's pin in
+#                        crates/drt-web/Cargo.toml. Unset, the one on
+#                        PATH if it is that version, else
+#                        script/wasm-bindgen.sh fetches the pinned one.
 #        DRT_WEB_PROFILE cargo profile (default: release; release-small
 #                        for the artifact that ships). Its `strip` is
 #                        overridden to none -- see the build below.
@@ -23,7 +24,6 @@ set -eu
 HERE=$(cd -- "$(dirname -- "$0")/.." && pwd)
 OUT=${1:-$HERE/crates/drt-web/browser-test/pkg}
 PROFILE=${DRT_WEB_PROFILE:-release}
-WASM_BINDGEN=${WASM_BINDGEN:-wasm-bindgen}
 TARGET_DIR=${CARGO_TARGET_DIR:-$HERE/target}
 
 # The C core and wasi-libc are compiled and linked from a wasi-sdk;
@@ -31,19 +31,10 @@ TARGET_DIR=${CARGO_TARGET_DIR:-$HERE/target}
 WASI_SDK_PATH=$("$HERE/script/wasi-sdk.sh")
 export WASI_SDK_PATH
 
-# The glue's format is the crate's: a CLI of another version refuses the
-# module, or worse, accepts it and generates glue that does not match.
+# The glue's format is the crate's: the CLI is the version the crate pins,
+# found or fetched by script/wasm-bindgen.sh.
 pin=$(sed -n 's/^wasm-bindgen = "=\([0-9.]*\)"/\1/p' "$HERE/crates/drt-web/Cargo.toml")
-have=$("$WASM_BINDGEN" --version 2>/dev/null | sed -n 's/^wasm-bindgen \([0-9.]*\).*/\1/p') || true
-if [ -z "$have" ]; then
-    printf 'drt-web.sh: no wasm-bindgen CLI (WASM_BINDGEN=%s). Install the pinned one:\n' "$WASM_BINDGEN" >&2
-    printf '    cargo install wasm-bindgen-cli --version %s --locked\n' "$pin" >&2
-    exit 2
-fi
-if [ "$have" != "$pin" ]; then
-    printf 'drt-web.sh: wasm-bindgen CLI is %s, crates/drt-web pins %s; they must match.\n' "$have" "$pin" >&2
-    exit 2
-fi
+WASM_BINDGEN=$("$HERE/script/wasm-bindgen.sh" "$pin")
 
 case $PROFILE in
     dev) dir=debug ;;
