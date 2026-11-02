@@ -274,6 +274,11 @@ struct Slot {
     /// backpressure the sender can see, not a buffer that grows. Keyed by
     /// far end rather than token, because tokens are per residency.
     held: Vec<(u32, Vec<u8>)>,
+    /// Whether this instance has been handed something that may carry an
+    /// endpoint reference (a `spawned` or `ref` event, a routed message),
+    /// so its engine instance binds them: set once, and re-applied to the
+    /// fresh instance every wake builds.
+    endpoints: bool,
     /// Queue handles already resolved for *this residency*. A handle is
     /// runtime identity — valid only for the instance that issued it — so
     /// this is cleared wherever `inst` changes: build, hibernate, wake.
@@ -301,6 +306,7 @@ impl Slot {
             pending: Vec::new(),
             deferred: None,
             held: Vec::new(),
+            endpoints: false,
             handles: Vec::new(),
         }
     }
@@ -749,6 +755,9 @@ impl<H: SwarmHost> Swarm<H> {
         touched_fast: bool,
         extra: &[(&str, rmpv::Value)],
     ) {
+        if !extra.is_empty() {
+            self.enable_endpoints(to);
+        }
         let Some(index) = self.find(InstanceId(to)) else {
             return;
         };
@@ -909,6 +918,9 @@ impl<H: SwarmHost> Swarm<H> {
                 )));
             }
         };
+        if self.slots[index].endpoints {
+            inst.enable_endpoints();
+        }
         // The buffer drains here, before any live push can reach the
         // instance. A message refused now is dropped rather than kept: the
         // queue it names is bounded, the sender was already told Ok, and
@@ -1537,6 +1549,7 @@ impl<H: SwarmHost> Swarm<H> {
                 let from = Sender::runtime(self.slots[i].path.clone());
                 let held = std::mem::take(&mut self.slots[i].held);
                 for (target, msg) in held {
+                    self.enable_endpoints(target);
                     if let Err(SwarmError::Limit(_) | SwarmError::UnknownQueue) =
                         self.push(InstanceId(target), INBOX, &from, &msg)
                     {
@@ -1583,6 +1596,7 @@ impl<H: SwarmHost> Swarm<H> {
         if self.slots[index].held.iter().any(|(t, _)| *t == target) {
             return;
         }
+        self.enable_endpoints(target);
         loop {
             let inst = self.slots[index].inst.as_deref_mut().expect("resident");
             let msg = match inst.pop(queue) {
@@ -1617,6 +1631,18 @@ impl<H: SwarmHost> Swarm<H> {
             return None;
         }
         id.parse::<u32>().ok().filter(|id| *id != 0)
+    }
+
+    /// Mark instance `id` as one that binds references, and switch it on
+    /// now if it is resident (a wake switches on the rest).
+    fn enable_endpoints(&mut self, id: u32) {
+        let Some(index) = self.find(InstanceId(id)) else {
+            return;
+        };
+        self.slots[index].endpoints = true;
+        if let Some(inst) = self.slots[index].inst.as_deref_mut() {
+            inst.enable_endpoints();
+        }
     }
 
     fn close_endpoint(&mut self, index: usize, queue: QueueHandle) {

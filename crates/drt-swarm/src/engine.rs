@@ -350,6 +350,14 @@ pub trait Instance: MaybeSend {
         0
     }
 
+    /// Let this instance bind endpoint references from now on. The swarm
+    /// calls it before handing the instance a reference, and again after
+    /// every wake of one it has called it for; an instance never handed a
+    /// reference never binds one, and pays nothing for the ability.
+    /// Idempotent. Without it, `endpoint.bind` raises "this host binds no
+    /// endpoints".
+    fn enable_endpoints(&mut self) {}
+
     /// The queue a bound endpoint drains through, or `None` when the program
     /// has destroyed it. Popping this queue is how a message leaves the
     /// instance for its far end.
@@ -455,6 +463,12 @@ pub mod diluvium_engine {
         /// inside `endpoint.bind`, which is why it is behind a lock: the
         /// handler runs while the instance is mutably borrowed by `run`.
         endpoints: std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+        /// Whether the bind handler is installed. Lazily, because the core
+        /// keeps it in a userdata on the guest's own heap (96 bytes), and an
+        /// instance that is never handed a reference should not pay that:
+        /// `bench/check-fidelity.py` holds resident bytes per agent to the
+        /// C swarm's figure.
+        handler: bool,
         /// The bounds this instance was loaded with, already resolved
         /// against its parent's. Held rather than dropped so
         /// [`DiluviumInstance::numeric_bounds`] can answer what was applied
@@ -470,6 +484,10 @@ pub mod diluvium_engine {
         /// state and does not ride a snapshot, so a woken program binds its
         /// references again (the core adopts the queue it had, by name).
         fn install_endpoint_handler(&mut self) {
+            if self.handler {
+                return;
+            }
+            self.handler = true;
             let table = std::sync::Arc::clone(&self.endpoints);
             self.inner.on_endpoint_bind(move |reference: &[u8]| {
                 let mut table = table
@@ -676,10 +694,10 @@ pub mod diluvium_engine {
                 inner,
                 ids: Vec::new(),
                 endpoints: Default::default(),
+                handler: false,
                 numeric: spec.numeric,
             };
             instance.apply_numeric();
-            instance.install_endpoint_handler();
             Ok(Box::new(instance))
         }
 
@@ -695,10 +713,10 @@ pub mod diluvium_engine {
                 inner,
                 ids: Vec::new(),
                 endpoints: Default::default(),
+                handler: false,
                 numeric: spec.numeric,
             };
             instance.apply_numeric();
-            instance.install_endpoint_handler();
             Ok(Box::new(instance))
         }
     }
@@ -783,6 +801,10 @@ pub mod diluvium_engine {
 
         fn snapshot(&mut self, host_stamp: Option<&str>) -> Result<Vec<u8>, EngineError> {
             self.inner.snapshot(host_stamp).map_err(lift_error)
+        }
+
+        fn enable_endpoints(&mut self) {
+            self.install_endpoint_handler();
         }
 
         fn endpoint_count(&self) -> u32 {
