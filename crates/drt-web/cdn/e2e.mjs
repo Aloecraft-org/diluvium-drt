@@ -372,6 +372,81 @@ await check('kernel() with a bus() as its net transport runs a program that talk
   await p.close();
 });
 
+await check('kernel(sink, backings, config) runs every command under that config with no --config on the line, and refuses a config it cannot read', async () => {
+  const p = await page();
+  const r = await p.evaluate(async () => {
+    let out = '';
+    const decoder = new TextDecoder();
+    const sink = (fd, bytes) => { out += decoder.decode(bytes, { stream: true }); };
+    const config = { caps: [{ capability: 'host:fs/*' }], connectors: { fs: { scope: { scope: '/app/work', access: 'readwrite' } } } };
+    const k = await window.drt.kernel(sink, undefined, config);
+    k.putDir('/app/work');
+    k.putFile('/app/app.dlua', new TextEncoder().encode("host.fs.write('out.txt', 'under the config') print('wrote')"));
+    k.setCwd('/app');
+    const s = k.exec(['drt', 'run', 'app.dlua']);
+    for (;;) {
+      const step = s.tick();
+      if (step.done) break;
+      await new Promise((r) => setTimeout(r, step.sleepMs ?? 0));
+    }
+    const written = new TextDecoder().decode(k.getFile('/app/work/out.txt') ?? new Uint8Array());
+    const echoed = JSON.parse(k.config());
+    k.free();
+    let refused = '';
+    try { await window.drt.kernel(sink, undefined, { caps: [], connectorz: {} }); } catch (e) { refused = String(e); }
+    return { out, written, echoed, refused };
+  });
+  if (r.out !== 'wrote\n' || r.written !== 'under the config') throw new Error(JSON.stringify(r));
+  if (!r.echoed.connectors?.fs) throw new Error(`config(): ${JSON.stringify(r.echoed)}`);
+  if (!/config: .*connectorz/.test(r.refused)) throw new Error(`a misspelt key was not refused by name: ${r.refused}`);
+  await p.close();
+});
+
+await check('terminal(id, { repl: true, config }) opens at dv> under the config; :run runs a file from the kernel, :load defines into the session, ^C stops a program, and Enter starts another REPL after ^D', async () => {
+  const p = await page();
+  await p.evaluate(async () => {
+    document.body.innerHTML = '<div id="card" style="width: 800px; height: 400px"></div>';
+    const config = { caps: [{ capability: 'host:fs/*' }], connectors: { fs: { scope: { scope: '/', access: 'readwrite' } } } };
+    window.card = await window.drt.terminal('card', { repl: true, config });
+    const put = (path, text) => window.card.term.putFile(path, new TextEncoder().encode(text));
+    put('/note.txt', 'from the kernel');
+    put('/app.dlua', "print('app read ' .. host.fs.read('note.txt'))");
+    put('/lib.dlua', 'function add(a, b) return a + b end');
+    // Parked with a deadline: a park nothing will ever wake is refused at once, as `drt run` refuses it.
+    put('/forever.dlua', "local q = queue.declare('never', {capacity = 1}) queue.wait({q}, 600000)");
+  });
+  // The viewport, not the scrollback: what a person sees. A timeout says what it showed.
+  const screen = () => p.evaluate(() => document.querySelector('#card .xterm-rows')?.innerText ?? '');
+  const see = (what, pred) => until(what, pred).catch(async (e) => { throw new Error(`${e.message}; the screen says:\n${await screen()}`); });
+  const atPrompt = async () => (await screen()).trimEnd().endsWith('dv>');
+  await see('the REPL prompt, with no shell before it', async () => (await atPrompt()) && !(await screen()).includes('$'));
+  await p.click('#card');
+  await p.keyboard.type(':help\r');
+  await see(':help lists :run', async () => /:run <path>/.test(await screen()));
+  await p.keyboard.type('x = 40\r');
+  await see('the prompt back after x = 40', async () => /^dv> x = 40$/m.test(await screen()) && (await atPrompt()));
+  await p.keyboard.type(':run app.dlua\r');
+  await see('the program printed through the config\'s fs', async () => /^app read from the kernel$/m.test(await screen()));
+  await p.keyboard.type(':load lib.dlua\r');
+  await p.keyboard.type('add(x, 2)\r');
+  await see('the session kept x and gained add', async () => /^42$/m.test(await screen()));
+  await p.keyboard.type(':run forever.dlua\r');
+  await p.keyboard.press('Control+C');
+  await see('^C stopped the program and the prompt is back', async () => (await screen()).includes(':run: interrupted') && (await atPrompt()));
+  await p.keyboard.type('x\r');
+  await see('the REPL survived the interrupt', async () => /^40$/m.test(await screen()));
+  await p.keyboard.press('Control+D');
+  await see('the REPL ended and the terminal says so', async () => (await screen()).includes('drt repl ended'));
+  await p.keyboard.press('Enter');
+  await see('another REPL after Enter', async () => {
+    const t = await screen();
+    const ended = t.indexOf('drt repl ended');
+    return ended >= 0 && t.indexOf('drt repl — Show help', ended) > ended && (await atPrompt());
+  });
+  await p.evaluate(() => window.card.dispose());
+  await p.close();
+});
+
 await check(`examples/35-drt-js: bare drt prints its usage, drt repl completes and colours its lines, the panels show its variables${withAloelite ? ', files' : ''} and what it spawns`, async () => {
   // Served from the example's directory with dist/drt.min.js (and aloelite, when built) in place of the copies its README makes.
   const dir = path.resolve(here, '../../../examples/35-drt-js');

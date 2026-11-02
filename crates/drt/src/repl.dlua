@@ -248,6 +248,25 @@ while true do
   elseif type(line) == 'table' and line.served then
     printed = {}
     env.print = served_print
+  elseif type(line) == 'table' and type(line.load) == 'string' then
+    -- `:load <path>`: a whole file into this environment, as `dofile`
+    -- would put it, named by its file so an error says where. A file is
+    -- a chunk, never an expression, so there is no `return` probe here.
+    local chunk, err = load(line.load, '=' .. (line.name or 'load'), 't', env)
+    if not chunk then
+      answer({ok = false, text = tostring(err)})
+    else
+      local r = table.pack(xpcall(chunk, on_error))
+      if not r[1] then
+        answer({ok = false, text = tostring(r[2])})
+      elseif r.n > 1 then
+        local parts = {}
+        for i = 2, r.n do parts[#parts + 1] = show(r[i]) end
+        answer({ok = true, text = table.concat(parts, '\t')})
+      else
+        answer({ok = true})
+      end
+    end
   elseif type(line) ~= 'string' then
     answer({ok = false, text = 'the repl expects a line of source'})
   else

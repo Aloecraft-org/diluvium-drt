@@ -116,6 +116,20 @@ releases:
       `doc/P2P.md` and `doc/DRT-Signalling.md`.
     added:
       - |
+        **A kernel on a page is a REPL with a config (#105).** `kernel(sink,
+        backings, config)` and `terminal(el, { backings, config })` take
+        the root config as an object of the JSON file's shape, and every
+        `drt run` and `drt repl` typed at that kernel runs under it with no
+        `--config` on the line; a `--config` on the line names another
+        and wins. `terminal(el, { repl: true })` opens straight into `drt
+        repl` at `dv> ` instead of the `$ ` shell, which stays the default
+        for typing README command lines. The REPL gained `:run <path>`,
+        `drt run <path>` from the prompt under the session's config with
+        the prompt back when it ends (^C stops it in a page), and `:load
+        <path>`, a file evaluated into the session like `dofile`; `:help`
+        lists both. A page's REPL now answers the colon commands at all:
+        `:help`, `:quit` and the rest went to the guest as source before.
+      - |
         **A match server shows its operator what it is doing.** `drt p2p
         --match --status-token-file <file>` answers `GET /v1/status` for a
         request bearing that token: uptime, names held and whether each is
