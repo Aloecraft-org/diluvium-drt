@@ -15,9 +15,12 @@ export function startTerminal(drt, element) {
     get cols() { return terminal.cols; },
     get rows() { return terminal.rows; },
   });
-  const ask = async (prompt) => {
+  // A REPL line is code: coloured as it is typed, and Tab completes the
+  // guest's names. A `$ ` line is a command, so neither applies.
+  const ask = async (prompt, session) => {
+    editor.setCandidates(session ? session.names() : []);
     prompting = true;
-    const { line } = await editor.readLine(prompt);
+    const { line } = await editor.readLine(prompt, session !== null);
     prompting = false;
     return line;
   };
@@ -29,7 +32,7 @@ export function startTerminal(drt, element) {
       const step = session.tick();
       if (step.done || cli.stop) break;
       if (step.wantsInput) {
-        const line = await ask(step.continuing ? '>> ' : 'dv> ');
+        const line = await ask(step.continuing ? '>> ' : 'dv> ', session);
         if (line === undefined) break;   // ^C or ^D at the REPL ends it
         session.feed(line);
       } else await new Promise((r) => setTimeout(r, step.sleepMs));
@@ -42,7 +45,7 @@ export function startTerminal(drt, element) {
   (async () => {
     await run(['drt']);
     for (;;) {
-      const argv = ((await ask('$ ')) ?? '').trim().split(/\s+/);
+      const argv = ((await ask('$ ', null)) ?? '').trim().split(/\s+/);
       if (argv[0] === 'drt') await run(argv);
       else if (argv[0]) terminal.write(`${argv[0]}: command not found\n`);
     }
