@@ -159,6 +159,12 @@ pub struct Args {
     /// write; without, whoever reaches the port may read and write.
     #[arg(long, value_name = "DIR")]
     pub kv: Option<PathBuf>,
+    /// With --match: serve GET /v1/status, what the server holds now
+    /// (names, topics, calls, kv), to a request carrying Authorization:
+    /// Bearer <the token in this file>. Without it there is no status.
+    /// The token is 16 or more of A-Z, a-z, 0-9 and -._~+/=.
+    #[arg(long = "status-token-file", value_name = "FILE")]
+    pub status_token_file: Option<PathBuf>,
     /// Trust this PEM certificate beside the public roots, for a signalling
     /// server behind an internal CA. Repeatable; added, never substituted.
     #[arg(long = "extra-root", value_name = "PEM")]
@@ -232,6 +238,9 @@ pub struct MatchRole {
     pub topics: Option<PathBuf>,
     /// `--kv`: the directory the kv database lives in; none, no kv.
     pub kv: Option<PathBuf>,
+    /// `--status-token-file`, read: what `GET /v1/status` takes; none, no
+    /// status.
+    pub status_token: Option<matchmaker::StatusToken>,
 }
 
 /// The four roles (`doc/P2P.md` §2).
@@ -267,6 +276,7 @@ fn spelled(key: &str, from: From) -> String {
             "all_ports" => "`-A`".to_string(),
             "headers" => "`--H`".to_string(),
             "match" => "`--match`".to_string(),
+            "status_token" => "`--status-token-file`".to_string(),
             other => format!("`--{}`", other.replace('_', "-")),
         },
     }
@@ -370,6 +380,16 @@ pub fn resolve_with(
     let capacity = pick(flags.capacity.as_ref(), f.capacity.as_ref());
     let topics = pick(flags.topics.as_ref(), f.topics.as_ref());
     let kv = pick(flags.kv.as_ref(), f.kv.as_ref());
+    // A flag names a file; the block's key is a Secret. Read only for a
+    // match, so another role's refusal never reads it.
+    let status_token = match (&flags.status_token_file, &f.status_token) {
+        (Some(path), _) => Some((
+            Secret::From(drt_config::secret::Source::File(path.clone())),
+            From::Flag,
+        )),
+        (None, Some(secret)) => Some((secret.clone(), From::File)),
+        (None, None) => None,
+    };
     let authorized_keys = pick(flags.authorized_keys.as_ref(), f.authorized_keys.as_ref());
     let (extra_roots, extra_roots_key) = if !flags.extra_root.is_empty() {
         (flags.extra_root.clone(), "--extra-root")
@@ -441,6 +461,11 @@ pub fn resolve_with(
             belongs("capacity", "a match", capacity.as_ref().map(|(_, s)| *s))?;
             belongs("topics", "a match", topics.as_ref().map(|(_, s)| *s))?;
             belongs("kv", "a match", kv.as_ref().map(|(_, s)| *s))?;
+            belongs(
+                "status_token",
+                "a match",
+                status_token.as_ref().map(|(_, s)| *s),
+            )?;
             belongs(
                 "authorized_keys",
                 "a park or a listen",
@@ -527,6 +552,11 @@ pub fn resolve_with(
             belongs("capacity", "a match", capacity.as_ref().map(|(_, s)| *s))?;
             belongs("topics", "a match", topics.as_ref().map(|(_, s)| *s))?;
             belongs("kv", "a match", kv.as_ref().map(|(_, s)| *s))?;
+            belongs(
+                "status_token",
+                "a match",
+                status_token.as_ref().map(|(_, s)| *s),
+            )?;
             if relay.is_some() {
                 return Err("--relay beside --park (\"answer for me\") is not built yet; a park that cannot use UDP holds a wss:// leg instead (--park wss://…)".into());
             }
@@ -564,6 +594,11 @@ pub fn resolve_with(
             belongs("capacity", "a match", capacity.as_ref().map(|(_, s)| *s))?;
             belongs("topics", "a match", topics.as_ref().map(|(_, s)| *s))?;
             belongs("kv", "a match", kv.as_ref().map(|(_, s)| *s))?;
+            belongs(
+                "status_token",
+                "a match",
+                status_token.as_ref().map(|(_, s)| *s),
+            )?;
             belongs("relay", "a call or a park", from(&relay))?;
             if let Some(from) = headers_from {
                 return Err(format!("{} belongs with a call, a park or a match's callers; a listen sends no request", spelled("headers", from)));
@@ -617,6 +652,12 @@ pub fn resolve_with(
                 capacity: capacity.map(|(c, _)| c).unwrap_or(256),
                 topics: topics.map(|(t, _)| t),
                 kv: kv.map(|(dir, _)| dir),
+                status_token: status_token
+                    .map(|(secret, from)| {
+                        let what = spelled("status_token", from);
+                        matchmaker::StatusToken::parse(&secret.resolve(&what, prompt)?, &what)
+                    })
+                    .transpose()?,
             })
         }
         _ => {
@@ -1071,6 +1112,50 @@ mod tests {
             .headers
             .iter()
             .any(|(n, v)| n == "drt-caller-token" && v == "from-flag"));
+    }
+
+    /// A match's status token: the block's key is a Secret, the flag names
+    /// a file and wins; another role naming either is refused by name, and
+    /// a short token by its rule.
+    #[test]
+    fn a_status_token_is_a_secret_in_the_block_and_a_file_on_the_flag() {
+        std::env::set_var("DRT_TEST_STATUS_TOKEN", "status-token-from-env");
+        let file = cfg(r#"{"commands": {"p2p": {"match": 8443,
+            "status_token": {"env": "DRT_TEST_STATUS_TOKEN"}}}}"#);
+        let Ok(Role::Match(m)) = role(&file, Args::default()) else {
+            panic!()
+        };
+        assert_eq!(m.status_token.unwrap().0, "status-token-from-env");
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("token");
+        std::fs::write(&path, "status-token-from-file\n").unwrap();
+        let flag = Args {
+            status_token_file: Some(path.clone()),
+            ..Args::default()
+        };
+        let Ok(Role::Match(m)) = role(&file, flag) else {
+            panic!()
+        };
+        assert_eq!(m.status_token.as_ref().unwrap().0, "status-token-from-file");
+        assert_eq!(format!("{:?}", m.status_token), "Some(StatusToken(..))");
+
+        let e = role(
+            &cfg(r#"{"commands": {"p2p": {"listen": 5000, "status_token": "status-token-0123456"}}}"#),
+            Args::default(),
+        )
+        .unwrap_err();
+        assert!(
+            e.contains("`commands.p2p.status_token` in the config belongs with a match"),
+            "{e}"
+        );
+
+        let e = role(
+            &cfg(r#"{"commands": {"p2p": {"match": 8443, "status_token": "short"}}}"#),
+            Args::default(),
+        )
+        .unwrap_err();
+        assert!(e.contains("16 or more"), "{e}");
     }
 
     /// `default`, then the block, then the flag: each replaces the one

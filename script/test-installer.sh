@@ -28,6 +28,8 @@ release() {  # $1 = tag; writes fake binaries and their sums
         printf '#!/bin/sh\n[ "${1:-}" != completions ] || { echo "# %s completion for $2"; exit; }\necho "%s %s"\n' "$NAME" "$NAME" "${1#v}" > "$M/$1/$a"
         chmod +x "$M/$1/$a"
     done
+    # The status page arrived after v1.0.0.
+    [ "$1" = v1.0.0 ] || printf '<!doctype html><title>status %s</title>\n' "$1" > "$M/$1/match-status.html"
     (cd "$M/$1" && sha256sum -- * > SHA256SUMS.txt 2>/dev/null || shasum -a 256 -- * > SHA256SUMS.txt)
 }
 release v1.0.0
@@ -35,7 +37,7 @@ release v1.1.0
 release v1.2.0-dev.1
 release v1.0.1
 # v1.0.1's sums name other bytes: the install must refuse it.
-for a in $ASSETS; do echo "tampered" >> "$M/v1.0.1/$a"; done
+for a in $ASSETS match-status.html; do echo "tampered" >> "$M/v1.0.1/$a"; done
 
 cat > "$M/releases.json" <<'EOF'
 {
@@ -133,5 +135,14 @@ same "the completions with it" "$left" ""
 mkdir "$T/here"
 (cd "$T/here" && $SH "$(stamp get v1.0.0)" >/dev/null)
 same "get.sh saves its release here" "$("$T/here/$NAME" --version)" "$NAME 1.0.0"
+
+mkdir "$T/page"
+(cd "$T/page" && $SH "$(stamp get v1.1.0)" status-page >/dev/null)
+same "status-page saves its release's page here" "$(cat "$T/page/match-status.html")" "<!doctype html><title>status v1.1.0</title>"
+(cd "$T/page" && $SH "$SCRIPT" status-page dev >/dev/null)
+has  "status-page takes a version" "$(cat "$T/page/match-status.html")" "v1.2.0-dev.1"
+fails_with "status-page: a release before the page says so" "releases before the status page" sh -c "cd '$T/page' && $SH '$SCRIPT' status-page v1.0.0"
+fails_with "status-page: a checksum mismatch refuses" "checksum mismatch" sh -c "cd '$T/page' && $SH '$SCRIPT' status-page v1.0.1"
+has  "status-page is in the usage" "$($SH "$SCRIPT" --help)" "status-page [VERSION]"
 
 if [ "$fails" -eq 0 ]; then echo "PASS ($SH)"; else echo "$fails failed ($SH)"; exit 1; fi

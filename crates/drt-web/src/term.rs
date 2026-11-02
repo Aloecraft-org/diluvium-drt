@@ -16,7 +16,9 @@
 //!   memory one; [`Term::with_sink`] gives a terminal output of its own;
 //!   [`Term::exec_to`] runs one command into a sink of the caller's;
 //!   [`Term::with_backings`] hands it connectors from the page
-//!   ([`Backing`]), each made fresh for every command.
+//!   ([`Backing`]), each made fresh for every command;
+//!   [`Term::with_config`] gives it the root config every command runs
+//!   under when its line names no `--config` (issue #105).
 //! - [`Session`]: one command, ticked to completion.
 //!   [`Session::enter`] for host calls that reach the runtime between
 //!   ticks.
@@ -53,6 +55,7 @@ use drt::config;
 use drt::drive::{Next, Solo};
 use drt::repl::Repl;
 use drt::start::DeployDriver;
+use drt_config::RootConfig;
 use drt_connector::{Connector, Dispatcher};
 use drt_platform::fs::{Backend, MemFs};
 use drt_platform::stdio::{self, Fd};
@@ -81,6 +84,7 @@ pub struct Term {
     fs: Arc<dyn PageFs>,
     sink: Option<Sink>,
     backings: BTreeMap<String, Backing>,
+    config: Option<RootConfig>,
 }
 
 /// A connector the page hands in, by the family a guest calls. A maker
@@ -110,6 +114,7 @@ impl Term {
             fs,
             sink: None,
             backings: BTreeMap::new(),
+            config: None,
         }
     }
 
@@ -131,6 +136,25 @@ impl Term {
         Term { backings, ..self }
     }
 
+    /// This terminal with a root config of its own: what every `drt run`
+    /// and `drt repl` typed at it runs under when the line names no
+    /// `--config`, exactly as `--config <that file>` would have it (the
+    /// `fs.json` a page used to write into every kernel, as a value). A
+    /// `--config` on a line names another and wins for that command. With
+    /// a config there are no zero-ceremony defaults: it names what is
+    /// wired, as a file does.
+    pub fn with_config(self, config: RootConfig) -> Self {
+        Term {
+            config: Some(config),
+            ..self
+        }
+    }
+
+    /// The config the terminal was built with, if one.
+    pub fn config(&self) -> Option<&RootConfig> {
+        self.config.as_ref()
+    }
+
     /// This terminal over `fs` instead of its memory filesystem: every
     /// program, config and granted directory its commands open is read
     /// there. Installed as the process's own, as [`Term::new`]'s is.
@@ -141,10 +165,7 @@ impl Term {
 
     /// One command's connectors, made from the backings.
     fn supplied(&self) -> cli::Supplied {
-        self.backings
-            .iter()
-            .map(|(family, make)| (family.clone(), make()))
-            .collect()
+        make_supplied(&self.backings)
     }
 
     /// The filesystem, to seed and to read back.
@@ -197,13 +218,14 @@ impl Term {
                 };
             }
         };
-        let (config, dispatcher) = match cli::assemble_with(&cli, &self.supplied()) {
-            Ok(pair) => pair,
-            Err(e) => {
-                say(Fd::Stderr, &format!("drt: {e}\n"));
-                return Kind::Exited(1);
-            }
-        };
+        let (config, dispatcher) =
+            match cli::assemble_under(&cli, self.config.as_ref(), &self.supplied()) {
+                Ok(pair) => pair,
+                Err(e) => {
+                    say(Fd::Stderr, &format!("drt: {e}\n"));
+                    return Kind::Exited(1);
+                }
+            };
         match cli.command {
             Command::Run {
                 ref target,
@@ -319,6 +341,10 @@ impl Term {
                 } else {
                     Repl::new
                 };
+                // `:run` wires a program's connectors from the same
+                // backings each command does, inside this session's
+                // context, since the line that typed it was fed there.
+                let backings = self.backings.clone();
                 match build(
                     Arc::new(dispatcher),
                     config::repl_ceiling(&config),
@@ -326,7 +352,11 @@ impl Term {
                 ) {
                     Ok(repl) => {
                         say(Fd::Stderr, &format!("{}\n", repl.banner()));
-                        Kind::Repl(repl)
+                        Kind::Repl(Box::new(
+                            repl.with_run(cli::run_under(&config, move || {
+                                make_supplied(&backings)
+                            })),
+                        ))
                     }
                     Err(e) => {
                         say(Fd::Stderr, &format!("drt repl: {e}\n"));
@@ -371,6 +401,15 @@ impl Term {
             }
         }
     }
+}
+
+/// Connectors for one command (or one `:run` program), made from the
+/// backings: each gets its own, as each `drt` invocation in a shell would.
+fn make_supplied(backings: &BTreeMap<String, Backing>) -> cli::Supplied {
+    backings
+        .iter()
+        .map(|(family, make)| (family.clone(), make()))
+        .collect()
 }
 
 // depth: a terminal's filesystem, as the page sees it
@@ -503,7 +542,9 @@ enum Kind {
         solo: Solo,
         dispatcher: Arc<Dispatcher>,
     },
-    Repl(Repl),
+    /// Boxed: a REPL carries its swarm and what `:run` runs, and a
+    /// session that is not one should not pay for it.
+    Repl(Box<Repl>),
     Start(DeployDriver),
     Exited(i32),
 }
@@ -606,14 +647,27 @@ impl Session {
         step
     }
 
-    /// Feed the REPL one line. Returns whether anything was sent (a blank
-    /// line outside a continuation is not). Only a `repl` session takes
-    /// input.
+    /// Feed the REPL one line as a person typed it: a colon command the
+    /// REPL answers itself (`:help`, `:run <path>`, ...; `drt::repl`'s
+    /// `META_HELP`) or source for the guest. Returns whether anything was
+    /// sent or run (a blank line outside a continuation is not). Only a
+    /// `repl` session takes input.
     pub fn feed(&mut self, line: &str) -> Result<bool, String> {
         let _entered = self.context.enter();
         match &mut self.kind {
-            Kind::Repl(repl) => repl.feed(line),
+            Kind::Repl(repl) => repl.line(line),
             _ => Err("this session takes no input".into()),
+        }
+    }
+
+    /// Stop the program the REPL's `:run` started, if one is running, and
+    /// say whether there was one: what ^C means while it has the
+    /// terminal. The REPL itself goes on.
+    pub fn interrupt(&mut self) -> bool {
+        let _entered = self.context.enter();
+        match &mut self.kind {
+            Kind::Repl(repl) => repl.interrupt(),
+            _ => false,
         }
     }
 

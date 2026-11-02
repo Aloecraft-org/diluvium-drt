@@ -648,3 +648,204 @@ fn two_terminals_are_two_kernels_with_their_own_files_and_output() {
     assert_eq!(text(&page, Fd::Stderr), "after");
     uninstall_sink();
 }
+
+/// Tick through sleeps until the REPL asks for a line again: what a page
+/// does while a `:run` program has the terminal.
+fn until_input(session: &mut drt_web::Session) -> Step {
+    for _ in 0..10_000 {
+        match session.tick() {
+            Step::Sleep(d) => std::thread::sleep(d.min(Duration::from_millis(5))),
+            step => return step,
+        }
+    }
+    panic!("the session never asked for a line")
+}
+
+/// A kernel built with a config (issue #105): every command typed at it
+/// with no `--config` runs under that config, as `--config <file>` would
+/// have it; a `--config` on the line names another and wins. The REPL's
+/// `:run <path>` runs a file from the kernel's filesystem under the same
+/// config, with the prompt back when it ends, and `:load` evaluates one
+/// into the session.
+#[test]
+fn a_kernels_config_is_every_commands_config_and_the_repl_runs_files() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let seen = capture();
+    let config = drt::config::parse(
+        r#"{"caps": [{"capability": "host:fs/*"}],
+            "connectors": {"fs": {"scope": {"scope": "/app/workspace", "access": "readwrite"}}}}"#,
+        "config",
+    )
+    .expect("the config parses");
+    let term = Term::new().with_config(config);
+    term.fs().add_dir("/app/workspace");
+    term.fs().add_file(
+        "/app/app.dlua",
+        "host.fs.write('from-run.txt', 'ran under the kernel config')",
+    );
+    term.fs().add_file(
+        "/app/lib.dlua",
+        "function add(a, b) return a + b end\nreturn 'loaded'",
+    );
+    term.fs().add_file(
+        "/app/other.json",
+        r#"{"caps": [{"capability": "host:time"}]}"#,
+    );
+    term.fs().set_cwd("/app");
+
+    // No `--config` on the line: the kernel's config is in force.
+    let mut session = term.exec(&argv(&["drt", "run", "app.dlua"]));
+    assert_eq!(run_to_exit(&mut session), 0, "{}", text(&seen, Fd::Stderr));
+    assert_eq!(
+        file(&term, "/app/workspace/from-run.txt"),
+        "ran under the kernel config"
+    );
+
+    // `--config` on the line names another config, which grants no fs.
+    let mut session = term.exec(&argv(&["drt", "run", "--config", "other.json", "app.dlua"]));
+    assert_eq!(run_to_exit(&mut session), 1);
+    assert!(
+        text(&seen, Fd::Stderr).contains("denied"),
+        "{}",
+        text(&seen, Fd::Stderr)
+    );
+
+    // The REPL, under the kernel's config: `:run` a file, `:load` another.
+    seen.borrow_mut().clear();
+    term.fs().add_file(
+        "/app/app.dlua",
+        "host.fs.write('from-repl.txt', 'ran from the prompt')",
+    );
+    let mut session = term.exec(&argv(&["drt", "repl"]));
+    assert_eq!(
+        until_input(&mut session),
+        Step::Input {
+            continuing: false,
+            busy: false
+        }
+    );
+    assert!(session.feed("x = 40").unwrap());
+    assert_eq!(
+        until_input(&mut session),
+        Step::Input {
+            continuing: false,
+            busy: false
+        }
+    );
+    assert!(session.feed(":run app.dlua").unwrap());
+    assert_eq!(
+        until_input(&mut session),
+        Step::Input {
+            continuing: false,
+            busy: false
+        }
+    );
+    assert_eq!(
+        file(&term, "/app/workspace/from-repl.txt"),
+        "ran from the prompt"
+    );
+    assert!(session.feed(":load lib.dlua").unwrap());
+    assert_eq!(
+        until_input(&mut session),
+        Step::Input {
+            continuing: false,
+            busy: false
+        }
+    );
+    assert!(session.feed("add(x, 2)").unwrap());
+    assert_eq!(
+        until_input(&mut session),
+        Step::Input {
+            continuing: false,
+            busy: false
+        }
+    );
+    assert_eq!(text(&seen, Fd::Stdout), "\"loaded\"\n42\n");
+    // A file that is not there is said so by name, and the prompt is back.
+    assert!(session.feed(":run nope.dlua").unwrap());
+    assert_eq!(
+        until_input(&mut session),
+        Step::Input {
+            continuing: false,
+            busy: false
+        }
+    );
+    assert!(
+        text(&seen, Fd::Stderr).contains(":run: cannot read nope.dlua"),
+        "{}",
+        text(&seen, Fd::Stderr)
+    );
+    // `:help` lists them, and `:quit` ends the session.
+    assert!(session.feed(":help").unwrap());
+    assert_eq!(
+        until_input(&mut session),
+        Step::Input {
+            continuing: false,
+            busy: false
+        }
+    );
+    assert!(text(&seen, Fd::Stderr).contains(":run <path>"));
+    assert!(session.feed(":quit").unwrap());
+    assert_eq!(until_input(&mut session), Step::Exit(0));
+    assert!(session.is_over());
+    uninstall_sink();
+}
+
+/// A `:run` program that parks is stopped by `interrupt`, what ^C means
+/// while it has the terminal, and the REPL is at its prompt again with
+/// what it had.
+#[test]
+fn interrupt_stops_a_run_program_and_the_repl_goes_on() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let seen = capture();
+    let config = drt::config::parse(r#"{"caps": [{"capability": "host:time"}]}"#, "config")
+        .expect("the config parses");
+    let term = Term::new().with_config(config);
+    term.fs()
+        // Parked with a deadline far off: a sleep, not a stuck program.
+        .add_file(
+            "/forever.dlua",
+            "local q = queue.declare('never', {capacity = 1}) queue.wait({q}, 600000)",
+        );
+    let mut session = term.exec(&argv(&["drt", "repl"]));
+    assert_eq!(
+        until_input(&mut session),
+        Step::Input {
+            continuing: false,
+            busy: false
+        }
+    );
+    assert!(session.feed("x = 42").unwrap());
+    assert_eq!(
+        until_input(&mut session),
+        Step::Input {
+            continuing: false,
+            busy: false
+        }
+    );
+    assert!(!session.interrupt(), "nothing to interrupt at the prompt");
+    assert!(session.feed(":run /forever.dlua").unwrap());
+    assert!(
+        matches!(session.tick(), Step::Sleep(_)),
+        "the program has the terminal"
+    );
+    assert!(session.interrupt());
+    assert!(text(&seen, Fd::Stderr).contains(":run: interrupted"));
+    assert_eq!(
+        until_input(&mut session),
+        Step::Input {
+            continuing: false,
+            busy: false
+        }
+    );
+    assert!(session.feed("x").unwrap());
+    assert_eq!(
+        until_input(&mut session),
+        Step::Input {
+            continuing: false,
+            busy: false
+        }
+    );
+    assert_eq!(text(&seen, Fd::Stdout), "42\n");
+    uninstall_sink();
+}

@@ -23,11 +23,15 @@
 //     on first use. `ssh(stream | wsUrl, pinned)` is `Ssh.connect` after it.
 //   - `loadRuntime()` -> crates/drt-web's exports (DrtTerm, DrtSwarm, ...),
 //     unpacked on first use.
-//   - `kernel(sink, backings)` -> a DrtTerm: one kernel, writing to
-//     `sink(fd, bytes)`, with the connectors `backings` hands it by family
-//     (crates/drt-web/src/js.rs: `fs` the kernel's filesystem, `net` a
-//     transport, any other family a `{ call }` object). Each kernel takes its own; `new DrtSwarm(max,
-//     spawns, config, backings)` takes the same map.
+//   - `kernel(sink, backings, config)` -> a DrtTerm: one kernel, writing
+//     to `sink(fd, bytes)`, with the connectors `backings` hands it by
+//     family (crates/drt-web/src/js.rs: `fs` the kernel's filesystem,
+//     `net` a transport, any other family a `{ call }` object) and the
+//     root config `config` gives it, an object of the JSON file's shape
+//     that every `drt run` and `drt repl` in the kernel runs under with
+//     no `--config` on the line. Each kernel takes its own; `new
+//     DrtSwarm(max, spawns, config, backings)` takes the same map, and
+//     its config as JSON text.
 //   - `bus()` -> an in-page `net` transport (bus.mjs). One bus handed to
 //     several kernels lets them reach each other by name.
 //   - `aloelite.open(engine, options)` and `aloelite.attach(file,
@@ -37,6 +41,7 @@
 //   - `terminal(elementOrId, options)` -> the drt CLI live in that
 //     element: an xterm.js terminal (bundled) over a kernel, with the
 //     native REPL's line editor (terminal.mjs). Options: `backings`,
+//     `config`, `repl` (open in `drt repl` rather than the `$ ` shell),
 //     `prompt`, `banner`, `ssh`, `xterm`, `fit`.
 //   - `kv(server, topic, options)` -> { get, put, delete, list, watch }:
 //     the key-value store of doc/DRT-Signalling.md §10. Options: `token`,
@@ -206,9 +211,9 @@ export function loadRuntime() {
   return webReady;
 }
 
-export async function kernel(sink, backings) {
+export async function kernel(sink, backings, config) {
   const { DrtTerm } = await loadRuntime();
-  return new DrtTerm(sink, backings);
+  return new DrtTerm(sink, backings, config);
 }
 
 // depth: the key-value store (doc/DRT-Signalling.md §10)

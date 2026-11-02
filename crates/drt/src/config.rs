@@ -39,6 +39,21 @@ pub fn load(path: Option<&Path>) -> Result<RootConfig, String> {
     };
     let text = drt_platform::fs::read_to_string(path)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let mut config = parse(&text, &path.display().to_string())?;
+    resolve_program(&mut config, path);
+    resolve_manifests(&mut config, path);
+    resolve_identity(&mut config, path);
+    Ok(config)
+}
+
+/// A root config from its JSON text, with no file behind it: what [`load`]
+/// reads once it has the text, and what a page hands a kernel as an object
+/// (`drt-web`'s `DrtTerm`, issue #105). `origin` is what a refusal or a
+/// deprecation names in place of a path. With no file there is no
+/// directory to resolve a relative `program`, `manifest` or
+/// `identity_file` against, so they stay relative to the working
+/// directory, which is where a page's kernel reads them.
+pub fn parse(text: &str, origin: &str) -> Result<RootConfig, String> {
     // A `_`-prefixed key is a comment, at every depth and in every kind of
     // block (`drt_config::comments`), and every other key must be one the
     // reader knows: the refusal names the key, the block it sits in, and
@@ -53,24 +68,21 @@ pub fn load(path: Option<&Path>) -> Result<RootConfig, String> {
     // the corpus snapshots hold the loader to. The path tracker sits outside
     // the filter, so a refusal names where it sits (`relay.labels.abc`) as
     // well as the line and column serde_json puts on it.
-    let mut json = serde_json::Deserializer::from_str(&text);
-    let mut config: RootConfig =
+    let mut json = serde_json::Deserializer::from_str(text);
+    let config: RootConfig =
         serde_path_to_error::deserialize(drt_config::comments::Strip(&mut json))
-            .map_err(|e| format!("{}: {}", path.display(), located(&text, e)))?;
-    json.end().map_err(|e| format!("{}: {e}", path.display()))?;
+            .map_err(|e| format!("{origin}: {}", located(text, e)))?;
+    json.end().map_err(|e| format!("{origin}: {e}"))?;
     // Here rather than only at startup, so a refusal names the file it
     // refused. A deployment directory holds several of these and
     // "relay.labels.xps needs both keys" is a different message when it
     // says which file's `xps`.
-    validate(&config).map_err(|e| format!("{}: {e}", path.display()))?;
+    validate(&config).map_err(|e| format!("{origin}: {e}"))?;
     // Every deprecated spelling still reads as it did, for one release; the
     // operator is told the new one each time the file is read.
     for warning in config.deprecations() {
-        eprintln!("drt: {}: {warning}", path.display());
+        eprintln!("drt: {origin}: {warning}");
     }
-    resolve_program(&mut config, path);
-    resolve_manifests(&mut config, path);
-    resolve_identity(&mut config, path);
     Ok(config)
 }
 

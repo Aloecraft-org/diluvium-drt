@@ -1025,6 +1025,130 @@ fn a_match_server_without_topics_says_so_and_a_bad_file_stops_it() {
     );
 }
 
+/// `--status-token-file` turns on `GET /v1/status` (doc/DRT-Signalling.md
+/// §11): it takes that token as a bearer and nothing else, names what the
+/// server holds without printing any token, and answers a page's
+/// preflight. Without the flag there is no status, and a short token stops
+/// the server before it listens.
+#[test]
+fn the_match_server_status_takes_its_token_and_shows_names_without_tokens() {
+    let dir = tempfile::tempdir().unwrap();
+    let token = "status-token-0123456789";
+    let file = dir.path().join("status");
+    std::fs::write(&file, format!("{token}\n")).unwrap();
+    let topics = dir.path().join("topics.json");
+    std::fs::write(
+        &topics,
+        r#"{"topics":{"lab":{"tokens":[{"token":"lab-park","roles":["park"]}]}}}"#,
+    )
+    .unwrap();
+    let server = Match::start_with(
+        4,
+        &[
+            "--status-token-file",
+            file.to_str().unwrap(),
+            "--topics",
+            topics.to_str().unwrap(),
+        ],
+    );
+    let bearer = |t: &str| format!("Authorization: Bearer {t}\r\n");
+    let status = |headers: &str| request_with(&server.base, "GET", "/v1/status", headers, "");
+
+    assert_eq!(status("").0, 401);
+    assert_eq!(status(&bearer("not-the-status-token")).0, 403);
+    // `?k=` is a topic token's carrier, not the status token's.
+    assert_eq!(server.get(&format!("/v1/status?k={token}")).0, 401);
+
+    let (code, _) = request_with(
+        &server.base,
+        "GET",
+        "/v1/mypc/calls",
+        &bearer("parker-secret"),
+        "",
+    );
+    assert_eq!(code, 200);
+    let (code, _) = request_with(
+        &server.base,
+        "GET",
+        "/v1/lab/box/calls",
+        &bearer("lab-park"),
+        "",
+    );
+    assert_eq!(code, 200);
+
+    let (code, body) = status(&bearer(token));
+    assert_eq!(code, 200, "{body}");
+    assert!(
+        !body.contains("parker-secret") && !body.contains("lab-park") && !body.contains(token),
+        "{body}"
+    );
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["server"]["capacity"], 4);
+    assert_eq!(v["server"]["held"], 2);
+    assert_eq!(v["server"]["topics"], true);
+    assert_eq!(v["server"]["kv"], false);
+    assert_eq!(v["kv"], serde_json::Value::Null);
+    let names: Vec<(String, String, bool)> = v["names"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| {
+            (
+                n["topic"].as_str().unwrap_or("").to_string(),
+                n["name"].as_str().unwrap().to_string(),
+                n["present"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            (String::new(), "mypc".to_string(), true),
+            ("lab".to_string(), "box".to_string(), true),
+        ]
+    );
+    assert_eq!(v["names"][0]["holder"], "token");
+    assert_eq!(v["topics"][0]["topic"], "lab");
+    assert_eq!(v["topics"][0]["present"], 1);
+    assert!(v["counts"]["requests"].as_u64().unwrap() >= 6, "{body}");
+    assert!(v["replies"]["403"].as_u64().unwrap() >= 1, "{body}");
+
+    // A page on another origin (or file://) asks first.
+    let (code, _) = request_with(
+        &server.base,
+        "OPTIONS",
+        "/v1/status",
+        "Origin: null\r\nAccess-Control-Request-Headers: authorization\r\n",
+        "",
+    );
+    assert_eq!(code, 204);
+    drop(server);
+
+    let plain = Match::start(2);
+    let (code, body) = request_with(&plain.base, "GET", "/v1/status", &bearer(token), "");
+    assert_eq!(
+        (code, body.contains("--status-token-file")),
+        (404, true),
+        "{body}"
+    );
+    drop(plain);
+
+    std::fs::write(&file, "short").unwrap();
+    let out = drt()
+        .args([
+            "p2p",
+            "--match",
+            "0",
+            "--status-token-file",
+            file.to_str().unwrap(),
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && err.contains("16 or more"), "{err}");
+}
+
 /// The answerer's `--accept` travels as DRT-Accept, and the match server
 /// refuses a caller outside it by the address its listener saw, before
 /// the parked side ever hears of the call.

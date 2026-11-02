@@ -19,7 +19,9 @@
 //            passed so the host can refresh Tab's candidates from it and
 //            abandon a line on ^C -- both the guest's business, asked
 //            between lines (doc/Wasm.md §5). stop() polled
-//            between ticks: true ends the command with status 130 (^C).
+//            between ticks: true ends the command with status 130 (^C),
+//            unless the session is a REPL running a `:run` program, in
+//            which case that program is stopped and the REPL goes on.
 //            ssh(argv) -> Promise<status>, optional: what `drt ssh` runs.
 //            running(session | null), optional: told when a drt command's
 //            session starts and before it is freed.
@@ -76,7 +78,12 @@ export function makeShell({ term, write, sleep = wait }) {
     if (io.running) io.running(session);
     try {
       for (;;) {
-        if (io.stop && io.stop()) return 130;
+        if (io.stop && io.stop()) {
+          // ^C while the REPL's `:run` program has the terminal stops the
+          // program, as it would in a shell, and the prompt comes back.
+          if (session.interrupt && session.interrupt()) continue;
+          return 130;
+        }
         const next = session.tick();
         if (next.sleepMs !== undefined) {
           await sleep(next.sleepMs);

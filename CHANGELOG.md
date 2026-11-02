@@ -56,6 +56,28 @@ Underneath it the embedded core moves from 0.15.1 to
   both verbs, `{listen = ["ip:port", ...], open = <a ws scope>}`, and
   a verb it leaves out is refused. Node code that links with `net`
   in a page links unchanged between processes.
+- **A kernel on a page is a REPL with a config (#105).** `kernel(sink,
+  backings, config)` and `terminal(el, { backings, config })` take
+  the root config as an object of the JSON file's shape, and every
+  `drt run` and `drt repl` typed at that kernel runs under it with no
+  `--config` on the line; a `--config` on the line names another
+  and wins. `terminal(el, { repl: true })` opens straight into `drt
+  repl` at `dv> ` instead of the `$ ` shell, which stays the default
+  for typing README command lines. The REPL gained `:run <path>`,
+  `drt run <path>` from the prompt under the session's config with
+  the prompt back when it ends (^C stops it in a page), and `:load
+  <path>`, a file evaluated into the session like `dofile`; `:help`
+  lists both. A page's REPL now answers the colon commands at all:
+  `:help`, `:quit` and the rest went to the guest as source before.
+- **A match server shows its operator what it is doing.** `drt p2p
+  --match --status-token-file <file>` answers `GET /v1/status` for a
+  request bearing that token: uptime, names held and whether each is
+  present, calls waiting, topics, kv, and counts of requests, calls
+  and replies since start, naming holders by kind and never printing
+  a token (`doc/DRT-Signalling.md` §11). Off without the flag; the
+  `p2p` block's `status_token` takes a secret. `match-status.html`,
+  a new release asset that `get-drt.sh status-page` downloads and
+  verifies, renders it from `file://` or localhost.
 - **A REPL says what it defined, and example 35 shows it and its
   files.** `repl.dlua`'s names snapshot now carries each of the
   session's own names with its type and a short value, or a
@@ -989,6 +1011,12 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Fixed
 
+- **A release commit gets no dev build beside its release.** The
+  merge of a release-prep PR reached `main` before its tag, so
+  `dev-build.yml` cut a dev tag on the same commit the real Release
+  run was building. `script/release-commit.sh` recognises that commit
+  (newest changelog entry released, and tagged there or released by
+  it) and push and scheduled runs skip it; a dispatch still cuts.
 - **Several `DrtTerm`s in one page are separate kernels.** The page's
   filesystem and output sink were module-wide, so a second terminal
   took both: the first one's commands read the second one's files
