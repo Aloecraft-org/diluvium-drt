@@ -335,6 +335,38 @@ pub trait Instance: MaybeSend {
     fn host_token(&self) -> Option<u32> {
         None
     }
+
+    /// How many endpoint references this residency has bound with
+    /// `endpoint.bind`. Tokens run `1..=endpoint_count()`, in the order the
+    /// program first bound each reference; binding the same reference again
+    /// reuses its token.
+    ///
+    /// The engine reads nothing in a reference: it accepts any bytes the
+    /// guest's runtime hands it (which only a host can have minted, the core
+    /// refuses a guest-built one) and remembers them under a token, so what
+    /// a reference *means* stays the swarm's (`crate::refs`). Defaults to 0
+    /// for engines with no endpoint support, which then never route.
+    fn endpoint_count(&self) -> u32 {
+        0
+    }
+
+    /// The queue a bound endpoint drains through, or `None` when the program
+    /// has destroyed it. Popping this queue is how a message leaves the
+    /// instance for its far end.
+    fn endpoint_queue(&mut self, _token: u32) -> Option<QueueHandle> {
+        None
+    }
+
+    /// The reference bytes (the ext 0x02 payload) a token was bound to.
+    fn endpoint_ref(&self, _token: u32) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// Mark a bound endpoint's far end gone: every later push to it answers
+    /// "gone", and it never comes back (`dv_endpoint_close`).
+    fn endpoint_close(&mut self, _queue: QueueHandle) -> Result<(), EngineError> {
+        Ok(())
+    }
 }
 
 /// The dv ABI pair this build speaks, or `None` when it carries no engine.
@@ -418,6 +450,11 @@ pub mod diluvium_engine {
     struct DiluviumInstance {
         inner: diluvium::Instance,
         ids: Vec<diluvium::QueueId>,
+        /// The references this residency's program has bound, token - 1 as
+        /// the index. Shared with the bind handler the core calls from
+        /// inside `endpoint.bind`, which is why it is behind a lock: the
+        /// handler runs while the instance is mutably borrowed by `run`.
+        endpoints: std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
         /// The bounds this instance was loaded with, already resolved
         /// against its parent's. Held rather than dropped so
         /// [`DiluviumInstance::numeric_bounds`] can answer what was applied
@@ -427,6 +464,28 @@ pub mod diluvium_engine {
     }
 
     impl DiluviumInstance {
+        /// Accept every reference the guest binds and remember it under a
+        /// token, up to [`crate::MAX_ENDPOINTS`] distinct ones. A restored
+        /// instance starts with an empty table: the core's token map is host
+        /// state and does not ride a snapshot, so a woken program binds its
+        /// references again (the core adopts the queue it had, by name).
+        fn install_endpoint_handler(&mut self) {
+            let table = std::sync::Arc::clone(&self.endpoints);
+            self.inner.on_endpoint_bind(move |reference: &[u8]| {
+                let mut table = table
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(at) = table.iter().position(|r| r == reference) {
+                    return Some(at as u32 + 1);
+                }
+                if table.len() >= crate::MAX_ENDPOINTS {
+                    return None; // the guest sees "the host refused this reference"
+                }
+                table.push(reference.to_vec());
+                Some(table.len() as u32)
+            });
+        }
+
         /// Hand the instance's numeric bounds to the core
         /// (`dv_numeric_set_max_elements`, `dv_numeric_set_max_tier`).
         ///
@@ -616,9 +675,11 @@ pub mod diluvium_engine {
             let mut instance = DiluviumInstance {
                 inner,
                 ids: Vec::new(),
+                endpoints: Default::default(),
                 numeric: spec.numeric,
             };
             instance.apply_numeric();
+            instance.install_endpoint_handler();
             Ok(Box::new(instance))
         }
 
@@ -633,9 +694,11 @@ pub mod diluvium_engine {
             let mut instance = DiluviumInstance {
                 inner,
                 ids: Vec::new(),
+                endpoints: Default::default(),
                 numeric: spec.numeric,
             };
             instance.apply_numeric();
+            instance.install_endpoint_handler();
             Ok(Box::new(instance))
         }
     }
@@ -720,6 +783,31 @@ pub mod diluvium_engine {
 
         fn snapshot(&mut self, host_stamp: Option<&str>) -> Result<Vec<u8>, EngineError> {
             self.inner.snapshot(host_stamp).map_err(lift_error)
+        }
+
+        fn endpoint_count(&self) -> u32 {
+            self.endpoints
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len() as u32
+        }
+
+        fn endpoint_queue(&mut self, token: u32) -> Option<QueueHandle> {
+            let id = self.inner.endpoint_queue(token)?;
+            Some(self.intern(id))
+        }
+
+        fn endpoint_ref(&self, token: u32) -> Option<Vec<u8>> {
+            let table = self
+                .endpoints
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            table.get(token.checked_sub(1)? as usize).cloned()
+        }
+
+        fn endpoint_close(&mut self, queue: QueueHandle) -> Result<(), EngineError> {
+            let id = self.resolve(queue)?;
+            self.inner.endpoint_close(id).map_err(lift_error)
         }
     }
 }
