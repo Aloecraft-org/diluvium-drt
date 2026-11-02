@@ -444,10 +444,11 @@
     // read by b. Answers what each said and what each lists.
     async pageFs(backing) {
       let make = memoryFs;
+      let engine = null;
       if (backing === 'aloelite') {
-        const { default: initAloelite, Fs } = await import('./aloelite/aloelite_wasm.js');
-        await initAloelite();
-        make = (volume) => pageFs.attach(Fs.openMemory(), { volume });
+        engine = await import('./aloelite/aloelite_wasm.js');
+        await engine.default();
+        make = (volume) => pageFs.attach(engine.Fs.openMemory(), { volume });
       }
       const shared = make('shared');
       const own = make('own');
@@ -505,7 +506,23 @@
       try { new DrtTerm(() => {}, { fs: { read() {} } }).free(); } catch (e) { refused = String(e); }
       let swarm = null;
       try { new DrtSwarm(0, 0, undefined, { fs: shared }).free(); } catch (e) { swarm = String(e); }
+      // A memory file round-trips through its export: what one page wrote,
+      // a file opened from the bytes reads, and the mount it made is `active`.
+      let seeded = null;
+      let mountState = null;
+      if (engine) {
+        const first = await pageFs.open(engine, { store: 'memory' });
+        pageFs.attach(first, { volume: 'seed' }).write('/kept.txt', new TextEncoder().encode('kept in the image'), false);
+        mountState = first.fs.call('list_mounts', { volume: first.fs.call('resolve_volume_name', { name: 'seed' }) })[0]?.state ?? null;
+        const image = first.export();
+        first.close();
+        const second = await pageFs.open(engine, { store: 'memory', bytes: image });
+        seeded = new TextDecoder().decode(pageFs.attach(second, { volume: 'seed' }).read('/kept.txt'));
+        second.close();
+      }
       const out = {
+        seeded,
+        mountState,
         status,
         out: { a: a.out, b: b.out.slice(0, before), c: c.out, sql: a.out + b.out.slice(before) },
         filesAB: a.term.listFiles(),
