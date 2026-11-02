@@ -437,3 +437,23 @@ fn a_sender_that_hibernates_binds_again_and_keeps_reaching_its_peer() {
         .collect();
     assert_eq!(got, ["before", "after"]);
 }
+
+#[test]
+fn what_a_child_pushes_just_before_it_returns_still_arrives() {
+    let mut sw = swarm();
+    let last_words = r#"
+        local _, m = queue.wait({ queue.lookup("inbox") })
+        queue.push(endpoint.bind(m.peer, "peer"), { said = "goodbye" })
+    "#;
+    let code = root_program(
+        &[last_words, REPORTER],
+        r#"
+        queue.push(endpoint.bind(kids[1].ref, "to_first"), { peer = kids[2].ref })
+        "#,
+    );
+    let parent = root(&mut sw, &code);
+    settle(&mut sw, 8);
+    let got = drain(&mut sw, InstanceId(parent.0 + 2), "out");
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(text(&got[0], "said"), "goodbye");
+}

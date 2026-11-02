@@ -1128,6 +1128,9 @@ impl<H: SwarmHost> Swarm<H> {
                         (Driven::Faulted(msg), false) => ("faulted", Some(msg.clone())),
                         _ => ("exited", None),
                     };
+                    // What it pushed before it stopped still goes. A held
+                    // message, if any, is lost with the slot.
+                    self.route_slot(index);
                     self.kill_subtree(InstanceId(id), false);
                     if parent != 0 {
                         self.emit_stop(parent, what, id, why.as_deref(), touched_fast);
@@ -1517,8 +1520,18 @@ impl<H: SwarmHost> Swarm<H> {
     /// the sender's next push answers "gone".
     fn route_endpoints(&mut self) {
         for i in 0..self.slots.len() {
+            self.route_slot(i);
+        }
+    }
+
+    /// One instance's share of [`Swarm::route_endpoints`]. Also called on
+    /// an instance that has just finished, before its slot is released:
+    /// "push, then return" is the ordinary last act of a worker, and the
+    /// pushes would otherwise go down with the queue they sit in.
+    fn route_slot(&mut self, i: usize) {
+        {
             if self.slots[i].id == 0 || !self.slots[i].alive {
-                continue;
+                return;
             }
             if !self.slots[i].held.is_empty() {
                 let from = Sender::runtime(self.slots[i].path.clone());
@@ -1535,10 +1548,10 @@ impl<H: SwarmHost> Swarm<H> {
             }
             let count = match self.slots[i].inst.as_deref() {
                 Some(inst) => inst.endpoint_count(),
-                None => continue,
+                None => return,
             };
             if count == 0 {
-                continue;
+                return;
             }
             let from = Sender::runtime(self.slots[i].path.clone());
             for token in 1..=count {
