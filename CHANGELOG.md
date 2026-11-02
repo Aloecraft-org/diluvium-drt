@@ -972,6 +972,12 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Fixed
 
+- **A release commit gets no dev build beside its release.** The
+  merge of a release-prep PR reached `main` before its tag, so
+  `dev-build.yml` cut a dev tag on the same commit the real Release
+  run was building. `script/release-commit.sh` recognises that commit
+  (newest changelog entry released, and tagged there or released by
+  it) and push and scheduled runs skip it; a dispatch still cuts.
 - **Several `DrtTerm`s in one page are separate kernels.** The page's
   filesystem and output sink were module-wide, so a second terminal
   took both: the first one's commands read the second one's files
