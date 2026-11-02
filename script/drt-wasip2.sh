@@ -27,8 +27,8 @@ here=$(cd -- "$(dirname -- "$self")" && pwd)
 
 if [ ! -f "$DRT_WASM" ]; then
     printf 'drt-wasip2: no component at %s\n' "$DRT_WASM" >&2
-    printf '    build one (a wasi-sdk >= 24 named by WASI_SDK_PATH is required):\n' >&2
-    printf '        cargo build --profile release-small -p drt --no-default-features --features wasi --target wasm32-wasip2\n' >&2
+    printf '    build one (script/wasi-sdk.sh fetches the wasi-sdk it needs):\n' >&2
+    printf '        WASI_SDK_PATH=$(script/wasi-sdk.sh) cargo build --profile release-small -p drt --no-default-features --features wasi --target wasm32-wasip2\n' >&2
     printf '    or point DRT_WASM at one.\n' >&2
     exit 2
 fi

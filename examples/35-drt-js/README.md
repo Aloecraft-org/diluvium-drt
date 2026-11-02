@@ -8,7 +8,7 @@ The page loads the `drt.min.js` this checkout builds, nothing fetched.
 From the repo root:
 
 ```sh
-WASI_SDK_PATH=<wasi-sdk 27> script/drt-web.sh           # the browser build; needs wasm-bindgen-cli and node too
+script/drt-web.sh                                       # the browser build; fetches a wasi-sdk, needs wasm-bindgen-cli and node
 script/drt-ssh-page.sh && script/drt-js.sh              # the SSH client, then both into drt.min.js
 cp crates/drt-web/cdn/dist/drt.min.js examples/35-drt-js/   # again after each rebuild
 cd examples/35-drt-js && python3 -m http.server 8000    # a page's modules need http, not file://
