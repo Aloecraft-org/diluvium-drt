@@ -156,6 +156,33 @@ fn the_repl_asks_for_lines_and_answers_them() {
     );
     assert!(err.contains("nil value"), "{err}");
     assert!(!session.is_over());
+
+    // What the session defined, for a page's variables panel: the names
+    // snapshot that follows an accepted line carries each of `env`'s own
+    // keys with its type and a short value, and a function's arity.
+    assert!(session.feed("function add(a, b) return a + b end").unwrap());
+    assert_eq!(session.tick(), Step::Input { continuing: false });
+    let vars: serde_json::Value = serde_json::from_str(&session.variables()).unwrap();
+    let vars = vars.as_array().expect("an array");
+    let by_name = |name: &str| {
+        vars.iter()
+            .find(|v| v["name"] == name)
+            .unwrap_or_else(|| panic!("no variable {name} in {vars:?}"))
+            .clone()
+    };
+    assert_eq!(by_name("x")["type"], "number");
+    assert_eq!(by_name("x")["value"], "22");
+    assert_eq!(by_name("add")["type"], "function");
+    assert_eq!(by_name("add")["params"], 2);
+    assert_eq!(by_name("add")["vararg"], false);
+    assert!(
+        session.names().iter().any(|n| n == "add"),
+        "Tab completes what the panel shows"
+    );
+    // A run session is not a REPL: nothing defined, nothing to show.
+    let mut run = term.exec(&argv(&["drt", "run", "-c", "print(1)"]));
+    run_to_exit(&mut run);
+    assert_eq!(run.variables(), "[]");
     uninstall_sink();
 }
 

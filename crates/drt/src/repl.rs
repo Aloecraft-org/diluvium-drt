@@ -56,6 +56,10 @@ pub struct Repl {
     /// because the editor's completer holds it and is asked during a
     /// keystroke while this side refreshes it between lines.
     names: Arc<Mutex<Vec<String>>>,
+    /// What the session defined, from the same snapshot as `names`: a JSON
+    /// array of `{name, type, value?, params?, vararg?}` (repl.dlua's
+    /// `defined`), for a page's variables panel.
+    variables: String,
     /// A line has run since the snapshot was taken, so it is worth
     /// asking again before the next prompt.
     names_stale: bool,
@@ -134,6 +138,7 @@ impl Repl {
             pending: String::new(),
             want_more: false,
             names: Arc::new(Mutex::new(Vec::new())),
+            variables: "[]".into(),
             names_stale: true,
             unsafe_stdlib,
             quit: false,
@@ -204,6 +209,14 @@ impl Repl {
     /// answer arrives, which is one tick after the instance starts.
     pub fn names(&self) -> Arc<Mutex<Vec<String>>> {
         self.names.clone()
+    }
+
+    /// What the session has defined, as of the same snapshot as
+    /// [`Repl::names`]: a JSON array of `{name, type, value?, params?,
+    /// vararg?}`, `value` as the REPL would show it (cut short) and
+    /// `params` a function's fixed parameter count.
+    pub fn variables(&self) -> &str {
+        &self.variables
     }
 
     /// Advance, print whatever the last line produced, and say what is
@@ -284,8 +297,9 @@ impl Repl {
         while let Ok(Some(raw)) = self.solo.pop(out) {
             match Answer::of(&raw) {
                 // Consumed, never printed: this one is for Tab.
-                Answer::Names(names) => {
-                    *self.names.lock().unwrap_or_else(|e| e.into_inner()) = names
+                Answer::Names(names, variables) => {
+                    *self.names.lock().unwrap_or_else(|e| e.into_inner()) = names;
+                    self.variables = variables;
                 }
                 Answer::Text { more } => {
                     answered = true;
@@ -889,10 +903,9 @@ impl<T: ego_cli::term::Terminal> ego_cli::term::Terminal for Keys<T> {
 enum Answer {
     /// Already printed. `more` means the line was unfinished rather than
     /// wrong, which is the host's cue to keep reading instead of reporting.
-    Text {
-        more: bool,
-    },
-    Names(Vec<String>),
+    Text { more: bool },
+    /// The names in scope, and what the session defined as JSON.
+    Names(Vec<String>, String),
 }
 
 impl Answer {
@@ -908,11 +921,16 @@ impl Answer {
                 .map(|(_, v)| v.clone())
         };
         if let Some(rmpv::Value::Array(names)) = get("names") {
+            let variables = match get("vars") {
+                Some(vars @ rmpv::Value::Array(_)) => json_of(&vars).to_string(),
+                _ => "[]".into(),
+            };
             return Answer::Names(
                 names
                     .iter()
                     .filter_map(|v| v.as_str().map(str::to_string))
                     .collect(),
+                variables,
             );
         }
         // What a served REPL's line printed, before its answer.
@@ -949,5 +967,31 @@ fn prompt(
     match lines.next() {
         Some(line) => line.map(Some).map_err(|e| e.to_string()),
         None => Ok(None),
+    }
+}
+
+/// A guest's msgpack answer as JSON: what `defined` sends is maps, arrays,
+/// strings, integers and booleans; anything else becomes null.
+fn json_of(value: &rmpv::Value) -> serde_json::Value {
+    use serde_json::Value as J;
+    match value {
+        rmpv::Value::Nil => J::Null,
+        rmpv::Value::Boolean(b) => J::Bool(*b),
+        rmpv::Value::Integer(i) => i
+            .as_i64()
+            .map(J::from)
+            .or_else(|| i.as_u64().map(J::from))
+            .unwrap_or(J::Null),
+        rmpv::Value::F32(f) => J::from(f64::from(*f)),
+        rmpv::Value::F64(f) => J::from(*f),
+        rmpv::Value::String(s) => s.as_str().map(J::from).unwrap_or(J::Null),
+        rmpv::Value::Array(items) => J::Array(items.iter().map(json_of).collect()),
+        rmpv::Value::Map(pairs) => J::Object(
+            pairs
+                .iter()
+                .filter_map(|(k, v)| k.as_str().map(|k| (k.to_string(), json_of(v))))
+                .collect(),
+        ),
+        rmpv::Value::Binary(_) | rmpv::Value::Ext(..) => J::Null,
     }
 }

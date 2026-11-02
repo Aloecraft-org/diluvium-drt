@@ -14,20 +14,32 @@ cp crates/drt-web/cdn/dist/drt.min.js examples/35-drt-js/   # again after each r
 cd examples/35-drt-js && python3 -m http.server 8000    # a page's modules need http, not file://
 ```
 
+For the Files panel, aloelite-wasm and its explorer, built from an
+aloelite checkout at the commit this page was checked with:
+
+```sh
+git clone https://github.com/Aloecraft-org/aloelite && git -C aloelite checkout 9aa67d6
+cd aloelite/rust && cargo build -p aloelite-wasm --target wasm32-unknown-unknown --release
+wasm-bindgen --target web --out-dir pkg target/wasm32-unknown-unknown/release/aloelite_wasm.wasm   # wasm-bindgen-cli 0.2.114, Cargo.lock's
+cp pkg/aloelite_wasm.js pkg/aloelite_wasm_bg.wasm aloelite-wasm/explorer/aloelite-explorer.js <drt>/examples/35-drt-js/
+```
+
 Open `http://localhost:8000`. The page runs `drt` once, which prints its
 usage, then gives you a `$` prompt at the bottom. Only `drt` is on its
 path, and Tab completes its subcommands. `drt repl`
 opens a Diluvium REPL with the native one's editor: history, Tab over the
 guest's names, and the line coloured as you type. Ctrl+D leaves it.
 
-The panel shows instances only for `drt start`, the one command with a
-swarm, and `drt start` needs a config and a program file. This page has
-no files, so the panel says nothing is running.
+Variables lists what the REPL has defined. Instances shows only `drt
+start`, the one command with a swarm; it needs a config and a program
+file. Files is the kernel's aloelite volume, in memory: a file you add
+there is one `drt run` sees, and what a program writes shows up there.
 
 | File | What it is |
 |---|---|
 | `main.js` | Imports the copied `drt.min.js`, puts `terminal()` in `#terminal`, and gives the panel to Alpine. |
-| `inspector.js` | The panel's state: the running command's instances, twice a second. |
+| `inspector.js` | Variables and Instances: the running command's REPL names and instances, twice a second. |
+| `files.js` | Files: one aloelite volume handed to `terminal()` as its filesystem and to aloelite's explorer. |
 | `index.html`, `style.css` | The layout, and the panel's table as Alpine markup. |
 
 The terminal (xterm.js with drt's line editor) is part of that

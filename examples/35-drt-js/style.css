@@ -1,7 +1,8 @@
 body { margin: 0; font: 14px system-ui, sans-serif; background: #111; color: #ddd; }
-main { display: grid; grid-template-columns: 1fr 26rem; height: 100vh; }
+main { display: grid; grid-template-columns: 1fr 32rem; height: 100vh; }
 #terminal { padding: 8px; }
-aside { padding: 8px 12px; border-left: 1px solid #333; overflow: auto; }
+aside { padding: 8px 12px; border-left: 1px solid #333; overflow: auto; display: flex; flex-direction: column; }
+#files { flex: 1; --alx-bg: #111; --alx-fg: #ddd; --alx-muted: #888; --alx-line: #2a2a2a; --alx-hover: #1c1c1c; }
 h2 { font-size: 15px; } small { color: #888; font-weight: normal; }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 3px 6px; border-bottom: 1px solid #2a2a2a; }
