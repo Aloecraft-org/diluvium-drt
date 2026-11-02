@@ -47,6 +47,14 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Added
 
+- **`terminal(id)` in drt.js: the drt CLI live in an element.**
+  `await terminal('cli')` renders an xterm.js terminal in that
+  element with a `$ ` prompt whose command is the real `drt`, the
+  native REPL's line editor (history, word motions, undo), and Tab
+  over `drt`'s subcommands at `$ ` and the guest's names at `dv> `.
+  It takes the kernel's `backings` (`{ fs }` included). xterm.js and
+  its stylesheet are bundled, which takes drt.js from 2.9 MB to
+  3.3 MB (2.08 MB to 2.16 MB gzipped).
 - **An fs scope can be an aloelite volume.** `{"volume_file":
   "app.fs", "volume": "notes", "mount_point": "/", "access":
   "readwrite"}` grants a volume inside one SQLite file where a

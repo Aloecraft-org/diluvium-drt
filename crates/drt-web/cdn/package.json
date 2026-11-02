@@ -8,6 +8,7 @@
     "test": "node e2e.mjs"
   },
   "devDependencies": {
+    "@xterm/addon-fit": "0.10.0",
     "@xterm/xterm": "5.5.0",
     "alpinejs": "3.14.9",
     "esbuild": "0.28.2",

@@ -180,7 +180,7 @@ let a;
 await check('a page on another origin imports drt.min.js served as application/javascript', async () => {
   a = await page();
   const names = await a.evaluate(() => Object.keys(window.drt).sort());
-  for (const n of ['call', 'connect', 'loadSsh', 'ssh', 'loadRuntime', 'kernel', 'bus', 'aloelite', 'kv', 'session', 'offer', 'direct', 'listen', 'canonicalPeer', 'VERSION']) {
+  for (const n of ['call', 'connect', 'loadSsh', 'ssh', 'loadRuntime', 'kernel', 'bus', 'aloelite', 'terminal', 'kv', 'session', 'offer', 'direct', 'listen', 'canonicalPeer', 'VERSION']) {
     if (!names.includes(n)) throw new Error(`no export ${n}; it has ${names.join(', ')}`);
   }
 });
@@ -415,6 +415,31 @@ await check('examples/37-page-connectors: the page as a reader opens it prints e
   const got = (await p.evaluate(() => document.querySelector('pre').textContent)).trimEnd();
   const want = fs.readFileSync(path.join(root, 'examples/37-page-connectors/expected.txt'), 'utf8').trimEnd();
   if (got !== want) throw new Error(`the page printed:\n${got}`);
+  await p.close();
+});
+
+await check('terminal(id) renders the drt CLI in that element: Tab completes a subcommand, it runs, and the REPL evaluates', async () => {
+  const p = await page();
+  await p.evaluate(async () => {
+    document.body.innerHTML = '<div id="cli" style="width: 800px; height: 400px"></div>';
+    window.cli = await window.drt.terminal('cli');
+  });
+  const screen = () => p.evaluate(() => document.querySelector('#cli .xterm-rows')?.innerText ?? '');
+  await until('the prompt', async () => (await screen()).trimEnd().endsWith('$'));
+  await p.keyboard.type('drt buildi');
+  await p.keyboard.press('Tab');
+  await until('Tab completes buildinfo', async () => (await screen()).includes('$ drt buildinfo'));
+  await p.keyboard.press('Enter');
+  await until('buildinfo runs', async () => /profile/i.test(await screen()) && (await screen()).trimEnd().endsWith('$'));
+  await p.keyboard.type('drt repl\r');
+  await until('the REPL prompt', async () => (await screen()).trimEnd().endsWith('dv>'));
+  await p.keyboard.type('print(40 + 2)\r');
+  await until('the REPL evaluates', async () => /^42$/m.test(await screen()));
+  await p.keyboard.press('Control+D');
+  await until('the prompt after the REPL', async () => (await screen()).trimEnd().endsWith('$'));
+  const style = await p.evaluate(() => document.querySelectorAll('#drt-xterm-css').length);
+  if (style !== 1) throw new Error(`${style} xterm stylesheets on the page`);
+  await p.evaluate(() => window.cli.dispose());
   await p.close();
 });
 

@@ -30,8 +30,8 @@ const INPUTS = {
   sshGlue: path.resolve(here, '../../drt-ssh-web/page/pkg/inline/drt_ssh_web.js'),
   sshWasm: path.resolve(here, '../../drt-ssh-web/page/pkg/drt_ssh_web_bg.wasm'),
 };
-/** Both modules gzipped are about 2 MB of base64 once drt-web is wasm-opt'd (2026-11-01); this is the alarm, not the goal. */
-export const MAX_BYTES = 3 * 1024 * 1024;
+/** Both modules gzipped are about 2.9 MB of base64 once drt-web is wasm-opt'd, and xterm.js for `terminal()` about 0.45 MB more (3.3 MB, 2026-11-02); this is the alarm, not the goal. */
+export const MAX_BYTES = 3.5 * 1024 * 1024;
 
 const b64gz = (file) => zlib.gzipSync(fs.readFileSync(file), { level: 9 }).toString('base64');
 const VIRTUAL = {
@@ -82,7 +82,7 @@ async function build() {
     },
   };
 
-  const banner = `// drt.js ${VERSION}: DRT in a page, one ES module with its wasm inlined. https://github.com/Aloecraft-org/diluvium-drt (Apache-2.0)`;
+  const banner = `// drt.js ${VERSION}: DRT in a page, one ES module with its wasm inlined. https://github.com/Aloecraft-org/diluvium-drt (Apache-2.0). Includes xterm.js and @xterm/addon-fit, (c) The xterm.js authors (MIT).`;
   fs.mkdirSync(path.join(here, 'dist'), { recursive: true });
   for (const out of OUTPUTS) {
     await esbuild.build({
@@ -96,6 +96,7 @@ async function build() {
       banner: { js: banner },
       outfile: path.join(here, out.file),
       plugins: [inline],
+      loader: { '.css': 'text' },
       logLevel: 'warning',
     });
   }
