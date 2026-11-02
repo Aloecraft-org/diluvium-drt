@@ -203,7 +203,10 @@ export function attach(
     while (!disposed) {
       settle();
       if (commands) editor.setCandidates(commands);
-      const outcome = await editor.readLine(prompt);
+      // false: a shell line is not Lua, so the editor does not colour it
+      // (`--config` would read as a comment). Ignored by an editor without
+      // highlighting.
+      const outcome = await editor.readLine(prompt, false);
       if (disposed) return;
       if (outcome.eof || outcome.interrupted) continue;
       const text = outcome.line;
