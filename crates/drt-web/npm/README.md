@@ -40,9 +40,35 @@ const { token: jwt } = await session().token();          // stdlib:session, same
 - A page with a Content-Security-Policy needs `'wasm-unsafe-eval'` in
   `script-src` for either module.
 - `session()` is for a page behind `stdlib:session`; see below.
+- `aloelite.open` and `aloelite.attach` give a kernel an aloelite volume
+  as its filesystem; see below.
 
 `crates/drt-web/cdn/drt.mjs` lists every export; `e2e.mjs` beside it is
 the check every release passes.
+
+## A kernel's filesystem on an aloelite volume
+
+```js
+import { kernel, aloelite } from './drt.js';
+import * as engine from './aloelite_wasm.js';   // aloelite-wasm, loaded by the page
+await engine.default();
+
+const file = await aloelite.open(engine, { store: 'opfs', name: 'node.fs' });
+const shared = aloelite.attach(file, { volume: 'docs' });
+const a = await kernel(sinkA, { fs: shared });   // a and b share files
+const b = await kernel(sinkB, { fs: shared });
+const c = await kernel(sinkC, { fs: aloelite.attach(file, { volume: 'c' }) });
+```
+
+- The volume is the kernel's whole filesystem: programs, configs and
+  `fs/*` all read it.
+- Calls are synchronous, so aloelite runs on drt's thread: `store:
+  'memory'` anywhere, `store: 'opfs'` in the Worker drt runs in.
+- An OPFS file another Worker holds fails with `busy`; a full pool says
+  to call `file.addCapacity(n)`. `file.export()` is the SQLite file.
+- `attach` takes `volume`, `mountPoint`, `access` (`rw` or `ro`), `pin`.
+- A memory file has no export or seed: aloelite-wasm's memory store keeps
+  no image. Not built.
 
 ## session(): a page behind stdlib:session
 

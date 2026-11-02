@@ -133,9 +133,9 @@ visible first.
 
 ## The files a page sees
 
-The page seeds a memory filesystem (`drt_platform::fs::MemFs`) and every
-path a command opens -- the program, a config, a granted directory -- is a
-path the page put there. Paths are absolute or relative to `cwd`. The fs
+The page seeds a memory filesystem (`drt_platform::fs::MemFs`), or hands
+the terminal one of its own under `fs` (below), and every path a command
+opens -- the program, a config, a granted directory -- is a path in it. Paths are absolute or relative to `cwd`. The fs
 connector jails exactly as it does over a disk: a config's `scope` names
 a directory inside the page's tree, and `..` or an absolute path out of it
 is refused in the same words. `putFile` after `exec` is visible to the
@@ -346,7 +346,11 @@ dispatcher gates, answers and token-echoes a handed-in family like any
 builtin, a family is wired only when the config names it (or always, with
 no config), and each command gets a fresh connector over the object. A
 family this build carries itself (`fs`, `time`, `crypto`) cannot be
-handed in. `net` is a transport for the net vocabulary
+handed in as a connector. `fs` instead names the terminal's whole
+filesystem: an object answering `crates/drt-web/src/pagefs.rs`'s seven
+calls, which `cdn/fs.mjs` makes over an aloelite volume in memory or in
+OPFS. Terminals handed the same object share its files; `DrtSwarm`
+refuses one. `net` is a transport for the net vocabulary
 (`connectors/net/src/lib.rs`); `sql` is a sql.js module (`await
 initSqlJs()`), answering `sql/*` with the native connector's contract
 over databases kept as files in the page's filesystem; any other family

@@ -86,7 +86,9 @@ impl DrtTerm {
     /// `backings` are connectors the page hands this terminal, by family
     /// (`js`'s surface block): `{ net: transport, store: { call } }`.
     /// Each command whose config names a family, and every command with
-    /// no config, gets its own connector over the object. Optional.
+    /// no config, gets its own connector over the object. Under `fs`, the
+    /// terminal's filesystem instead of an empty memory one (cdn/fs.mjs);
+    /// terminals handed the same `fs` share it. Optional.
     #[wasm_bindgen(constructor)]
     pub fn new(sink: js_sys::Function, backings: JsValue) -> Result<DrtTerm, JsValue> {
         let backings = crate::js::backings(&backings).map_err(|e| JsValue::from_str(&e))?;
@@ -104,47 +106,55 @@ impl DrtTerm {
         let page = sink.clone();
         drt_platform::stdio::install_sink(Box::new(move |fd, bytes| page(fd, bytes)));
         Ok(DrtTerm {
-            inner: Term::with_sink(sink).with_backings(backings),
+            inner: match backings.fs {
+                Some(fs) => Term::with_sink(sink).with_fs(fs),
+                None => Term::with_sink(sink),
+            }
+            .with_backings(backings.connectors),
         })
     }
 
     /// Put a file in the terminal's filesystem, making the directories
     /// above it. Paths are absolute, or relative to the working directory
-    /// (`/` until `setCwd`).
+    /// (`/` until `setCwd`). Throws what a handed-in filesystem refused.
     #[wasm_bindgen(js_name = putFile)]
-    pub fn put_file(&self, path: &str, bytes: &[u8]) {
-        self.inner.fs().add_file(path, bytes);
+    pub fn put_file(&self, path: &str, bytes: &[u8]) -> Result<(), JsValue> {
+        self.inner
+            .fs()
+            .put_file(std::path::Path::new(path), bytes)
+            .map_err(fs_error)
     }
 
     /// Make a directory, empty. A granted scope that holds no files yet
     /// still has to exist.
     #[wasm_bindgen(js_name = putDir)]
-    pub fn put_dir(&self, path: &str) {
-        self.inner.fs().add_dir(path);
+    pub fn put_dir(&self, path: &str) -> Result<(), JsValue> {
+        self.inner
+            .fs()
+            .put_dir(std::path::Path::new(path))
+            .map_err(fs_error)
     }
 
     /// Read a file back, or `undefined`.
     #[wasm_bindgen(js_name = getFile)]
     pub fn get_file(&self, path: &str) -> Option<Vec<u8>> {
-        use drt_platform::fs::Backend;
         self.inner.fs().read(std::path::Path::new(path)).ok()
     }
 
     /// Every file, by absolute path.
     #[wasm_bindgen(js_name = listFiles)]
-    pub fn list_files(&self) -> Vec<String> {
-        self.inner
-            .fs()
-            .files()
-            .into_iter()
-            .map(|(p, _)| p.display().to_string())
-            .collect()
+    pub fn list_files(&self) -> Result<Vec<String>, JsValue> {
+        let paths = self.inner.fs().file_paths().map_err(fs_error)?;
+        Ok(paths.iter().map(|p| p.display().to_string()).collect())
     }
 
     /// The directory relative paths resolve against -- what `cd` is.
     #[wasm_bindgen(js_name = setCwd)]
-    pub fn set_cwd(&self, path: &str) {
-        self.inner.fs().set_cwd(path);
+    pub fn set_cwd(&self, path: &str) -> Result<(), JsValue> {
+        self.inner
+            .fs()
+            .change_dir(std::path::Path::new(path))
+            .map_err(fs_error)
     }
 
     #[wasm_bindgen(js_name = cwd)]
@@ -489,11 +499,18 @@ impl DrtSwarm {
         backings: JsValue,
     ) -> Result<DrtSwarm, JsValue> {
         let backings = crate::js::backings(&backings).map_err(|e| JsValue::from_str(&e))?;
+        if backings.fs.is_some() {
+            // A swarm reads whichever terminal's filesystem is installed:
+            // it has no context of its own to put one in.
+            return Err(JsValue::from_str(
+                "a DrtSwarm has no filesystem of its own; hand 'fs' to a DrtTerm",
+            ));
+        }
         SwarmDeployment::new(
             max_instances,
             spawns_per_step,
             config.as_deref(),
-            &crate::js::supplied(&backings),
+            &crate::js::supplied(&backings.connectors),
         )
         .map(|inner| DrtSwarm { inner })
         .map_err(|e| JsValue::from_str(&e))
@@ -943,4 +960,9 @@ impl DrtShell {
     pub fn close(&self, status: u32) -> bool {
         self.to_client.try_send(ToClient::Close(status)).is_ok()
     }
+}
+
+/// An io error from a terminal's filesystem, thrown to the page.
+fn fs_error(e: std::io::Error) -> JsValue {
+    JsValue::from_str(&e.to_string())
 }

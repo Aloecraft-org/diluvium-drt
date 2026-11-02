@@ -6,10 +6,17 @@
 //! ## surface block
 //!
 //! - [`backings`]: a page's `{ family: object }` map, as the makers
-//!   `Term::with_backings` and `Swarm::new` take. One per kernel: a page
-//!   with several kernels hands each its own (doc/Browser.md).
+//!   `Term::with_backings` and `Swarm::new` take, and the filesystem
+//!   `Term::with_fs` takes ([`Backings`]). One per kernel: a page with
+//!   several kernels hands each its own (doc/Browser.md).
 //! - Fan-out, by family name -- the one table that decides what a handed
 //!   in object is:
+//!   - `fs`: not a connector but the kernel's whole filesystem, in place
+//!     of its memory one: programs, configs, granted directories, and the
+//!     `fs` connector's jail all read it. An object answering
+//!     `pagefs::CALLS` (cdn/fs.mjs makes one over an aloelite volume).
+//!     Each kernel gets its own `pagefs::JsFs` over the object, so the
+//!     same object handed to two kernels is one filesystem they share.
 //!   - `net`: a transport, `{ open, listen?, send, close }`, under
 //!     `drt-connector-net`. The connector keeps the handles, owners and
 //!     queues; the object only moves bytes. Its calls:
@@ -58,24 +65,37 @@ use drt_caps::Scope;
 use drt_connector::{Asker, CallError, CallResult, Caller, Connector};
 use drt_connector_net::{Acceptor, Link, NetConnector, Transport};
 
+use crate::pagefs::JsFs;
 use crate::term::Backing;
 
 #[cfg(target_feature = "atomics")]
 compile_error!("drt-web's js module assumes one thread; a build with atomics needs another design");
 
+/// The key a kernel's filesystem is handed in under.
+pub const FS: &str = "fs";
 /// The family a handed-in object is a transport for.
 pub const NET: &str = "net";
 /// The family a handed-in sql.js module answers.
 pub const SQL: &str = "sql";
 
+/// What a page hands one kernel.
+#[derive(Default)]
+pub struct Backings {
+    /// Connectors, by family.
+    pub connectors: BTreeMap<String, Backing>,
+    /// Its filesystem, when the page hands one in under [`FS`].
+    pub fs: Option<Arc<JsFs>>,
+}
+
 /// A page's backings: every own enumerable key of `object`, each to the
 /// maker its family's row of the fan-out names. `undefined` and `null`
 /// are no backings. A value of the wrong shape is refused here, by family,
 /// before any command runs.
-pub fn backings(object: &JsValue) -> Result<BTreeMap<String, Backing>, String> {
-    let mut out: BTreeMap<String, Backing> = BTreeMap::new();
+pub fn backings(object: &JsValue) -> Result<Backings, String> {
+    let mut handed = Backings::default();
+    let out = &mut handed.connectors;
     if object.is_undefined() || object.is_null() {
-        return Ok(out);
+        return Ok(handed);
     }
     let object: &Object = object
         .dyn_ref()
@@ -88,6 +108,11 @@ pub fn backings(object: &JsValue) -> Result<BTreeMap<String, Backing>, String> {
             .ok_or("a backing's family must be a string")?;
         let value = pair.get(1);
         let maker: Backing = match family.as_str() {
+            FS => {
+                let fs = JsFs::new(value).map_err(|e| format!("the '{family}' backing: {e}"))?;
+                handed.fs = Some(Arc::new(fs));
+                continue;
+            }
             NET => {
                 for method in ["open", "send", "close"] {
                     method_of(&value, method)
@@ -125,7 +150,7 @@ pub fn backings(object: &JsValue) -> Result<BTreeMap<String, Backing>, String> {
         };
         out.insert(family, maker);
     }
-    Ok(out)
+    Ok(handed)
 }
 
 /// One command's connectors, from the makers: what a `DrtSwarm`, which
