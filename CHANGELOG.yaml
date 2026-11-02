@@ -200,8 +200,9 @@ releases:
         (`busy` by name when another Worker holds it, a full pool named
         with `addCapacity`, `export`), and `aloelite.attach(file, {volume,
         mountPoint, access})` mounts a volume as that object. The page
-        loads aloelite-wasm; drt.js does not carry it. A memory file has
-        no export or seed.
+        loads aloelite-wasm; drt.js does not carry it. A memory file
+        exports and opens from an export too, with aloelite-wasm from
+        `0a23703` on (its memory store took no bytes before).
       - |
         **`sql` in a page, over sql.js (#81).** A page that hands in a
         sql.js module (`{ sql: await initSqlJs() }`) gets `sql/query` and

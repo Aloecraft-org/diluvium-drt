@@ -1246,7 +1246,7 @@ if (PAGE_CHECKS) {
 // aloelite volumes in memory, which is what a page writes.
 for (const [name, backing, why] of [
   ['page-fs', 'object', 'a page object answering the seven calls'],
-  ['aloelite-fs', 'aloelite', 'cdn/fs.mjs over aloelite volumes in memory'],
+  ['aloelite-fs', 'aloelite', 'cdn/fs.mjs over aloelite volumes in memory'],   // and open({bytes}) from export()
 ]) {
   if (!PAGE_CHECKS) break;
   if (backing === 'aloelite' && !(ALOELITE_PKG && fs.existsSync(path.join(ALOELITE_PKG, 'aloelite_wasm.js')))) {
@@ -1272,8 +1272,12 @@ for (const [name, backing, why] of [
     if (r.cwd !== '/k') wrong.push(`cwd ${r.cwd}`);
     if (r.refused !== "the 'fs' backing: it has no 'stat' function") wrong.push(`an object with no stat: ${JSON.stringify(r.refused)}`);
     if (r.swarm !== "a DrtSwarm has no filesystem of its own; hand 'fs' to a DrtTerm") wrong.push(`a swarm with fs: ${JSON.stringify(r.swarm)}`);
+    if (backing === 'aloelite') {
+      if (r.seeded !== 'kept in the image') wrong.push(`a memory file opened from an export read ${JSON.stringify(r.seeded)}`);
+      if (r.mountState !== 'active') wrong.push(`a mount this page made is ${JSON.stringify(r.mountState)}, not active`);
+    }
     if (wrong.length === 0) {
-      console.log(`ok       ${name.padEnd(24)} two kernels share one filesystem, a third has its own: ${why}`);
+      console.log(`ok       ${name.padEnd(24)} two kernels share one filesystem, a third has its own${backing === 'aloelite' ? ', a memory file round-trips through export' : ''}: ${why}`);
       nOk += 1;
     } else {
       fail(name, wrong.join('; '));

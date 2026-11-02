@@ -18,9 +18,9 @@ For the Files panel, aloelite-wasm and its explorer, built from an
 aloelite checkout at the commit this page was checked with:
 
 ```sh
-git clone https://github.com/Aloecraft-org/aloelite && git -C aloelite checkout 9aa67d6
+git clone https://github.com/Aloecraft-org/aloelite && git -C aloelite checkout 0a23703
 cd aloelite/rust && cargo build -p aloelite-wasm --target wasm32-unknown-unknown --release
-wasm-bindgen --target web --out-dir pkg target/wasm32-unknown-unknown/release/aloelite_wasm.wasm   # wasm-bindgen-cli 0.2.114, Cargo.lock's
+wasm-bindgen --target web --out-dir pkg target/wasm32-unknown-unknown/release/aloelite_wasm.wasm   # wasm-bindgen-cli 0.2.127, the version drt pins too
 cp pkg/aloelite_wasm.js pkg/aloelite_wasm_bg.wasm aloelite-wasm/explorer/aloelite-explorer.js <drt>/examples/35-drt-js/
 ```
 
