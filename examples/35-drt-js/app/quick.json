@@ -1,7 +1,0 @@
-{
-  "_comment": "app.json with each worker counting three rounds, so the program ends: what the examples gate runs.",
-  "program": {"path": "app.dlua"},
-  "args": {"rounds": 3},
-  "caps": [{"capability": "lifecycle"}],
-  "budget": {"instructions": 1000000000}
-}

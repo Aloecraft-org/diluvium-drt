@@ -109,8 +109,8 @@ Underneath it the embedded core moves from 0.15.1 to
   The browser build's module is now shrunk with wasm-opt, as the SSH
   page's is (5.9 MB to 2.8 MB), so `drt.js` is about 2.1 MB.
   `examples/35-drt-js` is a page on it: an xterm.js terminal that
-  runs `drt start`, and an Alpine panel listing the instances it
-  spawned, with park, wake and kill.
+  runs `drt` with no config and no files, and an Alpine panel for
+  the instances of what it runs.
 - **`host:aloecrypt/*`, post-quantum signatures and encryption, in
   every profile.** aloecrypt_core (ML-DSA 44/65/87, ML-KEM
   512/768/1024 and its document envelope) is compiled in as the

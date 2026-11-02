@@ -45,8 +45,6 @@ const SHIPPED_EXACT: &[&str] = &[
     "examples/33-second-factor-and-jwks/app.json",
     "examples/34-jwks/app.json",
     "examples/34-jwks/sign.json",
-    "examples/35-drt-js/app/app.json",
-    "examples/35-drt-js/app/quick.json",
     "examples/36-post-quantum/app.json",
     "examples/37-page-connectors/app.json",
     "examples/37-page-connectors/locked.json",

@@ -38,12 +38,13 @@ export function startTerminal(drt, element) {
     session.free();
   }
 
+  // A shell with one program on its path: drt, with no config and no files.
   (async () => {
-    terminal.write('drt in this page. Try: drt start --config app.json   (^C stops it)\n');
+    await run(['drt']);
     for (;;) {
       const argv = ((await ask('$ ')) ?? '').trim().split(/\s+/);
       if (argv[0] === 'drt') await run(argv);
-      else if (argv[0]) terminal.write(`${argv[0]}: only drt runs here\n`);
+      else if (argv[0]) terminal.write(`${argv[0]}: command not found\n`);
     }
   })();
   return cli;

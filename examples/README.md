@@ -48,7 +48,7 @@ reference. Everything here is v0.8.0.
 | [`32-kv`](32-kv) | A key-value store on the signalling server: every key has a version a write can name, a TTL key lives while it is refreshed, and `drt kv`, `curl` and a program reach the same keys. | `./demo.sh` |
 | [`33-second-factor-and-jwks`](33-second-factor-and-jwks) | TOTP and EdDSA with every key in the host: enrol a label as an `otpauth://` URI, accept its code once, and sign a token whose public half is a JWK. | `drt run --config app.json` |
 | [`34-jwks`](34-jwks) | `stdlib:jwks` keeps each signing key's public JWK in a topic's kv and serves the set at `/.well-known/jwks.json`, old and new keys together; PyJWT verifies a token from the URL alone, by its kid. | `./demo.sh` |
-| [`35-drt-js`](35-drt-js) | `drt.js` in a page: an xterm.js terminal running `drt start`, and an Alpine panel listing the instances it spawned, with park, wake and kill. | `python3 -m http.server` |
+| [`35-drt-js`](35-drt-js) | `drt.js` in a page: an xterm.js terminal running `drt` with no config and no files, and an Alpine panel for the instances of what it runs. | `python3 -m http.server` |
 | [`36-post-quantum`](36-post-quantum) | ML-DSA signatures and ML-KEM encryption with every private key a label in the host: the public half is text a program hands out, and the grants on `sign` and `decrypt` name the labels it may use. | `drt run --config app.json` |
 | [`37-page-connectors`](37-page-connectors) | A page answers a connector family drt does not carry with a JavaScript object: what it returns is the reply, what it throws is an `error`, and the config gates it like any family. Runs in a browser. | `python3 -m http.server` |
 

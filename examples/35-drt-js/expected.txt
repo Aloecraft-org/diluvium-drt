@@ -1,6 +1,1 @@
-spawned worker 2
-spawned worker 3
-spawned worker 4
-event: exited 2
-event: exited 3
-event: exited 4
+42

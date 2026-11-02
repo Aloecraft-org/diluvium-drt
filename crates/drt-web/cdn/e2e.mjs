@@ -362,12 +362,13 @@ await check('kernel() with a bus() as its net transport runs a program that talk
   await p.close();
 });
 
-await check('examples/35-drt-js: the terminal starts a deployment, and the inspector lists, parks and kills its instances', async () => {
-  const dir = path.resolve(here, '../../../examples/35-drt-js');
+await check('examples/35-drt-js: bare drt prints its usage, drt repl evaluates, and the panel says nothing is running', async () => {
+  // Served from the repo root, as its README says: main.js imports ../../crates/drt-web/cdn/dist/drt.min.js.
+  const root = path.resolve(here, '../../..');
   const types = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css' };
   http.createServer((req, res) => {
-    const name = req.url === '/' ? 'index.html' : req.url.slice(1);
-    const file = name === 'drt.min.js' ? path.join(here, 'dist/drt.min.js') : path.join(dir, name);
+    const name = req.url.endsWith('/') ? `${req.url.slice(1)}index.html` : req.url.slice(1);
+    const file = path.join(root, name);
     if (name.includes('..') || !fs.existsSync(file)) return res.writeHead(404).end();
     res.writeHead(200, { 'content-type': types[path.extname(file)] ?? 'text/plain' }).end(fs.readFileSync(file));
   }).listen(PORTS.example, '127.0.0.1');
@@ -377,23 +378,22 @@ await check('examples/35-drt-js: the terminal starts a deployment, and the inspe
     const type = url.endsWith('.css') ? 'text/css' : 'application/javascript';
     await p.route(url, (r) => r.fulfill({ contentType: type, body: fs.readFileSync(path.join(here, file)) }));
   }
-  await p.goto(`http://127.0.0.1:${PORTS.example}/`);
+  await p.goto(`http://127.0.0.1:${PORTS.example}/examples/35-drt-js/`);
   const screen = () => p.evaluate(() => document.querySelector('.xterm-rows')?.innerText ?? '');
   const panel = () => p.evaluate(() => [...document.querySelectorAll('aside tr')].slice(1).map((tr) => tr.innerText.replace(/\s+/g, ' ').trim()));
-  await until('the prompt', async () => (await screen()).includes('$'));
+  await until('bare drt: its usage, then the prompt', async () => { const t = await screen(); return t.includes('Print version') && t.trimEnd().endsWith('$'); });
   await p.click('#terminal');
-  await p.keyboard.type('drt start --config app.json\r');
-  await until('three workers', async () => (await screen()).includes('spawned worker 4'));
-  const rows = await until('four instances', async () => { const r = await panel(); return r.length === 4 && r; });
-  if (!rows.every((r) => /^\d+ \d+ resident \d+ lifecycle park kill$/.test(r))) throw new Error(`rows: ${JSON.stringify(rows)}`);
-  await p.click('aside tr:nth-child(3) button:has-text("park")');
-  await until('a parked worker', async () => (await panel()).some((r) => / parked - lifecycle wake kill$/.test(r)));
-  await p.click('aside tr:nth-child(4) button:has-text("kill")');
-  await until('three instances', async () => (await panel()).length === 3);
-  await p.click('#terminal');
-  await p.keyboard.press('Control+C');
-  await until('an empty panel', async () => (await panel()).length === 0);
-  await until('the prompt again', async () => (await screen()).trimEnd().endsWith('$'));
+  await p.keyboard.type('ls\r');
+  await until('a line that is not drt', async () => (await screen()).includes('ls: command not found'));
+  await p.keyboard.type('drt repl\r');
+  await until('the REPL prompt', async () => (await screen()).trimEnd().endsWith('dv>'));
+  // Only `drt start` drives a swarm, and it needs a config and a program file this page has none of.
+  await until('the panel says nothing is running', async () => (await p.innerText('aside h2')).includes('nothing running') && (await panel()).length === 0);
+  await p.keyboard.type('x = 41\r');
+  await p.keyboard.type('print(x + 1)\r');
+  await until('the REPL evaluates', async () => /^42$/m.test(await screen()));
+  await p.keyboard.press('Control+D');
+  await until('the prompt after the REPL', async () => (await screen()).trimEnd().endsWith('$'));
   await p.close();
 });
 

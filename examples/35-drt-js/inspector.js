@@ -1,4 +1,4 @@
-// The kernel inspector: every instance of the `drt start` the terminal is
+// The kernel inspector: every instance of the drt command the terminal is
 // running, refreshed twice a second, with the swarm's own verbs as buttons.
 export function inspector(cli) {
   return {
@@ -11,7 +11,7 @@ export function inspector(cli) {
       const s = cli.session;
       if (!s?.hasSwarm()) {
         this.rows = [];
-        this.note = 'nothing running: try drt start';
+        this.note = 'nothing running';
         return;
       }
       this.note = `${s.alive()} alive`;
