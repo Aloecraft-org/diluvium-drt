@@ -135,19 +135,55 @@ fn the_repl_asks_for_lines_and_answers_them() {
     let seen = capture();
     let term = Term::new();
     let mut session = term.exec(&argv(&["drt", "repl"]));
-    assert_eq!(session.tick(), Step::Input { continuing: false });
+    assert_eq!(
+        session.tick(),
+        Step::Input {
+            continuing: false,
+            busy: false
+        }
+    );
     assert!(session.feed("x = 20").unwrap());
-    assert_eq!(session.tick(), Step::Input { continuing: false });
+    assert_eq!(
+        session.tick(),
+        Step::Input {
+            continuing: false,
+            busy: false
+        }
+    );
     assert!(session.feed("for i = 1, 2 do").unwrap());
-    assert_eq!(session.tick(), Step::Input { continuing: true });
+    assert_eq!(
+        session.tick(),
+        Step::Input {
+            continuing: true,
+            busy: false
+        }
+    );
     assert!(session.continuing());
     assert!(session.feed("x = x + 1 end").unwrap());
-    assert_eq!(session.tick(), Step::Input { continuing: false });
+    assert_eq!(
+        session.tick(),
+        Step::Input {
+            continuing: false,
+            busy: false
+        }
+    );
     assert!(!session.feed("").unwrap(), "a blank line is not sent");
     assert!(session.feed("x").unwrap());
-    assert_eq!(session.tick(), Step::Input { continuing: false });
+    assert_eq!(
+        session.tick(),
+        Step::Input {
+            continuing: false,
+            busy: false
+        }
+    );
     assert!(session.feed("nope()").unwrap());
-    assert_eq!(session.tick(), Step::Input { continuing: false });
+    assert_eq!(
+        session.tick(),
+        Step::Input {
+            continuing: false,
+            busy: false
+        }
+    );
     assert_eq!(text(&seen, Fd::Stdout), "22\n");
     let err = text(&seen, Fd::Stderr);
     assert!(
@@ -156,7 +192,130 @@ fn the_repl_asks_for_lines_and_answers_them() {
     );
     assert!(err.contains("nil value"), "{err}");
     assert!(!session.is_over());
+
+    // What the session defined, for a page's variables panel: the names
+    // snapshot that follows an accepted line carries each of `env`'s own
+    // keys with its type and a short value, and a function's arity.
+    assert!(session.feed("function add(a, b) return a + b end").unwrap());
+    assert_eq!(
+        session.tick(),
+        Step::Input {
+            continuing: false,
+            busy: false
+        }
+    );
+    let vars: serde_json::Value = serde_json::from_str(&session.variables()).unwrap();
+    let vars = vars.as_array().expect("an array");
+    let by_name = |name: &str| {
+        vars.iter()
+            .find(|v| v["name"] == name)
+            .unwrap_or_else(|| panic!("no variable {name} in {vars:?}"))
+            .clone()
+    };
+    assert_eq!(by_name("x")["type"], "number");
+    assert_eq!(by_name("x")["value"], "22");
+    assert_eq!(by_name("add")["type"], "function");
+    assert_eq!(by_name("add")["params"], 2);
+    assert_eq!(by_name("add")["vararg"], false);
+    assert!(
+        session.names().iter().any(|n| n == "add"),
+        "Tab completes what the panel shows"
+    );
+    // A run session is not a REPL: nothing defined, nothing to show.
+    let mut run = term.exec(&argv(&["drt", "run", "-c", "print(1)"]));
+    run_to_exit(&mut run);
+    assert_eq!(run.variables(), "[]");
     uninstall_sink();
+}
+
+/// A line can spawn, and the child is on the session's roster: the REPL
+/// is the root of a swarm of its own, so a page's Instances panel sees
+/// what the prompt started. `busy` says the child is still there, which
+/// is the page's cue to keep ticking while the next line is typed. The
+/// answers are the REPL's own (a guest's `print` is the C core's, which
+/// lands on this process's stdout rather than the sink, as `term.rs`
+/// says); the child's output is checked in `drt`'s own repl tests.
+#[test]
+fn a_repl_line_can_spawn_and_the_child_is_on_the_roster() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let seen = capture();
+    let term = Term::new();
+    let mut session = term.exec(&argv(&["drt", "repl"]));
+    assert_eq!(
+        session.tick(),
+        Step::Input {
+            continuing: false,
+            busy: false
+        }
+    );
+    let root = drt_web::swarm::view::ids(session.deployment_mut().expect("a repl has a swarm"));
+    assert_eq!(root.len(), 1);
+
+    // A child that finishes: answered within the tick, and gone again.
+    assert!(session
+        .feed("c = host.spawn({code = [[local x = 1]]})")
+        .unwrap());
+    assert_eq!(
+        settle(&mut session),
+        Step::Input {
+            continuing: false,
+            busy: false
+        }
+    );
+    assert!(session.feed("type(c)").unwrap());
+    assert_eq!(
+        settle(&mut session),
+        Step::Input {
+            continuing: false,
+            busy: false
+        }
+    );
+    assert_eq!(text(&seen, Fd::Stdout), "\"table\"\n");
+    assert_eq!(
+        drt_web::swarm::view::ids(session.deployment_mut().unwrap()),
+        root
+    );
+
+    // A child that parks: on the roster, and the session says it is busy.
+    assert!(session
+        .feed("p = host.spawn({code = [[queue.wait({queue.lookup('inbox')})]]})")
+        .unwrap());
+    assert_eq!(
+        settle(&mut session),
+        Step::Input {
+            continuing: false,
+            busy: true
+        }
+    );
+    let ids = drt_web::swarm::view::ids(session.deployment_mut().unwrap());
+    assert_eq!(ids.len(), 2, "{ids:?}");
+    let child = ids.iter().find(|id| **id != root[0]).copied().unwrap();
+    assert!(session.feed("p.id").unwrap());
+    assert_eq!(
+        settle(&mut session),
+        Step::Input {
+            continuing: false,
+            busy: true
+        }
+    );
+    assert_eq!(text(&seen, Fd::Stdout), format!("\"table\"\n{child}\n"));
+    assert_eq!(
+        text(&seen, Fd::Stderr),
+        "drt repl — Show help: <:h+enter>\n"
+    );
+    uninstall_sink();
+}
+
+/// Tick through the sleeps a spawn takes (the lifecycle answer is a step
+/// away) until the REPL wants a line or is over.
+fn settle(session: &mut drt_web::Session) -> Step {
+    for _ in 0..1_000 {
+        match session.tick() {
+            Step::Sleep(d) => std::thread::sleep(d.min(Duration::from_millis(5))),
+            other => return other,
+        }
+    }
+    panic!("the repl never settled")
 }
 
 #[test]

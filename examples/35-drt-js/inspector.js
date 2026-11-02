@@ -1,7 +1,9 @@
-// The kernel inspector: every instance of the drt command the terminal is
-// running, refreshed twice a second, with the swarm's own verbs as buttons.
+// The kernel inspector: what a REPL has defined, and every instance of the
+// drt command the terminal is running, refreshed twice a second, with the
+// swarm's own verbs as buttons.
 export function inspector(cli) {
   return {
+    vars: [],
     rows: [],
     note: '',
     init() {
@@ -9,6 +11,7 @@ export function inspector(cli) {
     },
     refresh() {
       const s = cli.session;
+      this.vars = JSON.parse(s?.variables() ?? '[]');   // [] unless the command is drt repl
       if (!s?.hasSwarm()) {
         this.rows = [];
         this.note = 'nothing running';
