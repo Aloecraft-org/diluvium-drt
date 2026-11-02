@@ -680,33 +680,79 @@ impl Service for PeerService {
         };
         let inner = self.0.clone();
         Box::pin(async move {
-            // The lock is held across the whole open, so two streams
-            // arriving at once make one call between them, not two.
-            let mut held = inner.call.lock().await;
-            for attempt in 0..2 {
-                let current = match held.as_ref() {
-                    Some(c) => c.clone(),
-                    None => {
-                        let connected = call::connect(&inner.peer, &inner.dial, &inner.roots)
-                            .await
-                            .map_err(|e| {
-                                eprintln!("drt p2p: cannot reach {}: {e}", inner.peer.shown());
-                                drt_rtc::wisp::reason::UNREACHABLE
-                            })?;
-                        eprintln!("drt p2p: calling {} for every stream", inner.peer.shown());
-                        let c = Arc::new(connected.call);
-                        *held = Some(c.clone());
-                        c
-                    }
-                };
-                match current.open(&target).await {
-                    Ok((stream, _closed)) => return Ok(Box::pin(stream) as _),
-                    // The session ended since: call again, once.
-                    Err(_) if attempt == 0 => *held = None,
-                    Err(_) => break,
-                }
-            }
-            Err(drt_rtc::wisp::reason::UNREACHABLE)
+            let stream = inner.open(&target).await?;
+            Ok(Box::pin(stream) as _)
         })
     }
+}
+
+impl PeerInner {
+    /// One stream to `target` on the shared call, calling first when there
+    /// is none, and once more when the call has ended since.
+    async fn open(&self, target: &drt_rtc::caller::Target) -> Result<tokio::io::DuplexStream, u8> {
+        // The lock is held across the whole open, so two streams arriving
+        // at once make one call between them, not two.
+        let mut held = self.call.lock().await;
+        for attempt in 0..2 {
+            let current = match held.as_ref() {
+                Some(c) => c.clone(),
+                None => {
+                    let connected = call::connect(&self.peer, &self.dial, &self.roots)
+                        .await
+                        .map_err(|e| {
+                            eprintln!("drt p2p: cannot reach {}: {e}", self.peer.shown());
+                            drt_rtc::wisp::reason::UNREACHABLE
+                        })?;
+                    eprintln!("drt p2p: calling {} for every stream", self.peer.shown());
+                    let c = Arc::new(connected.call);
+                    *held = Some(c.clone());
+                    c
+                }
+            };
+            match current.open(target).await {
+                Ok((stream, _closed)) => return Ok(stream),
+                // The session ended since: call again, once.
+                Err(_) if attempt == 0 => *held = None,
+                Err(_) => break,
+            }
+        }
+        Err(drt_rtc::wisp::reason::UNREACHABLE)
+    }
+}
+
+/// `--listen-ws`'s way to a `drt://` forward: each WebSocket is one stream
+/// on one shared call to `peer`, the stream a `--listen` forwarder would
+/// open for a caller that named nothing (the peer's `drt+<service>://`
+/// service, else its default forward).
+pub(crate) fn peer_opener(
+    peer: &Peer,
+    settings: &ServeSettings,
+    roots: &[CertificateDer<'static>],
+) -> crate::bridge::Open {
+    let inner = Arc::new(PeerInner {
+        peer: peer.clone(),
+        dial: Dial {
+            stun: settings.stun.clone(),
+            headers: settings.headers.clone(),
+            fingerprint: None,
+        },
+        roots: roots.to_vec(),
+        call: tokio::sync::Mutex::new(None),
+    });
+    let target = match &peer.service {
+        Some(s) => drt_rtc::caller::Target::Service(s.clone()),
+        None => drt_rtc::caller::Target::Default,
+    };
+    Arc::new(move || {
+        let (inner, target) = (inner.clone(), target.clone());
+        Box::pin(async move {
+            let stream = inner.open(&target).await.map_err(|reason| {
+                format!(
+                    "{} refused the stream (wisp reason {reason})",
+                    inner.peer.shown()
+                )
+            })?;
+            Ok(Box::pin(stream) as crate::bridge::Opened)
+        })
+    })
 }

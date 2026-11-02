@@ -18,14 +18,16 @@
 //!   [`from_tunnel`], what `drt tunnel` was given, as this verb takes it
 //!   (§9).
 //! - Configurable: nothing here; each module lists its own.
-//! - Fan-out: [`Role`], the four roles, and the one match on it in [`run`];
+//! - Fan-out: [`Role`], the five roles, and the one match on it in [`run`];
 //!   the modules: [`peer`] (peer addresses, port maps, forward targets),
 //!   [`http`] (the profile's requests), [`call`], [`serve`] (the host
 //!   behind listen and park, and listen itself), [`park`], [`signal`] (a
-//!   listening peer's own signalling port).
+//!   listening peer's own signalling port), [`listen_ws`] (WebSockets in,
+//!   one forward out).
 
 pub mod call;
 pub mod http;
+pub mod listen_ws;
 pub mod matchmaker;
 pub mod park;
 pub mod peer;
@@ -52,7 +54,7 @@ pub struct Args {
     /// server, drt+<service>://… to open one of its named services, a bare
     /// host (drt://), an http(s):// URL as written, a record or a file
     /// holding one (direct mode: nothing is sent). Absent with --park,
-    /// --listen or --match.
+    /// --listen, --listen-ws or --match.
     #[arg(value_name = "PEER")]
     pub peer: Option<String>,
     /// Print the canonical form of a peer address and exit: one spelling
@@ -91,7 +93,14 @@ pub struct Args {
     /// front for pages on https:// origins.
     #[arg(long = "match", value_name = "PORT")]
     pub match_port: Option<u16>,
-    /// Who may connect to --listen or --match: an address to bind (default
+    /// Accept plain WebSockets on this TCP port and splice each to the one
+    /// --forward: host:port, as websockify does, or drt://… out over p2p.
+    /// Answers websockify's `binary` subprotocol. The page never names the
+    /// target, so a bare --forward is refused. Plain ws only: serve on
+    /// localhost, or behind a TLS terminator as with --match.
+    #[arg(long = "listen-ws", value_name = "PORT")]
+    pub listen_ws: Option<u16>,
+    /// Who may connect to --listen, --listen-ws or --match: an address to bind (default
     /// 127.0.0.1), 0.0.0.0 for anyone, or a CIDR such as a WireGuard subnet,
     /// which admits that range and binds this machine's address inside it.
     #[arg(long, value_name = "ADDRESS|CIDR")]
@@ -243,12 +252,13 @@ pub struct MatchRole {
     pub status_token: Option<matchmaker::StatusToken>,
 }
 
-/// The four roles (`doc/P2P.md` §2).
+/// The five roles (`doc/P2P.md` §2).
 #[derive(Debug)]
 pub enum Role {
     Call(CallRole),
     Park(ParkRole),
     Listen(ListenRole),
+    ListenWs(listen_ws::ListenWsRole),
     Match(MatchRole),
 }
 
@@ -352,6 +362,7 @@ pub fn resolve_with(
     let park = pick(flags.park.as_ref(), f.park.as_ref());
     let listen = pick(flags.listen.as_ref(), f.listen.as_ref());
     let matching = pick(flags.match_port.as_ref(), f.match_port.as_ref());
+    let listen_ws = pick(flags.listen_ws.as_ref(), f.listen_ws.as_ref());
     let host = pick(flags.host.as_ref(), f.host.as_ref());
     let accept = if flags.accept.is_empty() {
         (!f.accept.is_empty()).then(|| (f.accept.clone(), From::File))
@@ -412,6 +423,7 @@ pub fn resolve_with(
         ("peer", peer.as_ref().map(|(_, s)| *s)),
         ("park", park.as_ref().map(|(_, s)| *s)),
         ("listen", listen.as_ref().map(|(_, s)| *s)),
+        ("listen_ws", listen_ws.as_ref().map(|(_, s)| *s)),
         ("match", matching.as_ref().map(|(_, s)| *s)),
     ]
     .into_iter()
@@ -419,7 +431,8 @@ pub fn resolve_with(
     .collect();
     if let [(a, sa), (b, sb), ..] = roles[..] {
         return Err(format!(
-            "{} and {} name two roles; a p2p is one call, one park, one listen, or one match",
+            "{} and {} name two roles; a p2p is one call, one park, one listen, one listen-ws, \
+             or one match",
             spelled(a, sa),
             spelled(b, sb)
         ));
@@ -447,6 +460,52 @@ pub fn resolve_with(
         Ok(())
     };
     let role = match (peer, park, listen, matching) {
+        (None, None, None, None) if listen_ws.is_some() => {
+            serving_only("a listen-ws")?;
+            belongs("accept", "a park", accept.as_ref().map(|(_, s)| *s))?;
+            belongs("pair", "a park", from(&pair))?;
+            belongs("signal", "a listen", signal.as_ref().map(|(_, s)| *s))?;
+            belongs("capacity", "a match", capacity.as_ref().map(|(_, s)| *s))?;
+            belongs("topics", "a match", topics.as_ref().map(|(_, s)| *s))?;
+            belongs("kv", "a match", kv.as_ref().map(|(_, s)| *s))?;
+            belongs(
+                "status_token",
+                "a match",
+                status_token.as_ref().map(|(_, s)| *s),
+            )?;
+            belongs("relay", "a call or a park", from(&relay))?;
+            belongs(
+                "authorized_keys",
+                "a park or a listen",
+                authorized_keys.as_ref().map(|(_, s)| *s),
+            )?;
+            let (port, _) = listen_ws.expect("checked");
+            let host = match host {
+                Some((h, _)) => HostSpec::parse(&h)?,
+                None => HostSpec::Addr(std::net::Ipv4Addr::LOCALHOST.into()),
+            };
+            let forward = ForwardSpec::parse(
+                forward.as_ref().map(|(f, _)| f.as_slice()),
+                forward_ports.as_ref().map(|(p, _)| p.as_str()),
+                all_ports.is_some(),
+            )?;
+            listen_ws::check_forward(&forward)?;
+            // Headers go to a drt:// forward's signalling server; a TCP
+            // target is sent none.
+            if let (Some(from), ForwardSpec::One(_)) = (headers_from, &forward) {
+                return Err(format!(
+                    "{} belongs with a drt:// forward's signalling server; --listen-ws to \
+                     host:port sends no request",
+                    spelled("headers", from)
+                ));
+            }
+            Role::ListenWs(listen_ws::ListenWsRole {
+                port,
+                host,
+                forward,
+                settings: settings(&stun, &headers),
+            })
+        }
         (Some((peer, _)), None, None, None) => {
             belongs("host", "a listen or a match", from(&host))?;
             belongs("accept", "a park", accept.as_ref().map(|(_, s)| *s))?;
@@ -662,7 +721,8 @@ pub fn resolve_with(
         }
         _ => {
             return Err(
-                "name a peer to call, --park <signalling>, --listen <port>, or --match <port>; \
+                "name a peer to call, --park <signalling>, --listen <port>, --listen-ws <port>, \
+                 or --match <port>; \
                  or `p2p` in the --config file, which takes the same keys (drt p2p --help)"
                     .into(),
             )
@@ -790,6 +850,7 @@ pub fn run(args: &Args, config: &RootConfig) -> Result<u8, String> {
             Role::Call(c) => call::run(c, &roots).await,
             Role::Park(p) => park::run(p, config, &roots).await.map(|()| 0),
             Role::Listen(l) => serve::listen(l, config, &roots).await.map(|()| 0),
+            Role::ListenWs(w) => listen_ws::run(w, &roots).await.map(|()| 0),
             Role::Match(_) => unreachable!("dispatched above"),
         }
     });
@@ -802,8 +863,8 @@ pub fn run(args: &Args, config: &RootConfig) -> Result<u8, String> {
 // depth: `drt tunnel`, as this verb takes it (§9)
 
 /// A `tunnel` block as the `p2p` block it means, with one warning per key
-/// naming its replacement. `listen` has none: the WebSocket to TCP bridge
-/// is a server-side shim and moves to the `relay` block.
+/// naming its replacement. `listen`, the WebSocket to TCP bridge, is
+/// `listen_ws` with `host` and `forward`.
 pub fn from_tunnel_block(t: &TunnelConfig) -> Result<(P2pConfig, Vec<String>), String> {
     let mut block = P2pConfig::default();
     let mut warnings =
@@ -836,8 +897,22 @@ pub fn from_tunnel_block(t: &TunnelConfig) -> Result<(P2pConfig, Vec<String>), S
         block.park = Some(park.clone());
         block.forward = t.to.clone().map(ForwardTargets::One);
     }
-    if t.listen.is_some() {
-        return Err("`tunnel.listen`, the WebSocket to TCP bridge, is not a peer; it is the `relay` block's to serve now".into());
+    if let Some(listen) = &t.listen {
+        let addr: std::net::SocketAddr = listen.parse().map_err(|_| {
+            format!(
+                "`tunnel.listen` `{listen}` is not ip:port; it is `p2p.listen_ws` (a port) with \
+                 `p2p.host` (an address) now"
+            )
+        })?;
+        warnings.push(format!(
+            "`tunnel.listen` is `p2p.listen_ws` {} with `p2p.host` \"{}\", and `tunnel.to` is \
+             `p2p.forward`",
+            addr.port(),
+            addr.ip()
+        ));
+        block.listen_ws = Some(addr.port());
+        block.host = Some(addr.ip().to_string());
+        block.forward = t.to.clone().map(ForwardTargets::One);
     }
     block.extra_roots = t.extra_roots.clone();
     block.headers = t
@@ -849,7 +924,8 @@ pub fn from_tunnel_block(t: &TunnelConfig) -> Result<(P2pConfig, Vec<String>), S
 }
 
 /// What `drt tunnel` was given, as the `drt p2p` command it is now, for the
-/// alias to print and run. `None` for the bridge, which is not a peer.
+/// alias to print and run. `None` for a `--listen` that is not `ip:port`
+/// (a name), which `drt tunnel` still serves itself.
 pub fn from_tunnel(
     mode: &crate::tunnel::Mode,
     resolved: &crate::tunnel::Resolved,
@@ -895,7 +971,20 @@ pub fn from_tunnel(
                 to.clone(),
             ]);
         }
-        Mode::Listen { .. } => return None,
+        Mode::Listen { listen, to } => {
+            let addr: std::net::SocketAddr = listen.parse().ok()?;
+            args.listen_ws = Some(addr.port());
+            args.host = Some(addr.ip().to_string());
+            args.forward = vec![to.clone()];
+            words.extend([
+                "--listen-ws".to_string(),
+                addr.port().to_string(),
+                "--host".to_string(),
+                addr.ip().to_string(),
+                "--forward".to_string(),
+                to.clone(),
+            ]);
+        }
         Mode::Rtc { peer, to } => {
             args.peer = Some(peer.clone());
             words.push(if peer.starts_with('{') {
@@ -938,6 +1027,74 @@ mod tests {
 
     fn role(config: &RootConfig, args: Args) -> Result<Role, String> {
         resolve(config, &args).map(|r| r.role)
+    }
+
+    /// `--listen-ws` takes one target this side fixes; the forwards that
+    /// let a caller pick, or name no single target, are refused by name.
+    #[test]
+    fn listen_ws_takes_one_fixed_forward() {
+        let none = cfg("{}");
+        let ws = |forward: Vec<&str>| Args {
+            listen_ws: Some(6080),
+            forward: forward.into_iter().map(String::from).collect(),
+            ..Args::default()
+        };
+        for ok in [
+            "10.0.0.5:3389",
+            "ssh://10.0.0.5:22",
+            "drt://s.example/v1/pc",
+        ] {
+            assert!(
+                matches!(role(&none, ws(vec![ok])), Ok(Role::ListenWs(_))),
+                "{ok}"
+            );
+        }
+        for (bad, why) in [
+            (vec![""], "must never pick the target"),
+            (vec![], "needs a --forward"),
+            (vec!["-"], "stdio"),
+            (vec!["a:1", "b:2"], "one target"),
+        ] {
+            let e = role(&none, ws(bad.clone())).unwrap_err();
+            assert!(e.contains(why), "{bad:?}: {e}");
+        }
+        let e = role(
+            &none,
+            Args {
+                header: vec!["auth=x".into()],
+                ..ws(vec!["10.0.0.5:3389"])
+            },
+        )
+        .unwrap_err();
+        assert!(e.contains("sends no request"), "{e}");
+        let e = role(
+            &none,
+            Args {
+                listen: Some(5000),
+                ..ws(vec!["10.0.0.5:3389"])
+            },
+        )
+        .unwrap_err();
+        assert!(e.contains("`--listen-ws`"), "{e}");
+    }
+
+    /// A `tunnel.listen` block is the listen-ws role, with a warning.
+    #[test]
+    fn a_tunnel_listen_block_is_listen_ws() {
+        let t = TunnelConfig {
+            listen: Some("127.0.0.1:8022".into()),
+            to: Some("127.0.0.1:22".into()),
+            ..Default::default()
+        };
+        let (block, warnings) = from_tunnel_block(&t).unwrap();
+        assert_eq!(block.listen_ws, Some(8022));
+        assert_eq!(block.host.as_deref(), Some("127.0.0.1"));
+        assert!(warnings.iter().any(|w| w.contains("p2p.listen_ws")));
+        let t = TunnelConfig {
+            listen: Some("localhost:8022".into()),
+            ..t
+        };
+        assert!(from_tunnel_block(&t).unwrap_err().contains("not ip:port"));
     }
 
     #[test]
@@ -1386,8 +1543,9 @@ mod tests {
             drt_rtc::caller::Target::Service("ssh".into())
         );
         let bridge = cfg(r#"{"tunnel":{"listen":"127.0.0.1:8022","to":"127.0.0.1:22"}}"#);
-        assert!(role(&bridge, Args::default())
-            .unwrap_err()
-            .contains("`relay` block"));
+        assert!(matches!(
+            role(&bridge, Args::default()),
+            Ok(Role::ListenWs(_))
+        ));
     }
 }

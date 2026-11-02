@@ -1,7 +1,8 @@
 //! `drt p2p` end to end, on loopback (`doc/P2P.md`): a listening peer
 //! serving a TCP forward, called by its record and by its own signalling
 //! port, with stdio and with a mapped port; the REPL default's two
-//! services; and what the alias prints for a `drt tunnel` line.
+//! services; what the alias prints for a `drt tunnel` line; and
+//! `--listen-ws`, WebSockets in to a TCP forward and to a `drt://` one.
 //!
 //! ## surface block
 //!
@@ -9,7 +10,8 @@
 //! - Configurable: [`WAIT`], how long any one step may take.
 //! - Fan-out: [`Listening`] is the serving peer, a `drt p2p --listen`
 //!   subprocess; [`Room`] is `examples/30-signaling-room`, the signalling
-//!   server a parked peer answers at; [`echo`] is its target.
+//!   server a parked peer answers at; [`echo`] is its target;
+//!   [`ListeningWs`] is a `drt p2p --listen-ws` subprocess.
 
 #![cfg(feature = "p2p")]
 
@@ -1289,5 +1291,156 @@ fn a_listener_inside_a_project_writes_its_record_under_live() {
     assert_eq!(
         std::fs::read_to_string(&written).unwrap().trim(),
         record.unwrap()
+    );
+}
+
+// depth: --listen-ws, WebSockets in, one forward out
+
+/// A `drt p2p --listen-ws 0` process, read until it says where it bound.
+struct ListeningWs {
+    child: Child,
+    addr: String,
+}
+
+impl ListeningWs {
+    fn start(forward: &str) -> ListeningWs {
+        let mut child = drt()
+            .args(["p2p", "--listen-ws", "0", "--forward", forward])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut err = BufReader::new(child.stderr.take().unwrap());
+        let mut lines = Vec::new();
+        let mut addr = None;
+        let start = Instant::now();
+        while addr.is_none() && start.elapsed() < WAIT {
+            let mut line = String::new();
+            if err.read_line(&mut line).unwrap() == 0 {
+                break;
+            }
+            addr = line
+                .strip_prefix("drt p2p: ws on ")
+                .and_then(|rest| rest.split_whitespace().next())
+                .map(str::to_string);
+            lines.push(line);
+        }
+        std::thread::spawn(move || {
+            let mut line = String::new();
+            while err.read_line(&mut line).unwrap_or(0) > 0 {
+                line.clear();
+            }
+        });
+        let addr = addr.unwrap_or_else(|| panic!("no `ws on` line in {lines:?}"));
+        ListeningWs { child, addr }
+    }
+
+    /// Open a WebSocket offering `binary` as Emscripten's socket layer
+    /// does, send `input`, and read until as many bytes came back.
+    fn echo(&self, input: &[u8]) -> (Option<String>, Vec<u8>) {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        use tokio_tungstenite::tungstenite::Message;
+        let url = format!("ws://{}/any/path", self.addr);
+        let input = input.to_vec();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async move {
+            let mut req = url.into_client_request().unwrap();
+            req.headers_mut()
+                .insert("Sec-WebSocket-Protocol", "binary".parse().unwrap());
+            let (mut ws, resp) = tokio_tungstenite::connect_async(req).await.unwrap();
+            let answered = resp
+                .headers()
+                .get("Sec-WebSocket-Protocol")
+                .map(|v| v.to_str().unwrap().to_string());
+            ws.send(Message::Binary(input.clone())).await.unwrap();
+            let mut got = Vec::new();
+            let read = async {
+                while got.len() < input.len() {
+                    match ws.next().await {
+                        Some(Ok(Message::Binary(b))) => got.extend_from_slice(&b),
+                        Some(Ok(_)) => {}
+                        _ => break,
+                    }
+                }
+            };
+            let _ = tokio::time::timeout(WAIT, read).await;
+            (answered, got)
+        })
+    }
+}
+
+impl Drop for ListeningWs {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// websockify's shape: a WebSocket in, the one TCP target out.
+#[test]
+fn listen_ws_carries_a_websocket_to_its_tcp_forward() {
+    let port = echo();
+    let ws = ListeningWs::start(&format!("127.0.0.1:{port}"));
+    let (answered, got) = ws.echo(b"to tcp\n");
+    assert_eq!(answered.as_deref(), Some("binary"));
+    assert_eq!(got, b"to tcp\n");
+}
+
+/// ws in, p2p out: the forward is a listening peer's signalling port, and
+/// that peer forwards to the echo server.
+#[test]
+fn listen_ws_carries_a_websocket_over_p2p_to_a_drt_forward() {
+    let port = echo();
+    let l = Listening::start(Some(&format!("127.0.0.1:{port}")), true);
+    let ws = ListeningWs::start(&format!("drt://127.0.0.1:{}", l.signal.unwrap()));
+    let (answered, got) = ws.echo(b"over p2p\n");
+    assert_eq!(answered.as_deref(), Some("binary"));
+    assert_eq!(got, b"over p2p\n");
+}
+
+/// A page must never pick the target: a bare --forward, which lets the
+/// caller name one, is refused, as is no forward at all.
+#[test]
+fn listen_ws_refuses_a_bare_forward_and_no_forward() {
+    for args in [
+        &["p2p", "--listen-ws", "0", "--forward"][..],
+        &["p2p", "--listen-ws", "0"][..],
+    ] {
+        let out = drt().args(args).stdin(Stdio::null()).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{args:?}: {err}");
+        assert!(err.contains("--listen-ws:"), "{args:?}: {err}");
+    }
+    let out = drt()
+        .args(["p2p", "--listen-ws", "0", "--forward"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stderr).contains("must never pick the target"));
+}
+
+/// `drt tunnel --listen` prints its `--listen-ws` form and runs as that.
+#[test]
+fn drt_tunnel_listen_runs_as_listen_ws() {
+    let port = echo();
+    let mut child = drt()
+        .args(["tunnel", "--listen", "127.0.0.1:0", "--to"])
+        .arg(format!("127.0.0.1:{port}"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut err = BufReader::new(child.stderr.take().unwrap());
+    let mut line = String::new();
+    err.read_line(&mut line).unwrap();
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(
+        line.contains(&format!(
+            "this is `drt p2p --listen-ws 0 --host 127.0.0.1 --forward 127.0.0.1:{port}` now"
+        )),
+        "{line}"
     );
 }

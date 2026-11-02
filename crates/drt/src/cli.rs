@@ -393,8 +393,8 @@ pub enum Command {
     /// carrier. With a URL and --local: serve a local port instead, one
     /// fresh leg per accepted connection. With --listen/--to: accept
     /// WebSocket connections and bridge each to a TCP target, in front of
-    /// any sshd; this mode is not a peer and stays here until the `relay`
-    /// block takes it. With --park/--to: the device side of the relay.
+    /// any sshd; this runs as `drt p2p --listen-ws <port> --host <ip>
+    /// --forward <to>`. With --park/--to: the device side of the relay.
     /// With `rtc:` in place of the URL: `drt p2p <peer> -p :<to>`.
     ///
     /// Every flag is also a key of the `tunnel` block in --config, read as
@@ -2201,9 +2201,10 @@ pub fn main(cli: Cli) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            // `drt tunnel` is `drt p2p` now (doc/P2P.md §9): every mode but
-            // the WebSocket to TCP bridge prints its `drt p2p` form and runs
-            // as that.
+            // `drt tunnel` is `drt p2p` now (doc/P2P.md §9): every mode
+            // prints its `drt p2p` form and runs as that, the WebSocket to
+            // TCP bridge as `--listen-ws`. A `--listen` on a name rather
+            // than ip:port has no such form and is served below.
             #[cfg(feature = "p2p")]
             if let Some((form, args)) = crate::p2p::from_tunnel(&resolved.mode, &resolved) {
                 eprintln!("drt tunnel: this is `{form}` now; `drt tunnel` goes away in a release");
@@ -2217,8 +2218,9 @@ pub fn main(cli: Cli) -> ExitCode {
             }
             if matches!(resolved.mode, crate::tunnel::Mode::Listen { .. }) {
                 eprintln!(
-                    "drt tunnel: the WebSocket to TCP bridge is the `bridge` block under `drt \
-                     start` now; `drt tunnel --listen` goes away in a release"
+                    "drt tunnel: the WebSocket to TCP bridge is `drt p2p --listen-ws` now, \
+                     or the `bridge` block under `drt start`; `drt tunnel --listen` goes away \
+                     in a release"
                 );
             }
             let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
