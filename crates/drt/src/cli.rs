@@ -867,6 +867,12 @@ pub type Supplied =
 /// A supplied family may not be one this build carries itself. The builtin
 /// would win, silently, and a page that handed in a backing for `fs` would
 /// never learn that its backing was not the one answering.
+///
+/// `net` is the exception, because its transport is the host's by design
+/// (`connectors/net`): the native WebSocket transport is what answers when
+/// no host hands one in, and a host that hands one in is answered by its
+/// own. Nothing is silent about it: the backing handed in is the one that
+/// answers.
 pub fn wire_connectors_with(config: &RootConfig, supplied: &Supplied) -> Result<Registry, String> {
     if let Some(family) = supplied.keys().find(|f| carries_builtin(f)) {
         return Err(format!(
@@ -1050,8 +1056,10 @@ pub fn wire_connectors_with(config: &RootConfig, supplied: &Supplied) -> Result<
             // WebSocket both ways (connectors/ws/src/net.rs, issue #108).
             // The transport enforces the scope, so it is built from it:
             // `listen` what may be bound, `open` the origins it may reach.
+            // A handed-in transport is the host's choice and is used
+            // instead (see this function's note), by the arm below.
             #[cfg(feature = "connector-net")]
-            "net" => registry
+            "net" if !supplied.contains_key("net") => registry
                 .wire(
                     "net",
                     std::sync::Arc::new(
@@ -1099,11 +1107,13 @@ pub fn wire_connectors_with(config: &RootConfig, supplied: &Supplied) -> Result<
     Ok(registry)
 }
 
-/// Whether this build answers `family` itself. One line per arm of the
-/// match in [`wire_connectors_with`]; `a_supplied_backing_may_not_shadow_a_builtin`
+/// Whether this build answers `family` itself, so that a backing handed
+/// in for it is refused. One line per arm of the match in
+/// [`wire_connectors_with`] except `net`, whose builtin yields to a
+/// handed-in transport; `a_supplied_backing_may_not_shadow_a_builtin`
 /// checks the two agree.
 fn carries_builtin(family: &str) -> bool {
-    let carried: [(&str, bool); 14] = [
+    let carried: [(&str, bool); 13] = [
         ("time", cfg!(feature = "connector-time")),
         ("fs", cfg!(feature = "connector-fs")),
         ("sql", cfg!(feature = "connector-sql")),
@@ -1116,7 +1126,6 @@ fn carries_builtin(family: &str) -> bool {
         ("exec", cfg!(feature = "connector-exec")),
         ("socket", cfg!(feature = "connector-socket")),
         ("ws", cfg!(feature = "connector-ws")),
-        ("net", cfg!(feature = "connector-net")),
         ("kv", cfg!(feature = "connector-kv")),
     ];
     carried.iter().any(|(name, on)| *name == family && *on)

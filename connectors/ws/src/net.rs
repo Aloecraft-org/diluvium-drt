@@ -251,7 +251,7 @@ impl NetScope {
     fn parse(scope: Option<&Scope>) -> Result<NetScope, String> {
         let Some(Scope(value)) = scope else {
             return Err(
-                "the net connector takes a scope naming what it may do: {listen = {\"127.0.0.1:9400\"}} and/or {open = \"wss://hub.example.com\"}".into(),
+                "the net connector takes a scope naming what it may do, e.g. {\"listen\": [\"127.0.0.1:9400\"]} and/or {\"open\": \"wss://hub.example.com\"}".into(),
             );
         };
         let map = value
