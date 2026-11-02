@@ -33,7 +33,7 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Connectors
 
-- `full`: `time`, `fs`, `crypto`, `aloecrypt`, `sql`, `ssh`, `rest`, `ssmtp`, `ldap`, `exec`, `data`, `socket`, `ws`, `kv`, `listen`
+- `full`: `time`, `fs`, `crypto`, `aloecrypt`, `sql`, `ssh`, `rest`, `ssmtp`, `ldap`, `exec`, `data`, `socket`, `ws`, `net`, `kv`, `listen`
 - `slim`: `time`, `fs`, `crypto`, `aloecrypt`, `listen`
 - `wasi`: `time`, `fs`, `crypto`, `aloecrypt`, `sql`, `listen`
 - `web`: `time`, `fs`, `crypto`, `aloecrypt`
@@ -47,6 +47,15 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Added
 
+- **`net` natively: two `drt start` processes link by address.**
+  The `net` connector a page wires over its own transport is now in
+  `full` with one built in (`connector-net`, issue #108): WebSocket
+  both ways. `net/listen {address = "127.0.0.1:9400"}` serves plain
+  `ws://` on that `ip:port`; `net/open {address = "ws://..."}` dials
+  with the ws connector's client under its rules. The scope names
+  both verbs, `{listen = ["ip:port", ...], open = <a ws scope>}`, and
+  a verb it leaves out is refused. Node code that links with `net`
+  in a page links unchanged between processes.
 - **A REPL says what it defined, and example 35 shows it and its
   files.** `repl.dlua`'s names snapshot now carries each of the
   session's own names with its type and a short value, or a

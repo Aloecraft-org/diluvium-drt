@@ -168,7 +168,7 @@ libc = "0.2"
 # connector is its own gate so a profile is a feature list, not a fork.
 default = ["slim"]
 slim = ["connector-time", "connector-fs", "connector-crypto", "connector-aloecrypt", "listen", "cli"]
-full = ["slim", "aloelite", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "connector-ldap", "connector-exec", "connector-socket", "connector-ws", "connector-kv", "connector-data", "tunnel", "relay", "stun", "netcheck", "turn", "wireguard", "webrtc", "numeric", "sshd", "p2p"]
+full = ["slim", "aloelite", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "connector-ldap", "connector-exec", "connector-socket", "connector-ws", "connector-net", "connector-kv", "connector-data", "tunnel", "relay", "stun", "netcheck", "turn", "wireguard", "webrtc", "numeric", "sshd", "p2p"]
 # The portable build (doc/Wasm.md D2): what `drt` carries on
 # wasm32-wasip2, under wasmtime. Every connector here compiles for that
 # target with no source change and is exercised by the examples gate
@@ -276,6 +276,13 @@ connector-socket = ["dep:drt-connector-socket"]
 # only, on rest's argument: it links the same TLS stack. What browser access
 # signals over (doc/BrowserAccess.md §7).
 connector-ws = ["dep:drt-connector-ws"]
+# The net connector over a transport this process hosts: `host:net/open|
+# listen|accept|send|recv|close|transfer|claim` (connectors/net), with
+# WebSocket both ways -- `listen` a plain ws:// server on an ip:port, `open`
+# the ws connector's own client (connectors/ws/src/net.rs, issue #108).
+# `full` only, on ws's argument. The page carries `net` too, over a
+# transport it hands in; this is the same connector with one built in.
+connector-net = ["dep:drt-connector-ws", "drt-connector-ws/net"]
 # One topic of a signalling server's kv store (`drt p2p --match --kv`):
 # `host:kv/get|put|delete|list|watch`, over rest's HTTP client (connectors/
 # kv). `full` only, on rest's argument: it links the same TLS stack.

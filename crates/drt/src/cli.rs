@@ -75,6 +75,7 @@ const PROFILE_FULL: &[&str] = &[
     "connector-fs",
     "connector-kv",
     "connector-ldap",
+    "connector-net",
     "connector-rest",
     "connector-socket",
     "connector-sql",
@@ -585,6 +586,7 @@ pub enum Command {
         feature = "connector-exec",
         feature = "connector-socket",
         feature = "connector-ws",
+        feature = "connector-net",
         feature = "connector-kv",
         feature = "connector-data",
         feature = "netcheck"
@@ -641,6 +643,9 @@ pub fn buildinfo(json: bool) -> String {
     }
     if cfg!(feature = "connector-ws") {
         connectors.push("ws");
+    }
+    if cfg!(feature = "connector-net") {
+        connectors.push("net");
     }
     if cfg!(feature = "connector-kv") {
         connectors.push("kv");
@@ -792,6 +797,7 @@ fn enabled_features() -> Vec<&'static str> {
     feature!("connector-fs");
     feature!("connector-kv");
     feature!("connector-ldap");
+    feature!("connector-net");
     feature!("connector-rest");
     feature!("connector-sql");
     feature!("connector-ssh");
@@ -1040,6 +1046,21 @@ pub fn wire_connectors_with(config: &RootConfig, supplied: &Supplied) -> Result<
                     wiring.scope.clone(),
                 )
                 .map_err(|e| e.to_string())?,
+            // A connection to an address a node holds by handle, over
+            // WebSocket both ways (connectors/ws/src/net.rs, issue #108).
+            // The transport enforces the scope, so it is built from it:
+            // `listen` what may be bound, `open` the origins it may reach.
+            #[cfg(feature = "connector-net")]
+            "net" => registry
+                .wire(
+                    "net",
+                    std::sync::Arc::new(
+                        drt_connector_ws::net::NetWsConnector::new(wiring.scope.as_ref())
+                            .map_err(|e| format!("connector 'net': {e}"))?,
+                    ),
+                    wiring.scope.clone(),
+                )
+                .map_err(|e| e.to_string())?,
             // One topic of a signalling server's kv store: the scope names
             // the topic URL and carries the token, so a program names keys
             // and never the server, another topic, or the credential.
@@ -1082,7 +1103,7 @@ pub fn wire_connectors_with(config: &RootConfig, supplied: &Supplied) -> Result<
 /// match in [`wire_connectors_with`]; `a_supplied_backing_may_not_shadow_a_builtin`
 /// checks the two agree.
 fn carries_builtin(family: &str) -> bool {
-    let carried: [(&str, bool); 13] = [
+    let carried: [(&str, bool); 14] = [
         ("time", cfg!(feature = "connector-time")),
         ("fs", cfg!(feature = "connector-fs")),
         ("sql", cfg!(feature = "connector-sql")),
@@ -1095,6 +1116,7 @@ fn carries_builtin(family: &str) -> bool {
         ("exec", cfg!(feature = "connector-exec")),
         ("socket", cfg!(feature = "connector-socket")),
         ("ws", cfg!(feature = "connector-ws")),
+        ("net", cfg!(feature = "connector-net")),
         ("kv", cfg!(feature = "connector-kv")),
     ];
     carried.iter().any(|(name, on)| *name == family && *on)
@@ -1111,7 +1133,7 @@ fn carries_builtin(family: &str) -> bool {
 #[cfg(feature = "plugins")]
 const BUILTIN_FAMILIES: &[&str] = &[
     "time", "fs", "sql", "crypto", "data", "ssh", "rest", "ssmtp", "ldap", "exec", "socket", "ws",
-    "kv",
+    "net", "kv",
 ];
 
 /// Every plugin family's name, judged before anything is wired.
