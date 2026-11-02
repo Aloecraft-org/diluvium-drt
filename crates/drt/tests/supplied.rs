@@ -20,7 +20,7 @@ use drt_connector::mock::MockConnector;
 /// `wire_connectors_with`'s match answers to.
 const BUILTINS: &[&str] = &[
     "time", "fs", "sql", "crypto", "data", "ssh", "rest", "ssmtp", "ldap", "exec", "socket", "ws",
-    "kv",
+    "net", "kv",
 ];
 
 fn naming(families: &[&str]) -> RootConfig {
@@ -45,12 +45,14 @@ fn supplying(families: &[&str]) -> Supplied {
 
 /// A supplied family the config names is wired; one it does not name is
 /// not, because handing a backing in makes it available, not granted.
+/// `bus` stands for a family no build carries: `net` was the example
+/// until `full` carried it (issue #108).
 #[test]
 fn a_supplied_family_is_wired_only_when_the_config_names_it() {
-    let supplied = supplying(&["net", "other"]);
-    let registry = wire_connectors_with(&naming(&["net"]), &supplied).expect("net is wired");
+    let supplied = supplying(&["bus", "other"]);
+    let registry = wire_connectors_with(&naming(&["bus"]), &supplied).expect("bus is wired");
     let wired = menu(drt_connector::Dispatcher::new(registry));
-    assert!(wired.contains(&"net".to_string()), "{wired:?}");
+    assert!(wired.contains(&"bus".to_string()), "{wired:?}");
     assert!(!wired.contains(&"other".to_string()), "{wired:?}");
 }
 
@@ -83,18 +85,18 @@ fn menu(d: drt_connector::Dispatcher) -> Vec<String> {
 /// handed in, so a page that misspelled a key can see it.
 #[test]
 fn a_named_family_nobody_answers_says_what_was_handed_in() {
-    let err = wire_connectors_with(&naming(&["nett"]), &supplying(&["net"]))
+    let err = wire_connectors_with(&naming(&["buss"]), &supplying(&["bus"]))
         .err()
         .expect("refused");
     assert_eq!(
         err,
-        "config wires connector 'nett', which this build does not carry and no backing \
-         was handed in for (handed in: net)"
+        "config wires connector 'buss', which this build does not carry and no backing \
+         was handed in for (handed in: bus)"
     );
-    let err = wire_connectors(&naming(&["nett"])).err().expect("refused");
+    let err = wire_connectors(&naming(&["buss"])).err().expect("refused");
     assert_eq!(
         err,
-        "config wires connector 'nett', which this build does not carry"
+        "config wires connector 'buss', which this build does not carry"
     );
 }
 
