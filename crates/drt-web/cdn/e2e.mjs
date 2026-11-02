@@ -418,7 +418,7 @@ await check('examples/37-page-connectors: the page as a reader opens it prints e
   await p.close();
 });
 
-await check('terminal(id) renders the drt CLI in that element: Tab completes a subcommand, it runs, and the REPL evaluates', async () => {
+await check('terminal(id) renders the drt CLI in that element: the prompt on the last row, Tab completes a subcommand, it runs, and the REPL evaluates', async () => {
   const p = await page();
   await p.evaluate(async () => {
     document.body.innerHTML = '<div id="cli" style="width: 800px; height: 400px"></div>';
@@ -426,6 +426,11 @@ await check('terminal(id) renders the drt CLI in that element: Tab completes a s
   });
   const screen = () => p.evaluate(() => document.querySelector('#cli .xterm-rows')?.innerText ?? '');
   await until('the prompt', async () => (await screen()).trimEnd().endsWith('$'));
+  const bottom = () => p.evaluate(() => { const x = window.cli.xterm; return x.buffer.active.cursorY === x.rows - 1; });
+  if (!(await bottom())) throw new Error('the first prompt is not on the last row');
+  const rows = await p.evaluate(() => { document.getElementById('cli').style.height = '600px'; return window.cli.xterm.rows; });
+  await until('the terminal grows', async () => (await p.evaluate(() => window.cli.xterm.rows)) > rows);
+  if (!(await bottom())) throw new Error('the prompt left the last row when the terminal grew');
   await p.keyboard.type('drt buildi');
   await p.keyboard.press('Tab');
   await until('Tab completes buildinfo', async () => (await screen()).includes('$ drt buildinfo'));

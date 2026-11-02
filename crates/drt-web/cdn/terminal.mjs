@@ -14,7 +14,8 @@
 // - Entry point: `terminal(target, options)` -> Promise of
 //   { xterm, term, run(line), reset(), whenIdle(), dispose() }.
 //   `target` is an element or its id. `term` is the DrtTerm (the
-//   kernel); the rest are drt-term.js's.
+//   kernel); the rest are drt-term.js's. The prompt sits on the last
+//   row from the start and stays there as the element grows.
 //   Options:
 //   - `backings`: the kernel's connectors by family, as `kernel()` takes
 //     them; `{ fs }` gives it a filesystem (fs.mjs).
@@ -56,6 +57,7 @@ export async function terminal(target, options = {}) {
   if (fit) xterm.loadAddon(fit);
   xterm.open(element);
   const observer = fit ? follow(element, fit) : null;
+  stickToBottom(xterm, element);
 
   const cli = attach(runtime.DrtTerm, xterm, {
     prompt: options.prompt ?? '$ ',
@@ -78,6 +80,17 @@ export async function terminal(target, options = {}) {
 }
 
 // depth: the stylesheet, sizing, and the subcommand list
+
+/// The prompt starts on the last row, as in a terminal that has been in
+/// use, and stays there when the element grows: xterm.js pulls lines
+/// down from scrollback on a resize while nothing is below the cursor, so
+/// the padding is as many rows as the screen could ever show, not only
+/// this element's.
+function stickToBottom(xterm, element) {
+  const rowPx = element.clientHeight / xterm.rows || 16;
+  const tallest = Math.ceil((globalThis.screen?.height ?? 0) / rowPx);
+  xterm.write('\r\n'.repeat(Math.max(xterm.rows - 1, tallest)));
+}
 
 function addStyle() {
   if (document.getElementById(STYLE_ID)) return;
