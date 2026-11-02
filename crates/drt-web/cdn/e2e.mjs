@@ -372,6 +372,72 @@ await check('kernel() with a bus() as its net transport runs a program that talk
   await p.close();
 });
 
+await check('kernel(sink, backings, config) runs every command under that config with no --config on the line, and refuses a config it cannot read', async () => {
+  const p = await page();
+  const r = await p.evaluate(async () => {
+    let out = '';
+    const decoder = new TextDecoder();
+    const sink = (fd, bytes) => { out += decoder.decode(bytes, { stream: true }); };
+    const config = { caps: [{ capability: 'host:fs/*' }], connectors: { fs: { scope: { scope: '/app/work', access: 'readwrite' } } } };
+    const k = await window.drt.kernel(sink, undefined, config);
+    k.putDir('/app/work');
+    k.putFile('/app/app.dlua', new TextEncoder().encode("host.fs.write('out.txt', 'under the config') print('wrote')"));
+    k.setCwd('/app');
+    const s = k.exec(['drt', 'run', 'app.dlua']);
+    for (;;) {
+      const step = s.tick();
+      if (step.done) break;
+      await new Promise((r) => setTimeout(r, step.sleepMs ?? 0));
+    }
+    const written = new TextDecoder().decode(k.getFile('/app/work/out.txt') ?? new Uint8Array());
+    const echoed = JSON.parse(k.config());
+    k.free();
+    let refused = '';
+    try { await window.drt.kernel(sink, undefined, { caps: [], connectorz: {} }); } catch (e) { refused = String(e); }
+    return { out, written, echoed, refused };
+  });
+  if (r.out !== 'wrote\n' || r.written !== 'under the config') throw new Error(JSON.stringify(r));
+  if (!r.echoed.connectors?.fs) throw new Error(`config(): ${JSON.stringify(r.echoed)}`);
+  if (!/config: .*connectorz/.test(r.refused)) throw new Error(`a misspelt key was not refused by name: ${r.refused}`);
+  await p.close();
+});
+
+await check('terminal(id, { repl: true, config }) opens at dv> under the config; :run runs a file from the kernel, :load defines into the session, ^C stops a program, and Enter starts another REPL after ^D', async () => {
+  const p = await page();
+  await p.evaluate(async () => {
+    document.body.innerHTML = '<div id="card" style="width: 800px; height: 400px"></div>';
+    const config = { caps: [{ capability: 'host:fs/*' }], connectors: { fs: { scope: { scope: '/', access: 'readwrite' } } } };
+    window.card = await window.drt.terminal('card', { repl: true, config });
+    const put = (path, text) => window.card.term.putFile(path, new TextEncoder().encode(text));
+    put('/note.txt', 'from the kernel');
+    put('/app.dlua', "print('app read', host.fs.read('note.txt'))");
+    put('/lib.dlua', 'function add(a, b) return a + b end');
+    put('/forever.dlua', "queue.wait({queue.lookup('inbox')})");
+  });
+  const screen = () => p.evaluate(() => document.querySelector('#card .xterm-rows')?.innerText ?? '');
+  await until('the REPL prompt, with no shell before it', async () => { const t = await screen(); return t.trimEnd().endsWith('dv>') && !t.includes('$'); });
+  await p.click('#card');
+  await p.keyboard.type(':help\r');
+  await until(':help lists :run', async () => /:run <path>/.test(await screen()));
+  await p.keyboard.type('x = 40\r');
+  await p.keyboard.type(':run app.dlua\r');
+  await until('the program printed through the config\'s fs', async () => /^app read\tfrom the kernel$/m.test(await screen()));
+  await p.keyboard.type(':load lib.dlua\r');
+  await p.keyboard.type('add(x, 2)\r');
+  await until('the session kept x and gained add', async () => /^42$/m.test(await screen()));
+  await p.keyboard.type(':run forever.dlua\r');
+  await p.keyboard.press('Control+C');
+  await until('^C stopped the program and the prompt is back', async () => { const t = await screen(); return t.includes(':run: interrupted') && t.trimEnd().endsWith('dv>'); });
+  await p.keyboard.type('x\r');
+  await until('the REPL survived the interrupt', async () => /^40$/m.test(await screen()));
+  await p.keyboard.press('Control+D');
+  await until('the REPL ended and the terminal says so', async () => (await screen()).includes('drt repl ended'));
+  await p.keyboard.press('Enter');
+  await until('another REPL', async () => { const t = await screen(); return (t.match(/drt repl — Show help/g) ?? []).length === 2 && t.trimEnd().endsWith('dv>'); });
+  await p.evaluate(() => window.card.dispose());
+  await p.close();
+});
+
 await check(`examples/35-drt-js: bare drt prints its usage, drt repl completes and colours its lines, the panels show its variables${withAloelite ? ', files' : ''} and what it spawns`, async () => {
   // Served from the example's directory with dist/drt.min.js (and aloelite, when built) in place of the copies its README makes.
   const dir = path.resolve(here, '../../../examples/35-drt-js');

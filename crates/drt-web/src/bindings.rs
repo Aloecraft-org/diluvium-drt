@@ -89,9 +89,22 @@ impl DrtTerm {
     /// no config, gets its own connector over the object. Under `fs`, the
     /// terminal's filesystem instead of an empty memory one (cdn/fs.mjs);
     /// terminals handed the same `fs` share it. Optional.
+    ///
+    /// `config` is the root config every `drt run` and `drt repl` in this
+    /// kernel runs under when its line names no `--config`: an object of
+    /// the JSON file's shape (`caps`, `connectors`, `budget`, `program`,
+    /// ...), or that JSON as a string. Read as `--config` reads a file,
+    /// so a key the reader does not know is refused here, by name.
+    /// Optional; without it a command with no `--config` gets the
+    /// zero-ceremony defaults it always did.
     #[wasm_bindgen(constructor)]
-    pub fn new(sink: js_sys::Function, backings: JsValue) -> Result<DrtTerm, JsValue> {
+    pub fn new(
+        sink: js_sys::Function,
+        backings: JsValue,
+        config: JsValue,
+    ) -> Result<DrtTerm, JsValue> {
         let backings = crate::js::backings(&backings).map_err(|e| JsValue::from_str(&e))?;
+        let config = page_config(&config)?;
         let sink: crate::term::Sink = std::rc::Rc::new(move |fd, bytes: &[u8]| {
             let fd = match fd {
                 drt_platform::stdio::Fd::Stdout => 1u32,
@@ -105,13 +118,24 @@ impl DrtTerm {
         });
         let page = sink.clone();
         drt_platform::stdio::install_sink(Box::new(move |fd, bytes| page(fd, bytes)));
+        let inner = match backings.fs {
+            Some(fs) => Term::with_sink(sink).with_fs(fs),
+            None => Term::with_sink(sink),
+        }
+        .with_backings(backings.connectors);
         Ok(DrtTerm {
-            inner: match backings.fs {
-                Some(fs) => Term::with_sink(sink).with_fs(fs),
-                None => Term::with_sink(sink),
-            }
-            .with_backings(backings.connectors),
+            inner: match config {
+                Some(config) => inner.with_config(config),
+                None => inner,
+            },
         })
+    }
+
+    /// The config this kernel was built with, as JSON, or `undefined`.
+    pub fn config(&self) -> Option<String> {
+        self.inner
+            .config()
+            .and_then(|config| serde_json::to_string(config).ok())
     }
 
     /// Put a file in the terminal's filesystem, making the directories
@@ -245,10 +269,17 @@ impl DrtSession {
         o.into()
     }
 
-    /// Feed the REPL one line. `true` when it was sent; a blank line
-    /// outside a continuation is not.
+    /// Feed the REPL one line as typed: a colon command (`:help`, `:run
+    /// <path>`, ...) or source. `true` when it was sent or run; a blank
+    /// line outside a continuation is not.
     pub fn feed(&mut self, line: &str) -> Result<bool, JsValue> {
         self.inner.feed(line).map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// Stop the program the REPL's `:run` started, if one is running:
+    /// `true` when there was one. The REPL goes on at its prompt.
+    pub fn interrupt(&mut self) -> bool {
+        self.inner.interrupt()
     }
 
     pub fn continuing(&self) -> bool {
@@ -978,4 +1009,23 @@ impl DrtShell {
 /// An io error from a terminal's filesystem, thrown to the page.
 fn fs_error(e: std::io::Error) -> JsValue {
     JsValue::from_str(&e.to_string())
+}
+
+/// A kernel's config as the page handed it: nothing, a JSON string, or an
+/// object the page wrote in the file's shape, stringified here so the one
+/// reader (`drt::config::parse`) reads it as it reads a file.
+fn page_config(value: &JsValue) -> Result<Option<drt_config::RootConfig>, JsValue> {
+    if value.is_undefined() || value.is_null() {
+        return Ok(None);
+    }
+    let text = match value.as_string() {
+        Some(text) => text,
+        None => js_sys::JSON::stringify(value)
+            .map_err(|_| JsValue::from_str("config: not an object JSON can write"))?
+            .as_string()
+            .ok_or_else(|| JsValue::from_str("config: not an object JSON can write"))?,
+    };
+    drt::config::parse(&text, "config")
+        .map(Some)
+        .map_err(|e| JsValue::from_str(&e))
 }

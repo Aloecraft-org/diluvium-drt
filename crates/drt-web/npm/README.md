@@ -75,17 +75,27 @@ const dev = await getDrt('dev');       // or 'latest', '0.8.0', 'v0.8.0-dev.59'
 import { terminal } from './drt.js';
 
 const cli = await terminal('cli');               // <div id="cli"></div>
+
+const config = { caps: [{ capability: 'host:fs/*' }],
+                 connectors: { fs: { scope: { scope: '.', access: 'readwrite' } } } };
+const card = await terminal('card', { repl: true, config, backings: { fs } });
 ```
 
 - A `$ ` prompt whose command is `drt`, the binary's own CLI in the page;
   `drt repl` gives the native REPL's `dv> ` and `>> `.
+- `config` is the kernel's root config, the JSON file's shape as an
+  object: every `drt run` and `drt repl` typed there runs under it with
+  no `--config` on the line. `repl: true` opens straight into the REPL;
+  `:run <path>` runs a file from the kernel's filesystem under that
+  config, `:load <path>` evaluates one into the session, `:help` lists
+  the rest. When the REPL ends, Enter starts another.
 - The line editor is the native REPL's: history, word motions, undo, and
   Tab over `drt`'s subcommands at `$ ` and the guest's names at `dv> `.
 - xterm.js and its stylesheet are inside drt.js. The terminal fills the
   element and follows its size.
 - Options: `backings` (the kernel's connectors, `{ fs }` included),
-  `prompt`, `banner`, `ssh` (false leaves `drt ssh` out), `xterm`
-  (xterm.js options), `fit`.
+  `config`, `repl`, `prompt`, `banner`, `ssh` (false leaves `drt ssh`
+  out), `xterm` (xterm.js options), `fit`.
 - `cli.term` is the kernel; `cli.session` the running command's session
   (`variables()` is what a REPL defined, `hasSwarm()` and `ids()` a
   `drt start`'s instances, or a REPL and what its lines spawned);
@@ -103,8 +113,11 @@ const file = await aloelite.open(engine, { store: 'opfs', name: 'node.fs' });
 const shared = aloelite.attach(file, { volume: 'docs' });
 const a = await kernel(sinkA, { fs: shared });   // a and b share files
 const b = await kernel(sinkB, { fs: shared });
-const c = await kernel(sinkC, { fs: aloelite.attach(file, { volume: 'c' }) });
+const c = await kernel(sinkC, { fs: aloelite.attach(file, { volume: 'c' }) }, config);
 ```
+
+- `kernel`'s third argument is the kernel's root config, as `terminal()`
+  takes it: the JSON file's shape, as an object or a string.
 
 - The volume is the kernel's whole filesystem: programs, configs and
   `fs/*` all read it.

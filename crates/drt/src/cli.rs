@@ -1274,17 +1274,61 @@ pub fn assemble_with(
     cli: &Cli,
     supplied: &Supplied,
 ) -> Result<(RootConfig, drt_connector::Dispatcher), String> {
-    let mut config = config::load(cli.config.as_deref())?;
-    if cli.config.is_none() {
-        local_defaults(&mut config);
-        supplied_defaults(&mut config, supplied);
-    }
-    let registry = wire_connectors_with(&config, supplied)?;
+    assemble_under(cli, None, supplied)
+}
+
+/// [`assemble_with`], with a root config the host already holds standing
+/// in for a missing `--config`: a page's kernel built with a config
+/// object (issue #105). It is a config, so it decides exactly as a file
+/// would and the zero-ceremony defaults stay out; a `--config` on the line
+/// is the person naming another one, and wins.
+pub fn assemble_under(
+    cli: &Cli,
+    base: Option<&RootConfig>,
+    supplied: &Supplied,
+) -> Result<(RootConfig, drt_connector::Dispatcher), String> {
+    let config = match (&cli.config, base) {
+        (None, Some(base)) => base.clone(),
+        (path, _) => {
+            let mut config = config::load(path.as_deref())?;
+            if path.is_none() {
+                local_defaults(&mut config);
+                supplied_defaults(&mut config, supplied);
+            }
+            config
+        }
+    };
+    let dispatcher = dispatcher_for(&config, supplied)?;
+    Ok((config, dispatcher))
+}
+
+/// The connectors a config wires, checked: what every command gets, and
+/// what the REPL's `:run` gets afresh for each program it runs.
+pub fn dispatcher_for(
+    config: &RootConfig,
+    supplied: &Supplied,
+) -> Result<drt_connector::Dispatcher, String> {
+    let registry = wire_connectors_with(config, supplied)?;
     // By name, at startup: never a mystifying `denied` at first call, and
     // never a server that binds and then refuses everything in silence.
-    config::validate(&config)?;
-    config::validate_grants(&config, &registry)?;
-    Ok((config, drt_connector::Dispatcher::new(registry)))
+    config::validate(config)?;
+    config::validate_grants(config, &registry)?;
+    Ok(drt_connector::Dispatcher::new(registry))
+}
+
+/// What the REPL's `:run <path>` runs a program under: exactly what `drt
+/// run <path>` would get from the same config -- its ceiling, budget and
+/// numeric bounds, and connectors of its own, wired fresh for each program
+/// as each command's are. `supplied` makes a host's backings for one
+/// program.
+pub fn run_under(config: &RootConfig, supplied: impl Fn() -> Supplied + 'static) -> repl::RunUnder {
+    let wiring = config.clone();
+    repl::RunUnder {
+        caps: config::ceiling(config),
+        budget: config.root.budget,
+        numeric: config.root.numeric,
+        connectors: Box::new(move || dispatcher_for(&wiring, &supplied()).map(std::sync::Arc::new)),
+    }
 }
 
 /// `drt ldap`: the config's ldap scope, and nothing else of it wired.
@@ -2194,6 +2238,7 @@ pub fn main(cli: Cli) -> ExitCode {
                 config::repl_ceiling(&config),
                 config.root.budget,
                 unsafe_stdlib,
+                run_under(&config, Supplied::new),
             ) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {

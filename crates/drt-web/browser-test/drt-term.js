@@ -24,7 +24,8 @@
 // would otherwise come back as the next line at this prompt.
 //
 // surface block:
-//   attach(DrtTerm, terminal, { prompt, banner, DrtEditor, ssh })
+//   attach(DrtTerm, terminal, { prompt, banner, DrtEditor, ssh, backings,
+//                               config, repl, commands })
 //       -> { term, session, onCommand(listener), run(line), reset(),
 //            whenIdle(), dispose() }
 //     term      the DrtTerm, to seed files into
@@ -46,6 +47,15 @@
 //               `run` instead.
 //   backings (optional) -- DrtTerm's second argument: connectors by
 //               family, `fs` the kernel's filesystem (src/js.rs).
+//   config (optional) -- DrtTerm's third argument: the root config every
+//               `drt run` and `drt repl` here runs under with no
+//               `--config` on the line, as an object (src/bindings.rs).
+//   repl (optional) -- true opens straight into `drt repl` instead of the
+//               `$ ` shell: the prompt is `dv> `, under `config`, and
+//               `:help` lists drt's verbs. When the REPL ends (^D,
+//               `:quit`, a failure) the terminal says so and Enter starts
+//               a fresh one; the filesystem survives, the session's
+//               variables do not.
 //   commands (optional) -- what Tab completes from at the shell prompt.
 //               The REPL's prompts take the guest's names instead.
 //   ssh: { Ssh, access?, store? } (optional) -- drt-ssh-web's `Ssh`, the
@@ -55,11 +65,17 @@
 //   INTERRUPT: the one key this file still reads for itself, and only
 //               while a command is running -- the editor is not reading
 //               then, so nothing else would see it.
+//   DRT_REPL, REPL_ENDED: what a `repl: true` terminal runs, and what it
+//               says when that ends.
 
 import { makeShell } from './shell.js';
 import { sshCommand, words } from './ssh-command.js';
 
 const INTERRUPT = '\x03';
+/// What a `repl: true` terminal runs, every time.
+const DRT_REPL = 'drt repl';
+/// What it says when that ends, before waiting for Enter.
+const REPL_ENDED = 'drt repl ended; press Enter to start another';
 
 /// The REPL's bare `:ssh`: the config's `host:ssh/shell`, with a reply
 /// deadline as long as a session may be -- the native REPL's line exactly.
@@ -68,13 +84,14 @@ const SSH_SHELL_LINE = "return host.call('ssh/shell', nil, 2147483647)";
 export function attach(
   DrtTerm,
   terminal,
-  { prompt = '$ ', banner = '', DrtEditor, ssh, backings, commands } = {},
+  { prompt = '$ ', banner = '', DrtEditor, ssh, backings, config, repl = false, commands } = {},
 ) {
   const decoders = [null, new TextDecoder(), new TextDecoder()];
   const write = (fd, text) => terminal.write(text.replace(/\r?\n/g, '\r\n'));
   const term = new DrtTerm(
     (fd, bytes) => write(fd, decoders[fd].decode(bytes, { stream: true })),
     backings,
+    config,
   );
   const shell = makeShell({ term, write });
 
@@ -193,7 +210,13 @@ export function attach(
       }
     },
     ssh: runSsh,
-    stop: () => interrupted,
+    // Consumed when read: a ^C that stopped the REPL's `:run` program is
+    // answered, not carried on to end the REPL at its next tick.
+    stop: () => {
+      if (!interrupted) return false;
+      interrupted = false;
+      return true;
+    },
     running: (s) => {
       current = s;
       for (const listener of commandListeners) listener(s);
@@ -210,17 +233,33 @@ export function attach(
   }
 
   async function loop() {
+    let first = true;
     while (!disposed) {
       settle();
-      if (commands) editor.setCandidates(commands);
-      // false: a shell line is not Lua, so the editor does not colour it
-      // (`--config` would read as a comment). Ignored by an editor without
-      // highlighting.
-      const outcome = await editor.readLine(prompt, false);
-      if (disposed) return;
-      if (outcome.eof || outcome.interrupted) continue;
-      const text = outcome.line;
-      if (!text.trim()) continue;
+      let text;
+      if (repl) {
+        // A kernel on a page is a REPL with a config, not a shell with
+        // flags (issue #105): the command is always `drt repl`, and a line
+        // is only asked for to start the next one after it ends.
+        if (!first) {
+          write(2, `${REPL_ENDED}\n`);
+          const again = await editor.readLine('', false);
+          if (disposed) return;
+          if (again.eof) continue;
+        }
+        first = false;
+        text = DRT_REPL;
+      } else {
+        if (commands) editor.setCandidates(commands);
+        // false: a shell line is not Lua, so the editor does not colour it
+        // (`--config` would read as a comment). Ignored by an editor without
+        // highlighting.
+        const outcome = await editor.readLine(prompt, false);
+        if (disposed) return;
+        if (outcome.eof || outcome.interrupted) continue;
+        text = outcome.line;
+        if (!text.trim()) continue;
+      }
       running = true;
       interrupted = false;
       let status = 1;

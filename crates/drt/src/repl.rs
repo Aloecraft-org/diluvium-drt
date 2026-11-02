@@ -30,9 +30,12 @@
 //!
 //! ## surface block
 //!
-//! - [`Repl`]: the half every host shares — `tick`, `feed`, `continuing`,
-//!   [`Repl::names`], [`Repl::variables`], [`Repl::busy`], and
-//!   [`Repl::deployment_mut`] for a host that shows the swarm.
+//! - [`Repl`]: the half every host shares — `tick`, [`Repl::line`] (a
+//!   typed line: a colon command, or source for the guest), `feed` (source
+//!   only), `continuing`, [`Repl::names`], [`Repl::variables`],
+//!   [`Repl::busy`], and [`Repl::deployment_mut`] for a host that shows
+//!   the swarm. [`Repl::with_run`] gives it [`RunUnder`], what `:run`
+//!   runs a program under, and [`Repl::interrupt`] stops that program.
 //! - [`repl`]: the native loop. On a tty it is [`edited`] (ego-cli:
 //!   history, word motions, undo, Tab); through a pipe it is [`piped`],
 //!   whose prompts go to stderr so a redirect stays clean.
@@ -40,9 +43,11 @@
 //!   [`STEPS_PER_TICK`]: how long a tick keeps stepping a running child
 //!   before answering the terminal.
 //! - Fan-out: [`meta`], the lines the host answers instead of the guest:
-//!   `:help`, `:quit`, `:clear`, the control endpoint's orders, `:ssh`
-//!   (the config's `host:ssh/shell`) and `:ssh <target> …` (`drt ssh`, on
-//!   this terminal). [`META_HELP`] lists them.
+//!   `:help`, `:quit`, `:clear`, `:run <path>` (`drt run <path>` under the
+//!   session's config, the prompt back when it ends), `:load <path>` (the
+//!   file evaluated into the session, like `dofile`), the control
+//!   endpoint's orders, `:ssh` (the config's `host:ssh/shell`) and `:ssh
+//!   <target> …` (`drt ssh`, on this terminal). [`META_HELP`] lists them.
 
 use std::io::{BufRead, Write};
 use std::sync::{Arc, Mutex};
@@ -58,7 +63,7 @@ use drt_swarm::pump::PumpHost;
 use drt_swarm::swarm::Swarm;
 use drt_swarm::InstanceId;
 
-use crate::drive::Next;
+use crate::drive::{Next, Solo};
 use crate::start::{DeployHost, Deployment, IDLE_TICK};
 
 const PROGRAM: &str = include_str!("repl.dlua");
@@ -67,6 +72,20 @@ const OUT: &str = "repl/out";
 /// How many swarm steps one tick takes at most before answering the
 /// terminal, when something the REPL spawned keeps running.
 const STEPS_PER_TICK: usize = 64;
+
+/// What `:run <path>` runs a program under: what `drt run <path>` would
+/// get from the session's config (`crate::cli::run_under` builds it from
+/// one). The ceiling is `drt run`'s, not the REPL's own, which adds
+/// `lifecycle` when there is no config; a program run from the prompt is
+/// the program `drt run` would run. `connectors` wires a fresh set for
+/// each program, because a program is a process and its handles end with
+/// it, as each command's do.
+pub struct RunUnder {
+    pub caps: Vec<Grant>,
+    pub budget: drt_config::Budget,
+    pub numeric: drt_config::Numeric,
+    pub connectors: Box<dyn Fn() -> Result<Arc<Dispatcher>, String>>,
+}
 
 /// The REPL instance, driven by whoever has the terminal.
 pub struct Repl {
@@ -101,6 +120,12 @@ pub struct Repl {
     /// give: the process's own REPL, or a served one whose key holds the
     /// ceiling (`crate::control`).
     may_order: bool,
+    /// What `:run` runs a program under. `None`: this REPL was built
+    /// without a config to run one under, and `:run` says so.
+    run_under: Option<RunUnder>,
+    /// The program `:run` started, with its connectors, until it ends. The
+    /// prompt waits for it, as a shell's does for a command.
+    running: Option<(Solo, Arc<Dispatcher>)>,
 }
 
 impl Repl {
@@ -165,7 +190,15 @@ impl Repl {
             quit: false,
             served: false,
             may_order: true,
+            run_under: None,
+            running: None,
         })
+    }
+
+    /// This REPL, able to `:run` a program under `run`.
+    pub fn with_run(mut self, run: RunUnder) -> Self {
+        self.run_under = Some(run);
+        self
     }
 
     /// Whether the control endpoint's orders may be given from here.
@@ -260,6 +293,12 @@ impl Repl {
     /// needed next. [`Next::Input`] means a line; whether it continues an
     /// unfinished one is [`Repl::continuing`].
     pub fn tick(&mut self) -> Next {
+        if self.quit {
+            return Next::Done(crate::drive::Outcome::Exited);
+        }
+        if let Some(next) = self.tick_run() {
+            return next;
+        }
         // Twice at most: once to run whatever was fed, and once more to
         // let the guest answer what is in scope, so the prompt that
         // follows has a snapshot for Tab rather than the last line's.
@@ -363,6 +402,130 @@ impl Repl {
     /// Whether the next line continues an unfinished one.
     pub fn continuing(&self) -> bool {
         self.want_more
+    }
+
+    /// A line as a person typed it at the prompt: a colon command the host
+    /// answers ([`META_HELP`]), or source for the guest ([`Repl::feed`]).
+    /// What every host's loop does with a line, so a page's prompt and a
+    /// tty's answer `:help` alike. Returns whether anything was sent to
+    /// the guest or run.
+    pub fn line(&mut self, line: &str) -> Result<bool, String> {
+        if !self.continuing() && meta(self, line)? {
+            return Ok(true);
+        }
+        self.feed(line)
+    }
+
+    /// Stop the program `:run` started, if one is running: what `^C`
+    /// means while it has the terminal. True when there was one. The REPL
+    /// and what it defined are untouched.
+    pub fn interrupt(&mut self) -> bool {
+        let Some((_solo, dispatcher)) = self.running.take() else {
+            return false;
+        };
+        let _ = dispatcher.finish();
+        let _ = writeln!(stdio::stderr(), ":run: interrupted");
+        true
+    }
+
+    /// Whether a program `:run` started is still running.
+    pub fn is_running(&self) -> bool {
+        self.running.is_some()
+    }
+
+    /// The `:run` program's tick, while there is one: `Some` with what the
+    /// host does next, `None` once it is over (or there was none) and the
+    /// prompt is the REPL's again. `drt run`'s own `settle`, so the program
+    /// ends in the words `drt run` would end it in. The REPL's swarm gets a
+    /// step each tick, so what a line spawned keeps running beside it.
+    fn tick_run(&mut self) -> Option<Next> {
+        let (solo, dispatcher) = self.running.as_mut()?;
+        let next = solo.tick(None);
+        match crate::run::settle(&next, dispatcher) {
+            None => {
+                let wait = match next {
+                    Next::Sleep(d) => d,
+                    _ => IDLE_TICK,
+                };
+                if self.sw.alive() > 1 {
+                    self.sw.step();
+                    return Some(Next::Sleep(wait.min(self.idle())));
+                }
+                Some(Next::Sleep(wait))
+            }
+            Some(outcome) => {
+                if let Err(why) = outcome {
+                    let _ = writeln!(stdio::stderr(), ":run: {why}");
+                }
+                self.running = None;
+                None
+            }
+        }
+    }
+
+    /// `:run <path>`: start the program; the ticks that follow run it.
+    fn start_run(&mut self, path: &str) {
+        let Some(under) = &self.run_under else {
+            let _ = writeln!(
+                stdio::stderr(),
+                ":run: this REPL has no config to run a program under"
+            );
+            return;
+        };
+        let prepared = (under.connectors)().and_then(|dispatcher| {
+            crate::run::prepare(
+                std::path::Path::new(path),
+                dispatcher.clone(),
+                under.caps.clone(),
+                under.budget,
+                under.numeric,
+            )
+            .map(|solo| (solo, dispatcher))
+        });
+        match prepared {
+            Ok(running) => self.running = Some(running),
+            Err(e) => {
+                let _ = writeln!(stdio::stderr(), ":run: {e}");
+            }
+        }
+    }
+
+    /// `:load <path>`: the file, read as `drt run` reads a program, handed
+    /// to the guest to evaluate into the session's environment. Its answer
+    /// is a line's answer.
+    fn load(&mut self, path: &str) -> Result<(), String> {
+        let loaded = match crate::modules::program_load(std::path::Path::new(path)) {
+            Ok(loaded) => loaded,
+            Err(e) => {
+                let _ = writeln!(stdio::stderr(), ":load: {e}");
+                return Ok(());
+            }
+        };
+        let msg = rmpv::Value::Map(vec![
+            (rmpv::Value::from("load"), rmpv::Value::from(loaded.source)),
+            (rmpv::Value::from("name"), rmpv::Value::from(loaded.name)),
+        ]);
+        let mut bytes = Vec::new();
+        rmpv::encode::write_value(&mut bytes, &msg).map_err(|e| e.to_string())?;
+        let Some(inst) = self.sw.instance_mut(self.root) else {
+            return Err("the repl's instance is gone".into());
+        };
+        let Some(input) = inst.queue(IN) else {
+            return Err("the repl program never declared its input queue".into());
+        };
+        if !inst
+            .push(input, &bytes)
+            .map_err(|e| e.to_string())?
+            .is_accepted()
+        {
+            let _ = writeln!(
+                stdio::stderr(),
+                ":load: the repl's input queue refused {path}"
+            );
+            return Ok(());
+        }
+        self.names_stale = true;
+        Ok(())
     }
 
     /// Feed one line. Returns whether anything was sent: a blank line
@@ -486,13 +649,15 @@ pub fn repl(
     caps: Vec<Grant>,
     budget: drt_config::Budget,
     unsafe_stdlib: bool,
+    run: RunUnder,
 ) -> Result<(), String> {
     let _runtime = crate::runtime::enter();
     let repl = if unsafe_stdlib {
         Repl::unsealed(dispatcher, caps, budget)?
     } else {
         Repl::new(dispatcher, caps, budget)?
-    };
+    }
+    .with_run(run);
     // Not in a page: see `edited` for why the browser has no tty to ask
     // about, and `drt-web`'s `editor` module for what it has instead.
     #[cfg(all(
@@ -567,6 +732,8 @@ const META_HELP: &str = "\
 :help                this list
 :quit, :q            leave (so does ^D)
 :clear               clear the screen (so does ^L)
+:run <path>          run a program file, as drt run would under this config (^C stops it)
+:load <path>         evaluate a file into this session, like dofile
 :ssh [args]          an SSH session on this terminal; alone, the config's host:ssh/shell
 :ps                  a running deployment's instances (SPEC.md §13a)
 :status              its state
@@ -599,6 +766,26 @@ fn meta(repl: &mut Repl, line: &str) -> Result<bool, String> {
         }
         _ => {}
     }
+    if let Some((verb, path)) = file_meta(trimmed) {
+        if path.is_empty() {
+            let _ = writeln!(stdio::stderr(), ":{verb}: name a file: :{verb} <path>");
+            return Ok(true);
+        }
+        if verb == "run" {
+            if repl.served {
+                let _ = writeln!(
+                    stdio::stderr(),
+                    ":run is not available in a REPL reached over SSH: the program's \
+                     print would reach this server's terminal, not yours"
+                );
+            } else {
+                repl.start_run(path);
+            }
+        } else {
+            repl.load(path)?;
+        }
+        return Ok(true);
+    }
     if control_meta(repl, trimmed) {
         return Ok(true);
     }
@@ -628,6 +815,20 @@ fn meta(repl: &mut Repl, line: &str) -> Result<bool, String> {
     }
     ssh_to(rest);
     Ok(true)
+}
+
+/// `:run <path>` and `:load <path>`: the verb and the path, the rest of
+/// the line trimmed, so a path may hold spaces.
+fn file_meta(trimmed: &str) -> Option<(&'static str, &str)> {
+    let rest = trimmed.strip_prefix(':')?;
+    for verb in ["run", "load"] {
+        if let Some(path) = rest.strip_prefix(verb) {
+            if path.is_empty() || path.starts_with(char::is_whitespace) {
+                return Some((verb, path.trim()));
+            }
+        }
+    }
+    None
 }
 
 /// `:ps`, `:status`, `:caps <id>`, `:pause <id>`, `:resume <id>`,

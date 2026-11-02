@@ -21,6 +21,14 @@
 //   Options:
 //   - `backings`: the kernel's connectors by family, as `kernel()` takes
 //     them; `{ fs }` gives it a filesystem (fs.mjs).
+//   - `config`: the kernel's root config, an object of the JSON file's
+//     shape (`caps`, `connectors`, `budget`, `program`, ...), as
+//     `kernel()` takes it. Every `drt run` and `drt repl` typed here runs
+//     under it with no `--config` on the line.
+//   - `repl` (default false): true opens straight into `drt repl`, at
+//     `dv> `, under `config`; `:help` lists its commands, `:run <path>`
+//     runs a file from the kernel's filesystem. The `$ ` shell is the
+//     default, for typing README command lines.
 //   - `prompt` (default `$ `), `banner` (default none).
 //   - `ssh` (default true): `drt ssh` and the REPL's `:ssh` through
 //     drt-ssh-web, `--via rtc:` through the browser access client. false
@@ -66,6 +74,8 @@ export async function terminal(target, options = {}) {
     banner: options.banner ?? '',
     DrtEditor: runtime.DrtEditor,
     backings: options.backings,
+    config: options.config,
+    repl: options.repl === true,
     commands: ['drt', ...helpCommands(runtime.DrtTerm)],
     ssh: ssh ? { Ssh: ssh.Ssh, access } : undefined,
   });

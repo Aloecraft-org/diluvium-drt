@@ -347,3 +347,80 @@ fn a_named_ceiling_without_lifecycle_refuses_spawn() {
     assert!(lines[0].starts_with("false\t"), "{out}\n{err}");
     assert!(lines[0].contains("no lifecycle outcome"), "{out}\n{err}");
 }
+
+/// `:run <path>` is `drt run <path>` from the prompt, under the session's
+/// config: the program's `print` reaches the terminal, it reads what the
+/// config grants, the prompt comes back when it ends, and what the
+/// session had defined is still there. A file that is not there is said
+/// so by name, and the REPL goes on.
+#[test]
+fn run_runs_a_file_under_the_configs_grants_and_the_prompt_comes_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    std::fs::write(work.join("note.txt"), "from the volume").unwrap();
+    std::fs::write(
+        work.join("app.dlua"),
+        "print('app says', host.fs.read('note.txt'))\n",
+    )
+    .unwrap();
+    let config = dir.path().join("drt.json");
+    std::fs::write(
+        &config,
+        format!(
+            r#"{{"caps": [{{"capability": "host:fs/*"}}],
+                 "connectors": {{"fs": {{"scope": {{"scope": "{}", "access": "read"}}}}}}}}"#,
+            work.display()
+        ),
+    )
+    .unwrap();
+    let app = work.join("app.dlua").display().to_string();
+    let (out, err) = repl(
+        &format!(
+            "x = 40\n:run {app}\nx + 2\n:run {}\n3\n",
+            work.join("missing.dlua").display()
+        ),
+        &["--config", config.to_str().unwrap()],
+    );
+    let lines: Vec<_> = out.lines().collect();
+    assert_eq!(
+        lines,
+        vec!["app says\tfrom the volume", "42", "3"],
+        "{out}\n{err}"
+    );
+    assert!(err.contains(":run: cannot read"), "{err}");
+    assert!(err.contains("missing.dlua"), "{err}");
+}
+
+/// `:load <path>` evaluates a file into the session, as `dofile` would:
+/// what it defines is there on the next line, and what it returns is
+/// shown as a line's value is.
+#[test]
+fn load_evaluates_a_file_into_the_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = dir.path().join("lib.dlua");
+    std::fs::write(
+        &lib,
+        "function add(a, b) return a + b end\nreturn 'loaded'\n",
+    )
+    .unwrap();
+    let (out, err) = repl(
+        &format!(
+            ":load {}\nadd(40, 2)\n:load {}\n1\n",
+            lib.display(),
+            dir.path().join("none.dlua").display()
+        ),
+        &[],
+    );
+    let lines: Vec<_> = out.lines().collect();
+    assert_eq!(lines, vec!["\"loaded\"", "42", "1"], "{out}\n{err}");
+    assert!(err.contains(":load: cannot read"), "{err}");
+}
+
+/// `:help` lists the file commands beside the others.
+#[test]
+fn help_lists_run_and_load() {
+    let (_, err) = repl(":help\n", &[]);
+    assert!(err.contains(":run <path>"), "{err}");
+    assert!(err.contains(":load <path>"), "{err}");
+}
