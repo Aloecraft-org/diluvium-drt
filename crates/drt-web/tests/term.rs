@@ -17,7 +17,6 @@ use std::rc::Rc;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use drt_platform::fs::Backend;
 use drt_platform::stdio::{install_sink, uninstall_sink, Fd};
 use drt_web::{Step, Term};
 

@@ -39,6 +39,7 @@
   import { park } from './relay-leg.js';
   import { splice } from './stream-leg.js';
   import { bus } from './net-bus.js';
+  import * as pageFs from './page-fs.js';
 
   const decode = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
   // The other direction, for the SSH bridge: Playwright's exposed
@@ -64,6 +65,52 @@
     decoders = [null, new TextDecoder(), new TextDecoder()];
     term = new DrtTerm((fd, bytes) => chunks.push(decoders[fd].decode(bytes, { stream: true })), { sql: SQL, ...backings });
     shell = makeShell({ term, write: (fd, text) => chunks.push(text) });
+  }
+
+
+  // A page filesystem in a map: the seven calls of crates/drt-web
+  // src/pagefs.rs over plain objects, for the `page-fs` check. Errors carry
+  // the codes pagefs.rs reads.
+  function memoryFs() {
+    const files = new Map();
+    const dirs = new Set(['/']);
+    const parent = (p) => p.slice(0, p.lastIndexOf('/')) || '/';
+    const refuse = (code, message) => { throw Object.assign(new Error(message), { code }); };
+    const under = (dir, p) => dir === '/' ? p !== '/' : p.startsWith(`${dir}/`);
+    return {
+      stat: (p) => dirs.has(p) ? { dir: true, size: 0 } : files.has(p) ? { dir: false, size: files.get(p).length } : null,
+      read: (p) => files.get(p) ?? refuse(dirs.has(p) ? 'not_an_entry' : 'not_found', `nothing at ${p}`),
+      write(p, bytes, append) {
+        if (dirs.has(p)) refuse('not_an_entry', `Is a directory: ${p}`);
+        if (!dirs.has(parent(p))) refuse('not_found', `no directory ${parent(p)}`);
+        const old = append ? files.get(p) ?? new Uint8Array() : new Uint8Array();
+        const next = new Uint8Array(old.length + bytes.length);
+        next.set(old);
+        next.set(bytes, old.length);
+        files.set(p, next);
+      },
+      list(p) {
+        if (!dirs.has(p)) refuse(files.has(p) ? 'not_a_container' : 'not_found', `not a directory: ${p}`);
+        const names = [...dirs, ...files.keys()].filter((q) => q !== p && parent(q) === p);
+        return names.map((q) => q.slice(q.lastIndexOf('/') + 1)).sort();
+      },
+      remove(p) {
+        if (dirs.has(p)) refuse('not_an_entry', `Is a directory: ${p}`);
+        if (!files.delete(p)) refuse('not_found', `nothing at ${p}`);
+      },
+      mkdirs(p) {
+        let here = '';
+        for (const part of p.split('/').filter(Boolean)) {
+          here += `/${part}`;
+          if (files.has(here)) refuse('not_a_container', `Not a directory: ${here}`);
+          dirs.add(here);
+        }
+      },
+      removeAll(p) {
+        for (const q of [...files.keys()]) if (q === p || under(p, q)) files.delete(q);
+        for (const q of [...dirs]) if (q !== '/' && (q === p || under(p, q))) dirs.delete(q);
+      },
+    };
   }
 
   const harness = {
@@ -388,6 +435,99 @@
       if (socket) socket.close();
       sshShells.delete(id);
       sshSockets.delete(id);
+    },
+    // A filesystem the page hands in (`{ fs }`): a and b get one object,
+    // c its own, over `backing` -- 'object', a page object answering the
+    // seven calls (memoryFs below), or 'aloelite', cdn/fs.mjs over
+    // aloelite volumes in memory (ALOELITE_PKG in run.mjs). Every kernel
+    // writes, then every kernel reads, then a sql.js database a makes is
+    // read by b. Answers what each said and what each lists.
+    async pageFs(backing) {
+      let make = memoryFs;
+      if (backing === 'aloelite') {
+        const { default: initAloelite, Fs } = await import('./aloelite/aloelite_wasm.js');
+        await initAloelite();
+        make = (volume) => pageFs.attach(Fs.openMemory(), { volume });
+      }
+      const shared = make('shared');
+      const own = make('own');
+      const kernel = (name, fs) => {
+        const k = { name, out: '', decoder: new TextDecoder() };
+        k.term = new DrtTerm((f, bytes) => { k.out += k.decoder.decode(bytes, { stream: true }); }, { fs, sql: SQL });
+        const put = (path, text) => k.term.putFile(path, new TextEncoder().encode(text));
+        k.term.putDir('/k/data');
+        // Named by kernel: a and b put their programs into one filesystem.
+        put(`/k/write_${name}.dlua`, `host.fs.write('${name}.txt', '${name}')\n`);
+        put(`/k/read_${name}.dlua`,
+          "local function peek(n) return tostring((host.fs.try_read(n .. '.txt'))) end\n" +
+          `print('${name}: a=' .. peek('a') .. ' b=' .. peek('b') .. ' c=' .. peek('c'))\n`);
+        put('/k/sql_write.dlua',
+          "local db = host.sql.open('notes.db')\n" +
+          "db.exec('create table t (x text)')\n" +
+          "db.exec(\"insert into t values ('shared through the volume')\")\n");
+        put('/k/sql_read.dlua',
+          "local db = host.sql.open('notes.db')\n" +
+          "for _, r in ipairs(db.query('select x from t').rows) do print('row: ' .. r[1]) end\n");
+        put('/k/deploy.json', JSON.stringify({
+          caps: [{ capability: 'host:fs/*' }, { capability: 'host:sql/*' }],
+          connectors: {
+            fs: { scope: { scope: './data', access: 'readwrite' } },
+            sql: { scope: { scope: './data', access: 'readwrite' } },
+          },
+        }));
+        k.term.setCwd('/k');
+        return k;
+      };
+      const a = kernel('a', shared);
+      const b = kernel('b', shared);
+      const c = kernel('c', own);
+      const run = async (k, program) => {
+        const s = k.term.exec(['drt', 'run', '--config', 'deploy.json', program]);
+        const deadline = Date.now() + 10000;
+        try {
+          while (Date.now() < deadline) {
+            const step = s.tick();
+            if (step.done) return step.status;
+            await new Promise((r) => setTimeout(r, 1));
+          }
+          return null;
+        } finally {
+          s.free();
+        }
+      };
+      const status = [];
+      for (const k of [a, b, c]) status.push(await run(k, `write_${k.name}.dlua`));
+      for (const k of [a, b, c]) status.push(await run(k, `read_${k.name}.dlua`));
+      const before = b.out.length;
+      status.push(await run(a, 'sql_write.dlua'));
+      status.push(await run(b, 'sql_read.dlua'));
+      let refused = null;
+      try { new DrtTerm(() => {}, { fs: { read() {} } }).free(); } catch (e) { refused = String(e); }
+      let swarm = null;
+      try { new DrtSwarm(0, 0, undefined, { fs: shared }).free(); } catch (e) { swarm = String(e); }
+      const out = {
+        status,
+        out: { a: a.out, b: b.out.slice(0, before), c: c.out, sql: a.out + b.out.slice(before) },
+        filesAB: a.term.listFiles(),
+        filesB: b.term.listFiles(),
+        filesC: c.term.listFiles(),
+        cwd: a.term.cwd(),
+        refused,
+        swarm,
+      };
+      for (const k of [a, b, c]) k.term.free();
+      return out;
+    },
+    // The OPFS store (cdn/fs.mjs `open`): opfs-worker.js runs drt and
+    // aloelite in a Dedicated Worker, the only place OPFS is synchronous,
+    // and answers what each of its steps saw.
+    opfs() {
+      return new Promise((resolve) => {
+        const worker = new Worker('./opfs-worker.js', { type: 'module' });
+        worker.onmessage = ({ data }) => { worker.terminate(); resolve(data); };
+        worker.onerror = (e) => { worker.terminate(); resolve({ threw: e.message }); };
+        worker.postMessage('go');
+      });
     },
     // Connectors the page hands in (issue #80): a fresh terminal with an
     // in-page bus as its `net` transport and a `store` answered by a

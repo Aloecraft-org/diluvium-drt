@@ -14,11 +14,11 @@ drt-connector = { workspace = true }
 # The entropy source, per target (doc/Wasm.md D5): an encryption's KEM
 # randomness comes from here, never from a guest.
 drt-platform = { workspace = true }
-# Pinned by tag, as diluvium is: v0.1.0-dev.1 is commit cf62a17.
+# Pinned by tag, as diluvium is: v0.1.0 is commit 27eb44b.
 # `default-features = false`: no `host_rng`, because the core is seeded by
 # its caller and drt supplies the entropy, and getrandom without a backend
 # would refuse the browser target; no wordlists, which nothing here calls.
-aloecrypt_core = { git = "https://github.com/Aloecraft-org/aloecrypt_core", tag = "v0.1.0-dev.1", default-features = false }
+aloecrypt_core = { git = "https://github.com/Aloecraft-org/aloecrypt_core", tag = "v0.1.0", default-features = false }
 # Hex for addresses and digests. Already in the
 # tree through aloecrypt_core itself.
 data-encoding = "2"
@@ -30,5 +30,5 @@ drt-hostcall = { workspace = true }
 pollster = "0.4"
 # Interop: the connector's signatures are checked with the core's own
 # struct API, and its digest against the core's hash.
-aloecrypt_core = { git = "https://github.com/Aloecraft-org/aloecrypt_core", tag = "v0.1.0-dev.1", default-features = false }
+aloecrypt_core = { git = "https://github.com/Aloecraft-org/aloecrypt_core", tag = "v0.1.0", default-features = false }
 data-encoding = "2"

@@ -180,7 +180,7 @@ let a;
 await check('a page on another origin imports drt.min.js served as application/javascript', async () => {
   a = await page();
   const names = await a.evaluate(() => Object.keys(window.drt).sort());
-  for (const n of ['call', 'connect', 'loadSsh', 'ssh', 'loadRuntime', 'kernel', 'bus', 'kv', 'session', 'offer', 'direct', 'listen', 'canonicalPeer', 'VERSION']) {
+  for (const n of ['call', 'connect', 'loadSsh', 'ssh', 'loadRuntime', 'kernel', 'bus', 'aloelite', 'kv', 'session', 'offer', 'direct', 'listen', 'canonicalPeer', 'VERSION']) {
     if (!names.includes(n)) throw new Error(`no export ${n}; it has ${names.join(', ')}`);
   }
 });

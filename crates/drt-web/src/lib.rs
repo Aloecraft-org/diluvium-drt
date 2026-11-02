@@ -37,6 +37,9 @@
 //! - `js` (browser only): connectors the page hands in -- a `net`
 //!   transport, or any family as a `{ call }` object (SPEC.md §7's
 //!   `JsConnector`) -- by kernel, through `Term::with_backings`.
+//! - `pagefs` (browser only): a terminal's filesystem answered by a page
+//!   object, handed in as `fs` (cdn/fs.mjs: an aloelite volume), one per
+//!   terminal or shared by several.
 //! - `sqljs` (browser only): `sql/*` over a sql.js module the page hands
 //!   in, with the native connector's contract.
 
@@ -49,6 +52,8 @@ pub mod editor;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod js;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod pagefs;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod raw;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod sqljs;
@@ -60,4 +65,4 @@ pub mod ws;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod wasi_shim;
 
-pub use term::{Backing, Entered, Session, Sink, Step, Term};
+pub use term::{Backing, Entered, PageFs, Session, Sink, Step, Term};

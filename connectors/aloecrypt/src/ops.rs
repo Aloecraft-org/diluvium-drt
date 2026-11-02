@@ -190,7 +190,7 @@ impl PublicKey {
     /// The one place text becomes a public key. The armor label says which
     /// family, the document says which parameter set, and the core's reader
     /// checks the address against the key and, for ML-KEM, the FIPS 203
-    /// encapsulation-key check the core would otherwise unwrap.
+    /// encapsulation-key check.
     pub fn decode(text: &str) -> Result<PublicKey, OpError> {
         let label = if text.contains(&format!("BEGIN ALOECRYPT {SIGNER_LABEL}-")) {
             SIGNER_LABEL
@@ -239,16 +239,16 @@ impl PublicKey {
     }
 
     /// A `PublicKey` built from bytes rather than decoded still has to pass
-    /// the ML-KEM check before the core sees it: the core's encapsulator
-    /// unwraps it, and a release build aborts on panic (aloecrypt_core#7).
+    /// the FIPS 203 ML-KEM check, so a bad key is refused as `Malformed`
+    /// before any work is done, not as a status from the middle of encrypt.
     fn check(&self) -> Result<(), OpError> {
         let valid = match self.alg {
             Alg::MlKem512 => <&MlKem512Pubkey>::try_from(self.bytes.as_slice())
-                .is_ok_and(|k| MlKem512Encapsulator::try_from_public_key(k).is_some()),
+                .is_ok_and(|k| MlKem512Encapsulator::try_from_public_key(k).is_ok()),
             Alg::MlKem768 => <&MlKem768Pubkey>::try_from(self.bytes.as_slice())
-                .is_ok_and(|k| MlKem768Encapsulator::try_from_public_key(k).is_some()),
+                .is_ok_and(|k| MlKem768Encapsulator::try_from_public_key(k).is_ok()),
             Alg::MlKem1024 => <&MlKem1024Pubkey>::try_from(self.bytes.as_slice())
-                .is_ok_and(|k| MlKem1024Encapsulator::try_from_public_key(k).is_some()),
+                .is_ok_and(|k| MlKem1024Encapsulator::try_from_public_key(k).is_ok()),
             _ => self.bytes.len() == self.alg.public_key_len(),
         };
         if valid {
@@ -466,7 +466,7 @@ macro_rules! each_kem {
             let seed: &MlKemPrivateSeed = seed.try_into().expect("an ML-KEM seed is 64 bytes");
             <$kp as MlKemKeypair>::from_seed(seed)
         }
-        /// Only after [`PublicKey::check`]: the core unwraps this key.
+        /// Only after [`PublicKey::check`]: this skips the core's key check.
         fn $e_fn(bytes: &[u8]) -> $e {
             let pk: $pk = bytes.try_into().expect("public key length checked by decode");
             $e { public_key: pk }

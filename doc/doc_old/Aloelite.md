@@ -4,7 +4,19 @@
 aloelite's Rust port on `claude/aloelite-rust-port-assessment-732bo0`
 (workspace `0.4.0-rc.1`, six crates), before that port has had its
 evaluation. Claims about aloelite name the file in its tree; claims
-about DRT name the file here or on the wasm branch. Nothing is built.
+about DRT name the file here or on the wasm branch.
+
+**Built since:** §3's `fs` backend, natively and under wasmtime
+(`crates/drt-platform/src/aloelite.rs`, the `aloelite` feature in `full`
+and `wasi`): a scope `{volume_file, volume, mount_point, access,
+max_bytes}`, where a missing file or volume is made, and a mount point
+the volume lacks is a startup refusal. Mounts carry a 30 s lease renewed
+on use, and a file closed cleanly is left out of WAL so it opens on
+either target. In a page, aloelite-wasm backs a kernel's whole
+filesystem through drt-web's `fs` backing (`crates/drt-web/cdn/fs.mjs`).
+Not built: `pin_env`/`pin_file` (volumes are unencrypted), the snapshot
+store over a volume, the `aloe/*` family, and the schema era in
+BUILDINFO.
 
 **The DRT-side claims were checked against the wasm branch on
 2026-09-03**: the `Backend` trait's six operations and their names,
