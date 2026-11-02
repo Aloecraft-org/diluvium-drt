@@ -43,6 +43,7 @@ RootConfig {
                 capacity: None,
                 topics: None,
                 kv: None,
+                status_token: None,
                 extra_roots: [],
                 authorized_keys: None,
                 identity_file: None,

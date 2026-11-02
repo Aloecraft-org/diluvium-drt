@@ -21,6 +21,7 @@ set -eu
 #   start    install the latest stable release
 #   install  install the release that shipped this copy
 #   get      download and verify that release into the current directory
+#   (the status-page command fetches one more asset, STATUS_PAGE, the same way)
 #   help     print the usage below
 usage() {
     cat <<EOF
@@ -29,6 +30,9 @@ usage: $SELF [command] [--version VERSION] [--prefix DIR] [--slim]
   (none)            $(mode_says)
   install [VERSION] install VERSION, or the default above, and use it
   get [VERSION]     download and verify VERSION into the current directory
+  status-page [VERSION]
+                    download and verify VERSION's match-status.html, the
+                    page that reads 'drt p2p --match --status-token-file'
   latest            as VERSION: the newest stable release
   dev               as VERSION: the newest dev build
   --version, -r, --release [VERSION]
@@ -71,6 +75,8 @@ RAW="https://raw.githubusercontent.com/$REPO"
 # every publish, so it lists what GitHub can serve and nothing pruned.
 RELEASE_LOG="${DRT_RELEASE_LOG:-$RAW/release-log/.github/release-log}"
 SELFTEST=--version
+# The match server's status page, a release asset of its own since v0.8.0.
+STATUS_PAGE=match-status.html
 # More names in bin for the same binary. DRT has none; Diluvium's is dlua.
 ALIASES=
 # Shells that get tab completion. Each finds its file under the prefix by
@@ -86,6 +92,7 @@ dispatch() {
         help)     usage ;;
         install)  do_install ;;
         get)      do_get ;;
+        status-page) do_status_page ;;
         list)     do_list stable ;;
         list-all) do_list all ;;
         check)    do_check ;;
@@ -157,7 +164,7 @@ mode_says() {
 # A word after --version is its value unless it is an option or a command.
 is_value() {
     case "$1" in
-        -*|install|get|list|list-all|check|use|remove|help) return 1 ;;
+        -*|install|get|status-page|list|list-all|check|use|remove|help) return 1 ;;
     esac
     return 0
 }
@@ -165,7 +172,7 @@ is_value() {
 ACTION=""; TARGET=""; PRINT=0
 while [ $# -gt 0 ]; do
     case "$1" in
-        install|get|list|list-all|check|use|remove|help)
+        install|get|status-page|list|list-all|check|use|remove|help)
             [ -z "$ACTION" ] || die "one command at a time: $ACTION, then $1"
             ACTION="$1" ;;
         --version|-r|--release)
@@ -297,13 +304,14 @@ download() {
     done
     [ -n "$SOURCE" ] || die "no $* for $TAG at $MIRROR/$TAG or $GITHUB/releases/download/$TAG (see '$SELF list-all')"
     fetch "$SOURCE/SHA256SUMS.txt" "$dir/.sums" || : > "$dir/.sums"
+    chmod +x "$dir/$want_name"
     verify "$dir/$want_name" "$got"
     printf '%s\n' "$WANT" | sed 1d | while read -r extra asset alt; do
         [ -n "$extra" ] || continue
         if fetch "$SOURCE/$asset" "$dir/$extra"; then
-            verify "$dir/$extra" "$asset"
+            chmod +x "$dir/$extra"; verify "$dir/$extra" "$asset"
         elif [ -n "$alt" ] && fetch "$SOURCE/$alt" "$dir/$extra"; then
-            verify "$dir/$extra" "$alt"
+            chmod +x "$dir/$extra"; verify "$dir/$extra" "$alt"
         else
             say "note: $TAG has no $asset"
         fi
@@ -315,7 +323,6 @@ download() {
 # refuses: that is a release older than the sums-publishing workflow, and
 # refusing would strand whoever pinned it. A mismatch always refuses.
 verify() {
-    chmod +x "$1"
     want=$(grep " $2\$" "$(dirname "$1")/.sums" | cut -d' ' -f1 || true)
     if [ -z "$want" ]; then
         say "warning: $SOURCE/SHA256SUMS.txt does not list $2; not verified" >&2
@@ -441,6 +448,23 @@ do_get() {
         mv -f "$f" "./$(basename "$f")"
         say "got ./$(basename "$f") ($TAG, from $SOURCE)"
     done
+}
+
+# One asset of the release, not this platform's binary: the mirror first,
+# then GitHub Releases, verified against the sums of whichever served it.
+do_status_page() {
+    TAG=$(resolve "$TARGET")
+    tmp=$(mktemp -d "./.$NAME-get.XXXXXX")
+    trap 'rm -rf "$tmp"' EXIT INT TERM
+    SOURCE=""
+    for base in "$MIRROR/$TAG" "$GITHUB/releases/download/$TAG"; do
+        if fetch "$base/$STATUS_PAGE" "$tmp/$STATUS_PAGE"; then SOURCE="$base"; break; fi
+    done
+    [ -n "$SOURCE" ] || die "no $STATUS_PAGE for $TAG at $MIRROR/$TAG or $GITHUB/releases/download/$TAG; releases before the status page have none"
+    fetch "$SOURCE/SHA256SUMS.txt" "$tmp/.sums" || : > "$tmp/.sums"
+    verify "$tmp/$STATUS_PAGE" "$STATUS_PAGE"
+    mv -f "$tmp/$STATUS_PAGE" "./$STATUS_PAGE"
+    say "got ./$STATUS_PAGE ($TAG, from $SOURCE); open it in a browser"
 }
 
 do_list() {

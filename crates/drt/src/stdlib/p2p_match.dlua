@@ -15,7 +15,8 @@
 --   audience, groups_claim, jwks or jwks_kv, and revoked_topic), or ''
 --   for none;
 --   `args.kv` the database `drt p2p --match --kv <dir>` names, or nil for
---   no kv.
+--   no kv; `args.status_token` the --status-token-file token, or '' for no
+--   status; `args.version` drt's, for the status.
 -- - Configurable: HOLD_MS (§3), PRESENT_MS (§4.2), WAITING_CAP (§6),
 --   RECORD_MAX (§1), KEEPALIVE_MS (§5), the CORS headers; RESERVED, the
 --   second path segments that are not a name inside a topic; kv's
@@ -31,7 +32,8 @@
 --   groups the file maps); `kv_route`, the kv requests
 --   (doc/DRT-Signalling.md §10), and `kv_access`, the one place a kv
 --   request is admitted; `revoked_written`, what a put under
---   REVOKED_PREFIX does to the names its subject holds.
+--   REVOKED_PREFIX does to the names its subject holds; `status`,
+--   GET /v1/status (§11), which takes the status token and nothing else.
 --
 -- Topics (doc/P2P.md §2.4): /v1/<topic>/<name>/… is a name inside a topic
 -- the --topics file declares, and every request there takes a token the
@@ -54,6 +56,12 @@
 -- a JWT for that `sub` issued at or before that time (its `iat`) is
 -- refused as `revoked`, and writing it drops the names that subject holds
 -- by such a token. The key's TTL is what prunes the list.
+--
+-- Status (doc/DRT-Signalling.md §11): with a status token, GET /v1/status
+-- answers a request bearing it with what the server holds now and counts
+-- since it started. It names holders by kind (`token`) or by a JWT's
+-- `sub`, never by a token, so the page that shows it holds no credential
+-- but its own. Without a status token, /v1/status is 404.
 --
 -- Admission is by token, not origin: every reply carries
 -- access-control-allow-origin: *, so a page opened from file:// (Origin:
@@ -123,6 +131,15 @@ end
 local JWT = nil
 if type(args.jwt) == 'string' and args.jwt ~= '' then JWT = json.decode(args.jwt) end
 local KV_DB    = args.kv   -- a database name inside the sql scope, or nil: no kv
+-- The status token, or nil: no status.
+local STATUS_TOKEN = nil
+if type(args.status_token) == 'string' and args.status_token ~= '' then STATUS_TOKEN = args.status_token end
+local VERSION = type(args.version) == 'string' and args.version or nil
+local STARTED_MS, STARTED_AT = host.monotonic(), host.time()
+-- Counts since start, for the status: requests routed, replies by status,
+-- and what calls and pairings came to.
+local stats = {requests = 0, replies = {}, calls = 0, answered = 0, withdrawn = 0,
+               unanswered = 0, pairs = 0, pair_outcomes = {}}
 
 -- depth: replies
 
@@ -143,6 +160,7 @@ local function json_body(text)
 end
 
 local function json(conn, status, body, extra)
+  stats.replies[status] = (stats.replies[status] or 0) + 1
   queue.push(replies, {conn = conn, status = status, body = body,
                        content_type = 'application/json', headers = with(extra)})
 end
@@ -439,6 +457,7 @@ local function call(m, name, token, now, by)
   if waiting(r) >= WAITING_CAP then return fail(m.conn, 429, 'too many calls waiting', {['retry-after'] = '5'}) end
   r.last = r.last + 1
   r.calls[r.last] = {record = m.body, conn = m.conn, ends = now + HOLD_MS, by = by or token}
+  stats.calls = stats.calls + 1
   notify(r, r.last, now)
 end
 
@@ -470,6 +489,7 @@ local function answer(m, r, id, base)
   if c.answered then return fail(m.conn, 409, 'the call was already answered') end
   if not checked(m) then return end
   c.answered = true
+  stats.answered = stats.answered + 1
   json(c.conn, 200, m.body, {location = base .. id})
   json(m.conn, 204, '')
 end
@@ -479,6 +499,7 @@ local function withdraw(m, r, id)
   if not c then return fail(m.conn, 404, 'no such call') end
   if c.answered then return fail(m.conn, 409, 'the call was already answered') end
   fail(c.conn, 410, 'the call was withdrawn or refused')
+  stats.withdrawn = stats.withdrawn + 1
   r.calls[n] = nil
   json(m.conn, 204, '')
 end
@@ -514,6 +535,7 @@ local function ask_pair(m, r, name, now)
   end
   o.last = o.last + 1
   o.pairs[o.last] = {name = name, token = token, ends = now + HOLD_MS, asked_by = name}
+  stats.pairs = stats.pairs + 1
   notify(o, o.last, now, 'pair')
   json(m.conn, 202, '{"id":"p' .. o.last .. '"}')
 end
@@ -529,6 +551,7 @@ local function pair_result(m, r, id, now)
     return fail(m.conn, 400, 'outcome is connected, refused, unreachable or declined')
   end
   p.outcome = outcome
+  stats.pair_outcomes[outcome] = (stats.pair_outcomes[outcome] or 0) + 1
   -- One log line per result: a `why` is the told side's words, so control
   -- characters are dropped and the length bounded before it is printed.
   local why = type(body.why) == 'string' and body.why:gsub('[%c]', ' '):sub(1, 200) or ''
@@ -937,6 +960,95 @@ local function kv_housekeep(now)
   end
 end
 
+-- depth: status (doc/DRT-Signalling.md §11)
+
+-- A list as JSON: an empty table encodes as an object, so `[]` is written.
+local function json_list(t) return #t > 0 and json_text(t) or '[]' end
+
+-- Who holds a name, as the status shows it: a JWT's subject, or `token`.
+local function holder_kind(holder)
+  if type(holder) == 'string' and holder:sub(1, 4) == 'jwt:' then return holder end
+  return 'token'
+end
+
+local function count(t)
+  local n = 0
+  for _ in pairs(t) do n = n + 1 end
+  return n
+end
+
+-- `GET /v1/status`, bearing the status token in Authorization (never
+-- `?k=`, which a log or a history keeps).
+local function status(m, now)
+  if not STATUS_TOKEN then
+    return fail(m.conn, 404, 'this server serves no status; start it with --status-token-file')
+  end
+  if m.method ~= 'GET' then return fail(m.conn, 405, 'status takes GET') end
+  local h = m.headers or {}
+  local bearer = h.authorization and h.authorization:match('^Bearer%s+(%S+)$')
+  if not bearer then return fail(m.conn, 401, 'the status token is needed, as Authorization: Bearer') end
+  if bearer ~= STATUS_TOKEN then return fail(m.conn, 403, 'that is not the status token') end
+  local list, per_topic = {}, {}
+  for key, r in pairs(names) do
+    local waiting_n, open_n, pairs_n = 0, 0, 0
+    for _, c in pairs(r.calls) do
+      if c.answered then open_n = open_n + 1 else waiting_n = waiting_n + 1 end
+    end
+    for _, p in pairs(r.pairs) do if not p.outcome then pairs_n = pairs_n + 1 end end
+    local here = present(r, now)
+    list[#list + 1] = {
+      name = r.topic and key:sub(#r.topic + 2) or key,
+      topic = r.topic,
+      holder = holder_kind(r.holder),
+      present = here,
+      polled_ago_s = r.polled and math.floor((now - r.polled) / 1000) or nil,
+      streams = count(r.streams),
+      calls_waiting = waiting_n,
+      calls_answered = open_n,
+      pairs_pending = pairs_n,
+      caller_token = r.caller ~= nil,
+      accept = r.accept,
+      cursor = r.last,
+    }
+    if r.topic and here then per_topic[r.topic] = (per_topic[r.topic] or 0) + 1 end
+  end
+  table.sort(list, function(a, b)
+    return (a.topic or '') .. '/' .. a.name < (b.topic or '') .. '/' .. b.name
+  end)
+  local topics = {}
+  for topic, tokens in pairs(TOPICS or {}) do
+    topics[#topics + 1] = {topic = topic, tokens = count(tokens), groups = count(GROUPS[topic] or {}),
+                           present = per_topic[topic] or 0}
+  end
+  table.sort(topics, function(a, b) return a.topic < b.topic end)
+  local replies_by = {}
+  for code, n in pairs(stats.replies) do replies_by[tostring(code)] = n end
+  local kv_part = 'null'
+  if kv.db then
+    local ok, keys = pcall(function() return kv.db.query('select count(*) from kv').rows[1][1] end)
+    kv_part = json_text({revision = kv.revision, keys = ok and keys or nil,
+                         watchers = count(kv.streams) + count(kv.polls)})
+  end
+  local server = {
+    version = VERSION, started_at_ms = STARTED_AT, now_ms = host.time(),
+    uptime_s = math.floor((now - STARTED_MS) / 1000),
+    capacity = CAPACITY, held = held_count(), topics = TOPICS ~= nil, kv = kv.db ~= nil,
+    jwt_issuer = JWT and JWT.issuer or nil,
+    revoked_in_kv = JWT and JWT.revoked_topic ~= nil or false,
+    limits = {hold_ms = HOLD_MS, present_ms = PRESENT_MS, waiting_cap = WAITING_CAP,
+              record_max = RECORD_MAX},
+  }
+  local counts = {requests = stats.requests, calls = stats.calls, answered = stats.answered,
+                  withdrawn = stats.withdrawn, unanswered = stats.unanswered, pairs = stats.pairs}
+  json(m.conn, 200, '{"server":' .. json_text(server)
+    .. ',"counts":' .. json_text(counts)
+    .. ',"replies":' .. (next(replies_by) and json_text(replies_by) or '{}')
+    .. ',"pair_outcomes":' .. (next(stats.pair_outcomes) and json_text(stats.pair_outcomes) or '{}')
+    .. ',"names":' .. json_list(list)
+    .. ',"topics":' .. json_list(topics)
+    .. ',"kv":' .. kv_part .. '}', {['cache-control'] = 'no-store'})
+end
+
 -- depth: the five requests of §2
 
 -- Paths after /v1/<name>, the same for a bare name and a name inside a
@@ -1004,7 +1116,9 @@ end
 -- topic <a>.
 local function route(m, now)
   local path, params = split(m.path)
+  stats.requests = stats.requests + 1
   if m.method == 'OPTIONS' then return json(m.conn, 204, '') end
+  if path == '/v1/status' then return status(m, now) end
   local kv_topic, kv_rest = path:match('^/v1/([^/]+)/kv(.*)$')
   if kv_topic and (kv_rest == '' or kv_rest:sub(1, 1) == '/') then
     -- A kv failure (a full disk, a locked file) is this request's 500,
@@ -1039,7 +1153,10 @@ local function housekeep(now)
   for name, r in pairs(names) do
     for n, c in pairs(r.calls) do
       if now >= c.ends then
-        if not c.answered then fail(c.conn, 504, 'no answer within the hold time') end
+        if not c.answered then
+          stats.unanswered = stats.unanswered + 1
+          fail(c.conn, 504, 'no answer within the hold time')
+        end
         r.calls[n] = nil
       end
     end
@@ -1063,6 +1180,9 @@ if KV_DB then
   print('p2p match: kv in ' .. KV_DB .. ' at revision ' .. kv.revision
     .. (TOPICS and '; kv takes a token of its topic with read or write'
         or '; kv takes no token without --topics, so whoever reaches this port may read and write it'))
+end
+if STATUS_TOKEN then
+  print('p2p match: status at GET /v1/status, for the status token')
 end
 if JWT then
   print('p2p match: topics also admit JWTs from issuer ' .. JWT.issuer .. ', checked against '

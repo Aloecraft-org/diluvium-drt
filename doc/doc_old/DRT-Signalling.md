@@ -26,7 +26,8 @@ costs latency, never correctness.
 - Configurable values a server states: the hold time (§3), the call
   lifetime (§4.1), the waiting cap (§6), the call notification stream's keepalive (§5).
 - Fan-out: the five requests of §2's table.
-- Optional: the key-value store of §10, its six requests in one table.
+- Optional: the key-value store of §10, its six requests in one table;
+  the operator's status of §11, one request.
 
 ## 1. Names, tokens and records
 
@@ -348,3 +349,25 @@ it answers every request below 404. It is plain HTTP, with
   restarts; `Last-Event-ID` or `since` replays those after it first. When
   `since` is older than that, a stream sends `event: reset` and a poll
   answers `"reset": true`: list again, from the listing's `revision`.
+
+## 11. Status
+
+A server may answer `GET /v1/status` with what it holds now, for its
+operator. `drt p2p --match --status-token-file <file>` does, for a request
+bearing that file's token as `Authorization: Bearer <token>` and no other
+way (`?k=` is not read). No token is 401, another token 403, and a server
+started without the flag answers 404. Every reply carries
+`access-control-allow-origin: *`, so `crates/drt/page/match-status.html`
+(the `match-status.html` release asset, `get-drt.sh status-page`) reads it
+from `file://` or any origin.
+
+The reply names holders by kind and never prints a token:
+
+| Key | What |
+|---|---|
+| `server` | `version`, `started_at_ms` and `now_ms` (Unix ms), `uptime_s`, `capacity`, `held`, `topics` and `kv` (on or off), `jwt_issuer`, `revoked_in_kv`, `limits` (`hold_ms`, `present_ms`, `waiting_cap`, `record_max`). |
+| `counts` | Since start: `requests`, `calls`, `answered`, `withdrawn`, `unanswered` (504), `pairs` asked. |
+| `replies`, `pair_outcomes` | Since start, by HTTP status and by pairing outcome. |
+| `names` | Each name held: `name`, `topic`, `holder` (`token`, or `jwt:<sub>`), `present`, `polled_ago_s`, `streams`, `calls_waiting`, `calls_answered`, `pairs_pending`, `caller_token` (whether one is set), `accept`, `cursor`. |
+| `topics` | Each declared topic: `topic`, `present` names, the number of `tokens` and of `groups` mapped. |
+| `kv` | `null` without `--kv`; else `revision`, `keys`, `watchers`. |
