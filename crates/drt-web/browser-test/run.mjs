@@ -22,7 +22,9 @@
 // (doc/SshInBrowser.md); and `repl-parity`, repl-script.txt typed at
 // drt-term.js against the transcript the native binary produced for the
 // same lines (repl-expected.txt); and `two-kernels`, two DrtTerms in one
-// page that must not see each other's output or files.
+// page that must not see each other's output or files; and `page-fs` and
+// `aloelite-fs`, a filesystem the page hands in (cdn/fs.mjs), shared by
+// two kernels and not by a third.
 //
 // usage: node run.mjs [--net] [--list] [example ...]
 //   --net    also run examples whose meta.json sets "needs_network"
@@ -34,6 +36,9 @@
 //                    checks after the examples left out
 //      DRT_BIN  a native `drt` carrying `relay` and `tunnel`, for the
 //               whole-chain check. Found under target/ if unset.
+//      ALOELITE_PKG  aloelite-wasm's ES module directory (wasm-bindgen
+//                    --target web of crates aloelite-wasm), for
+//                    `aloelite-fs`; skipped, and named, without it
 //      DRT_WEB_BUILDINFO  a path: the page's `drt buildinfo` is written there,
 //                         which is how a release reads the profile off the
 //                         module (release.yml, build-web)
@@ -141,6 +146,8 @@ if (!fs.existsSync(path.join(HERE, 'pkg', 'drt_web.js'))) {
 // that signals (the page's own CSP admits only WebSocket connections).
 const BROWSER_ACCESS = path.resolve(HERE, '../../drt-rtc/client/drt_browser_access.js');
 const NET_BUS = path.resolve(HERE, '../cdn/bus.mjs');
+const PAGE_FS = path.resolve(HERE, '../cdn/fs.mjs');
+const ALOELITE_PKG = process.env.ALOELITE_PKG ? path.resolve(process.env.ALOELITE_PKG) : null;
 const SSH_PAGE = path.resolve(HERE, '../../drt-ssh-web/page/dist/ssh.html');
 // ssh.html's client as its own module (script/drt-ssh-page.sh leaves it in
 // pkg/), for `drt ssh` and `:ssh` in a page.
@@ -166,6 +173,19 @@ const server = http.createServer((req, res) => {
     const file = path.join(EXAMPLES, url.slice('/example-backings/'.length));
     if (file.startsWith(EXAMPLES + path.sep) && file.endsWith('.js') && fs.existsSync(file)) {
       res.writeHead(200, { 'content-type': TYPES['.js'] });
+      res.end(fs.readFileSync(file));
+      return;
+    }
+  }
+  if (url === '/page-fs.js') {
+    res.writeHead(200, { 'content-type': TYPES['.js'] });
+    res.end(fs.readFileSync(PAGE_FS));
+    return;
+  }
+  if (url.startsWith('/aloelite/') && ALOELITE_PKG) {
+    const file = path.join(ALOELITE_PKG, path.basename(url));
+    if (fs.existsSync(file)) {
+      res.writeHead(200, { 'content-type': TYPES[path.extname(file)] ?? 'application/octet-stream' });
       res.end(fs.readFileSync(file));
       return;
     }
@@ -253,6 +273,8 @@ const noRelay = [];
 // No dist/ssh.html (script/drt-ssh-page.sh), so the WebRTC check has no
 // SSH client to run in the second page.
 const noSshPage = [];
+// Checks that need aloelite-wasm's package (ALOELITE_PKG).
+const noAloelite = [];
 
 const fail = (name, why) => {
   console.log(`FAILED   ${name.padEnd(24)} ${why}`);
@@ -1214,13 +1236,94 @@ if (PAGE_CHECKS) {
   }
 }
 
+// A filesystem the page hands in (`{ fs }`, crates/drt-web/src/pagefs.rs):
+// kernels a and b get the same object and c its own. Each program is read
+// from that filesystem, writes its name into ./data through the fs
+// connector, and tries the other two names. a and b must see each other
+// and not c; c must see neither. Then a sql.js database written by a lands
+// in the same filesystem, where b reads it. `page-fs` runs it over a
+// JavaScript object answering the calls; `aloelite-fs` over cdn/fs.mjs on
+// aloelite volumes in memory, which is what a page writes.
+for (const [name, backing, why] of [
+  ['page-fs', 'object', 'a page object answering the seven calls'],
+  ['aloelite-fs', 'aloelite', 'cdn/fs.mjs over aloelite volumes in memory'],
+]) {
+  if (!PAGE_CHECKS) break;
+  if (backing === 'aloelite' && !(ALOELITE_PKG && fs.existsSync(path.join(ALOELITE_PKG, 'aloelite_wasm.js')))) {
+    noAloelite.push(name);
+    continue;
+  }
+  try {
+    const r = await withTimeout(page.evaluate((b) => window.drtBrowserTest.pageFs(b), backing), TIMEOUT * 1000);
+    const wrong = [];
+    if (JSON.stringify(r.status) !== '[0,0,0,0,0,0,0,0]') wrong.push(`statuses ${JSON.stringify(r.status)}, wanted eight 0s`);
+    const want = {
+      a: 'a: a=a b=b c=nil',
+      b: 'b: a=a b=b c=nil',
+      c: 'c: a=nil b=nil c=c',
+    };
+    for (const k of ['a', 'b', 'c']) {
+      if (!r.out[k].includes(`${want[k]}\n`)) wrong.push(`${k} said ${JSON.stringify(r.out[k])}`);
+    }
+    if (!r.out.sql.includes('row: shared through the volume\n')) wrong.push(`b's sql said ${JSON.stringify(r.out.sql)}`);
+    if (JSON.stringify(r.filesAB) !== JSON.stringify(r.filesB)) wrong.push(`a and b list different files: ${JSON.stringify([r.filesAB, r.filesB])}`);
+    if (!r.filesAB.includes('/k/data/notes.db')) wrong.push(`the database is not in the shared filesystem: ${JSON.stringify(r.filesAB)}`);
+    if (r.filesC.some((f) => f.endsWith('/a.txt') || f.endsWith('/b.txt'))) wrong.push(`c lists a's or b's files: ${JSON.stringify(r.filesC)}`);
+    if (r.cwd !== '/k') wrong.push(`cwd ${r.cwd}`);
+    if (r.refused !== "the 'fs' backing: it has no 'stat' function") wrong.push(`an object with no stat: ${JSON.stringify(r.refused)}`);
+    if (r.swarm !== "a DrtSwarm has no filesystem of its own; hand 'fs' to a DrtTerm") wrong.push(`a swarm with fs: ${JSON.stringify(r.swarm)}`);
+    if (wrong.length === 0) {
+      console.log(`ok       ${name.padEnd(24)} two kernels share one filesystem, a third has its own: ${why}`);
+      nOk += 1;
+    } else {
+      fail(name, wrong.join('; '));
+    }
+  } catch (e) {
+    fail(name, e === TIMED_OUT ? `timed out after ${TIMEOUT}s` : `the page threw: ${e.message}`);
+  }
+}
+
+// The OPFS store (cdn/fs.mjs `open`), in a Worker: a kernel's file
+// survives its volume file being closed and opened again, a second open is
+// `busy` by name, a read-only attach refuses a write, `export` is a SQLite
+// file, and a full pool says to add capacity rather than failing in SQLite.
+if (PAGE_CHECKS) {
+  const name = 'aloelite-opfs';
+  if (!(ALOELITE_PKG && fs.existsSync(path.join(ALOELITE_PKG, 'aloelite_wasm.js')))) {
+    noAloelite.push(name);
+  } else {
+    try {
+      const r = await withTimeout(page.evaluate(() => window.drtBrowserTest.opfs()), TIMEOUT * 1000);
+      const wrong = [];
+      if (r.threw) wrong.push(`the worker threw: ${r.threw} after ${JSON.stringify({ ...r, threw: undefined })}`);
+      else {
+        if (r.first?.status !== 0 || r.first.out !== 'wrote\n') wrong.push(`first kernel: ${JSON.stringify(r.first)}`);
+        if (r.busy?.code !== 'busy') wrong.push(`a second open: ${JSON.stringify(r.busy)}`);
+        if (r.again?.status !== 0 || r.again.out !== 'kept in OPFS\n' || r.again.note !== 'kept in OPFS') wrong.push(`after reopening: ${JSON.stringify(r.again)}`);
+        if (!r.readOnly || r.readOnlyRead !== 'kept in OPFS') wrong.push(`read-only: ${JSON.stringify([r.readOnly, r.readOnlyRead])}`);
+        if (r.exported !== 'SQLite format 3') wrong.push(`export began ${JSON.stringify(r.exported)}`);
+        if (r.full?.code !== 'opfs' || !/addCapacity/.test(r.full.message)) wrong.push(`a full pool: ${JSON.stringify(r.full)}`);
+        if (r.afterAdd !== null) wrong.push(`after addCapacity: ${JSON.stringify(r.afterAdd)}`);
+      }
+      if (wrong.length === 0) {
+        console.log(`ok       ${name.padEnd(24)} a kernel's files in OPFS: kept across reopen, busy, ro, export, full pool`);
+        nOk += 1;
+      } else {
+        fail(name, wrong.join('; '));
+      }
+    } catch (e) {
+      fail(name, e === TIMED_OUT ? `timed out after ${TIMEOUT}s` : `the page threw: ${e.message}`);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 
 for (const n of uncovered) console.log(`NO META  ${n.padEnd(24)} not checked by anything — add a meta.json`);
 const nSkip = skipped.length + wrongBuild.length + noSocket.length + noSsh.length + noRelay.length
-  + noSshPage.length;
+  + noSshPage.length + noAloelite.length;
 const total = nOk + nFail + nSkip + uncovered.length;
 console.log('');
 console.log(`${total} check(s): ${nOk} ok, ${nFail} failed, ${nSkip} skipped, ${uncovered.length} without a meta.json`);
@@ -1247,6 +1350,10 @@ if (noRelay.length) {
 if (noSshPage.length) {
   console.log(`skipped for needing the SSH page (NOT a pass): ${noSshPage.join(' ')}`);
   console.log('build it -- script/drt-ssh-page.sh -- so dist/ssh.html is there.');
+}
+if (noAloelite.length) {
+  console.log(`skipped for needing aloelite-wasm (NOT a pass): ${noAloelite.join(' ')}`);
+  console.log('build its package (crates aloelite-wasm in Aloecraft-org/aloelite) and set ALOELITE_PKG.');
 }
 if (uncovered.length) console.log(`no meta.json, so unchecked: ${uncovered.join(' ')}`);
 if (nFail) console.log(`failed: ${failed.join(' ')}`);
