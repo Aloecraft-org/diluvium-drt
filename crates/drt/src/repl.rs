@@ -41,7 +41,8 @@
 //!   whose prompts go to stderr so a redirect stays clean.
 //! - [`PROGRAM`], [`IN`], [`OUT`]: the guest and the two queues.
 //!   [`STEPS_PER_TICK`]: how long a tick keeps stepping a running child
-//!   before answering the terminal.
+//!   before answering the terminal. [`RUN_TICK`]: the longest a `:run`
+//!   program's tick sleeps, so ^C reaches it.
 //! - Fan-out: [`meta`], the lines the host answers instead of the guest:
 //!   `:help`, `:quit`, `:clear`, `:run <path>` (`drt run <path>` under the
 //!   session's config, the prompt back when it ends), `:load <path>` (the
@@ -72,6 +73,10 @@ const OUT: &str = "repl/out";
 /// How many swarm steps one tick takes at most before answering the
 /// terminal, when something the REPL spawned keeps running.
 const STEPS_PER_TICK: usize = 64;
+/// The longest a `:run` program's tick asks the host to sleep, so that
+/// ^C, which a page polls for between ticks, reaches a parked program
+/// promptly.
+const RUN_TICK: Duration = Duration::from_millis(50);
 
 /// What `:run <path>` runs a program under: what `drt run <path>` would
 /// get from the session's config (`crate::cli::run_under` builds it from
@@ -438,13 +443,18 @@ impl Repl {
     /// prompt is the REPL's again. `drt run`'s own `settle`, so the program
     /// ends in the words `drt run` would end it in. The REPL's swarm gets a
     /// step each tick, so what a line spawned keeps running beside it.
+    ///
+    /// The sleep is never longer than [`RUN_TICK`], whatever the program's
+    /// own deadline: a page polls for ^C between ticks, and a program
+    /// parked for ten minutes would otherwise hold the terminal for ten
+    /// minutes with the interrupt waiting behind the sleep.
     fn tick_run(&mut self) -> Option<Next> {
         let (solo, dispatcher) = self.running.as_mut()?;
         let next = solo.tick(None);
         match crate::run::settle(&next, dispatcher) {
             None => {
                 let wait = match next {
-                    Next::Sleep(d) => d,
+                    Next::Sleep(d) => d.min(RUN_TICK),
                     _ => IDLE_TICK,
                 };
                 if self.sw.alive() > 1 {
