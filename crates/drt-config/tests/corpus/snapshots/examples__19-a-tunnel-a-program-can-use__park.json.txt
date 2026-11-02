@@ -44,6 +44,7 @@ RootConfig {
                 stun: [],
                 fingerprint: None,
                 headers: {},
+                token_file: None,
                 capacity: None,
                 topics: None,
                 kv: None,
