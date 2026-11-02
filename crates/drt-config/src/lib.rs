@@ -1152,7 +1152,13 @@ pub struct P2pConfig {
     /// `{"file": ..}`, `{"prompt": "hidden"}`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, Secret>,
-    /// `--capacity`: names a `match` server holds at once.
+    /// `--token-file`: a `park`'s token for the signalling server, read
+    /// again before every request, so a replaced file (a renewed JWT)
+    /// takes over without letting the name go.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_file: Option<PathBuf>,
+    /// `--capacity`: names a `match` server holds at once; a topics file
+    /// naming `capacity` replaces it, and changes it while the server runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capacity: Option<usize>,
     /// `--topics`: a `match` server's topics file, each topic with its

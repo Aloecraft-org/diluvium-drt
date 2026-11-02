@@ -365,9 +365,9 @@ The reply names holders by kind and never prints a token:
 
 | Key | What |
 |---|---|
-| `server` | `version`, `started_at_ms` and `now_ms` (Unix ms), `uptime_s`, `capacity`, `held`, `topics` and `kv` (on or off), `jwt_issuer`, `revoked_in_kv`, `limits` (`hold_ms`, `present_ms`, `waiting_cap`, `record_max`). |
+| `server` | `version`, `started_at_ms` and `now_ms` (Unix ms), `uptime_s`, `capacity`, `held`, `topics` and `kv` (on or off), `jwt_issuer`, `revoked_in_kv`, `reloads` (topics file reloads since start), `limits` (`hold_ms`, `present_ms`, `waiting_cap`, `record_max`). |
 | `counts` | Since start: `requests`, `calls`, `answered`, `withdrawn`, `unanswered` (504), `pairs` asked. |
 | `replies`, `pair_outcomes` | Since start, by HTTP status and by pairing outcome. |
-| `names` | Each name held: `name`, `topic`, `holder` (`token`, or `jwt:<sub>`), `present`, `polled_ago_s`, `streams`, `calls_waiting`, `calls_answered`, `pairs_pending`, `caller_token` (whether one is set), `accept`, `cursor`. |
+| `names` | Each name held: `name`, `topic`, `holder` (`token`, or `jwt:<sub>`), `present`, `polled_ago_s`, `streams`, `calls_waiting`, `calls_answered`, `pairs_pending`, `caller_token` (whether one is set), `accept`, `cursor`, `expires_in_s` (seconds until the holder's JWT expires, when it holds by one). |
 | `topics` | Each declared topic: `topic`, `present` names, the number of `tokens` and of `groups` mapped. |
 | `kv` | `null` without `--kv`; else `revision`, `keys`, `watchers`. |
