@@ -132,6 +132,20 @@ impl DeployHost {
             .collect()
     }
 
+    /// The wait `id` is parked on, if it is parked and resident. `None`
+    /// for an instance that is running, gone, or hibernated (its handles
+    /// died with the residency). A host that feeds one queue asks this to
+    /// tell "waiting for my line" from "waiting for something else".
+    pub fn wait_of(&self, id: InstanceId) -> Option<WaitSet> {
+        self.parked.get(&id.0).and_then(|p| p.wait)
+    }
+
+    /// The earliest park deadline, on our clock: how long a host may
+    /// sleep before something is due.
+    pub fn next_deadline(&self) -> Option<Instant> {
+        next_deadline(self)
+    }
+
     /// The deadline for a wait, or the refusal: a timeout under the floor
     /// is refused here, when it is armed, naming both (acceptance 22).
     fn arm(&self, wait: &WaitSet) -> Result<Option<Instant>, String> {

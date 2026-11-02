@@ -305,3 +305,45 @@ fn a_string_is_quoted_so_it_is_not_its_own_value() {
         "{out}"
     );
 }
+
+/// A line can spawn. The REPL is the root of a swarm of its own, so
+/// `host.spawn` is answered rather than timing out on a lifecycle queue
+/// nothing drains, the child runs beside the REPL (it prints before the
+/// line after it is evaluated), and a child still parked when input ends
+/// does not keep the process alive.
+#[test]
+fn a_line_can_spawn_and_the_child_runs_beside_the_repl() {
+    let (out, err) = repl(
+        "c = host.spawn({code = [[print('child says hi')]]})\n\
+         print('after', type(c))\n\
+         p = host.spawn({code = [[queue.wait({queue.lookup('inbox')})]]})\n\
+         print('parked', type(p))\n",
+        &[],
+    );
+    let lines: Vec<_> = out.lines().collect();
+    assert_eq!(
+        lines,
+        vec!["child says hi", "after\ttable", "parked\ttable"],
+        "{out}\n{err}"
+    );
+    assert!(!err.contains("lifecycle"), "{err}");
+}
+
+/// A config that names its ceiling decides whether a line may spawn: no
+/// `lifecycle` in it, and `host.spawn` is refused by mechanism -- the
+/// request sits on a queue nothing drains, which the host lib reports as
+/// no outcome. Only the configless REPL gets the grant on its own.
+#[test]
+fn a_named_ceiling_without_lifecycle_refuses_spawn() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("drt.json");
+    std::fs::write(&config, r#"{"caps": [{"capability": "host:time"}]}"#).unwrap();
+    let (out, err) = repl(
+        "ok, why = pcall(host.spawn, {code = 'print(1)', waitms = 50})\nprint(ok, why)\n",
+        &["--config", config.to_str().unwrap()],
+    );
+    let lines: Vec<_> = out.lines().collect();
+    assert_eq!(lines.len(), 1, "{out}\n{err}");
+    assert!(lines[0].starts_with("false\t"), "{out}\n{err}");
+    assert!(lines[0].contains("no lifecycle outcome"), "{out}\n{err}");
+}

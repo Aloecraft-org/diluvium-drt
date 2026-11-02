@@ -38,6 +38,10 @@ end
 -- what is in scope.
 local NAME_CAP = 512
 local NAME_DEPTH = 3
+-- The same snapshot also lists what this session defined -- `env`'s own
+-- keys, not the stdlib behind it -- each with its type and its value as
+-- `show` renders it, cut to VAR_TEXT, for a page's variables panel.
+local VAR_TEXT = 120
 
 local function collect(names, seen, scope, prefix, depth)
   if type(scope) ~= 'table' or depth > NAME_DEPTH or #names >= NAME_CAP then
@@ -208,6 +212,27 @@ local function answer(msg)
   queue.push(outq, msg)
 end
 
+local function defined()
+  local vars = {}
+  for key, value in pairs(env) do
+    if #vars >= NAME_CAP then break end
+    if type(key) == 'string' and key:sub(1, 1) ~= '_' and value ~= served_print then
+      local var = {name = key, type = type(value)}
+      if type(value) == 'function' then
+        local info = debug.getinfo(value, 'u')
+        var.params = info.nparams
+        var.vararg = info.isvararg
+      else
+        local text = show(value)
+        var.value = #text > VAR_TEXT and text:sub(1, VAR_TEXT) .. '...' or text
+      end
+      vars[#vars + 1] = var
+    end
+  end
+  table.sort(vars, function(a, b) return a.name < b.name end)
+  return vars
+end
+
 local function names_in_scope()
   local names, seen = {}, {}
   collect(names, seen, env, '', 1)
@@ -219,7 +244,7 @@ end
 while true do
   local _, line = queue.wait({inq})
   if type(line) == 'table' and line.complete then
-    queue.push(outq, {names = names_in_scope()})
+    queue.push(outq, {names = names_in_scope(), vars = defined()})
   elseif type(line) == 'table' and line.served then
     printed = {}
     env.print = served_print

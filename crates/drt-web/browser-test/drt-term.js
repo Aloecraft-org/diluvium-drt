@@ -25,9 +25,12 @@
 //
 // surface block:
 //   attach(DrtTerm, terminal, { prompt, banner, DrtEditor, ssh })
-//       -> { term, session, run(line), reset(), whenIdle(), dispose() }
+//       -> { term, session, onCommand(listener), run(line), reset(),
+//            whenIdle(), dispose() }
 //     term      the DrtTerm, to seed files into
 //     session   the running drt command's DrtSession, or null
+//     onCommand(listener) -> dispose: listener(session) when a command
+//               starts and listener(null) when it ends
 //     run       submit a line as though it were typed -- through the
 //               terminal's own `input`, so it really is typed and the
 //               editor treats it identically. Resolves with its exit
@@ -153,6 +156,7 @@ export function attach(
   let disposed = false;
   let pending = null; // resolve(status) for the `run` in flight
   let current = null; // the drt command's session while one runs
+  const commandListeners = new Set(); // told (session) at a command's start and (null) at its end
 
   const idle = () => !running;
   const settle = () => {
@@ -192,6 +196,7 @@ export function attach(
     stop: () => interrupted,
     running: (s) => {
       current = s;
+      for (const listener of commandListeners) listener(s);
     },
   };
   /// A read that ended without a line: ^C abandons the unfinished one and
@@ -250,6 +255,12 @@ export function attach(
     /// ends, so read it each time rather than keeping it.
     get session() {
       return current;
+    },
+    /// Told when a drt command starts (its session) and when it ends
+    /// (null): a panel refreshes on the second. Returns a disposer.
+    onCommand(listener) {
+      commandListeners.add(listener);
+      return () => commandListeners.delete(listener);
     },
     /// Type `line` and submit it: literally typed, through the terminal's
     /// own `input`, so the editor echoes and edits it exactly as it would

@@ -8,6 +8,17 @@
   <section id="terminal"></section>
 
   <aside x-data="inspector">
+    <h2>Variables <small x-text="vars.length ? '' : 'nothing defined; drt repl, then x = 1'"></small></h2>
+    <table>
+      <template x-for="v in vars" :key="v.name">
+        <tr>
+          <td x-text="v.name"></td>
+          <td x-text="v.type"></td>
+          <td x-text="v.type === 'function' ? `(${v.params}${v.vararg ? ', ...' : ''})` : v.value"></td>
+        </tr>
+      </template>
+    </table>
+
     <h2>Instances <small x-text="note"></small></h2>
     <table>
       <tr><th>id</th><th>parent</th><th>state</th><th>instructions</th><th>caps</th><th></th></tr>
@@ -26,5 +37,8 @@
         </tr>
       </template>
     </table>
+
+    <h2>Files</h2>
+    <section id="files"></section>
   </aside>
 </main>

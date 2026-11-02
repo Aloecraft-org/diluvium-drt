@@ -250,6 +250,19 @@ pub fn ceiling(config: &RootConfig) -> Vec<drt_caps::Grant> {
     }
 }
 
+/// What a REPL should be allowed to reach: [`ceiling`], and with no
+/// config `lifecycle` as well, so that a line at the prompt can
+/// `host.spawn` and what it spawns runs beside the REPL in its swarm. A
+/// config that names its ceiling decides that for itself, as it does for
+/// `drt start`.
+pub fn repl_ceiling(config: &RootConfig) -> Vec<drt_caps::Grant> {
+    let mut caps = ceiling(config);
+    if config.root.caps.is_empty() {
+        caps.push(drt_caps::Grant::grant("lifecycle"));
+    }
+    caps
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

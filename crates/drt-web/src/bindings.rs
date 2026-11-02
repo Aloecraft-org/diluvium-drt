@@ -232,9 +232,10 @@ impl DrtSession {
         };
         match self.inner.tick() {
             Step::Sleep(d) => set("sleepMs", JsValue::from_f64(d.as_secs_f64() * 1000.0)),
-            Step::Input { continuing } => {
+            Step::Input { continuing, busy } => {
                 set("wantsInput", JsValue::TRUE);
                 set("continuing", JsValue::from_bool(continuing));
+                set("busy", JsValue::from_bool(busy));
             }
             Step::Exit(status) => {
                 set("done", JsValue::TRUE);
@@ -264,6 +265,13 @@ impl DrtSession {
         self.inner.names()
     }
 
+    /// What a `drt repl` session has defined, as of the last accepted
+    /// line: a JSON array of `{name, type, value?, params?, vararg?}`.
+    /// `[]` for any other command.
+    pub fn variables(&self) -> String {
+        self.inner.variables()
+    }
+
     /// Throw away an unfinished line, as Ctrl+C does natively.
     pub fn abandon(&mut self) {
         self.inner.abandon();
@@ -273,11 +281,13 @@ impl DrtSession {
     // Instances panel can show the agents its own terminal started.
     //
     // Every one of these answers emptily for a session that is not `drt
-    // start`, because only that verb has a swarm -- `hasSwarm` is how a
-    // panel tells "no agents" from "not that kind of session" without
-    // guessing from an empty list. The bodies borrow the deployment for
-    // the length of one call and hand back owned values, which is what
-    // keeps a `&mut` from having to cross into JavaScript.
+    // start` or `drt repl`, because only those two have a swarm (the
+    // REPL is the root of its own, and what a line spawns runs beside
+    // it) -- `hasSwarm` is how a panel tells "no agents" from "not that
+    // kind of session" without guessing from an empty list. The bodies
+    // borrow the deployment for the length of one call and hand back
+    // owned values, which is what keeps a `&mut` from having to cross
+    // into JavaScript.
 
     /// Whether this session drives a swarm at all.
     #[wasm_bindgen(js_name = hasSwarm)]
