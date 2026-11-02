@@ -362,13 +362,13 @@ await check('kernel() with a bus() as its net transport runs a program that talk
   await p.close();
 });
 
-await check('examples/35-drt-js: bare drt prints its usage, drt repl evaluates, and the panel says nothing is running', async () => {
-  // Served from the repo root, as its README says: main.js imports ../../crates/drt-web/cdn/dist/drt.min.js.
-  const root = path.resolve(here, '../../..');
+await check('examples/35-drt-js: bare drt prints its usage, drt repl completes and colours its lines, and the panel says nothing is running', async () => {
+  // Served from the example's directory with dist/drt.min.js in place of the copy its README makes.
+  const dir = path.resolve(here, '../../../examples/35-drt-js');
   const types = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css' };
   http.createServer((req, res) => {
-    const name = req.url.endsWith('/') ? `${req.url.slice(1)}index.html` : req.url.slice(1);
-    const file = path.join(root, name);
+    const name = req.url === '/' ? 'index.html' : req.url.slice(1);
+    const file = name === 'drt.min.js' ? path.join(here, 'dist/drt.min.js') : path.join(dir, name);
     if (name.includes('..') || !fs.existsSync(file)) return res.writeHead(404).end();
     res.writeHead(200, { 'content-type': types[path.extname(file)] ?? 'text/plain' }).end(fs.readFileSync(file));
   }).listen(PORTS.example, '127.0.0.1');
@@ -378,19 +378,31 @@ await check('examples/35-drt-js: bare drt prints its usage, drt repl evaluates, 
     const type = url.endsWith('.css') ? 'text/css' : 'application/javascript';
     await p.route(url, (r) => r.fulfill({ contentType: type, body: fs.readFileSync(path.join(here, file)) }));
   }
-  await p.goto(`http://127.0.0.1:${PORTS.example}/examples/35-drt-js/`);
+  await p.goto(`http://127.0.0.1:${PORTS.example}/`);
   const screen = () => p.evaluate(() => document.querySelector('.xterm-rows')?.innerText ?? '');
   const panel = () => p.evaluate(() => [...document.querySelectorAll('aside tr')].slice(1).map((tr) => tr.innerText.replace(/\s+/g, ' ').trim()));
+  // xterm's DOM renderer gives a coloured cell a `xterm-fg-N` class; the usage text and a shell line have none.
+  const coloured = () => p.evaluate(() => document.querySelectorAll('.xterm-rows [class*="xterm-fg-"]').length);
   await until('bare drt: its usage, then the prompt', async () => { const t = await screen(); return t.includes('Print version') && t.trimEnd().endsWith('$'); });
   await p.click('#terminal');
   await p.keyboard.type('ls\r');
   await until('a line that is not drt', async () => (await screen()).includes('ls: command not found'));
+  await p.keyboard.type('drt run --config "x"');
+  await until('a shell line typed', async () => (await screen()).includes('drt run --config "x"'));
+  if (await coloured()) throw new Error('a shell line was coloured as code');
+  await p.keyboard.type('\r');
+  await until('the prompt after a refused run', async () => (await screen()).trimEnd().endsWith('$'));
   await p.keyboard.type('drt repl\r');
   await until('the REPL prompt', async () => (await screen()).trimEnd().endsWith('dv>'));
   // Only `drt start` drives a swarm, and it needs a config and a program file this page has none of.
   await until('the panel says nothing is running', async () => (await p.innerText('aside h2')).includes('nothing running') && (await panel()).length === 0);
-  await p.keyboard.type('x = 41\r');
-  await p.keyboard.type('print(x + 1)\r');
+  await p.keyboard.type('x = 41');   // the number is coloured; `local` would not outlive its own line
+  await until('a coloured REPL line', async () => (await coloured()) > 0);
+  await p.keyboard.type('\r');
+  await p.keyboard.type('pri');
+  await p.keyboard.press('Tab');
+  await until('Tab completes print', async () => (await screen()).trimEnd().endsWith('dv> print'));
+  await p.keyboard.type('(x + 1)\r');
   await until('the REPL evaluates', async () => /^42$/m.test(await screen()));
   await p.keyboard.press('Control+D');
   await until('the prompt after the REPL', async () => (await screen()).trimEnd().endsWith('$'));
