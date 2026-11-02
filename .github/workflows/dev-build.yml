@@ -59,8 +59,35 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      # A release commit gets its release, not a dev build beside it: the
+      # merge of a release-prep PR lands on main before the owner tags it,
+      # and a dev tag cut on it races the real Release run for the same
+      # commit. A dispatch is someone asking for this commit on purpose
+      # (usually `full`), so it is not skipped.
+      - name: Skip a release commit
+        id: release
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          set -u
+          set +e
+          TAG=$(script/release-commit.sh)
+          rc=$?
+          set -e
+          case "$rc" in
+            0)
+              echo "$(git rev-parse --short HEAD) is the $TAG release commit; no dev build"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              ;;
+            3) ;;
+            *)
+              echo "script/release-commit.sh failed (exit $rc)" >&2
+              exit 1
+              ;;
+          esac
+
       - name: The next dev tag, if HEAD moved
         id: tag
+        if: steps.release.outputs.skip != 'true'
         env:
           IN_FULL: ${{ inputs.full }}
         run: |
