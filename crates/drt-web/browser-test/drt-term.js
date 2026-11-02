@@ -25,8 +25,9 @@
 //
 // surface block:
 //   attach(DrtTerm, terminal, { prompt, banner, DrtEditor, ssh })
-//       -> { term, run(line), reset(), whenIdle(), dispose() }
+//       -> { term, session, run(line), reset(), whenIdle(), dispose() }
 //     term      the DrtTerm, to seed files into
+//     session   the running drt command's DrtSession, or null
 //     run       submit a line as though it were typed -- through the
 //               terminal's own `input`, so it really is typed and the
 //               editor treats it identically. Resolves with its exit
@@ -151,6 +152,7 @@ export function attach(
   let waiters = [];
   let disposed = false;
   let pending = null; // resolve(status) for the `run` in flight
+  let current = null; // the drt command's session while one runs
 
   const idle = () => !running;
   const settle = () => {
@@ -188,6 +190,9 @@ export function attach(
     },
     ssh: runSsh,
     stop: () => interrupted,
+    running: (s) => {
+      current = s;
+    },
   };
   /// A read that ended without a line: ^C abandons the unfinished one and
   /// asks again; ^D is end of input.
@@ -240,6 +245,12 @@ export function attach(
 
   return {
     term,
+    /// The running drt command's DrtSession, or null: what a panel asks
+    /// about the swarm (`hasSwarm`, `ids`, ...). Freed when the command
+    /// ends, so read it each time rather than keeping it.
+    get session() {
+      return current;
+    },
     /// Type `line` and submit it: literally typed, through the terminal's
     /// own `input`, so the editor echoes and edits it exactly as it would
     /// a person's keystrokes and there is one input path rather than two.

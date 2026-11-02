@@ -12,9 +12,10 @@
 // ## surface block
 //
 // - Entry point: `terminal(target, options)` -> Promise of
-//   { xterm, term, run(line), reset(), whenIdle(), dispose() }.
+//   { xterm, term, session, run(line), reset(), whenIdle(), dispose() }.
 //   `target` is an element or its id. `term` is the DrtTerm (the
-//   kernel); the rest are drt-term.js's. The prompt sits on the last
+//   kernel), `session` the running drt command's DrtSession or null;
+//   the rest are drt-term.js's. The prompt sits on the last
 //   row from the start and stays there as the element grows.
 //   Options:
 //   - `backings`: the kernel's connectors by family, as `kernel()` takes
@@ -69,8 +70,14 @@ export async function terminal(target, options = {}) {
   });
   xterm.focus();
   return {
-    ...cli,
     xterm,
+    term: cli.term,
+    get session() {
+      return cli.session;
+    },
+    run: cli.run,
+    reset: cli.reset,
+    whenIdle: cli.whenIdle,
     dispose() {
       cli.dispose();
       observer?.disconnect();
