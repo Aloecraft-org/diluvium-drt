@@ -915,6 +915,11 @@ Underneath it the embedded core moves from 0.15.1 to
   which drt's Windows CI row found (0.17.2), the fix for `export`
   writing past the code array, and the spawn handle's `child.ref`,
   `child.push` and `host.ref` that sibling instances meet through.
+  The core now makes more objects at setup, so iteration order over
+  table and function keys differs from 0.17.2's
+  (`tests/determinism/03-reproducible` is re-captured); it still
+  agrees across every `numeric` target, and a program relying on
+  it was relying on the setup.
 - **`buildinfo`'s `features` is read off the core** (`dv_features()`)
   instead of stated per profile, and says what the core says:
   `regex,json,msgpack,snapshot`, plus `numeric` where it is on, in
