@@ -562,8 +562,11 @@ host, and after this crate it is what the *same* `TimeConnector` and
 `sql` is the exception among the crossing connectors: bundled SQLite
 compiles for wasip2 (§2.1) and needs nothing here, but a browser build of
 it would need SQLite's own libc surface over D4's mechanism plus a VFS —
-real work, not in v1. The Lab's `sql.js` path keeps answering that need
-in a page until then, and the browser profile says `sql` is absent.
+real work, not built. The browser profile does not carry `sql`; a page
+that hands in a sql.js module (`new DrtTerm(sink, { sql: SQL })`,
+`crates/drt-web/src/sqljs.rs`) gets `sql/*` with the native contract,
+databases kept as files in the page's filesystem, and examples/07-sql
+runs unchanged against it in the browser suite.
 
 ### 4.3 `drt`: the driver, and the loop that inverts
 
@@ -1111,7 +1114,7 @@ channel and a `browser/*` capability over it, both assessed against M3's
 pump and now unblocked by it (`doc/Plugins.md`, `doc/Playwright.md`);
 `rest` over
 `wasi:http` and `fetch` (the deferred pump is the prerequisite, M3);
-`sql` in the browser; `ego_transport` on wasm (it already builds for both
+bundled SQLite in the browser (sql.js answers `sql` meanwhile); `ego_transport` on wasm (it already builds for both
 targets with `WebSocket`/`wasip2` backends) for `webrtc://` and the
 browser doing SSH — SPEC.md §13b's seam; the wasm-engine tier
 (`diluvium-wasmtime`, SPEC.md §8) is a different thing and unaffected.

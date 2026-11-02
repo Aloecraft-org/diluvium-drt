@@ -57,6 +57,30 @@ Underneath it the embedded core moves from 0.15.1 to
   name. In `full` and `wasi` (the `aloelite` feature), and a file
   written natively opens under wasmtime. Encrypted volumes are not
   built.
+- **`sql` in a page, over sql.js (#81).** A page that hands in a
+  sql.js module (`{ sql: await initSqlJs() }`) gets `sql/query` and
+  `sql/exec` with the native connector's scope, bounds, refusals and
+  words: SQLite's own classification refuses a writing query, one
+  statement per call, text back as bytes, a transaction left open
+  rolled back by name. Each database is a SQLite file in the page's
+  filesystem inside the granted directory, written back after every
+  write outside a transaction, so the page and later commands see
+  it. examples/07-sql runs unchanged in the browser suite. Bundled
+  SQLite for the browser is not built.
+- **Connectors a page hands in, and `net` over them (#80).** `new
+  DrtTerm(sink, backings)` and `new DrtSwarm(..., backings)` take
+  `{ family: object }`, wired like any builtin when the config names
+  the family: gated, token-echoed, every request answered. `net` is a
+  transport (`open`, `listen`, `send`, `close`) under the new net
+  connector, whose handles follow the socket connector's rules: a
+  connection is its owner's, closes when the owner is released,
+  moves by `transfer` and `claim`, ends a `vital` owner, and pushes
+  what arrives to a named queue or waits for `recv`. Any other family
+  is a `{ call(name, args, node) }` object, answered synchronously or
+  by a promise. drt.js adds `kernel(sink, backings)` and `bus()`, an
+  in-page transport several kernels share. A family this build
+  carries itself cannot be handed in. `examples/37-page-connectors`
+  answers a `storage` family from `localStorage`.
 - **`drt.js`, DRT in a page as one ES module a page imports from any
   origin.** The browser access client, the SSH client and the
   browser build, with both wasm modules inlined and unpacked on first

@@ -82,8 +82,14 @@ impl DrtTerm {
     /// sink is also installed page-wide, as it always was, so output from
     /// something no terminal owns -- a `DrtSwarm` -- reaches the newest
     /// terminal.
+    ///
+    /// `backings` are connectors the page hands this terminal, by family
+    /// (`js`'s surface block): `{ net: transport, store: { call } }`.
+    /// Each command whose config names a family, and every command with
+    /// no config, gets its own connector over the object. Optional.
     #[wasm_bindgen(constructor)]
-    pub fn new(sink: js_sys::Function) -> DrtTerm {
+    pub fn new(sink: js_sys::Function, backings: JsValue) -> Result<DrtTerm, JsValue> {
+        let backings = crate::js::backings(&backings).map_err(|e| JsValue::from_str(&e))?;
         let sink: crate::term::Sink = std::rc::Rc::new(move |fd, bytes: &[u8]| {
             let fd = match fd {
                 drt_platform::stdio::Fd::Stdout => 1u32,
@@ -97,9 +103,9 @@ impl DrtTerm {
         });
         let page = sink.clone();
         drt_platform::stdio::install_sink(Box::new(move |fd, bytes| page(fd, bytes)));
-        DrtTerm {
-            inner: Term::with_sink(sink),
-        }
+        Ok(DrtTerm {
+            inner: Term::with_sink(sink).with_backings(backings),
+        })
     }
 
     /// Put a file in the terminal's filesystem, making the directories
@@ -473,16 +479,24 @@ impl DrtSwarm {
     /// names -- the same JSON `drt run --config` takes.
     ///
     /// Zero for either limit means the swarm's own default, as
-    /// `dvsjs_new` meant it.
+    /// `dvsjs_new` meant it. `backings` are `DrtTerm`'s: connectors the
+    /// page hands this swarm, by family. Optional.
     #[wasm_bindgen(constructor)]
     pub fn new(
         max_instances: u32,
         spawns_per_step: u32,
         config: Option<String>,
+        backings: JsValue,
     ) -> Result<DrtSwarm, JsValue> {
-        SwarmDeployment::new(max_instances, spawns_per_step, config.as_deref())
-            .map(|inner| DrtSwarm { inner })
-            .map_err(|e| JsValue::from_str(&e))
+        let backings = crate::js::backings(&backings).map_err(|e| JsValue::from_str(&e))?;
+        SwarmDeployment::new(
+            max_instances,
+            spawns_per_step,
+            config.as_deref(),
+            &crate::js::supplied(&backings),
+        )
+        .map(|inner| DrtSwarm { inner })
+        .map_err(|e| JsValue::from_str(&e))
     }
 
     /// The first instance, from source, the capabilities it may hold and

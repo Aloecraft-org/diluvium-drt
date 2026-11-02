@@ -433,3 +433,20 @@ Found, not fixed here: crypto's signing_keys secret parser duplicates
 drt_config::Secret and refuses prompt, where ldap's bind_password takes
 it (sent to the crypto thread). A session JWT outlives a logout until
 its own exp; the test states that, and jwt_ttl is the knob.
+
+## 2026-11-01 run: JsConnector and net (#80), sql.js in a page (#81)
+
+Plan: two pull requests. PR 1 (claude/project-thread-wo5zam): a `net`
+connector in `connectors/net` over a host-supplied `Transport`, with the
+socket connector's handle rules (owner, release, transfer/claim, vital)
+and two inbound shapes (push to a named queue, or buffer for recv and
+accept); a `Supplied` seam in `cli::wire_connectors_with` and
+`assemble_with` so a host can hand in a connector for a family the build
+does not carry; `drt-web/src/js.rs` turning a page's `{family: object}`
+into connectors (`net` a transport, anything else `{call}`), per kernel
+through `DrtTerm(sink, backings)` and `DrtSwarm(..., backings)`; drt.js
+`kernel()` and `bus()`. PR 2 (claude/project-thread-wo5zam-sqljs, on PR
+1): `sql` in a page over sql.js with the native contract, databases kept
+as files in the page's filesystem so examples/07-sql runs unchanged in
+the browser. #81 route 2 (bundled SQLite for wasm32-unknown-unknown)
+stays parked. #82 is PR #83's; backings are per kernel so they fit it.

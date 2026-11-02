@@ -285,6 +285,122 @@ fn a_run_session_has_no_deployment_to_hand_out() {
     uninstall_sink();
 }
 
+// depth: connectors the page hands in (issue #80)
+
+/// A terminal whose commands each get a `net` connector over one bus, the
+/// way a page hands in its transport.
+fn term_with_net() -> Term {
+    let bus = drt_connector_net::bus::Bus::new();
+    let mut backings: std::collections::BTreeMap<String, drt_web::Backing> = Default::default();
+    backings.insert(
+        "net".into(),
+        Rc::new(move || {
+            std::sync::Arc::new(drt_connector_net::NetConnector::new(bus.clone()))
+                as std::sync::Arc<dyn drt_connector::Connector>
+        }),
+    );
+    Term::new().with_backings(backings)
+}
+
+const NET_CONFIG: &str = r#"{"program": {"path": "app.dlua"},
+    "caps": [{"capability": "host:net/*"}, {"capability": "host:fs/*"}],
+    "connectors": {"net": {}, "fs": {"scope": {"scope": "./out", "access": "readwrite"}}}}"#;
+
+/// `drt run` over a handed-in transport: no queue sweep, so the program
+/// waits in `accept` and `recv`, and what it heard it writes back.
+#[test]
+fn a_handed_in_net_transport_answers_net_calls_in_drt_run() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let seen = capture();
+    let term = term_with_net();
+    term.fs().add_dir("/app/out");
+    term.fs().add_file(
+        "/app/app.dlua",
+        "local l = host.call('net/listen', {address = 'me'})\n\
+         local a = host.call('net/open', {address = 'me'})\n\
+         local b = host.call('net/accept', {handle = l.handle})\n\
+         host.call('net/send', {handle = a.handle, data = 'hello'})\n\
+         local got = host.call('net/recv', {handle = b.handle})\n\
+         host.call('net/close', {handle = a.handle})\n\
+         local eof = host.call('net/recv', {handle = b.handle})\n\
+         host.fs.write('got.txt', got.data .. ' ' .. b.peer .. ' ' .. tostring(eof.eof))",
+    );
+    term.fs().add_file("/app/deploy.json", NET_CONFIG);
+    term.fs().set_cwd("/app");
+    let mut session = term.exec(&argv(&["drt", "run", "--config", "deploy.json"]));
+    assert_eq!(run_to_exit(&mut session), 0, "{}", text(&seen, Fd::Stderr));
+    assert_eq!(file(&term, "/app/out/got.txt"), "hello me-peer true");
+    uninstall_sink();
+}
+
+/// `drt start` over the same transport: a `queue` handle pushes what
+/// arrives to the owner's inbox, and the program wakes on it.
+#[test]
+fn a_handed_in_net_transport_pushes_to_the_inbox_under_drt_start() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let seen = capture();
+    let term = term_with_net();
+    term.fs().add_dir("/app/out");
+    term.fs().add_file(
+        "/app/app.dlua",
+        "local inbox = queue.lookup('inbox')\n\
+         host.call('net/listen', {address = 'me', queue = true})\n\
+         local a = host.call('net/open', {address = 'me', queue = true})\n\
+         local _, accepted = queue.wait({inbox}, 5000)\n\
+         host.call('net/send', {handle = a.handle, data = 'ping'})\n\
+         local _, data = queue.wait({inbox}, 5000)\n\
+         host.fs.write('got.txt', accepted.event .. ' ' .. data.event .. ' ' .. data.data\n\
+           .. ' ' .. tostring(data.handle == accepted.conn))",
+    );
+    term.fs().add_file("/app/app.json", NET_CONFIG);
+    term.fs().set_cwd("/app");
+    let mut session = term.exec(&argv(&["drt", "start", "--config", "app.json"]));
+    assert_eq!(run_to_exit(&mut session), 0, "{}", text(&seen, Fd::Stderr));
+    assert_eq!(file(&term, "/app/out/got.txt"), "accepted data ping true");
+    uninstall_sink();
+}
+
+/// A handed-in family is available, not granted: without `host:net/*` the
+/// call is denied like any other, and a config naming `net` on a terminal
+/// that was handed none is refused at startup, by name.
+#[test]
+fn a_handed_in_family_is_gated_and_a_missing_one_is_named() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let seen = capture();
+    let term = term_with_net();
+    term.fs().add_dir("/app/out");
+    term.fs().add_file(
+        "/app/app.dlua",
+        "local _, status = host.try('net/open', {address = 'me'})\n\
+         host.fs.write('status.txt', status)",
+    );
+    term.fs().add_file(
+        "/app/deploy.json",
+        r#"{"program": {"path": "app.dlua"},
+            "caps": [{"capability": "host:fs/*"}],
+            "connectors": {"net": {}, "fs": {"scope": {"scope": "./out", "access": "readwrite"}}}}"#,
+    );
+    term.fs().set_cwd("/app");
+    let mut session = term.exec(&argv(&["drt", "run", "--config", "deploy.json"]));
+    assert_eq!(run_to_exit(&mut session), 0, "{}", text(&seen, Fd::Stderr));
+    assert_eq!(file(&term, "/app/out/status.txt"), "denied");
+    uninstall_sink();
+
+    let seen = capture();
+    let bare = Term::new();
+    bare.fs().add_file("/app/app.dlua", "");
+    bare.fs().add_file("/app/deploy.json", NET_CONFIG);
+    bare.fs().add_dir("/app/out");
+    bare.fs().set_cwd("/app");
+    let mut session = bare.exec(&argv(&["drt", "run", "--config", "deploy.json"]));
+    assert_eq!(run_to_exit(&mut session), 1);
+    assert_eq!(
+        text(&seen, Fd::Stderr),
+        "drt: config wires connector 'net', which this build does not carry\n"
+    );
+    uninstall_sink();
+}
+
 /// A kernel for the two-kernel test: its own sink, and a program at one
 /// path that both kernels share, so a kernel reading the other's
 /// filesystem would run the other's program.

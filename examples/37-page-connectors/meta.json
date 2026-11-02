@@ -1,0 +1,9 @@
+{
+  "name": "37-page-connectors",
+  "teaches": "A page hands drt a connector family as a JavaScript object: under a config that grants it, what the object returns is the reply and what it throws is an error; under one that wires it without the grant, the gate denies it like any family.",
+  "cmd": "echo '$ drt run --config app.json'; drt run --config app.json; echo; echo '$ drt run --config locked.json'; drt run --config locked.json",
+  "needs_network": false,
+  "needs_build": "web",
+  "backings": "storage.js",
+  "normalise": []
+}

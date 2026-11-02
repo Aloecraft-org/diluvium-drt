@@ -1,0 +1,5 @@
+{
+  "program": { "path": "app.dlua" },
+  "caps": [{ "capability": "host:storage/*" }],
+  "connectors": { "storage": {} }
+}
