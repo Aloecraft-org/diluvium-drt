@@ -123,8 +123,8 @@ Underneath it the embedded core moves from 0.15.1 to
   keyless and answers `verify`, `encrypt` and `hash`. It builds for
   the browser and wasip2 like every other target, and costs about
   150 KB at `release-small`. Public keys travel as aloecrypt's armored
-  `SIGNER` and `RECIPIENT` documents.
-  `examples/36-post-quantum` walks through it.
+  `SIGNER` and `RECIPIENT` documents. Pinned to aloecrypt_core
+  v0.1.0. `examples/36-post-quantum` walks through it.
 - **`stdlib:session`, a login portal and forward-auth endpoint
   (`doc/Session.md`).** A dlua program on four connectors: `ldap`
   binds the user, `crypto` checks a TOTP code (enrolment by policy:

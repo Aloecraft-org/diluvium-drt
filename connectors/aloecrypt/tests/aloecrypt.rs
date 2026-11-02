@@ -350,8 +350,7 @@ fn a_keyless_wiring_answers_only_the_public_calls() {
 #[test]
 fn an_invalid_kem_key_is_refused_not_a_panic() {
     // A RECIPIENT document carrying the right length for ML-KEM-768 and
-    // coefficients past the modulus. aloecrypt_core's encapsulator would
-    // unwrap this key (aloecrypt_core#7); its reader refuses it instead.
+    // coefficients past the modulus. aloecrypt_core's reader refuses it.
     let bogus = MlKem768Encapsulator {
         public_key: [0xFFu8; MLKEM_768_ENCAP_KEY_SZ],
     };
