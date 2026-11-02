@@ -1,13 +1,21 @@
 name: ci
 
 on:
+  # A pull request is checked by its `pull_request` run and `main` by its
+  # push run. Branches are not push-triggered as well: that ran every PR
+  # commit twice, and only the `pull_request` run is the one that counts
+  # (.claude/rules/merging.md).
   push:
-    # `main` for when there is one; the working branch is the trunk in
-    # practice today, and a trunk whose pushes are never checked is a CI
-    # config that agrees with itself and nothing else.
-    branches: [main, 'claude/**']
+    branches: [main]
   pull_request:
   workflow_dispatch:
+
+# A newer commit on the same pull request cancels the run it replaces, so
+# a superseded commit stops holding runners. `main` is never cancelled:
+# every merge keeps its own complete run.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -75,36 +83,41 @@ jobs:
     # `slim`, at the top of this list, is the shipped set that still gets
     # built here with `--all-targets`, which is what catches a test
     # assuming a feature its profile lacks.
+    #
+    # One job, not a matrix of one runner per feature: each leg spent most
+    # of its time getting a runner and compiling the same dependencies
+    # again, and twenty-five legs held the queue for every other job. Here
+    # they share one target directory, every feature is checked even after
+    # one fails, and the step fails at the end naming each that did not
+    # compile.
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        feature:
-          - slim
-          - cli
-          - listen
-          - runtime
-          - connector-time
-          - connector-fs
-          - connector-sql
-          - connector-crypto
-          - connector-rest
-          - connector-ssmtp
-          - connector-ldap
-          - connector-ssh
-          - sshd
-          - connector-exec
-          - connector-socket
-          - connector-ws
-          - connector-data
-          - tunnel
-          - relay
-          - stun
-          - netcheck
-          - numeric
-          - turn
-          - turn-client
-          - webrtc
+    env:
+      FEATURES: >-
+        slim
+        cli
+        listen
+        runtime
+        connector-time
+        connector-fs
+        connector-sql
+        connector-crypto
+        connector-rest
+        connector-ssmtp
+        connector-ldap
+        connector-ssh
+        sshd
+        connector-exec
+        connector-socket
+        connector-ws
+        connector-data
+        tunnel
+        relay
+        stun
+        netcheck
+        numeric
+        turn
+        turn-client
+        webrtc
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -112,8 +125,21 @@ jobs:
       # `--no-default-features` so the feature under test is the only thing
       # on beyond what it pulls in itself. With defaults left on, `slim`
       # would satisfy half of these gates and the job would prove nothing.
-      - name: cargo check -p drt --features ${{ matrix.feature }}
-        run: cargo check -p drt --all-targets --no-default-features --features ${{ matrix.feature }}
+      - name: cargo check -p drt --features <each>, alone
+        run: |
+          failed=()
+          for feature in $FEATURES; do
+            echo "::group::$feature"
+            if ! cargo check -p drt --all-targets --no-default-features --features "$feature"; then
+              failed+=("$feature")
+              echo "::error title=features ($feature)::cargo check -p drt --no-default-features --features $feature failed"
+            fi
+            echo "::endgroup::"
+          done
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo "did not compile alone: ${failed[*]}"
+            exit 1
+          fi
 
   test:
     runs-on: ubuntu-latest
