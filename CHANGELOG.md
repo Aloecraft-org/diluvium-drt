@@ -14,10 +14,10 @@ carries in the release. See `doc/Release.md`.
 
 ## [0.8.0] - unreleased
 
-`v0.8.0` &middot; dv ABI 2 &middot; diluvium `97bb9f9d2897` (v0.17.2)
+`v0.8.0` &middot; dv ABI 2 &middot; diluvium `f59bc77b2f51` (v0.17.4)
 
 **A browser reaches a DRT host directly, two machines reach each
-other with nothing in between, and the core is diluvium 0.17.2.**
+other with nothing in between, and the core is diluvium 0.17.4.**
 The `webrtc` block lets a stock browser open a data channel to this
 process and carry TCP streams to the targets the block names, with
 the WebRTC stack in the binary and the signaling left to the
@@ -26,7 +26,7 @@ program. `drt p2p` makes the same session between two `drt`s, or a
 record each way and never sees the session; `drt ssh` rides it, and
 `drt ps` reaches a running deployment over its new `ssh` listener.
 Underneath it the embedded core moves from 0.15.1 to
-0.17.2: dv ABI 2, the numeric tier on in `full` and `web`, and
+0.17.4: dv ABI 2, the numeric tier on in `full` and `web`, and
 `buildinfo` reading the core's features off the core. The plan is
 `doc/Plan-0.8.0.md`; the wires are `doc/BrowserAccess.md`,
 `doc/P2P.md` and `doc/DRT-Signalling.md`.
@@ -908,17 +908,19 @@ Underneath it the embedded core moves from 0.15.1 to
   and runs each family through `drt-plugin`, refusing a plugin that
   would shadow a builtin family. 0.7.0's notes did not say so;
   0.7.0-rc.2's "built as a crate and not wired" was true when written.
-- **diluvium 0.15.1 -> 0.17.2, dv ABI 1 -> 2.** The pin names the
-  tag, `v0.17.2`, rather than following diluvium's default branch,
-  where ABI 3 lands when 0.18.0 ships. 0.17.2 is 0.17.1's runtime
-  with a build-script fix for `diluvium-sys` under a native Windows
-  GCC, which drt's Windows CI row found.
+- **diluvium 0.15.1 -> 0.17.4, dv ABI 1 -> 2.** The pin names the
+  tag, `v0.17.4`, rather than following diluvium's default branch,
+  where ABI 3 lands when 0.18.0 ships. Over 0.17.1 it carries a
+  build-script fix for `diluvium-sys` under a native Windows GCC,
+  which drt's Windows CI row found (0.17.2), the fix for `export`
+  writing past the code array, and the spawn handle's `child.ref`,
+  `child.push` and `host.ref` that sibling instances meet through.
 - **`buildinfo`'s `features` is read off the core** (`dv_features()`)
   instead of stated per profile, and says what the core says:
   `regex,json,msgpack,snapshot`, plus `numeric` where it is on, in
   the core's own order. A custom build reports its core's list rather
   than an empty one. `diluvium_version` is still stated, because
-  0.17.2 has no `dv_version()`.
+  0.17.4 has no `dv_version()`.
 - **A serving peer keeps an identity file.** A listening or parked
   `drt p2p` writes `~/.drt/p2p/identity.json` (`p2p.identity_file`
   to put it elsewhere) and a `webrtc` block writes its
@@ -1009,7 +1011,7 @@ Underneath it the embedded core moves from 0.15.1 to
   stated zero is a real bound; in `dv.h` 0 means no limit, so passing
   it on would turn the tightest bound into none. It is withheld
   instead, which leaves the core at its default -- also no limit --
-  and 0.17.2 enforces neither bound yet, so nothing behaves
+  and 0.17.4 enforces neither bound yet, so nothing behaves
   differently today. Needs a "no limit" sentinel upstream.
 - **The `webrtc` block has only been proven on one machine.**
   Chromium connects to it, several sessions at once, through
