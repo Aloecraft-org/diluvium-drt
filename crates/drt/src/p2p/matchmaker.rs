@@ -8,7 +8,8 @@
 //! ## surface block
 //!
 //! - Entry points: [`run`]; [`load_topics`], the `--topics` file read and
-//!   checked into what the program is handed ([`Topics`]);
+//!   checked into what the program is handed ([`Topics`]), at start and
+//!   again by [`TopicsWatch`] whenever the file changes;
 //!   [`StatusToken::parse`], the `--status-token-file` token checked. With
 //!   one, the program answers `GET /v1/status` (`doc/DRT-Signalling.md`
 //!   §11) to a request bearing it.
@@ -19,11 +20,19 @@
 //!   inside the `--kv` directory; [`ROLES`], what a topic token may hold;
 //!   [`NAME_MAX`]; [`GROUPS_CLAIM`], the claim a JWT's groups are read
 //!   from unless the file names another; [`JWKS_MAX_KEYS`];
-//!   [`STATUS_TOKEN_MIN`], the shortest `--status-token-file` taken.
+//!   [`STATUS_TOKEN_MIN`], the shortest `--status-token-file` taken;
+//!   [`RELOAD_CHECK`], how often the `--topics` file is read for a change.
 //! - Fan-out: none; one listener, one program. `--kv` adds the `sql`
 //!   connector, scoped to its directory, and the grants the program needs.
-//!   A topics file with a `jwt` block adds the `crypto` connector, wired
-//!   `verify_only` unless the config wires one, and `host:crypto/jwt_verify`.
+//!   `--topics` adds the `crypto` connector, wired `verify_only` unless the
+//!   config wires one, and `host:crypto/jwt_verify`, so a `jwt` block the
+//!   file gains while the server runs has what it needs.
+//!
+//! Reload: the program's arguments are the one way its settings arrive
+//! (`args`), so a changed topics file is the same table handed again on
+//! the same queue, with the file's topics, groups, jwt block and
+//! `capacity` in place of the old. A file that no longer checks is
+//! refused by name and the settings in force stay.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -78,6 +87,10 @@ pub const JWKS_MAX_KEYS: usize = 64;
 /// The shortest status token: a server reachable from anywhere answers
 /// whoever holds it with every name it holds.
 pub const STATUS_TOKEN_MIN: usize = 16;
+/// How often the `--topics` file is read again for a change. It is small
+/// and local, so reading it is cheaper than trusting a modification time
+/// that a quick rewrite leaves unchanged.
+pub const RELOAD_CHECK: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The server, foreground forever, as `drt start` on the equivalent
 /// config would be. The config given is the base: its connectors and
@@ -91,30 +104,15 @@ pub fn run(role: &MatchRole, config: &RootConfig) -> Result<(), String> {
     };
     config.root.program = Some(Program::Source(source.into()));
     config.entry = None;
-    let topics = match &role.topics {
-        Some(path) => load_topics(path)?,
-        None => Topics::default(),
+    let (topics, topics_text) = match &role.topics {
+        Some(path) => {
+            let text = std::fs::read_to_string(path)
+                .map_err(|e| format!("--topics {}: {e}", path.display()))?;
+            (checked_topics(path, &text, role.kv.is_some())?, Some(text))
+        }
+        None => (Topics::default(), None),
     };
-    if topics.jwks_in_kv && role.kv.is_none() {
-        return Err(format!(
-            "--topics {}: jwt.jwks names a kv key, and this server keeps no kv; add --kv <dir>",
-            role.topics.as_deref().unwrap_or(Path::new("")).display()
-        ));
-    }
-    if topics.revoked_in_kv && role.kv.is_none() {
-        return Err(format!(
-            "--topics {}: jwt.revoked names a kv topic, and this server keeps no kv; add --kv <dir>",
-            role.topics.as_deref().unwrap_or(Path::new("")).display()
-        ));
-    }
     config.args = BTreeMap::from([
-        (
-            "capacity".to_string(),
-            ArgValue::Int(i64::try_from(role.capacity).unwrap_or(i64::MAX)),
-        ),
-        ("topics".to_string(), ArgValue::Str(topics.tokens)),
-        ("groups".to_string(), ArgValue::Str(topics.groups)),
-        ("jwt".to_string(), ArgValue::Str(topics.jwt.clone())),
         (
             "status_token".to_string(),
             ArgValue::Str(
@@ -129,11 +127,12 @@ pub fn run(role: &MatchRole, config: &RootConfig) -> Result<(), String> {
             ArgValue::Str(env!("CARGO_PKG_VERSION").to_string()),
         ),
     ]);
+    put_topics(&mut config.args, &topics, role.capacity);
     config.connectors.entry("time".to_string()).or_default();
     if let Some(dir) = &role.kv {
         wire_kv(&mut config, dir)?;
     }
-    if !topics.jwt.is_empty() {
+    if role.topics.is_some() {
         wire_jwt_verify(&mut config)?;
     }
     config.listeners = vec![Listener {
@@ -158,7 +157,138 @@ pub fn run(role: &MatchRole, config: &RootConfig) -> Result<(), String> {
         );
     }
     let dispatcher = Dispatcher::new(crate::cli::wire_connectors(&config)?);
-    crate::start::start(&config, dispatcher)
+    match &role.topics {
+        Some(path) => {
+            let mut watch = TopicsWatch {
+                path: path.clone(),
+                args: config.args.clone(),
+                capacity: role.capacity,
+                has_kv: role.kv.is_some(),
+                seen: topics_text,
+                next: std::time::Instant::now() + RELOAD_CHECK,
+                pending: None,
+            };
+            crate::start::start_observed(&config, dispatcher, |sw, root| watch.pass(sw, root))
+        }
+        None => crate::start::start(&config, dispatcher),
+    }
+}
+
+/// The parts of the program's arguments the topics file decides; the
+/// file's `capacity`, when it names one, in place of `--capacity`.
+fn put_topics(args: &mut BTreeMap<String, ArgValue>, topics: &Topics, capacity: usize) {
+    let capacity = topics.capacity.unwrap_or(capacity);
+    args.insert(
+        "capacity".to_string(),
+        ArgValue::Int(i64::try_from(capacity).unwrap_or(i64::MAX)),
+    );
+    args.insert("topics".to_string(), ArgValue::Str(topics.tokens.clone()));
+    args.insert("groups".to_string(), ArgValue::Str(topics.groups.clone()));
+    args.insert("jwt".to_string(), ArgValue::Str(topics.jwt.clone()));
+}
+
+/// The topics file's text checked, and checked against this server: a
+/// JWKS or revocations in kv need `--kv`.
+fn checked_topics(path: &Path, text: &str, has_kv: bool) -> Result<Topics, String> {
+    let shown = path.display();
+    let topics = topics_from_text(text).map_err(|e| format!("--topics {shown}: {e}"))?;
+    if topics.jwks_in_kv && !has_kv {
+        return Err(format!(
+            "--topics {shown}: jwt.jwks names a kv key, and this server keeps no kv; add --kv <dir>"
+        ));
+    }
+    if topics.revoked_in_kv && !has_kv {
+        return Err(format!(
+            "--topics {shown}: jwt.revoked names a kv topic, and this server keeps no kv; add --kv <dir>"
+        ));
+    }
+    Ok(topics)
+}
+
+// depth: reloading the topics file
+
+/// The `--topics` file, read every [`RELOAD_CHECK`] on the drive thread.
+/// When its text changes and still checks, the program's arguments with
+/// the new topics are pushed onto its `args` queue; held and pushed again
+/// next pass while the queue is full. A file that does not check, or will
+/// not read, is said once per change and the settings in force stay.
+pub struct TopicsWatch {
+    path: std::path::PathBuf,
+    /// The arguments as the program was started with them.
+    args: BTreeMap<String, ArgValue>,
+    capacity: usize,
+    has_kv: bool,
+    /// The text last read, whether or not it checked; a read error's
+    /// text, so it is said once.
+    seen: Option<String>,
+    next: std::time::Instant,
+    /// Encoded arguments the queue had no room for yet.
+    pending: Option<Vec<u8>>,
+}
+
+impl TopicsWatch {
+    /// The arguments to hand the program, when the file changed since it
+    /// was last read and checks; `Err` when it changed and does not.
+    fn changed(&mut self) -> Result<Option<BTreeMap<String, ArgValue>>, String> {
+        let text = match std::fs::read_to_string(&self.path) {
+            Ok(text) => text,
+            Err(e) => {
+                // A file mid-replace is briefly absent: said once, and read
+                // again the next time round.
+                let why = format!("--topics {}: {e}", self.path.display());
+                if self.seen.as_deref() == Some(why.as_str()) {
+                    return Ok(None);
+                }
+                self.seen = Some(why.clone());
+                return Err(why);
+            }
+        };
+        if self.seen.as_deref() == Some(text.as_str()) {
+            return Ok(None);
+        }
+        self.seen = Some(text.clone());
+        let topics = checked_topics(&self.path, &text, self.has_kv)?;
+        let mut args = self.args.clone();
+        put_topics(&mut args, &topics, self.capacity);
+        Ok(Some(args))
+    }
+
+    /// One drive-loop pass: push what is held, or read the file when due.
+    fn pass(&mut self, sw: &mut crate::start::Deployment, root: drt_swarm::InstanceId) {
+        if self.pending.is_none() {
+            let now = std::time::Instant::now();
+            if now < self.next {
+                return;
+            }
+            self.next = now + RELOAD_CHECK;
+            match self.changed() {
+                Ok(None) => return,
+                Ok(Some(args)) => {
+                    let mut bytes = Vec::new();
+                    let value = drt_config::resolve::args_to_msgpack(&args);
+                    if rmpv::encode::write_value(&mut bytes, &value).is_err() {
+                        return;
+                    }
+                    self.pending = Some(bytes);
+                }
+                Err(why) => {
+                    eprintln!("drt p2p: {why}; the topics in force stay");
+                    return;
+                }
+            }
+        }
+        let Some(bytes) = &self.pending else { return };
+        match sw.push(
+            root,
+            drt_config::resolve::ARGS_QUEUE,
+            &crate::start::runtime_sender(),
+            bytes,
+        ) {
+            // Full: the program has not taken the last one yet.
+            Err(drt_swarm::swarm::SwarmError::Limit(_)) => {}
+            _ => self.pending = None,
+        }
+    }
 }
 
 // depth: the status token
@@ -201,14 +331,20 @@ impl StatusToken {
 ///          "jwks": {"keys": […]} | {"kv": "<topic>/<key>"},
 ///          "revoked": {"kv": "<topic>"}},
 ///  "topics": {"<topic>": {"tokens": [{"token": "…", "roles": ["park", …]}],
-///                         "groups": {"<group>": ["call", …]}}}}
+///                         "groups": {"<group>": ["call", …]}}},
+///  "capacity": 256}
 /// ```
+///
+/// `capacity`, when present, is the names held at once in place of
+/// `--capacity`, so it changes with the file.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TopicsFile {
     #[serde(default)]
     jwt: Option<JwtEntry>,
     topics: BTreeMap<String, TopicEntry>,
+    #[serde(default)]
+    capacity: Option<usize>,
 }
 
 #[derive(serde::Deserialize)]
@@ -261,6 +397,8 @@ pub struct Topics {
     /// Whether `revoked` names a topic in this server's kv, which needs
     /// `--kv`. A `jwks` in kv implies it.
     pub revoked_in_kv: bool,
+    /// The file's `capacity`: names held at once, in place of `--capacity`.
+    pub capacity: Option<usize>,
 }
 
 /// Read and check the `--topics` file, and return it as the program takes
@@ -274,6 +412,11 @@ pub fn load_topics(path: &Path) -> Result<Topics, String> {
 
 fn topics_from_text(text: &str) -> Result<Topics, String> {
     let file: TopicsFile = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    if file.capacity == Some(0) {
+        return Err(
+            "capacity: 0 holds no name; one or more, or leave it out for --capacity".into(),
+        );
+    }
     let mut out: BTreeMap<String, BTreeMap<String, BTreeSet<String>>> = BTreeMap::new();
     let mut groups: BTreeMap<String, BTreeMap<String, BTreeSet<String>>> = BTreeMap::new();
     for (topic, entry) in file.topics {
@@ -328,6 +471,7 @@ fn topics_from_text(text: &str) -> Result<Topics, String> {
         jwt,
         jwks_in_kv,
         revoked_in_kv,
+        capacity: file.capacity,
     })
 }
 
@@ -538,6 +682,60 @@ fn listener_defaults() -> Listener {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_topics_files_capacity_replaces_the_flags_and_zero_is_refused() {
+        let named = topics_from_text(r#"{"topics": {}, "capacity": 3}"#).unwrap();
+        let mut args = BTreeMap::new();
+        put_topics(&mut args, &named, 256);
+        assert_eq!(args["capacity"], ArgValue::Int(3));
+        let unnamed = topics_from_text(r#"{"topics": {}}"#).unwrap();
+        put_topics(&mut args, &unnamed, 256);
+        assert_eq!(args["capacity"], ArgValue::Int(256));
+        let e = topics_from_text(r#"{"topics": {}, "capacity": 0}"#)
+            .err()
+            .unwrap_or_default();
+        assert!(e.contains("capacity: 0 holds no name"), "{e}");
+    }
+
+    /// A reload is the start's table with the file's parts replaced: what
+    /// the verb set beside them (kv, the status token) is kept.
+    #[test]
+    fn a_changed_file_is_handed_on_once_and_a_bad_one_is_said_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("topics.json");
+        std::fs::write(&path, r#"{"topics": {}}"#).unwrap();
+        let mut watch = TopicsWatch {
+            path: path.clone(),
+            args: BTreeMap::from([("kv".to_string(), ArgValue::Str(KV_DB.into()))]),
+            capacity: 256,
+            has_kv: true,
+            seen: std::fs::read_to_string(&path).ok(),
+            next: std::time::Instant::now(),
+            pending: None,
+        };
+        assert!(watch.changed().unwrap().is_none());
+        std::fs::write(
+            &path,
+            r#"{"topics": {"home": {"tokens": [{"token": "t", "roles": ["park"]}]}},
+                "capacity": 2}"#,
+        )
+        .unwrap();
+        let args = watch.changed().unwrap().unwrap();
+        assert_eq!(args["capacity"], ArgValue::Int(2));
+        assert_eq!(
+            args["topics"],
+            ArgValue::Str(r#"{"home":{"t":["park"]}}"#.into())
+        );
+        assert_eq!(args["kv"], ArgValue::Str(KV_DB.into()));
+        assert!(watch.changed().unwrap().is_none());
+        std::fs::write(&path, "{").unwrap();
+        assert!(watch.changed().is_err());
+        assert!(watch.changed().unwrap().is_none());
+        std::fs::remove_file(&path).unwrap();
+        assert!(watch.changed().is_err());
+        assert!(watch.changed().unwrap().is_none());
+    }
 
     #[test]
     fn a_topics_file_becomes_topic_token_roles_with_duplicates_merged() {

@@ -23,7 +23,7 @@ the path is a flag the user typed.
 - Configurable: `-p` (call), `--host` (default `127.0.0.1`), `--accept`,
   `--pair`, `--forward`, `-A`, `-P`, `--signal`, `--stun`,
   `--fingerprint` (`--fingerp`), `--H` (`auth=` for a bearer token),
-  `--authorized-keys`, `--capacity`, `--topics`, `--kv`,
+  `--token-file` (park), `--authorized-keys`, `--capacity`, `--topics`, `--kv`,
   `--status-token-file`, `--extra-root`, `--config`; `--show`
   prints a peer's canonical form. Every flag is also a key of the `p2p`
   block (§8). A call's command after `--` (§2.1) is the one argument that
@@ -215,7 +215,8 @@ what the profile asks of them.
   says so.
 - **`--capacity`** is the number of names held at once. A claim past it
   gets 429 with `retry-after`. Each name keeps the profile's cap of 16
-  waiting calls.
+  waiting calls. A topics file's `capacity` key replaces it, and changes
+  with the file.
 - **`--topics <file>`** declares topics: namespaces with their own
   tokens. A name inside topic `home` is `drt://<server>/v1/home/<name>`,
   and every request under `/v1/home/` needs a token the file gives
@@ -242,9 +243,17 @@ what the profile asks of them.
   `DRT-Caller-Token` is not read: the topic's `call` tokens admit. Pairing
   stays inside the topic, and the told side calls with its own token, so
   that token needs `call` as well as `park`. `--capacity` counts every
-  name held, bare or in a topic. The file is read at start; a change
-  needs a restart. Tokens are compared as written, so keep the file
-  private.
+  name held, bare or in a topic. Tokens are compared as written, so keep
+  the file private.
+- **The topics file is read again when it changes**, every 2 s, with no
+  restart. Its topics, tokens, groups, `jwt` block and `capacity` are in
+  force from the next request. A name held inside a topic is judged
+  again with its holder's latest token and let go when that token no
+  longer parks there (its waiting callers get 503, its event stream
+  ends). A lower `capacity` lets nothing go; claims past it get 429 until
+  names are freed. A file that does not check is said on stderr and the
+  settings in force stay. Write the new file and rename it over the old,
+  so the server never reads half of one.
 - **A topic can admit JWTs and map directory groups to roles.** With a
   `jwt` block, a token the file does not list is checked as a JWT, and a
   topic's `groups` give each group in it roles:
@@ -274,7 +283,9 @@ what the profile asks of them.
     `expired`, `issuer`, ...); a valid one without the role is 403, the
     same in every topic, so a JWT does not list topics either.
   - A JWT holds a name by its `sub`, so a renewed token keeps the name and
-    a token of another subject does not take it.
+    a token of another subject does not take it. When the `exp` of the
+    last token a parked side sent passes, the name is let go as a
+    revocation lets it go.
   - **Revocation.** A kv key `revoked/<sub>` in the topic the keys are
     published in (or the one `"revoked": {"kv": "<topic>"}` names, which
     needs `--kv`) holds a Unix second. While it stands, a token for that
@@ -296,9 +307,17 @@ what the profile asks of them.
   token of that topic holding `read` and `write`. Limits: the header must be
   the one `crypto/jwt_sign` writes (`{"alg":"EdDSA","typ":"JWT","kid":…}`,
   in that order), so a token from another library is refused as `alg`;
-  only EdDSA keys are read from a JWKS; and a parked side sends the token
-  it started with, so it is refused once that token expires (renewal is
-  not built).
+  and only EdDSA keys are read from a JWKS.
+- **A parked side renews its token from a file.** `drt p2p --park …
+  --token-file <file>` sends the file's token as `Authorization: Bearer`
+  and reads the file again before every request. Replace it with a
+  renewed JWT before the old one expires and the next poll (within 5 s)
+  carries it: the name stays, and open sessions never touch the
+  signalling server, so nothing drops. Refused (401, 403), the park waits
+  for a new file and parks again rather than exiting. Whatever writes the
+  file (a timer calling `stdlib:session`'s `/api/token`, say) is outside
+  drt; a device credential exchanged for a JWT is not built. Not beside
+  `-H auth=` or `Authorization`, and not for a `wss://` park.
 - **Admission is by token, not origin**, so every reply carries
   `access-control-allow-origin: *`. A page opened from `file://` sends
   `Origin: null` and preflights because of its `Authorization` header; a
@@ -543,6 +562,7 @@ change, so nothing negotiates it.
 | `--accept` | park | the signalling server, then the parked side | which callers are passed to the parked side |
 | `--topics FILE` | match | the signalling server | which tokens, and which JWT groups, may park, call, read or write in each topic (§2.4) |
 | `--H name=value` | call, park | sent to the signalling side only | HTTP headers; `auth=` is shorthand for `Authorization: Bearer`. In the file, a value may come from a variable, a file or a prompt (§8) |
+| `--token-file FILE` | park | sent to the signalling side only | the bearer token, read again before every request, so a renewed JWT takes over without dropping the name (§2.4) |
 | `--fingerprint SHA256:…` | call | the caller, locally | the answerer's DTLS fingerprint must match; `--fingerp` is the same flag |
 
 - **`--H` never reaches the peer.** The record exchange is the signalling;
