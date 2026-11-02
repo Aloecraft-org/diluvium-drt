@@ -11,8 +11,9 @@
 //!
 //! ## surface block
 //!
-//! - [`Term`]: the memory filesystem a page seeds, and `exec`.
-//!   [`Term::with_sink`] gives a terminal output of its own;
+//! - [`Term`]: the filesystem a page seeds, and `exec`.
+//!   [`Term::with_fs`] puts a filesystem of the page's in place of the
+//!   memory one; [`Term::with_sink`] gives a terminal output of its own;
 //!   [`Term::exec_to`] runs one command into a sink of the caller's;
 //!   [`Term::with_backings`] hands it connectors from the page
 //!   ([`Backing`]), each made fresh for every command.
@@ -21,6 +22,11 @@
 //!   ticks.
 //! - [`Step`]: what a tick asks of the page.
 //! - [`Sink`]: where a terminal's bytes go.
+//! - [`PageFs`]: what a terminal's filesystem is to the page, beyond the
+//!   runtime's [`Backend`]: seeded, listed, and given a working
+//!   directory. Two implementations: `MemFs` (below), the default and
+//!   private to its terminal, and `pagefs::JsFs` (browser only), a page
+//!   object that several terminals may share.
 //!
 //! Several terminals in one page (doc/Browser.md): the runtime reads
 //! through one process filesystem (`drt_platform::fs::host`) and writes
@@ -34,8 +40,8 @@
 //! one CPU.
 
 use std::collections::BTreeMap;
-use std::io::Write;
-use std::path::Path;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -70,7 +76,7 @@ pub enum Step {
 /// The terminal: a filesystem the page fills, and a way to run commands
 /// against it.
 pub struct Term {
-    fs: Arc<MemFs>,
+    fs: Arc<dyn PageFs>,
     sink: Option<Sink>,
     backings: BTreeMap<String, Backing>,
 }
@@ -96,7 +102,7 @@ impl Term {
     /// Its commands write to whatever sink is installed when they run. A
     /// page with more than one terminal wants [`Term::with_sink`].
     pub fn new() -> Self {
-        let fs = Arc::new(MemFs::new());
+        let fs: Arc<dyn PageFs> = Arc::new(MemFs::new());
         drt_platform::fs::install(fs.clone());
         Term {
             fs,
@@ -123,6 +129,14 @@ impl Term {
         Term { backings, ..self }
     }
 
+    /// This terminal over `fs` instead of its memory filesystem: every
+    /// program, config and granted directory its commands open is read
+    /// there. Installed as the process's own, as [`Term::new`]'s is.
+    pub fn with_fs(self, fs: Arc<dyn PageFs>) -> Self {
+        drt_platform::fs::install(fs.clone());
+        Term { fs, ..self }
+    }
+
     /// One command's connectors, made from the backings.
     fn supplied(&self) -> cli::Supplied {
         self.backings
@@ -132,8 +146,8 @@ impl Term {
     }
 
     /// The filesystem, to seed and to read back.
-    pub fn fs(&self) -> &MemFs {
-        &self.fs
+    pub fn fs(&self) -> &(dyn PageFs + 'static) {
+        self.fs.as_ref()
     }
 
     /// Run one command line. `argv` is what a shell would hand `main`,
@@ -357,12 +371,77 @@ impl Term {
     }
 }
 
+// depth: a terminal's filesystem, as the page sees it
+
+/// A terminal's filesystem, beyond what the runtime reads through: what
+/// the page seeds and reads back. Paths are absolute, or relative to the
+/// working directory.
+pub trait PageFs: Backend {
+    /// Put a file in, making the directories above it.
+    fn put_file(&self, path: &Path, bytes: &[u8]) -> io::Result<()>;
+    /// Make a directory and every one above it.
+    fn put_dir(&self, path: &Path) -> io::Result<()>;
+    /// Make `path` the working directory, making it when it is not there.
+    fn change_dir(&self, path: &Path) -> io::Result<()>;
+    fn cwd(&self) -> PathBuf;
+    /// Every file, by absolute path, in path order.
+    fn file_paths(&self) -> io::Result<Vec<PathBuf>>;
+}
+
+impl PageFs for MemFs {
+    fn put_file(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
+        self.add_file(path, bytes);
+        Ok(())
+    }
+
+    fn put_dir(&self, path: &Path) -> io::Result<()> {
+        self.add_dir(path);
+        Ok(())
+    }
+
+    fn change_dir(&self, path: &Path) -> io::Result<()> {
+        self.set_cwd(path);
+        Ok(())
+    }
+
+    fn cwd(&self) -> PathBuf {
+        MemFs::cwd(self)
+    }
+
+    fn file_paths(&self) -> io::Result<Vec<PathBuf>> {
+        Ok(self.files().into_iter().map(|(path, _)| path).collect())
+    }
+}
+
+/// The seeding calls a host writes by hand, which cannot fail on a
+/// `MemFs`: a failure (only a page filesystem has them) panics with what
+/// went wrong. The page's own calls (`bindings`) use the fallible ones.
+impl dyn PageFs {
+    pub fn add_file(&self, path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) {
+        let path = path.as_ref();
+        self.put_file(path, bytes.as_ref())
+            .unwrap_or_else(|e| panic!("putting {}: {e}", path.display()));
+    }
+
+    pub fn add_dir(&self, path: impl AsRef<Path>) {
+        let path = path.as_ref();
+        self.put_dir(path)
+            .unwrap_or_else(|e| panic!("making {}: {e}", path.display()));
+    }
+
+    pub fn set_cwd(&self, path: impl AsRef<Path>) {
+        let path = path.as_ref();
+        self.change_dir(path)
+            .unwrap_or_else(|e| panic!("changing to {}: {e}", path.display()));
+    }
+}
+
 // depth: a terminal's context, installed for as long as its command runs
 
 /// What a terminal's command reads through and writes to.
 #[derive(Clone)]
 struct Context {
-    fs: Arc<MemFs>,
+    fs: Arc<dyn PageFs>,
     sink: Option<Sink>,
 }
 
