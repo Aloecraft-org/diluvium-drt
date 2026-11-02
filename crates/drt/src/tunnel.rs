@@ -519,7 +519,13 @@ pub async fn serve_ws_bridge(
     listener: tokio::net::TcpListener,
     target: &str,
 ) -> Result<(), String> {
-    crate::bridge::serve(listener, target.to_string(), None).await
+    crate::bridge::serve(
+        listener,
+        crate::bridge::Target::Tcp(target.to_string()),
+        None,
+        None,
+    )
+    .await
 }
 
 /// The program-shaped caller half (issue #13): a local TCP listener where

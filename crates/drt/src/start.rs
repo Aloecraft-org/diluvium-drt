@@ -651,7 +651,8 @@ pub fn serve_with_observer<B: Acceptor>(
     #[cfg(feature = "bridge")]
     let mut bridge = match &config.bridge {
         Some(cfg) => {
-            let bridge = crate::bridge::WsBridge::start(cfg)?;
+            let target = crate::bridge::block_target(cfg, config)?;
+            let bridge = crate::bridge::WsBridge::start(cfg, target)?;
             eprintln!("drt bridge: ws on {} bridging to {}", bridge.addr(), cfg.to);
             Some(bridge)
         }

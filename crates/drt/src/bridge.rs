@@ -8,26 +8,33 @@
 //!
 //! ```text
 //! page --ws://bind--> [bridge] --tcp--> to (one fixed host:port)
+//!                              --p2p--> to (one fixed drt://peer)
 //! ```
+//!
+//! This is `drt p2p --listen-ws`'s role (`crate::p2p::listen_ws`), as a
+//! `drt start` block: the same [`serve`], the same [`Target`]s. A `drt://`
+//! target needs the `p2p` feature, which supplies the opener.
 //!
 //! The target is the block's, never the client's. A page reaches `to` and
 //! nothing else, whatever URL or path it opened, so a bridge is scoped by
 //! construction. It is not a relay: nothing is parked, nothing is paired,
 //! and it runs only when a config names it.
 //!
-//! `drt tunnel --listen` is the same accept loop with nobody listening for
-//! its events, and every tunnel mode splices through [`pump`].
+//! `drt tunnel --listen` runs as `drt p2p --listen-ws` where `p2p` is
+//! built, and every tunnel mode splices through [`pump`].
 //!
 //! ## surface block
 //!
-//! - Entry points: [`WsBridge::start`], the block bound and served;
-//!   [`WsBridge::report`], its events onto the root's queue, once per pass
-//!   of `drt start`'s loop; [`serve`], the accept loop over a listener the
-//!   caller bound; [`pump`], one splice.
+//! - Entry points: [`block_target`], the block's `to` as a [`Target`];
+//!   [`WsBridge::start`], the block bound and served; [`WsBridge::report`],
+//!   its events onto the root's queue, once per pass of `drt start`'s
+//!   loop; [`serve`], the accept loop over a listener the caller bound;
+//!   [`pump`], one splice.
 //! - Configurable: [`CHUNK`], how much is moved per read; [`SUBPROTOCOL`],
 //!   the one subprotocol answered.
-//! - Fan-out: [`Event`], the two things a bridge says, and the one match
-//!   on it in [`event_value`].
+//! - Fan-out: [`Target`], where a connection goes (TCP, or a stream an
+//!   opener hands back), matched once in [`connect`]; [`Event`], the two
+//!   things a bridge says, matched once in [`event_value`].
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -35,7 +42,7 @@ use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, 
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
-use drt_config::BridgeConfig;
+use drt_config::{BridgeConfig, RootConfig};
 
 /// How much is moved per read. A throughput knob and nothing more.
 const CHUNK: usize = 64 * 1024;
@@ -47,6 +54,76 @@ const CHUNK: usize = 64 * 1024;
 /// header. websockify's older `base64` is not spoken: its frames are text,
 /// and this bridge moves binary frames only.
 pub const SUBPROTOCOL: &str = "binary";
+
+/// A byte stream a bridge splices a WebSocket to.
+pub trait Stream: AsyncRead + AsyncWrite + Send {}
+impl<T: AsyncRead + AsyncWrite + Send> Stream for T {}
+
+/// One opened stream, whatever carries it.
+pub type Opened = std::pin::Pin<Box<dyn Stream>>;
+
+/// Opens one stream per accepted WebSocket: how a target that is not a TCP
+/// address (a `drt://` peer) is reached without this module knowing p2p.
+pub type Open = std::sync::Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Opened, String>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// Who may connect, by address; `None` admits whoever reaches the bind.
+pub type Admit = std::sync::Arc<dyn Fn(std::net::IpAddr) -> bool + Send + Sync>;
+
+/// Where every connection a bridge accepts goes. Fixed when the bridge
+/// starts; a client never names it.
+#[derive(Clone)]
+pub enum Target {
+    /// One `host:port`, dialled per connection: websockify's shape.
+    Tcp(String),
+    /// Something else, `to` as it is shown, opened by `open`.
+    Open { to: String, open: Open },
+}
+
+impl Target {
+    /// The target as lines and events name it.
+    pub fn shown(&self) -> &str {
+        match self {
+            Target::Tcp(to) | Target::Open { to, .. } => to,
+        }
+    }
+}
+
+/// The block's `to` as a [`Target`]: `host:port`, or a `drt://` peer when
+/// this build has `p2p`, called the way `drt p2p --listen-ws` calls it with
+/// the file's `default` STUN servers and extra roots.
+pub fn block_target(block: &BridgeConfig, config: &RootConfig) -> Result<Target, String> {
+    let to = block.to.trim();
+    let scheme = to.split_once("://").map(|(s, _)| s.to_ascii_lowercase());
+    match scheme.as_deref() {
+        Some(s) if s == "drt" || s.starts_with("drt+") => {
+            #[cfg(feature = "p2p")]
+            {
+                crate::p2p::listen_ws::block_target(to, config)
+                    .map_err(|e| format!("bridge.to: {e}"))
+            }
+            #[cfg(not(feature = "p2p"))]
+            {
+                let _ = config;
+                Err(format!(
+                    "bridge.to `{to}` is a DRT peer, and this build has no `p2p` feature (it is \
+                     in `full`)"
+                ))
+            }
+        }
+        Some(_) => Err(format!(
+            "bridge.to `{to}` names a scheme; it is host:port, or drt://… for a peer"
+        )),
+        None => {
+            let _ = config;
+            check_target(to)?;
+            Ok(Target::Tcp(to.to_string()))
+        }
+    }
+}
 
 /// What a bridge says about a connection, one of each per connection that
 /// reached its target. A handshake that failed, or a target that refused,
@@ -76,13 +153,12 @@ pub struct WsBridge {
 }
 
 impl WsBridge {
-    /// Check the block, bind it, and serve it on its own runtime.
+    /// Bind the block and serve it on its own runtime, to `target`
+    /// ([`block_target`], which refuses a `to` it cannot reach).
     ///
-    /// Everything that can be refused is refused here, before `drt start`
-    /// steps the root: a `to` that is not `host:port`, and a `bind` that is
-    /// held or not an address, each naming the key it read.
-    pub fn start(config: &BridgeConfig) -> Result<WsBridge, String> {
-        check_target(&config.to)?;
+    /// Everything that can be refused is refused before `drt start` steps
+    /// the root: a `bind` that is held or not an address names its key.
+    pub fn start(config: &BridgeConfig, target: Target) -> Result<WsBridge, String> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| format!("the bridge needs a runtime: {e}"))?;
         let listener = rt
@@ -90,9 +166,8 @@ impl WsBridge {
             .map_err(|e| format!("bridge.bind `{}`: {e}", config.bind))?;
         let addr = listener.local_addr().map_err(|e| e.to_string())?;
         let (tx, events) = std::sync::mpsc::channel();
-        let to = config.to.clone();
         let runtime = std::thread::spawn(move || {
-            if let Err(e) = rt.block_on(serve(listener, to, Some(tx))) {
+            if let Err(e) = rt.block_on(serve(listener, target, None, Some(tx))) {
                 eprintln!("drt start: bridge stopped: {e}");
             }
             // Leaked for the reason every bridge here leaks one: tokio
@@ -168,18 +243,26 @@ fn check_target(to: &str) -> Result<(), String> {
     }
 }
 
-/// Accept WebSockets on `listener` and splice each to `target`, telling
-/// `events` when each opens and closes, until the listener fails. Each way
-/// a connection ends is said on stderr, by peer.
+/// Accept WebSockets on `listener` from whoever `admit` lets in and
+/// splice each to `target`, telling `events` when each opens and closes,
+/// until the listener fails. Each way a connection ends is said on stderr,
+/// by peer.
 pub async fn serve(
     listener: tokio::net::TcpListener,
-    target: String,
+    target: Target,
+    admit: Option<Admit>,
     events: Option<std::sync::mpsc::Sender<Event>>,
 ) -> Result<(), String> {
     loop {
         let Ok((conn, peer)) = listener.accept().await else {
             continue;
         };
+        if let Some(admit) = &admit {
+            if !admit(peer.ip()) {
+                eprintln!("drt bridge: {peer}: outside --host's range, closed");
+                continue;
+            }
+        }
         // Issue #33: interactive on both of this hop's sockets; see
         // `tunnel::connect`.
         if let Err(e) = conn.set_nodelay(true) {
@@ -196,17 +279,14 @@ pub async fn serve(
                     return;
                 }
             };
-            let tcp = match tokio::net::TcpStream::connect(&target).await {
-                Ok(tcp) => tcp,
+            let stream = match connect(&target).await {
+                Ok(stream) => stream,
                 Err(e) => {
-                    eprintln!("drt bridge: {peer}: cannot reach {target}: {e}");
+                    eprintln!("drt bridge: {peer}: cannot reach {}: {e}", target.shown());
                     return;
                 }
             };
-            if let Err(e) = tcp.set_nodelay(true) {
-                eprintln!("drt bridge: {peer}: cannot reach {target}: TCP_NODELAY: {e}");
-                return;
-            }
+            let target = target.shown().to_string();
             let peer = peer.to_string();
             eprintln!("drt bridge: {peer}: bridged to {target}");
             if let Some(events) = &events {
@@ -215,7 +295,7 @@ pub async fn serve(
                     to: target.clone(),
                 });
             }
-            let (sent, received) = pump(tcp, ws).await;
+            let (sent, received) = pump(stream, ws).await;
             eprintln!("drt bridge: {peer}: session ended");
             if let Some(events) = &events {
                 let _ = events.send(Event::Closed {
@@ -226,6 +306,22 @@ pub async fn serve(
                 });
             }
         });
+    }
+}
+
+/// One stream to `target`: a TCP connection, interactive (issue #33), or
+/// whatever the opener hands back.
+async fn connect(target: &Target) -> Result<Opened, String> {
+    match target {
+        Target::Tcp(to) => {
+            let tcp = tokio::net::TcpStream::connect(to)
+                .await
+                .map_err(|e| e.to_string())?;
+            tcp.set_nodelay(true)
+                .map_err(|e| format!("TCP_NODELAY: {e}"))?;
+            Ok(Box::pin(tcp))
+        }
+        Target::Open { open, .. } => open().await,
     }
 }
 
@@ -325,7 +421,30 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::check_target;
+    use super::{block_target, check_target, Target};
+
+    /// A block's `to` is `host:port`, or a `drt://` peer where `p2p` is
+    /// built; anything else is refused by its key.
+    #[test]
+    fn a_block_target_is_tcp_or_a_peer() {
+        let block = |to: &str| drt_config::BridgeConfig {
+            bind: "127.0.0.1:0".into(),
+            to: to.into(),
+            queue: "bridge_in".into(),
+        };
+        let config = drt_config::RootConfig::default();
+        assert!(matches!(
+            block_target(&block("10.0.0.5:3389"), &config),
+            Ok(Target::Tcp(to)) if to == "10.0.0.5:3389"
+        ));
+        let peer = block_target(&block("drt://s.example/v1/pc"), &config);
+        #[cfg(feature = "p2p")]
+        assert!(matches!(peer, Ok(Target::Open { .. })));
+        #[cfg(not(feature = "p2p"))]
+        assert!(peer.err().unwrap().contains("no `p2p` feature"));
+        let err = block_target(&block("ws://x:1"), &config).err().unwrap();
+        assert!(err.contains("bridge.to"), "{err}");
+    }
 
     /// A target is `host:port`, and a bracketed v6 address is one.
     #[test]

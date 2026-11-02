@@ -141,6 +141,8 @@ drt p2p --listen 5000                # serve the REPL on a UDP port; prints the 
 ssh -o ProxyCommand="drt p2p drt://signal.example/v1/xps" me@xps   # call a peer, direct
 drt p2p drt://signal.example/v1/xps -p 8080:80            # or map a port to it
 drt p2p --park drt://signal.example/v1/xps --H auth=…     # answer calls for a name
+drt p2p --listen-ws 6080 --forward 10.0.0.5:3389   # a page's WebSocket in, one TCP target out (websockify)
+drt p2p --listen-ws 6080 --forward drt://signal.example/v1/pc   # ... or out over p2p to a peer
 drt p2p --match 8443                 # be the signalling server
 drt p2p --match 8443 --kv ./kv       # ... keeping a kv store; drt kv get|put|ls|watch its keys
 drt p2p --match 8443 --status-token-file ./tok   # ... with GET /v1/status; get-drt.sh status-page fetches the page
@@ -149,7 +151,7 @@ drt --config p2p.json p2p            # any role, with the token in a 0600 file
 drt start --config session.json      # stdlib:session: LDAP sign-in, TOTP or webhook, forward auth (doc/Session.md)
 drt --config nc.json netcheck        # what can this network do, with the evidence
 drt --config st.json start           # a STUN server: what address did that come from
-drt --config br.json start           # a websockify-style bridge: a page's WebSocket in, one TCP target out
+drt --config br.json start           # --listen-ws as a `bridge` block: one host:port or drt:// target
 drt --config tn.json start           # a TURN relay, for what cannot be punched
 drt --config wg.json start           # a WireGuard peer, in the process or in userspace
 drt wg keygen                        # a key pair, so wireguard-tools is not needed
