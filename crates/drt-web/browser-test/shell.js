@@ -24,9 +24,12 @@
 //            running(session | null), optional: told when a drt command's
 //            session starts and before it is freed.
 //   ECHO, DRT: the two commands; everything else is not found.
+//   BUSY_TICK_MS: how often a session that wants a line is still ticked
+//     while something it spawned is alive (the repl's `busy`).
 
 const ECHO = 'echo';
 const DRT = 'drt';
+const BUSY_TICK_MS = 20;
 const STATUS = Symbol('$?');
 
 export function makeShell({ term, write, sleep = wait }) {
@@ -80,7 +83,20 @@ export function makeShell({ term, write, sleep = wait }) {
           continue;
         }
         if (next.wantsInput) {
-          const line = await io.readLine(next.continuing, session);
+          // A REPL line may have spawned something; the page's loop is
+          // here and the editor is async, so the child keeps running
+          // while the next line is typed rather than only between lines.
+          let ended = false;
+          const ticker = next.busy
+            ? setInterval(() => { if (session.tick().done) ended = true; }, BUSY_TICK_MS)
+            : null;
+          let line;
+          try {
+            line = await io.readLine(next.continuing, session);
+          } finally {
+            if (ticker) clearInterval(ticker);
+          }
+          if (ended) continue;
           if (line === null) {
             // End of input, newline included, as the native repl leaves.
             write(2, '\n');

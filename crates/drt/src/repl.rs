@@ -6,6 +6,16 @@
 //! on `repl/out`. Hostcalls are pumped exactly as `drt run` pumps them, so
 //! a REPL reaches every connector the config wired and nothing it did not.
 //!
+//! The instance is the root of a swarm of its own (`crate::start`'s
+//! [`Deployment`], the one `drt start` drives), so that a line can
+//! `host.spawn` and what it spawns runs beside the REPL under the same
+//! ceiling and budget. The terminal drives the whole swarm: a child gets
+//! its slices while a line evaluates and between lines, and a host whose
+//! editor does not block (a page) keeps ticking while [`Repl::busy`]
+//! holds, so a child runs while the next line is typed. With no config
+//! the root holds `lifecycle` (`crate::config::repl_ceiling`); a config
+//! that names its ceiling decides for itself.
+//!
 //! The split is the point. "Line in, text out" is a contract a terminal
 //! satisfies today and an xterm.js in a browser satisfies unchanged, over
 //! the same two queues — so there is one REPL with one behavior, not a
@@ -21,11 +31,14 @@
 //! ## surface block
 //!
 //! - [`Repl`]: the half every host shares — `tick`, `feed`, `continuing`,
-//!   [`Repl::names`].
+//!   [`Repl::names`], [`Repl::variables`], [`Repl::busy`], and
+//!   [`Repl::deployment_mut`] for a host that shows the swarm.
 //! - [`repl`]: the native loop. On a tty it is [`edited`] (ego-cli:
 //!   history, word motions, undo, Tab); through a pipe it is [`piped`],
 //!   whose prompts go to stderr so a redirect stays clean.
 //! - [`PROGRAM`], [`IN`], [`OUT`]: the guest and the two queues.
+//!   [`STEPS_PER_TICK`]: how long a tick keeps stepping a running child
+//!   before answering the terminal.
 //! - Fan-out: [`meta`], the lines the host answers instead of the guest:
 //!   `:help`, `:quit`, `:clear`, the control endpoint's orders, `:ssh`
 //!   (the config's `host:ssh/shell`) and `:ssh <target> …` (`drt ssh`, on
@@ -33,21 +46,35 @@
 
 use std::io::{BufRead, Write};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use drt_caps::{CapSet, Grant};
+use drt_caps::Grant;
 use drt_connector::Dispatcher;
+use drt_platform::clock::Instant;
 use drt_platform::stdio;
-use drt_swarm::engine::{diluvium_engine::DiluviumEngine, LoadSpec, ProgramBytes};
+use drt_swarm::engine::diluvium_engine::DiluviumEngine;
+use drt_swarm::engine::QueueHandle;
+use drt_swarm::pump::PumpHost;
+use drt_swarm::swarm::Swarm;
+use drt_swarm::InstanceId;
 
-use crate::drive::{Next, Solo};
+use crate::drive::Next;
+use crate::start::{DeployHost, Deployment, IDLE_TICK};
 
 const PROGRAM: &str = include_str!("repl.dlua");
 const IN: &str = "repl/in";
 const OUT: &str = "repl/out";
+/// How many swarm steps one tick takes at most before answering the
+/// terminal, when something the REPL spawned keeps running.
+const STEPS_PER_TICK: usize = 64;
 
 /// The REPL instance, driven by whoever has the terminal.
 pub struct Repl {
-    solo: Solo,
+    /// The swarm the REPL is the root of. A swarm rather than a lone
+    /// instance so that a line can `host.spawn`, and what it spawns runs
+    /// here, under the REPL's own ceiling, stepped between lines.
+    sw: Deployment,
+    root: InstanceId,
     /// Text carried over from a line that ended mid-expression.
     pending: String,
     /// The last answer said the line was unfinished: ask for more.
@@ -108,33 +135,27 @@ impl Repl {
         budget: drt_config::Budget,
         unsafe_stdlib: bool,
     ) -> Result<Self, String> {
-        let engine = DiluviumEngine::new().map_err(|e| e.to_string())?;
-        let caps: Arc<CapSet> = CapSet::root(caps);
-        let solo = Solo::load(
-            &engine,
-            LoadSpec {
-                program: ProgramBytes::Source(PROGRAM),
-                name: "repl",
-                budget,
-                // The REPL states none: a line a user types is bounded by
-                // the same ceiling everything else in this process is.
-                numeric: drt_config::Numeric::default(),
-                // The REPL's own source is ours, not the user's. Sealed,
-                // the lines it evaluates run under the same stdlib every
-                // other guest gets, and a REPL is not a way around the
-                // sandbox; unsealed, that is what the caller asked for by
-                // name, and the caps and the budget still hold.
-                unsafe_stdlib,
-                // Not tied to the flag above: the debug set is a separate
-                // authority and a REPL has no more claim on `setlocal`
-                // than `drt run` does. A tool that wants it asks for it.
-                unsafe_debug: false,
-            },
-            caps,
-            dispatcher,
-        )?;
+        let engine = Arc::new(DiluviumEngine::new().map_err(|e| e.to_string())?);
+        // No residency policy: nothing the REPL spawns hibernates, so no
+        // park floor either (`crate::start::deployment` says why they go
+        // together).
+        let mut sw = Swarm::new(engine, PumpHost::shared(DeployHost::new(), dispatcher));
+        // The REPL's own source is ours, not the user's. Sealed, the lines
+        // it evaluates run under the same stdlib every other guest gets,
+        // and a REPL is not a way around the sandbox; unsealed, that is
+        // what the caller asked for by name, and the caps and the budget
+        // still hold. The debug set is not tied to it: a separate
+        // authority, and a REPL has no more claim on `setlocal` than `drt
+        // run` does. The numeric ceiling is the default, as `drt run`'s is
+        // without a config: a line a user types is bounded by the same
+        // ceiling everything else in this process is.
+        sw.allow_unsafe_stdlib(unsafe_stdlib);
+        let root = sw
+            .root(PROGRAM.as_bytes(), caps, budget)
+            .map_err(|e| e.to_string())?;
         Ok(Repl {
-            solo,
+            sw,
+            root,
             pending: String::new(),
             want_more: false,
             names: Arc::new(Mutex::new(Vec::new())),
@@ -167,14 +188,13 @@ impl Repl {
         // The guest declares its queues on its first slice; until then
         // there is nowhere to say it is served.
         for _ in 0..8 {
-            if repl.solo.queue(IN).is_some() {
+            if repl.input_queue().is_some() {
                 break;
             }
-            let _ = repl.solo.tick(Some(IN));
+            repl.sw.step();
         }
         let input = repl
-            .solo
-            .queue(IN)
+            .input_queue()
             .ok_or("the repl program never declared its input queue")?;
         let served = rmpv::Value::Map(vec![(
             rmpv::Value::from("served"),
@@ -182,8 +202,25 @@ impl Repl {
         )]);
         let mut msg = Vec::new();
         rmpv::encode::write_value(&mut msg, &served).map_err(|e| e.to_string())?;
-        repl.solo.push(input, &msg)?;
+        let inst = repl
+            .sw
+            .instance_mut(repl.root)
+            .ok_or("the repl's instance is gone")?;
+        if !inst
+            .push(input, &msg)
+            .map_err(|e| e.to_string())?
+            .is_accepted()
+        {
+            return Err("the repl's input queue is full".into());
+        }
         Ok(repl)
+    }
+
+    /// The guest's input queue, once it has declared it.
+    fn input_queue(&mut self) -> Option<QueueHandle> {
+        self.sw
+            .instance_mut(self.root)
+            .and_then(|inst| inst.queue(IN))
     }
 
     /// What to print before the first prompt.
@@ -227,16 +264,10 @@ impl Repl {
         // let the guest answer what is in scope, so the prompt that
         // follows has a snapshot for Tab rather than the last line's.
         for _ in 0..2 {
-            let next = self.solo.tick(Some(IN));
+            let next = self.drive();
             // Whatever the last line produced, before asking for the next.
             self.print_answers();
             match next {
-                // Not waiting for us: a park this terminal can never wake.
-                Next::Stuck { .. } => {
-                    return Next::Failed(
-                        "the repl parked on something the terminal cannot wake".into(),
-                    )
-                }
                 Next::Input if self.names_stale => {
                     self.names_stale = false;
                     self.ask_for_names();
@@ -245,6 +276,88 @@ impl Repl {
             }
         }
         Next::Input
+    }
+
+    /// Step the swarm until the REPL is at its prompt, then say what it
+    /// waits for. [`Next::Input`] when it is this terminal's line; a sleep
+    /// while the REPL itself is parked on something else (a spawn's
+    /// outcome, a connector reply, a deadline); a failure when it parked
+    /// on something nothing here will ever wake.
+    fn drive(&mut self) -> Next {
+        // Bounded: a child that never parks would otherwise hold the
+        // terminal, and the budget is the real bound on it, not this loop.
+        for _ in 0..STEPS_PER_TICK {
+            self.sw.step();
+            for (id, what) in self.sw.host_mut().take_lost() {
+                let _ = writeln!(stdio::stderr(), "drt: instance {} lost {what}", id.0);
+            }
+            if !self.sw.ids().contains(&self.root) {
+                // The host already said why, on stderr, when it faulted.
+                return Next::Failed("the repl's instance is gone".into());
+            }
+            // At the prompt, and nothing it spawned has a slice to run: time
+            // to ask the terminal. A child still running gets the rest of
+            // the tick first, so a line's spawn mostly finishes before the
+            // prompt that follows it.
+            if self.at_prompt() && !self.children_running() {
+                return Next::Input;
+            }
+        }
+        if self.at_prompt() {
+            // Something it spawned is still running; it gets the next
+            // tick, which is the host's to give (`busy`).
+            return Next::Input;
+        }
+        if self.sw.host().inner().wait_of(self.root).is_none() {
+            return Next::Sleep(self.idle());
+        }
+        let alone = self.sw.alive() == 1;
+        let quiet = self.sw.host().pump().in_flight() == 0;
+        if alone && quiet && self.sw.host().inner().next_deadline().is_none() {
+            // Not waiting for us, and nothing else will ever answer it:
+            // a park this terminal can never wake.
+            return Next::Failed("the repl parked on something the terminal cannot wake".into());
+        }
+        Next::Sleep(self.idle())
+    }
+
+    /// Whether the REPL is parked on its input queue: its line is wanted.
+    fn at_prompt(&mut self) -> bool {
+        let Some(wait) = self.sw.host().inner().wait_of(self.root) else {
+            return false;
+        };
+        self.input_queue()
+            .is_some_and(|q| wait.queues().contains(&q))
+    }
+
+    /// Whether anything the REPL spawned is still here. A host that reads
+    /// a line without blocking keeps ticking while this holds, so a child
+    /// runs while the person types rather than only between lines; a host
+    /// that blocks on its terminal steps it between lines, which is what
+    /// the native tty does.
+    pub fn busy(&self) -> bool {
+        self.sw.alive() > 1
+    }
+
+    /// Whether an instance other than the root is resident and not
+    /// parked: it has a slice to run now.
+    fn children_running(&self) -> bool {
+        let host = self.sw.host().inner();
+        self.sw
+            .ids()
+            .into_iter()
+            .any(|id| id != self.root && host.wait_of(id).is_none())
+    }
+
+    /// How long the host may sleep before the next step is due: until the
+    /// earliest park deadline, and never longer than [`IDLE_TICK`].
+    fn idle(&self) -> Duration {
+        self.sw
+            .host()
+            .inner()
+            .next_deadline()
+            .map(|d| d.saturating_duration_since(Instant::now()).min(IDLE_TICK))
+            .unwrap_or(IDLE_TICK)
     }
 
     /// Whether the next line continues an unfinished one.
@@ -262,13 +375,20 @@ impl Repl {
             self.pending.push('\n');
         }
         self.pending.push_str(line);
-        let Some(input) = self.solo.queue(IN) else {
+        let Some(inst) = self.sw.instance_mut(self.root) else {
+            return Err("the repl's instance is gone".into());
+        };
+        let Some(input) = inst.queue(IN) else {
             return Err("the repl program never declared its input queue".into());
         };
         let mut msg = Vec::new();
         rmpv::encode::write_value(&mut msg, &rmpv::Value::from(self.pending.as_str()))
             .map_err(|e| e.to_string())?;
-        if !self.solo.push(input, &msg)?.is_accepted() {
+        if !inst
+            .push(input, &msg)
+            .map_err(|e| e.to_string())?
+            .is_accepted()
+        {
             return Err("the repl's input queue is full".into());
         }
         self.names_stale = true;
@@ -283,18 +403,31 @@ impl Repl {
     }
 
     pub fn dispatcher(&self) -> &Dispatcher {
-        self.solo.dispatcher()
+        self.sw.host().dispatcher()
+    }
+
+    /// The swarm, for a host that shows or orders what the REPL spawned:
+    /// the roster `drt ps` walks, and a page's Instances panel.
+    pub fn deployment_mut(&mut self) -> &mut Deployment {
+        &mut self.sw
     }
 
     // depth: answers
 
     fn print_answers(&mut self) {
-        let Some(out) = self.solo.queue(OUT) else {
+        let Some(inst) = self.sw.instance_mut(self.root) else {
+            return;
+        };
+        let Some(out) = inst.queue(OUT) else {
             return;
         };
         let mut want_more = false;
         let mut answered = false;
-        while let Ok(Some(raw)) = self.solo.pop(out) {
+        let mut raws = Vec::new();
+        while let Ok(Some(raw)) = inst.pop(out) {
+            raws.push(raw);
+        }
+        for raw in raws {
             match Answer::of(&raw) {
                 // Consumed, never printed: this one is for Tab.
                 Answer::Names(names, variables) => {
@@ -320,7 +453,10 @@ impl Repl {
     /// because a Tab that has not been prepared for offers nothing rather
     /// than stalling (doc/Wasm.md §5).
     fn ask_for_names(&mut self) {
-        let Some(input) = self.solo.queue(IN) else {
+        let Some(inst) = self.sw.instance_mut(self.root) else {
+            return;
+        };
+        let Some(input) = inst.queue(IN) else {
             return;
         };
         let ask = rmpv::Value::Map(vec![(
@@ -329,7 +465,7 @@ impl Repl {
         )]);
         let mut msg = Vec::new();
         if rmpv::encode::write_value(&mut msg, &ask).is_ok() {
-            let _ = self.solo.push(input, &msg);
+            let _ = inst.push(input, &msg);
         }
     }
 }

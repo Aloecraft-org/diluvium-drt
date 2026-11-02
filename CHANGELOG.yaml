@@ -126,6 +126,18 @@ releases:
         beside drt.min.js, so a file made there is one `drt run` sees and
         a file a program writes appears there.
       - |
+        **A line at `drt repl` can spawn.** The REPL is now the root of a
+        swarm of its own rather than a lone instance, so `host.spawn` is
+        answered instead of timing out on a lifecycle queue nothing
+        drained, and what a line spawns runs beside the REPL under the
+        same ceiling and budget: while a line evaluates, between lines,
+        and in a page while the next line is typed. With no config the
+        REPL holds `lifecycle`; a config that names its ceiling decides
+        for itself, as for `drt start`. In drt.js a REPL session's
+        `hasSwarm()` and `ids()` now list the REPL and its children, so
+        example 35's Instances panel shows them, and a step that wants a
+        line carries `busy` while a child is alive.
+      - |
         **`terminal(id)` in drt.js: the drt CLI live in an element.**
         `await terminal('cli')` renders an xterm.js terminal in that
         element with a `$ ` prompt whose command is the real `drt`, the

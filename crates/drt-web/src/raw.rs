@@ -141,7 +141,7 @@ async fn drive(mut session: Session, terminal: ByteTerminal) -> i32 {
     loop {
         match session.tick() {
             Step::Sleep(d) => sleep_ms(d.as_secs_f64() * 1000.0).await,
-            Step::Input { continuing } => {
+            Step::Input { continuing, .. } => {
                 *names.lock().unwrap_or_else(|e| e.into_inner()) = session.names();
                 editor.set_prompt(if continuing { CONTINUING } else { PROMPT });
                 match editor.read_line().await {

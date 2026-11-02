@@ -30,10 +30,13 @@ path, and Tab completes its subcommands. `drt repl`
 opens a Diluvium REPL with the native one's editor: history, Tab over the
 guest's names, and the line coloured as you type. Ctrl+D leaves it.
 
-Variables lists what the REPL has defined. Instances shows only `drt
-start`, the one command with a swarm; it needs a config and a program
-file. Files is the kernel's aloelite volume, in memory: a file you add
-there is one `drt run` sees, and what a program writes shows up there.
+Variables lists what the REPL has defined. Instances is the swarm of
+the command that is running: `drt start`'s, which needs a config and a
+program file, or the REPL's own, which is the REPL and whatever a line
+spawned (`p = host.spawn{code = [[...]]}`), with the swarm's verbs as
+buttons. Files is the kernel's aloelite volume, in memory: a file you
+add there is one `drt run` sees, and what a program writes shows up
+there.
 
 | File | What it is |
 |---|---|

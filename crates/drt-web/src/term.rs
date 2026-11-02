@@ -67,8 +67,10 @@ pub enum Step {
     /// Nothing until this elapses; then tick again.
     Sleep(Duration),
     /// The REPL wants a line. `continuing` chooses the prompt: `>> ` for an
-    /// unfinished line, `dv> ` otherwise.
-    Input { continuing: bool },
+    /// unfinished line, `dv> ` otherwise. `busy` says something the REPL
+    /// spawned is still here, so the page should keep ticking while it
+    /// waits for the line, or the child only runs between lines.
+    Input { continuing: bool, busy: bool },
     /// Over, with the status the binary would have exited with.
     Exit(i32),
 }
@@ -319,7 +321,7 @@ impl Term {
                 };
                 match build(
                     Arc::new(dispatcher),
-                    config::ceiling(&config),
+                    config::repl_ceiling(&config),
                     config.root.budget,
                 ) {
                     Ok(repl) => {
@@ -522,7 +524,10 @@ impl Session {
     pub fn deployment_mut(&mut self) -> Option<&mut drt::start::Deployment> {
         match &mut self.kind {
             Kind::Start(driver) => Some(driver.deployment_mut()),
-            Kind::Run { .. } | Kind::Repl(_) | Kind::Exited(_) => None,
+            // The REPL is the root of a swarm of its own, so what it spawns
+            // is a roster too.
+            Kind::Repl(repl) => Some(repl.deployment_mut()),
+            Kind::Run { .. } | Kind::Exited(_) => None,
         }
     }
 
@@ -559,6 +564,7 @@ impl Session {
                 Next::Sleep(d) => Step::Sleep(d),
                 Next::Input => Step::Input {
                     continuing: repl.continuing(),
+                    busy: repl.busy(),
                 },
                 Next::Done(_) => Step::Exit(0),
                 Next::Failed(why) => {

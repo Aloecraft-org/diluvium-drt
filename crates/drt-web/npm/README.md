@@ -66,7 +66,8 @@ const cli = await terminal('cli');               // <div id="cli"></div>
   (xterm.js options), `fit`.
 - `cli.term` is the kernel; `cli.session` the running command's session
   (`variables()` is what a REPL defined, `hasSwarm()` and `ids()` a
-  `drt start`'s instances); `cli.onCommand(fn)` is told when one starts
+  `drt start`'s instances, or a REPL and what its lines spawned);
+  `cli.onCommand(fn)` is told when one starts
   and ends; `cli.run(line)` types a line; `cli.dispose()` removes it.
 
 ## A kernel's filesystem on an aloelite volume

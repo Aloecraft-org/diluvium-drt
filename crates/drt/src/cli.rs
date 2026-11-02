@@ -2191,7 +2191,7 @@ pub fn main(cli: Cli) -> ExitCode {
         Command::Repl { unsafe_stdlib } => {
             match repl::repl(
                 std::sync::Arc::new(dispatcher),
-                config::ceiling(&config),
+                config::repl_ceiling(&config),
                 config.root.budget,
                 unsafe_stdlib,
             ) {

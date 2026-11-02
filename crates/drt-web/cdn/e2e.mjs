@@ -372,7 +372,7 @@ await check('kernel() with a bus() as its net transport runs a program that talk
   await p.close();
 });
 
-await check(`examples/35-drt-js: bare drt prints its usage, drt repl completes and colours its lines, the panels show its variables${withAloelite ? ' and files' : ''}, and nothing is running`, async () => {
+await check(`examples/35-drt-js: bare drt prints its usage, drt repl completes and colours its lines, the panels show its variables${withAloelite ? ', files' : ''} and what it spawns`, async () => {
   // Served from the example's directory with dist/drt.min.js (and aloelite, when built) in place of the copies its README makes.
   const dir = path.resolve(here, '../../../examples/35-drt-js');
   const types = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.wasm': 'application/wasm' };
@@ -404,10 +404,17 @@ await check(`examples/35-drt-js: bare drt prints its usage, drt repl completes a
   if (await coloured()) throw new Error('a shell line was coloured as code');
   await p.keyboard.type('\r');
   await until('the prompt after a refused run', async () => (await screen()).trimEnd().endsWith('$'));
+  // Between commands there is no session, so no swarm.
+  await until('the panel says nothing is running', async () => (await p.innerText('aside h2:nth-of-type(2)')).includes('nothing running') && (await panel()).length === 0);
   await p.keyboard.type('drt repl\r');
   await until('the REPL prompt', async () => (await screen()).trimEnd().endsWith('dv>'));
-  // Only `drt start` drives a swarm, and it needs a config and a program file this page has none of.
-  await until('the panel says nothing is running', async () => (await p.innerText('aside h2:nth-of-type(2)')).includes('nothing running') && (await panel()).length === 0);
+  // The REPL is the root of a swarm of its own: one instance until a line spawns.
+  await until('the REPL on the Instances panel', async () => (await p.innerText('aside h2:nth-of-type(2)')).includes('1 alive') && (await panel()).length === 1);
+  await p.keyboard.type("p = host.spawn({code = [[print('child says hi') queue.wait({queue.lookup('inbox')})]]})\r");
+  await until('the child printed', async () => /^child says hi$/m.test(await screen()));
+  await until('the child on the Instances panel', async () => (await p.innerText('aside h2:nth-of-type(2)')).includes('2 alive') && (await panel()).length === 2);
+  await p.keyboard.type('p.kill()\r');
+  await until('the child gone from the Instances panel', async () => (await p.innerText('aside h2:nth-of-type(2)')).includes('1 alive') && (await panel()).length === 1);
   await p.keyboard.type('x = 41');   // the number is coloured; `local` would not outlive its own line
   await until('a coloured REPL line', async () => (await coloured()) > 0);
   await p.keyboard.type('\r');
