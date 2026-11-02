@@ -6,8 +6,10 @@
 # needed beyond whatever serves it, and nothing fetched at run time.
 #
 # usage: script/drt-ssh-page.sh
-# env:   WASM_BINDGEN    the wasm-bindgen CLI (default: on PATH), at the
-#                        version crates/drt-ssh-web pins; checked below
+# env:   WASM_BINDGEN    the wasm-bindgen CLI, at the version
+#                        crates/drt-ssh-web pins. Unset, the one on PATH if
+#                        it is that version, else script/wasm-bindgen.sh
+#                        fetches the pinned one.
 #        DRT_SSH_PROFILE cargo profile (default: release-small)
 #        CARGO_TARGET_DIR  as cargo reads it
 #
@@ -19,18 +21,12 @@ set -eu
 HERE=$(cd -- "$(dirname -- "$0")/.." && pwd)
 PAGE=$HERE/crates/drt-ssh-web/page
 PROFILE=${DRT_SSH_PROFILE:-release-small}
-WASM_BINDGEN=${WASM_BINDGEN:-wasm-bindgen}
 TARGET_DIR=${CARGO_TARGET_DIR:-$HERE/target}
 
-# The glue's format is the crate's: a CLI of another version refuses the
-# module, or accepts it and generates glue that does not match.
+# The glue's format is the crate's: the CLI is the version the crate pins,
+# found or fetched by script/wasm-bindgen.sh.
 pin=$(sed -n 's/^wasm-bindgen = "=\([0-9.]*\)"/\1/p' "$HERE/crates/drt-ssh-web/Cargo.toml")
-have=$("$WASM_BINDGEN" --version 2>/dev/null | sed -n 's/^wasm-bindgen \([0-9.]*\).*/\1/p') || true
-if [ "$have" != "$pin" ]; then
-    printf 'drt-ssh-page.sh: need wasm-bindgen %s (WASM_BINDGEN=%s is %s)\n' "$pin" "$WASM_BINDGEN" "${have:-missing}" >&2
-    printf '    cargo install wasm-bindgen-cli --version %s --locked\n' "$pin" >&2
-    exit 2
-fi
+WASM_BINDGEN=$("$HERE/script/wasm-bindgen.sh" "$pin")
 
 case $PROFILE in
     dev) dir=debug ;;
