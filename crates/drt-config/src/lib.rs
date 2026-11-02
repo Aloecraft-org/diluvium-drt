@@ -604,6 +604,37 @@ fn default_stun_report_ms() -> u64 {
     10_000
 }
 
+/// A websockify-style bridge, as `drt start` runs it: WebSockets accepted
+/// on `bind`, each one spliced to the one TCP target `to` names.
+///
+/// For a browser client whose sockets are WebSockets, an Emscripten build
+/// such as FreeRDP's in a page, that needs something on the far end to
+/// turn each one into TCP. The target is this block's and never the
+/// client's: a page reaches `to` and nothing else, whatever URL or path it
+/// opened. Nothing here is a relay; the bridge is a hop the operator runs
+/// in front of a service they can already reach.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BridgeConfig {
+    /// Where WebSockets are accepted, `ip:port`: `127.0.0.1:6080` for a
+    /// page on the same machine, a public address behind a TLS-terminating
+    /// proxy for one that is not. Plain `ws://`; TLS here is not built.
+    pub bind: String,
+    /// The one `host:port` every accepted connection is spliced to:
+    /// `10.0.0.5:3389` in front of an RDP host.
+    pub to: String,
+    /// Where `opened` and `closed`, one each per connection, land on the
+    /// root program, as ordinary queue messages on the same bridge the
+    /// relay's control plane uses.
+    #[serde(default = "default_bridge_queue")]
+    pub queue: String,
+}
+
+fn default_bridge_queue() -> String {
+    "bridge_in".into()
+}
+
 /// The TURN relay, as `drt start` and `drt turn` run it: the last rung of
 /// the traversal ladder, for the peers `stun` says cannot punch.
 ///
@@ -1443,6 +1474,8 @@ pub struct RootConfig {
     pub relay: Option<RelayConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stun: Option<StunConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge: Option<BridgeConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn: Option<TurnConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

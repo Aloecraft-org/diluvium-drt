@@ -168,7 +168,7 @@ libc = "0.2"
 # connector is its own gate so a profile is a feature list, not a fork.
 default = ["slim"]
 slim = ["connector-time", "connector-fs", "connector-crypto", "connector-aloecrypt", "listen", "cli"]
-full = ["slim", "aloelite", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "connector-ldap", "connector-exec", "connector-socket", "connector-ws", "connector-net", "connector-kv", "connector-data", "tunnel", "relay", "stun", "netcheck", "turn", "wireguard", "webrtc", "numeric", "sshd", "p2p"]
+full = ["slim", "aloelite", "connector-ssh", "connector-sql", "connector-rest", "connector-ssmtp", "connector-ldap", "connector-exec", "connector-socket", "connector-ws", "connector-net", "connector-kv", "connector-data", "bridge", "tunnel", "relay", "stun", "netcheck", "turn", "wireguard", "webrtc", "numeric", "sshd", "p2p"]
 # The portable build (doc/Wasm.md D2): what `drt` carries on
 # wasm32-wasip2, under wasmtime. Every connector here compiles for that
 # target with no source change and is exercised by the examples gate
@@ -304,7 +304,13 @@ listen = ["dep:httparse"]
 # `drt tunnel`: the stdio<->WSS bridge (ProxyCommand shape) and the
 # WS->TCP listener half. In `full` beside `ssh` — the NAT-traversal story
 # is a server-and-CLI concern, not a notebook's.
-tunnel = ["dep:tokio", "dep:tokio-tungstenite", "dep:futures-util", "dep:tokio-rustls", "dep:webpki-roots"]
+tunnel = ["bridge", "dep:tokio", "dep:tokio-tungstenite", "dep:futures-util", "dep:tokio-rustls", "dep:webpki-roots"]
+# The `bridge` block: a websockify-style WebSocket to TCP bridge in front of
+# one target, for a page whose sockets are WebSockets (FreeRDP's wasm
+# build). `tunnel --listen` is its accept loop and every tunnel mode its
+# splice. Depends on `listen` for the reason `relay` does: `drt start` runs
+# its loop only there.
+bridge = ["listen", "dep:tokio", "dep:tokio-tungstenite", "dep:futures-util"]
 # `drt p2p` (doc/P2P.md): one verb for peer-to-peer sessions. The caller and
 # the serving side are `webrtc`'s host and caller; the REPL default is
 # `sshd`'s server; `--relay wss://` and `--park wss://` are `tunnel`'s legs;

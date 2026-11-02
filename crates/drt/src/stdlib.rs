@@ -46,11 +46,12 @@ pub const PREFLIGHT: &str = "preflight";
 /// measures, print it, stop.
 pub const NETCHECK: &str = "netcheck";
 
-/// The four server-shaped blocks' readers. Each is the program half of a block
+/// The five server-shaped blocks' readers. Each is the program half of a block
 /// `drt start` already serves: the block binds and measures, the program keeps
 /// the deployment alive and prints what the block reports.
 pub const RELAY: &str = "relay";
 pub const STUN: &str = "stun";
+pub const BRIDGE: &str = "bridge";
 pub const TURN: &str = "turn";
 pub const WG: &str = "wg";
 
@@ -80,9 +81,9 @@ pub const JWKS: &str = "jwks";
 /// entry and supplies the listener and the connectors.
 pub const SESSION: &str = "session";
 
-/// One reader, four blocks.
+/// One reader, five blocks.
 ///
-/// A deployment is config plus a program, and these four blocks used to be
+/// A deployment is config plus a program, and these five blocks used to be
 /// verbs precisely because they had no program to be the other half of. This
 /// is that half: declare the block's report queue, print whatever lands, and
 /// never return — a server-shaped deployment is foreground-forever, and the
@@ -91,7 +92,7 @@ pub const SESSION: &str = "session";
 /// `capacity = 16` and not 1: these blocks report on a timer and a slow
 /// terminal must not be backpressure on a relay's accounting.
 ///
-/// **A report is a flat map, not a string.** All four bridges push
+/// **A report is a flat map, not a string.** All five bridges push
 /// `{event = "...", ...}` with the fields that event carries — the same
 /// shape the http listener uses, so a program branches on a field and never
 /// on a message's position. `print(report)` on one of those prints
@@ -102,13 +103,14 @@ pub const SESSION: &str = "session";
 /// **`from` is skipped, for the same reason `event` is.** Every delivered
 /// queue message carries the sender the runtime attached (`doc/Peers.md`),
 /// and that is the envelope rather than a field the event carries. These
-/// four blocks are local by construction, so it is the same constant on
+/// five blocks are local by construction, so it is the same constant on
 /// every line: printing it would put `from={node=root peer={kind=runtime}}`
 /// on every counter a relay ever emits to say nothing that ever changes. A
 /// guest that wants the sender reads `report.from`; this renders reports.
 #[cfg(any(
     feature = "relay",
     feature = "stun",
+    feature = "bridge",
     feature = "turn",
     feature = "wireguard"
 ))]
@@ -221,6 +223,8 @@ pub fn lookup(name: &str) -> Option<Kind> {
         RELAY => Some(Kind::Source(relay_source())),
         #[cfg(feature = "stun")]
         STUN => Some(Kind::Source(stun_source())),
+        #[cfg(feature = "bridge")]
+        BRIDGE => Some(Kind::Source(bridge_source())),
         #[cfg(feature = "turn")]
         TURN => Some(Kind::Source(turn_source())),
         #[cfg(feature = "wireguard")]
@@ -251,15 +255,16 @@ pub fn lookup(name: &str) -> Option<Kind> {
     }
 }
 
-// depth: the four readers, each built once and leaked into a `&'static str`
+// depth: the five readers, each built once and leaked into a `&'static str`
 //
 // `reader` formats, and a `Kind::Source` is `&'static str` because a program's
-// source outlives the process that loads it. Four `OnceLock`s rather than four
-// hand-written constants so the shape is written once: a fifth block is a
+// source outlives the process that loads it. Five `OnceLock`s rather than five
+// hand-written constants so the shape is written once: a sixth block is a
 // default queue name and one line here.
 #[cfg(any(
     feature = "relay",
     feature = "stun",
+    feature = "bridge",
     feature = "turn",
     feature = "wireguard"
 ))]
@@ -276,6 +281,8 @@ macro_rules! reader_source {
 reader_source!(relay_source, "relay_in");
 #[cfg(feature = "stun")]
 reader_source!(stun_source, "stun_in");
+#[cfg(feature = "bridge")]
+reader_source!(bridge_source, "bridge_in");
 #[cfg(feature = "turn")]
 reader_source!(turn_source, "turn_in");
 #[cfg(feature = "wireguard")]
@@ -290,6 +297,7 @@ pub fn names() -> Vec<&'static str> {
         NETCHECK,
         RELAY,
         STUN,
+        BRIDGE,
         TURN,
         WG,
         BROWSER_ACCESS,
@@ -511,7 +519,7 @@ mod tests {
         );
     }
 
-    /// The four server-block readers, each against the queue its block
+    /// The five server-block readers, each against the queue its block
     /// actually reports on. A reader wired to the wrong queue name is a
     /// deployment that starts, serves, and prints nothing forever -- which
     /// looks exactly like a relay with no traffic, so nothing would say so.
@@ -523,6 +531,7 @@ mod tests {
         for (name, queue, built) in [
             (RELAY, "relay_in", cfg!(feature = "relay")),
             (STUN, "stun_in", cfg!(feature = "stun")),
+            (BRIDGE, "bridge_in", cfg!(feature = "bridge")),
             (TURN, "turn_in", cfg!(feature = "turn")),
             (WG, "wg_in", cfg!(feature = "wireguard")),
         ] {

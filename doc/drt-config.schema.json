@@ -11,6 +11,16 @@
         "$ref": "#/$defs/ArgValue"
       }
     },
+    "bridge": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BridgeConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "budget": {
       "$ref": "#/$defs/Budget"
     },
@@ -204,6 +214,30 @@
             "type": "string"
           }
         }
+      ]
+    },
+    "BridgeConfig": {
+      "description": "A websockify-style bridge, as `drt start` runs it: WebSockets accepted\non `bind`, each one spliced to the one TCP target `to` names.\n\nFor a browser client whose sockets are WebSockets, an Emscripten build\nsuch as FreeRDP's in a page, that needs something on the far end to\nturn each one into TCP. The target is this block's and never the\nclient's: a page reaches `to` and nothing else, whatever URL or path it\nopened. Nothing here is a relay; the bridge is a hop the operator runs\nin front of a service they can already reach.",
+      "type": "object",
+      "properties": {
+        "bind": {
+          "description": "Where WebSockets are accepted, `ip:port`: `127.0.0.1:6080` for a\npage on the same machine, a public address behind a TLS-terminating\nproxy for one that is not. Plain `ws://`; TLS here is not built.",
+          "type": "string"
+        },
+        "queue": {
+          "description": "Where `opened` and `closed`, one each per connection, land on the\nroot program, as ordinary queue messages on the same bridge the\nrelay's control plane uses.",
+          "type": "string",
+          "default": "bridge_in"
+        },
+        "to": {
+          "description": "The one `host:port` every accepted connection is spliced to:\n`10.0.0.5:3389` in front of an RDP host.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "bind",
+        "to"
       ]
     },
     "Budget": {

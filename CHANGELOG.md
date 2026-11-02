@@ -47,6 +47,18 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Added
 
+- **The `bridge` block: websockify's job under `drt start`.**
+  `{"bridge": {"bind": "127.0.0.1:6080", "to": "10.0.0.5:3389"}}`
+  accepts WebSockets on `bind`, on any path, answers the `binary`
+  subprotocol, and splices each connection to the one `to` target, so
+  a page whose sockets are WebSockets (FreeRDP's wasm build) can point
+  at drt directly. The target is the block's, never the client's.
+  `stdlib:bridge` prints an `opened` and a `closed` per connection,
+  the close carrying `sent` and `received` byte counts; a program of
+  its own reads them on `bridge_in`. New `bridge` feature, in `full`.
+  Plain `ws://` only: TLS on `bind` and an Origin allow-list are not
+  built. `drt tunnel --listen` is the same accept loop, and its
+  notice now points here instead of at the `relay` block.
 - **`net` natively: two `drt start` processes link by address.**
   The `net` connector a page wires over its own transport is now in
   `full` with one built in (`connector-net`, issue #108): WebSocket
@@ -1011,6 +1023,14 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Fixed
 
+- **`drt tunnel --listen` answers websockify's `binary` subprotocol.**
+  A browser client built with Emscripten (FreeRDP's wasm build is
+  one) opens `new WebSocket(url, ['binary'])`, and Chromium fails a
+  handshake that offered a subprotocol and got none back, so the
+  bridge refused every such page. It now answers `binary` when
+  offered and sends no header otherwise, which makes
+  `drt tunnel --listen <addr> --to <host:port>` a drop-in for
+  websockify in front of one fixed target. `base64` is not spoken.
 - **A release commit gets no dev build beside its release.** The
   merge of a release-prep PR reached `main` before its tag, so
   `dev-build.yml` cut a dev tag on the same commit the real Release

@@ -141,6 +141,69 @@ async fn bytes_cross_the_bridge_alone() {
     assert_eq!(&back, b"marco");
 }
 
+/// The listen half as websockify: a browser-shaped client (Emscripten's
+/// socket layer, which FreeRDP's wasm build uses) offers the `binary`
+/// subprotocol and gets it answered, then raw bytes cross in binary
+/// frames. A client that offers no subprotocol gets no header, as before;
+/// Chromium refuses a handshake that offered one and got none back, which
+/// is the failure the answer exists to prevent.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_listen_half_answers_the_binary_subprotocol_like_websockify() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let echo = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let echo_addr = echo.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        while let Ok((mut c, _)) = echo.accept().await {
+            tokio::spawn(async move {
+                let mut b = [0u8; 1024];
+                while let Ok(n) = c.read(&mut b).await {
+                    if n == 0 || c.write_all(&b[..n]).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ws_url = format!("ws://{}/websockify", ws_listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _ = drt::tunnel::serve_ws_bridge(ws_listener, &echo_addr).await;
+    });
+
+    let mut offered = ws_url.as_str().into_client_request().unwrap();
+    offered
+        .headers_mut()
+        .insert("Sec-WebSocket-Protocol", "binary".parse().unwrap());
+    let (mut ws, response) = tokio_tungstenite::connect_async(offered).await.unwrap();
+    assert_eq!(
+        response
+            .headers()
+            .get("Sec-WebSocket-Protocol")
+            .map(|v| v.to_str().unwrap()),
+        Some(drt::bridge::SUBPROTOCOL)
+    );
+    ws.send(Message::Binary(b"\x03\x00\x00\x13rdp".to_vec()))
+        .await
+        .unwrap();
+    let back = loop {
+        match ws.next().await.unwrap().unwrap() {
+            Message::Binary(b) => break b,
+            Message::Ping(_) | Message::Pong(_) => continue,
+            other => panic!("expected a binary frame, got {other:?}"),
+        }
+    };
+    assert_eq!(back, b"\x03\x00\x00\x13rdp");
+
+    let (_plain, response) = tokio_tungstenite::connect_async(ws_url.as_str())
+        .await
+        .unwrap();
+    assert!(response.headers().get("Sec-WebSocket-Protocol").is_none());
+}
+
 /// Issue #13, the program-shaped caller: a local listener where each
 /// accepted connection claims one fresh leg. Two connections at once are
 /// two legs, each spliced through its own WS to the echo and answered on

@@ -42,6 +42,7 @@ RootConfig {
         },
     ),
     stun: None,
+    bridge: None,
     turn: None,
     wireguard: None,
     tunnel: None,

@@ -67,6 +67,7 @@ const PROFILE_WEB: &[&str] = &[
 ];
 const PROFILE_FULL: &[&str] = &[
     "aloelite",
+    "bridge",
     "cli",
     "connector-aloecrypt",
     "connector-crypto",
@@ -417,7 +418,8 @@ pub enum Command {
         /// file supplies.
         #[arg(long, value_name = "HOST:PORT")]
         local: Option<String>,
-        /// Serve the other half: accept WebSockets here…
+        /// Serve the other half: accept WebSockets here, on any path,
+        /// answering websockify's `binary` subprotocol when offered…
         #[arg(long)]
         listen: Option<String>,
         /// …and bridge each connection to this host:port (used by both
@@ -821,6 +823,7 @@ fn enabled_features() -> Vec<&'static str> {
     feature!("runtime");
     feature!("sshd");
     feature!("stun");
+    feature!("bridge");
     feature!("tunnel");
     feature!("turn");
     // Probed even though no profile turns it on by itself: `wireguard` names
@@ -2214,8 +2217,8 @@ pub fn main(cli: Cli) -> ExitCode {
             }
             if matches!(resolved.mode, crate::tunnel::Mode::Listen { .. }) {
                 eprintln!(
-                    "drt tunnel: the WebSocket to TCP bridge is a server-side shim; it moves to \
-                     the `relay` block and `drt tunnel --listen` goes away in a release"
+                    "drt tunnel: the WebSocket to TCP bridge is the `bridge` block under `drt \
+                     start` now; `drt tunnel --listen` goes away in a release"
                 );
             }
             let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime");
