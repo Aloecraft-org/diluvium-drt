@@ -18,11 +18,12 @@
 //   - `open(engine, options)` -> a volume file. `engine` is aloelite-wasm's
 //     module. Options: `store`, one of STORES; `name`, the file's name in
 //     the pool; `directory`, the pool's OPFS directory (aloelite's default
-//     when absent); `bytes`, a whole file to install first (an `export`).
-//     The file has `fs`, `export()`, `close()`, `delete()`, and
-//     `addCapacity(n)`. An OPFS file another Worker holds fails with
-//     `busy`, by name, at once. A pool without room for the file fails
-//     with `opfs` and says to call `addCapacity`.
+//     when absent); `bytes`, a whole file to open first (an `export`),
+//     for either store. The file has `fs`, `export()`, `close()`,
+//     `delete()`, and `addCapacity(n)`; the last two are the pool's, and
+//     a memory file refuses them with `unsupported`. An OPFS file another
+//     Worker holds fails with `busy`, by name, at once. A pool without
+//     room for the file fails with `opfs` and says to call `addCapacity`.
 //   - `attach(file, options)` -> a filesystem for `{ fs }`
 //     (crates/drt-web/src/js.rs), over a file from `open` or an
 //     aloelite-wasm `Fs`. Options: `volume`, the volume's name, made when
@@ -41,13 +42,13 @@
 //   (`not_found`, `not_a_container`, `not_an_entry`, ...), which drt reads
 //   as the matching io error.
 //
-// Not here: checkpoints and export for `memory`, because aloelite-wasm's
-// memory store keeps no image a page can take; how files are named; and
+// Not here: checkpoint timing for a memory file (`export()` is the
+// whole image, taken when the page says); how files are named; and
 // anything `host.fs.*` already answers.
 
 export const DEFAULT_VOLUME = 'drt';
 
-//   memory   Fs.openMemory(): gone with the handle; works anywhere
+//   memory   Fs.openMemory(bytes?): gone with the handle unless exported; works anywhere
 //   opfs     Pool.open(name) under its Web Lock: survives a reload; a Worker
 export const STORES = ['memory', 'opfs'];
 
@@ -63,10 +64,9 @@ export const CALLS = ['stat', 'read', 'write', 'list', 'remove', 'mkdirs', 'remo
 export async function open(engine, options = {}) {
   const store = options.store ?? 'memory';
   if (store === 'memory') {
-    if (options.bytes) refuse('unsupported', "a 'memory' file cannot be seeded: aloelite-wasm's memory store takes no bytes");
-    const fs = engine.Fs.openMemory();
+    const fs = engine.Fs.openMemory(options.bytes ?? null);
     const none = (what) => () => refuse('unsupported', `a 'memory' file has no ${what}; use store 'opfs'`);
-    return { store, fs, export: none('export'), delete: none('delete'), addCapacity: none('pool'), close: () => fs.close() };
+    return { store, fs, export: () => fs.export(), delete: none('delete'), addCapacity: none('pool'), close: () => fs.close() };
   }
   if (store !== 'opfs') refuse('usage', `store is one of ${STORES.join(', ')}, not '${store}'`);
   const name = options.name ?? refuse('usage', "an 'opfs' file needs a name");
@@ -105,11 +105,12 @@ export function attach(file, options = {}) {
     fs.call('resolve_volume_name', { name }) ?? fs.call('create_volume', { name, pin }).id;
   if (!LIVE.has(fs)) LIVE.set(fs, new Set());
   const live = LIVE.get(fs);
-  // Mount rows are durable, so a file opened again after a reload still
-  // holds the last session's, not unmounted, and aloelite admits one rw mount per
-  // subtree. The handle is single-writer (an OPFS file is held under its
-  // Web Lock, a memory one by nobody else), so a live row this page did
-  // not make is left over, and is ended before mounting.
+  // Mount rows are durable, so a file opened again after a reload, or
+  // from an export, still holds the last session's `active` rows, and
+  // aloelite admits one rw mount per subtree. The handle is single-writer
+  // (an OPFS file is held under its Web Lock, a memory one by nobody
+  // else), so a live row this page did not make is left over, and is
+  // ended before mounting.
   for (const row of fs.call('list_mounts', { volume })) {
     if (row.state !== 'unmounted' && !live.has(row.id)) fs.call('unmount', { mount: row.id });
   }

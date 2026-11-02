@@ -111,10 +111,11 @@ const c = await kernel(sinkC, { fs: aloelite.attach(file, { volume: 'c' }) });
 - Calls are synchronous, so aloelite runs on drt's thread: `store:
   'memory'` anywhere, `store: 'opfs'` in the Worker drt runs in.
 - An OPFS file another Worker holds fails with `busy`; a full pool says
-  to call `file.addCapacity(n)`. `file.export()` is the SQLite file.
+  to call `file.addCapacity(n)`. `file.export()` is the SQLite file, for
+  either store, and `open(engine, { store, bytes })` opens one from it.
 - `attach` takes `volume`, `mountPoint`, `access` (`rw` or `ro`), `pin`.
-- A memory file has no export or seed: aloelite-wasm's memory store keeps
-  no image. Not built.
+- aloelite-wasm from its `main` at `0a23703` or later: the memory
+  store's export and seed and the mount lifecycle are from there.
 
 ## session(): a page behind stdlib:session
 
