@@ -1119,7 +1119,11 @@ jobs:
           else
             ../script/changelog.py buildinfo-check --tag '${{ needs.preflight.outputs.tag }}' --file BUILDINFO.txt
           fi
-          # Every other asset, the sixteen installers, get-drt.js and the web buildinfo included
+          # The match server's status page (doc/doc_old/DRT-Signalling.md
+          # §11): one self-contained file, shipped as it is checked in, so
+          # `get-drt.sh status-page` can fetch it beside the binary.
+          cp ../crates/drt/page/match-status.html match-status.html
+          # Every other asset, the sixteen installers, get-drt.js, the status page and the web buildinfo included
           # (doc/ALIGNMENT.md §6): the mirror verifies each file it carries
           # against this, and a file it cannot find here is one it cannot
           # vouch for. Generated last, so it does not list itself.

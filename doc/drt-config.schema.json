@@ -721,6 +721,17 @@
           "maximum": 65535,
           "minimum": 0
         },
+        "status_token": {
+          "description": "`--status-token-file`: the token a `match` server's status\n(`GET /v1/status`, `doc/DRT-Signalling.md` §11) takes, as a\n[`Secret`]. Absent, the server serves no status.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Secret"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "stun": {
           "description": "`--stun`, repeatable: `host:port` servers asked for a public address.",
           "type": "array",

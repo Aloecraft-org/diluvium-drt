@@ -116,6 +116,16 @@ releases:
       `doc/P2P.md` and `doc/DRT-Signalling.md`.
     added:
       - |
+        **A match server shows its operator what it is doing.** `drt p2p
+        --match --status-token-file <file>` answers `GET /v1/status` for a
+        request bearing that token: uptime, names held and whether each is
+        present, calls waiting, topics, kv, and counts of requests, calls
+        and replies since start, naming holders by kind and never printing
+        a token (`doc/DRT-Signalling.md` §11). Off without the flag; the
+        `p2p` block's `status_token` takes a secret. `match-status.html`,
+        a new release asset that `get-drt.sh status-page` downloads and
+        verifies, renders it from `file://` or localhost.
+      - |
         **A REPL says what it defined, and example 35 shows it and its
         files.** `repl.dlua`'s names snapshot now carries each of the
         session's own names with its type and a short value, or a

@@ -1,0 +1,198 @@
+<!doctype html>
+<!--
+  The status of a `drt p2p --match` server (doc/doc_old/DRT-Signalling.md
+  §11), read from GET /v1/status with its status token. One file, no
+  dependencies: open it from disk or serve it from localhost.
+
+  ## surface block
+
+  - Entry point: the form (server URL, status token); `load()` fetches
+    once, and the refresh timer calls it again.
+  - Configurable: REFRESH_MS, the choices in the refresh menu; STORE, the
+    browser storage keys. The token is kept for this tab only unless
+    "remember" is ticked.
+  - Fan-out: `render()`, one section per part of the reply (server,
+    counts, names, topics, kv).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Match server status</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --ink: #1c1c1a; --muted: #6b6b66;
+    --line: #e2e2dd; --ok: #1f7a4d; --bad: #b3261e; --accent: #2b5fd9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161615; --panel: #1f1f1d; --ink: #ecece8; --muted: #9a9a93;
+      --line: #33332f; --ok: #5cc493; --bad: #ff8a80; --accent: #8fb0ff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 48px; }
+  h1 { font-size: 18px; margin: 0 0 14px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
+       color: var(--muted); margin: 26px 0 8px; font-weight: 600; }
+  form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+         background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  input, select, button { font: inherit; color: inherit; background: var(--bg);
+         border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+  input[name=server] { flex: 2 1 260px; } input[name=token] { flex: 2 1 220px; }
+  button { background: var(--accent); color: #fff; border: 0; cursor: pointer; padding: 6px 14px; }
+  label.check { color: var(--muted); display: flex; gap: 4px; align-items: center; }
+  #state { margin: 10px 2px 0; color: var(--muted); min-height: 1.4em; }
+  #state.bad { color: var(--bad); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .card b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+  .card span { color: var(--muted); font-size: 12px; }
+  .wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  tr:last-child td { border-bottom: 0; }
+  .empty { color: var(--muted); padding: 10px 12px; }
+  .yes { color: var(--ok); } .no { color: var(--muted); }
+  code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Match server status</h1>
+  <form id="form">
+    <input name="server" placeholder="http://127.0.0.1:8443" autocomplete="url" required>
+    <input name="token" type="password" placeholder="status token" autocomplete="off" required>
+    <select name="refresh" title="Refresh"></select>
+    <label class="check"><input type="checkbox" name="remember"> remember token</label>
+    <button>Load</button>
+  </form>
+  <div id="state">Give the server's address and its status token.</div>
+  <div id="out"></div>
+</main>
+<script>
+const REFRESH_MS = [["off", 0], ["2 s", 2000], ["5 s", 5000], ["15 s", 15000], ["60 s", 60000]];
+const STORE = { server: "drt-match-status.server", token: "drt-match-status.token", refresh: "drt-match-status.refresh" };
+
+const form = document.getElementById("form");
+const state = document.getElementById("state");
+const out = document.getElementById("out");
+let timer = null;
+
+// depth: storage, which a private window or file:// may refuse
+function get(store, key) { try { return store.getItem(key); } catch { return null; } }
+function put(store, key, value) { try { value == null ? store.removeItem(key) : store.setItem(key, value); } catch {} }
+
+for (const [label, ms] of REFRESH_MS) form.refresh.add(new Option(label, ms));
+form.server.value = get(localStorage, STORE.server) || "http://127.0.0.1:8443";
+form.refresh.value = get(localStorage, STORE.refresh) || "5000";
+const saved = get(localStorage, STORE.token);
+form.token.value = saved || get(sessionStorage, STORE.token) || "";
+form.remember.checked = saved != null;
+
+form.addEventListener("submit", (e) => {
+  e.preventDefault();
+  put(localStorage, STORE.server, form.server.value.trim());
+  put(localStorage, STORE.refresh, form.refresh.value);
+  put(sessionStorage, STORE.token, form.token.value);
+  put(localStorage, STORE.token, form.remember.checked ? form.token.value : null);
+  load();
+});
+form.refresh.addEventListener("change", () => { put(localStorage, STORE.refresh, form.refresh.value); schedule(); });
+
+function schedule() {
+  clearTimeout(timer);
+  const ms = Number(form.refresh.value);
+  if (ms > 0) timer = setTimeout(load, ms);
+}
+
+async function load() {
+  const base = form.server.value.trim().replace(/\/+$/, "");
+  try {
+    const reply = await fetch(base + "/v1/status", {
+      headers: { Authorization: "Bearer " + form.token.value.trim() },
+      cache: "no-store",
+    });
+    const body = await reply.json().catch(() => ({}));
+    if (!reply.ok) throw new Error(reply.status + ": " + (body.error || reply.statusText));
+    render(body);
+    state.className = "";
+    state.textContent = "Read " + new Date().toLocaleTimeString() + " from " + base;
+  } catch (err) {
+    state.className = "bad";
+    state.textContent = String(err.message || err) +
+      (err instanceof TypeError ? " (is the server up, and started with --status-token-file?)" : "");
+  }
+  schedule();
+}
+
+// depth: rendering
+const esc = (v) => String(v ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const yes = (v) => v ? '<span class="yes">yes</span>' : '<span class="no">no</span>';
+function ago(s) {
+  if (s == null) return "–";
+  if (s < 60) return s + " s";
+  if (s < 3600) return Math.floor(s / 60) + " min";
+  if (s < 86400) return Math.floor(s / 3600) + " h " + Math.floor((s % 3600) / 60) + " min";
+  return Math.floor(s / 86400) + " d " + Math.floor((s % 86400) / 3600) + " h";
+}
+const cards = (items) => '<div class="cards">' +
+  items.map(([label, value]) => `<div class="card"><b>${esc(value)}</b><span>${esc(label)}</span></div>`).join("") + "</div>";
+function table(rows, columns) {
+  if (!rows.length) return '<div class="wrap"><div class="empty">None.</div></div>';
+  const head = columns.map(([title]) => `<th>${esc(title)}</th>`).join("");
+  const body = rows.map((r) => "<tr>" + columns.map(([, cell]) => `<td>${cell(r)}</td>`).join("") + "</tr>").join("");
+  return `<div class="wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
+function render(s) {
+  const v = s.server, c = s.counts;
+  const parts = [
+    "<h2>Server</h2>" + cards([
+      ["drt", v.version || "?"],
+      ["up for", ago(v.uptime_s)],
+      ["names held / capacity", v.held + " / " + v.capacity],
+      ["topics", v.topics ? s.topics.length : "off"],
+      ["kv", v.kv ? "on" : "off"],
+      ["JWT issuer", v.jwt_issuer || "none"],
+    ]),
+    "<h2>Since start</h2>" + cards([
+      ["requests", c.requests], ["calls", c.calls], ["answered", c.answered],
+      ["unanswered (504)", c.unanswered], ["withdrawn", c.withdrawn], ["pairings asked", c.pairs],
+    ]),
+    "<h2>Replies by status</h2>" + table(Object.entries(s.replies).sort(), [
+      ["status", ([k]) => esc(k)], ["count", ([, n]) => esc(n)],
+    ]),
+    "<h2>Names</h2>" + table(s.names, [
+      ["name", (r) => `<code>${esc(r.topic ? r.topic + "/" + r.name : r.name)}</code>`],
+      ["present", (r) => yes(r.present)],
+      ["held by", (r) => esc(r.holder)],
+      ["last poll", (r) => r.polled_ago_s == null ? "–" : ago(r.polled_ago_s) + " ago"],
+      ["streams", (r) => esc(r.streams)],
+      ["calls waiting", (r) => esc(r.calls_waiting)],
+      ["pairings pending", (r) => esc(r.pairs_pending)],
+      ["caller token", (r) => yes(r.caller_token)],
+      ["accept", (r) => esc(r.accept || "any")],
+    ]),
+  ];
+  if (v.topics) parts.push("<h2>Topics</h2>" + table(s.topics, [
+    ["topic", (t) => `<code>${esc(t.topic)}</code>`], ["names present", (t) => esc(t.present)],
+    ["tokens", (t) => esc(t.tokens)], ["groups mapped", (t) => esc(t.groups)],
+  ]));
+  if (s.kv) parts.push("<h2>Key-value store</h2>" + cards([
+    ["revision", s.kv.revision], ["keys", s.kv.keys ?? "?"], ["watchers", s.kv.watchers],
+  ]));
+  const outcomes = Object.entries(s.pair_outcomes);
+  if (outcomes.length) parts.push("<h2>Pairing outcomes</h2>" + table(outcomes.sort(), [
+    ["outcome", ([k]) => esc(k)], ["count", ([, n]) => esc(n)],
+  ]));
+  out.innerHTML = parts.join("");
+}
+
+if (form.token.value) load();
+</script>
+</body>
+</html>

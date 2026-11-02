@@ -8,14 +8,18 @@
 //! ## surface block
 //!
 //! - Entry points: [`run`]; [`load_topics`], the `--topics` file read and
-//!   checked into what the program is handed ([`Topics`]).
+//!   checked into what the program is handed ([`Topics`]);
+//!   [`StatusToken::parse`], the `--status-token-file` token checked. With
+//!   one, the program answers `GET /v1/status` (`doc/DRT-Signalling.md`
+//!   §11) to a request bearing it.
 //! - Configurable: [`CONN_DEADLINE_MS`], past the program's hold time so a
 //!   call nobody answers gets the program's 504; [`MAX_BODY`] (§6), and
 //!   [`KV_MAX_BODY`] when `--kv` is on (§10); [`HEADERS`], what the program
 //!   reads; [`RESP_HEADERS`], what it sets; [`KV_DB`], the database's name
 //!   inside the `--kv` directory; [`ROLES`], what a topic token may hold;
 //!   [`NAME_MAX`]; [`GROUPS_CLAIM`], the claim a JWT's groups are read
-//!   from unless the file names another; [`JWKS_MAX_KEYS`].
+//!   from unless the file names another; [`JWKS_MAX_KEYS`];
+//!   [`STATUS_TOKEN_MIN`], the shortest `--status-token-file` taken.
 //! - Fan-out: none; one listener, one program. `--kv` adds the `sql`
 //!   connector, scoped to its directory, and the grants the program needs.
 //!   A topics file with a `jwt` block adds the `crypto` connector, wired
@@ -71,6 +75,9 @@ pub const NAME_MAX: usize = 64;
 pub const GROUPS_CLAIM: &str = "groups";
 /// An inline JWKS: the crypto connector's own limit on a key set.
 pub const JWKS_MAX_KEYS: usize = 64;
+/// The shortest status token: a server reachable from anywhere answers
+/// whoever holds it with every name it holds.
+pub const STATUS_TOKEN_MIN: usize = 16;
 
 /// The server, foreground forever, as `drt start` on the equivalent
 /// config would be. The config given is the base: its connectors and
@@ -108,6 +115,19 @@ pub fn run(role: &MatchRole, config: &RootConfig) -> Result<(), String> {
         ("topics".to_string(), ArgValue::Str(topics.tokens)),
         ("groups".to_string(), ArgValue::Str(topics.groups)),
         ("jwt".to_string(), ArgValue::Str(topics.jwt.clone())),
+        (
+            "status_token".to_string(),
+            ArgValue::Str(
+                role.status_token
+                    .as_ref()
+                    .map(|t| t.0.clone())
+                    .unwrap_or_default(),
+            ),
+        ),
+        (
+            "version".to_string(),
+            ArgValue::Str(env!("CARGO_PKG_VERSION").to_string()),
+        ),
     ]);
     config.connectors.entry("time".to_string()).or_default();
     if let Some(dir) = &role.kv {
@@ -139,6 +159,37 @@ pub fn run(role: &MatchRole, config: &RootConfig) -> Result<(), String> {
     }
     let dispatcher = Dispatcher::new(crate::cli::wire_connectors(&config)?);
     crate::start::start(&config, dispatcher)
+}
+
+// depth: the status token
+
+/// A match server's status token, read and checked. Its `Debug` does not
+/// print it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct StatusToken(pub String);
+
+impl std::fmt::Debug for StatusToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StatusToken(..)")
+    }
+}
+
+impl StatusToken {
+    /// The token as `what` names it, checked: it rides in `Authorization:
+    /// Bearer`, unescaped, so its characters are a topic token's.
+    pub fn parse(value: &str, what: &str) -> Result<StatusToken, String> {
+        let value = value.trim();
+        if value.len() < STATUS_TOKEN_MIN
+            || !value
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-._~+/=".contains(c))
+        {
+            return Err(format!(
+                "{what}: a status token is {STATUS_TOKEN_MIN} or more of A-Z, a-z, 0-9 and -._~+/="
+            ));
+        }
+        Ok(StatusToken(value.to_string()))
+    }
 }
 
 // depth: the topics file

@@ -23,7 +23,8 @@ the path is a flag the user typed.
 - Configurable: `-p` (call), `--host` (default `127.0.0.1`), `--accept`,
   `--pair`, `--forward`, `-A`, `-P`, `--signal`, `--stun`,
   `--fingerprint` (`--fingerp`), `--H` (`auth=` for a bearer token),
-  `--authorized-keys`, `--capacity`, `--topics`, `--extra-root`, `--config`; `--show`
+  `--authorized-keys`, `--capacity`, `--topics`, `--kv`,
+  `--status-token-file`, `--extra-root`, `--config`; `--show`
   prints a peer's canonical form. Every flag is also a key of the `p2p`
   block (§8). A call's command after `--` (§2.1) is the one argument that
   is not.
@@ -316,6 +317,12 @@ what the profile asks of them.
   and `write` tokens and an undeclared topic's keys are refused; without
   `--topics` kv takes no token, so `--host` is what narrows who may read
   and write.
+- **`--status-token-file <file>`** turns on `GET /v1/status`, what the
+  server holds now and counts since it started, for a request bearing
+  that token (`doc/DRT-Signalling.md` §11). The token is 16 or more of
+  `A-Z a-z 0-9 -._~+/=`; the block's key, `status_token`, takes a secret
+  (`{"env": ..}`, `{"file": ..}`). Without it there is no status.
+  `crates/drt/page/match-status.html` renders it.
 - `--match` with `--forward`, `--relay` or `--fallback` is refused: a
   signalling server carries no session bytes (§10).
 

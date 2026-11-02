@@ -1132,6 +1132,11 @@ pub struct P2pConfig {
     /// (`doc/DRT-Signalling.md` §10). Absent, the server keeps no kv.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kv: Option<PathBuf>,
+    /// `--status-token-file`: the token a `match` server's status
+    /// (`GET /v1/status`, `doc/DRT-Signalling.md` §11) takes, as a
+    /// [`Secret`]. Absent, the server serves no status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_token: Option<Secret>,
     /// `--extra-root`: PEM files trusted beside the public roots.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_roots: Vec<PathBuf>,
