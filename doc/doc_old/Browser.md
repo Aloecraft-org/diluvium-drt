@@ -47,7 +47,8 @@ what the page shows, which is why `expected.txt` can be the oracle there.
   abiVersion()          -> number         the dv ABI the linked C core speaks
   buildInfo(json)       -> string         `drt buildinfo`, from inside the page
 
-  new DrtTerm(sink)                       sink(fd: 1|2, bytes: Uint8Array), called in order
+  new DrtTerm(sink, backings?)            sink(fd: 1|2, bytes: Uint8Array), called in order;
+                                          backings: connectors the page hands in (below)
   term.putFile(path, bytes)               seed a file, making the directories above it
   term.putDir(path)                       an empty directory (a granted scope with no files yet)
   term.getFile(path)    -> Uint8Array | undefined
@@ -337,6 +338,30 @@ kernel worker, plus the Instances panel over the swarm exports below.
 above is its documentation. A p2p web app embedding a sealed runtime is
 not a fourth integration; it is this one.
 
+## Connectors the page hands in
+
+`new DrtTerm(sink, backings)` and `new DrtSwarm(max, spawns, config,
+backings)` take `{ family: object }`: SPEC.md §7's `JsConnector`. The
+dispatcher gates, answers and token-echoes a handed-in family like any
+builtin, a family is wired only when the config names it (or always, with
+no config), and each command gets a fresh connector over the object. A
+family this build carries itself (`fs`, `time`, `crypto`) cannot be
+handed in. `net` is a transport for the net vocabulary
+(`connectors/net/src/lib.rs`); `sql` is a sql.js module (`await
+initSqlJs()`), answering `sql/*` with the native connector's contract
+over databases kept as files in the page's filesystem; any other family
+is a `{ call(name, args, node) }` object. The shapes are in `crates/drt-web/src/js.rs`'s surface
+block, and `cdn/bus.mjs` is an in-page transport:
+
+```js
+import { kernel, bus } from 'drt.js';
+const net = bus();
+const a = await kernel(sinkA, { net });
+const b = await kernel(sinkB, { net });   // a and b reach each other by address
+```
+
+`examples/37-page-connectors` is a page answering a `{ call }` family.
+
 ## The swarm exports
 
 `DrtSwarm`, beside `DrtTerm`, over the same `Deployment` a `drt start`
@@ -348,7 +373,7 @@ does not impersonate a C ABI to be adopted. `swarm.js`'s
 `drtCapable` beside it is the migration.
 
 ```js
-const sw = new DrtSwarm(0, 0);            // maxInstances, spawnsPerStep; 0 = default
+const sw = new DrtSwarm(0, 0);            // maxInstances, spawnsPerStep; 0 = default; then config, backings
 const root = sw.root(bytes);              // caps and budget default to a config's ceiling
 while (sw.step() > 0) { /* a round */ }
 sw.ids(); sw.parent(id); sw.alive(); sw.slotsAllocated();

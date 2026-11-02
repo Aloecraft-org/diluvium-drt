@@ -14,7 +14,8 @@
 // Then the checks that are not examples, because what they exercise is a
 // page rather than a program: `xterm-embedding`, the contract against a
 // real Terminal; `swarm-table`, the instances table driven the way a host
-// drives it; `socket-echo`, the byte stream a page owns;
+// drives it; `js-backings`, connectors the page hands in; `socket-echo`,
+// the byte stream a page owns;
 // `ssh-into-the-page` and `ssh-through-a-relay`, a standard `ssh` client
 // reaching a shell in the page -- over a bridge this file makes, and then
 // over a real relay (`drt start`) with `drt tunnel` as the `ProxyCommand`
@@ -139,6 +140,7 @@ if (!fs.existsSync(path.join(HERE, 'pkg', 'drt_web.js'))) {
 // crates/drt-ssh-web with its CSP taken out, since there it is the harness
 // that signals (the page's own CSP admits only WebSocket connections).
 const BROWSER_ACCESS = path.resolve(HERE, '../../drt-rtc/client/drt_browser_access.js');
+const NET_BUS = path.resolve(HERE, '../cdn/bus.mjs');
 const SSH_PAGE = path.resolve(HERE, '../../drt-ssh-web/page/dist/ssh.html');
 // ssh.html's client as its own module (script/drt-ssh-page.sh leaves it in
 // pkg/), for `drt ssh` and `:ssh` in a page.
@@ -149,6 +151,21 @@ const server = http.createServer((req, res) => {
     const file = path.join(SSH_CLIENT, url.slice(1));
     if (fs.existsSync(file)) {
       res.writeHead(200, { 'content-type': TYPES[path.extname(file)] });
+      res.end(fs.readFileSync(file));
+      return;
+    }
+  }
+  if (url === '/net-bus.js') {
+    res.writeHead(200, { 'content-type': TYPES['.js'] });
+    res.end(fs.readFileSync(NET_BUS));
+    return;
+  }
+  // An example's own backings module (meta.json "backings"), imported by
+  // the page as that example's terminal is made.
+  if (url.startsWith('/example-backings/')) {
+    const file = path.join(EXAMPLES, url.slice('/example-backings/'.length));
+    if (file.startsWith(EXAMPLES + path.sep) && file.endsWith('.js') && fs.existsSync(file)) {
+      res.writeHead(200, { 'content-type': TYPES['.js'] });
       res.end(fs.readFileSync(file));
       return;
     }
@@ -302,7 +319,10 @@ for (const name of examples) {
     if (isDir) dirs.push(`${cwd}/${rel}`);
     else files.push({ path: `${cwd}/${rel}`, data: fs.readFileSync(path.join(dir, rel)).toString('base64') });
   });
-  await page.evaluate((seed) => window.drtBrowserTest.seed(seed), { cwd, files, dirs });
+  // "backings": a module beside the example whose exports are the
+  // connector families its page hands in, by name (examples/37).
+  const backings = meta.backings ? `/example-backings/${name}/${meta.backings}` : null;
+  await page.evaluate((seed) => window.drtBrowserTest.seed(seed), { cwd, files, dirs, backings });
 
   const started = Date.now();
   let result;
@@ -426,6 +446,65 @@ if (PAGE_CHECKS) {
     if (r.idsAfter.length !== 0) wrong.push(`roster is ${JSON.stringify(r.idsAfter)} after it exited`);
     if (wrong.length === 0) {
       console.log(`ok       ${name.padEnd(24)} root, step to exit, roster and caps back`);
+      nOk += 1;
+    } else {
+      fail(name, wrong.join('; '));
+    }
+  } catch (e) {
+    fail(name, e === TIMED_OUT ? `timed out after ${TIMEOUT}s` : `the page threw: ${e.message}`);
+  }
+}
+
+// Connectors the page hands in (issue #80, SPEC.md §7's JsConnector): a
+// `net` transport that is an in-page bus (cdn/bus.mjs), and a `store`
+// family answered by a JavaScript object. What only a browser can show is
+// the boundary: values converted both ways, a promise awaited across
+// ticks, a throw and a rejection reaching the guest as `error`, and a
+// transport of the wrong shape refused when the terminal is made.
+if (PAGE_CHECKS) {
+  const name = 'js-backings';
+  const program = [
+    "local l = host.call('net/listen', {address = 'hub'})",
+    "local a = host.call('net/open', {address = 'hub'})",
+    "local b = host.call('net/accept', {handle = l.handle})",
+    "host.call('net/send', {handle = a.handle, data = 'hello'})",
+    "print('net: ' .. host.call('net/recv', {handle = b.handle}).data .. ' from ' .. b.peer)",
+    "local e = host.call('store/echo', {key = 'k', list = {1, 2, 3}})",
+    "print('echo: ' .. e.args.key .. ' ' .. #e.args.list .. ' ' .. e.bytes .. ' ' .. tostring(e.node))",
+    "print('promise: ' .. host.call('store/later', {n = 41}))",
+    "local _, s1, w1 = host.try('store/fail', {})",
+    "print('throw: ' .. s1 .. ' ' .. w1)",
+    "local _, s2, w2 = host.try('store/reject', {})",
+    "print('reject: ' .. s2 .. ' ' .. w2)",
+  ].join('\n');
+  const config = JSON.stringify({
+    program: { path: 'app.dlua' },
+    caps: [{ capability: 'host:net/*' }, { capability: 'host:store/*' }],
+    connectors: { net: {}, store: {} },
+  });
+  const want = [
+    'net: hello from hub#1',
+    'echo: k 3 hi 1',
+    'promise: 42',
+    'throw: error no such key',
+    'reject: error refused later',
+  ].join('\n') + '\n';
+  try {
+    const r = await withTimeout(
+      page.evaluate(
+        (a) => window.drtBrowserTest.backings(a),
+        { files: { '/app/app.dlua': program, '/app/deploy.json': config }, line: 'drt run --config deploy.json' },
+      ),
+      TIMEOUT * 1000,
+    );
+    const wrong = [];
+    if (r.status !== 0) wrong.push(`exited ${r.status}`);
+    if (r.out !== want) wrong.push(`said ${JSON.stringify(r.out)}`);
+    if (r.refused !== "the 'net' backing: it has no 'send' function") {
+      wrong.push(`a transport with no send: ${JSON.stringify(r.refused)}`);
+    }
+    if (wrong.length === 0) {
+      console.log(`ok       ${name.padEnd(24)} net over an in-page bus, a JS store: sync, promise, throw, reject`);
       nOk += 1;
     } else {
       fail(name, wrong.join('; '));

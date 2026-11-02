@@ -17,7 +17,7 @@
 //! ## surface block
 //!
 //! - [`Swarm::new`]: the table's `dvsjs_new`, with the build's connectors
-//!   or a config's.
+//!   or a config's, and any the page handed in.
 //! - [`Swarm::root`]: the first instance; every other one is spawned by a
 //!   program.
 //! - [`Swarm::step`]: one round, answering how many are alive.
@@ -170,20 +170,25 @@ impl Swarm {
     /// page that wants `fs` scoped somewhere writes what it would write on
     /// disk; `None` is the zero-ceremony case, the connectors this build
     /// carries that need no scope of their own.
+    ///
+    /// `supplied` are connectors the page handed in (`drt::cli::Supplied`),
+    /// wired when `config` names them, or always when there is no config.
     pub fn new(
         max_instances: u32,
         spawns_per_step: u32,
         config: Option<&str>,
+        supplied: &drt::cli::Supplied,
     ) -> Result<Self, String> {
         let config = match config {
             Some(text) => serde_json::from_str(text).map_err(|e| format!("the config: {e}"))?,
             None => {
                 let mut config = drt::config::load(None)?;
                 drt::cli::local_defaults(&mut config);
+                drt::cli::supplied_defaults(&mut config, supplied);
                 config
             }
         };
-        let registry = drt::cli::wire_connectors(&config)?;
+        let registry = drt::cli::wire_connectors_with(&config, supplied)?;
         drt::config::validate_grants(&config, &registry)?;
         let engine = Arc::new(DiluviumEngine::new().map_err(|e| e.to_string())?);
         let host = PumpHost::new(

@@ -13,7 +13,9 @@
 //!
 //! - [`Term`]: the memory filesystem a page seeds, and `exec`.
 //!   [`Term::with_sink`] gives a terminal output of its own;
-//!   [`Term::exec_to`] runs one command into a sink of the caller's.
+//!   [`Term::exec_to`] runs one command into a sink of the caller's;
+//!   [`Term::with_backings`] hands it connectors from the page
+//!   ([`Backing`]), each made fresh for every command.
 //! - [`Session`]: one command, ticked to completion.
 //!   [`Session::enter`] for host calls that reach the runtime between
 //!   ticks.
@@ -31,6 +33,7 @@
 //! time is the only kernel there is, the way one process at a time is on
 //! one CPU.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 use std::rc::Rc;
@@ -44,7 +47,7 @@ use drt::config;
 use drt::drive::{Next, Solo};
 use drt::repl::Repl;
 use drt::start::DeployDriver;
-use drt_connector::Dispatcher;
+use drt_connector::{Connector, Dispatcher};
 use drt_platform::fs::{Backend, MemFs};
 use drt_platform::stdio::{self, Fd};
 
@@ -69,7 +72,14 @@ pub enum Step {
 pub struct Term {
     fs: Arc<MemFs>,
     sink: Option<Sink>,
+    backings: BTreeMap<String, Backing>,
 }
+
+/// A connector the page hands in, by the family a guest calls. A maker
+/// rather than a connector, because a command is a process: each `exec`
+/// gets its own handle tables, as each `drt` invocation in a shell would,
+/// and a node id from one command can never name another's connection.
+pub type Backing = Rc<dyn Fn() -> Arc<dyn Connector>>;
 
 impl Default for Term {
     fn default() -> Self {
@@ -88,7 +98,11 @@ impl Term {
     pub fn new() -> Self {
         let fs = Arc::new(MemFs::new());
         drt_platform::fs::install(fs.clone());
-        Term { fs, sink: None }
+        Term {
+            fs,
+            sink: None,
+            backings: BTreeMap::new(),
+        }
     }
 
     /// A terminal whose commands write to `sink` and read this terminal's
@@ -98,6 +112,23 @@ impl Term {
             sink: Some(sink),
             ..Term::new()
         }
+    }
+
+    /// This terminal, with connectors the page hands in. A family here is
+    /// wired by every command whose config names it, and by every command
+    /// with no config at all (`drt::cli::assemble_with`). The makers run
+    /// inside the command's context, so a backing that reads the host
+    /// filesystem when it is made reads this terminal's.
+    pub fn with_backings(self, backings: BTreeMap<String, Backing>) -> Self {
+        Term { backings, ..self }
+    }
+
+    /// One command's connectors, made from the backings.
+    fn supplied(&self) -> cli::Supplied {
+        self.backings
+            .iter()
+            .map(|(family, make)| (family.clone(), make()))
+            .collect()
     }
 
     /// The filesystem, to seed and to read back.
@@ -150,7 +181,7 @@ impl Term {
                 };
             }
         };
-        let (config, dispatcher) = match cli::assemble(&cli) {
+        let (config, dispatcher) = match cli::assemble_with(&cli, &self.supplied()) {
             Ok(pair) => pair,
             Err(e) => {
                 say(Fd::Stderr, &format!("drt: {e}\n"));

@@ -46,6 +46,8 @@ const SHIPPED_EXACT: &[&str] = &[
     "examples/34-jwks/app.json",
     "examples/34-jwks/sign.json",
     "examples/36-post-quantum/app.json",
+    "examples/37-page-connectors/app.json",
+    "examples/37-page-connectors/locked.json",
     "examples/11-tunnel-and-relay/rendezvous.json",
     "examples/19-a-tunnel-a-program-can-use/park.json",
     "examples/19-a-tunnel-a-program-can-use/claim.json",
