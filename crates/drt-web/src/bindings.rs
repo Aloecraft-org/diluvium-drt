@@ -440,14 +440,17 @@ impl DrtEditor {
         }
     }
 
-    /// Read one line, showing `prompt`.
+    /// Read one line, showing `prompt`. `highlight` (default true) colours
+    /// the line as Diluvium code while it is typed, the way `drt repl`
+    /// does natively; pass false for a shell line such as `drt start
+    /// --config app.json`, where `--config` is not a comment.
     ///
     /// Resolves to `{line}`, `{interrupted: true}` (Ctrl+C) or
     /// `{eof: true}` (Ctrl+D on an empty line); rejects if a read is
     /// already in flight.
     #[wasm_bindgen(js_name = readLine)]
-    pub fn read_line(&self, prompt: String) -> js_sys::Promise {
-        let reading = self.inner.read_line(prompt);
+    pub fn read_line(&self, prompt: String, highlight: Option<bool>) -> js_sys::Promise {
+        let reading = self.inner.read_line(prompt, highlight.unwrap_or(true));
         wasm_bindgen_futures::future_to_promise(async move {
             let o = js_sys::Object::new();
             let set = |k: &str, v: JsValue| {
