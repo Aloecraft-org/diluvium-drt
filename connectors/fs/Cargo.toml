@@ -19,3 +19,9 @@ drt-platform = { workspace = true }
 drt-hostcall = { workspace = true }
 tempfile = "3"
 pollster = "0.4"
+
+[features]
+# A scope may name an aloelite volume file (`volume_file`), mounted through
+# drt-platform's AloeliteFs. Not in a page, which reaches aloelite through
+# drt-web's `fs` backing instead.
+aloelite = ["drt-platform/aloelite"]

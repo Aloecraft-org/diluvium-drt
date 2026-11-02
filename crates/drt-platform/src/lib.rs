@@ -21,7 +21,16 @@
 //!   target has a process API -- so a caller that spawns is gated on the
 //!   platform rather than told no at runtime.
 //! - [`detect`]: which of the three this build is.
+//! - `aloelite` (feature `aloelite`, not in a page): `AloeliteFs`, an
+//!   aloelite volume as a [`fs::Backend`].
 
+/// An aloelite volume as a filesystem backend. Native and wasip2, behind
+/// the `aloelite` feature.
+#[cfg(all(
+    feature = "aloelite",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
+pub mod aloelite;
 pub mod clock;
 pub mod entropy;
 pub mod fs;

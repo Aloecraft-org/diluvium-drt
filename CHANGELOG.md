@@ -47,6 +47,16 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Added
 
+- **An fs scope can be an aloelite volume.** `{"volume_file":
+  "app.fs", "volume": "notes", "mount_point": "/", "access":
+  "readwrite"}` grants a volume inside one SQLite file where a
+  directory was granted before, under the same jail, verbs and
+  `max_bytes`, so a program cannot tell the two apart. The file and
+  volume are made when absent, and a mount point the volume lacks, or
+  a read-write mount another process holds, is a startup refusal by
+  name. In `full` and `wasi` (the `aloelite` feature), and a file
+  written natively opens under wasmtime. Encrypted volumes are not
+  built.
 - **A kernel's filesystem on an aloelite volume.** `new DrtTerm(sink,
   { fs })` reads programs, configs and every granted directory
   through a page object instead of an empty memory filesystem, and
@@ -57,8 +67,7 @@ Underneath it the embedded core moves from 0.15.1 to
   with `addCapacity`, `export`), and `aloelite.attach(file, {volume,
   mountPoint, access})` mounts a volume as that object. The page
   loads aloelite-wasm; drt.js does not carry it. A memory file has
-  no export or seed, and aloelite as a native `fs` backend is not
-  built.
+  no export or seed.
 - **`sql` in a page, over sql.js (#81).** A page that hands in a
   sql.js module (`{ sql: await initSqlJs() }`) gets `sql/query` and
   `sql/exec` with the native connector's scope, bounds, refusals and
