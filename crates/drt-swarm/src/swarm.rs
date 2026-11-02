@@ -26,6 +26,13 @@
 //!   peek): a throttled spawn is popped, held, and processed first on the
 //!   next step. Order and rate are preserved; the only observable difference
 //!   is the requester's own queue depth.
+//! - Instances reach each other. `dvs.c` binds no endpoints, so its
+//!   instances can only be pushed at by the host. Here a `spawned` event
+//!   and the `ref` op hand out an endpoint reference (`crate::refs`), a
+//!   program binds it with `endpoint.bind`, and every step the swarm moves
+//!   what it pushed into the far end's `inbox`, sender attached. Holding
+//!   a reference is the permission: siblings meet when something that
+//!   holds both references introduces them.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -39,6 +46,7 @@ use crate::engine::{
     Engine, Instance, LoadSpec, ProgramBytes, PushOutcome, QueueHandle, RestoreSpec, UsageReport,
     WaitSet,
 };
+use crate::refs::EndpointRef;
 use crate::InstanceId;
 
 /// The capability that gates `system/lifecycle`.
@@ -55,6 +63,10 @@ const MAX_PENDING: usize = 16;
 const MAX_QNAME: usize = 64;
 /// Event details are clamped exactly as `emit_event` clamps them.
 const MAX_EVENT_DETAIL: usize = 191;
+/// The queue an endpoint reference delivers into. One per instance: a
+/// reference names an instance, and what it does with its inbox is the
+/// program's business.
+pub const INBOX: &str = "inbox";
 
 /// The four-row delivery table's answers, plus the refusals around it.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -255,6 +267,18 @@ struct Slot {
     pending: Vec<Pending>,
     /// A lifecycle request popped but throttled: processed first next step.
     deferred: Option<Vec<u8>>,
+    /// Messages this instance pushed through an endpoint whose far end had
+    /// no room (or no inbox yet), at most one per far end, retried first
+    /// every step. Holding one stops that endpoint draining, so the
+    /// sender's own endpoint queue fills and its push answers "full":
+    /// backpressure the sender can see, not a buffer that grows. Keyed by
+    /// far end rather than token, because tokens are per residency.
+    held: Vec<(u32, Vec<u8>)>,
+    /// Whether this instance has been handed something that may carry an
+    /// endpoint reference (a `spawned` or `ref` event, a routed message),
+    /// so its engine instance binds them: set once, and re-applied to the
+    /// fresh instance every wake builds.
+    endpoints: bool,
     /// Queue handles already resolved for *this residency*. A handle is
     /// runtime identity — valid only for the instance that issued it — so
     /// this is cleared wherever `inst` changes: build, hibernate, wake.
@@ -281,6 +305,8 @@ impl Slot {
             snap: None,
             pending: Vec::new(),
             deferred: None,
+            held: Vec::new(),
+            endpoints: false,
             handles: Vec::new(),
         }
     }
@@ -696,6 +722,19 @@ impl<H: SwarmHost> Swarm<H> {
         self.emit_with(to, what, about, detail, false);
     }
 
+    /// An event with fields beyond the fixed four: the endpoint reference
+    /// on `spawned` and `ref`.
+    fn emit_extra(
+        &mut self,
+        to: u32,
+        what: &str,
+        about: u32,
+        detail: Option<&str>,
+        extra: &[(&str, rmpv::Value)],
+    ) {
+        self.emit_fields(to, what, about, detail, false, extra);
+    }
+
     fn emit_with(
         &mut self,
         to: u32,
@@ -704,6 +743,21 @@ impl<H: SwarmHost> Swarm<H> {
         detail: Option<&str>,
         touched_fast: bool,
     ) {
+        self.emit_fields(to, what, about, detail, touched_fast, &[]);
+    }
+
+    fn emit_fields(
+        &mut self,
+        to: u32,
+        what: &str,
+        about: u32,
+        detail: Option<&str>,
+        touched_fast: bool,
+        extra: &[(&str, rmpv::Value)],
+    ) {
+        if !extra.is_empty() {
+            self.enable_endpoints(to);
+        }
         let Some(index) = self.find(InstanceId(to)) else {
             return;
         };
@@ -723,6 +777,9 @@ impl<H: SwarmHost> Swarm<H> {
         }
         if touched_fast {
             map.push(("numeric_touched_fast".into(), rmpv::Value::Boolean(true)));
+        }
+        for (key, value) in extra {
+            map.push(((*key).into(), value.clone()));
         }
         let mut buf = Vec::new();
         if rmpv::encode::write_value(&mut buf, &rmpv::Value::Map(map)).is_ok() {
@@ -861,6 +918,9 @@ impl<H: SwarmHost> Swarm<H> {
                 )));
             }
         };
+        if self.slots[index].endpoints {
+            inst.enable_endpoints();
+        }
         // The buffer drains here, before any live push can reach the
         // instance. A message refused now is dropped rather than kept: the
         // queue it names is bounded, the sender was already told Ok, and
@@ -1015,6 +1075,10 @@ impl<H: SwarmHost> Swarm<H> {
                 let _ = self.push(id, &queue, &from, &msg);
             }
         }
+        // What instances pushed at each other last step, before the wake
+        // loop for the notices' reason: a parked far end with
+        // `wake_on_message` is woken in the step its message arrives.
+        self.route_endpoints();
         // Waking first, so a woken instance gets a whole step in the same
         // step its message arrived in. A wake that fails is fatal: the
         // alternative is a handle alive, non-resident, and permanently
@@ -1076,6 +1140,9 @@ impl<H: SwarmHost> Swarm<H> {
                         (Driven::Faulted(msg), false) => ("faulted", Some(msg.clone())),
                         _ => ("exited", None),
                     };
+                    // What it pushed before it stopped still goes. A held
+                    // message, if any, is lost with the slot.
+                    self.route_slot(index);
                     self.kill_subtree(InstanceId(id), false);
                     if parent != 0 {
                         self.emit_stop(parent, what, id, why.as_deref(), touched_fast);
@@ -1140,6 +1207,7 @@ impl<H: SwarmHost> Swarm<H> {
                 "kill" => self.do_kill(index, &request),
                 "query" => self.do_query(index, &request),
                 "hibernate" => self.do_hibernate(index, &request),
+                "ref" => self.do_ref(index, &request),
                 other => self.emit(id, "denied", 0, Some(other)),
             }
             // Acting on a request may have freed this slot or swapped its
@@ -1295,7 +1363,8 @@ impl<H: SwarmHost> Swarm<H> {
             Ok(()) => {
                 self.spawns_this_step += 1;
                 let child_id = self.slots[child_index].id;
-                self.emit(parent_id, "spawned", child_id, None);
+                let reference = self.reference(child_id);
+                self.emit_extra(parent_id, "spawned", child_id, None, &[("ref", reference)]);
             }
             Err(why) => {
                 let gone = self.slots[child_index].id;
@@ -1411,6 +1480,175 @@ impl<H: SwarmHost> Swarm<H> {
             usage.instructions, usage.memory_kb_peak
         );
         self.emit(parent_id, "status", target, Some(&detail));
+    }
+
+    /// `{op = "ref", id = n?}`: an endpoint reference to the requester
+    /// itself (no `id`, or its own) or to a descendant, answered as
+    /// `{event = "ref", id, ref}`. Ancestry gates it like every other op:
+    /// a reference is the permission to push, so handing out one to a
+    /// stranger would be the "any instance may reach any other" this layer
+    /// refuses. A sibling's reference reaches you only from something that
+    /// already holds it.
+    fn do_ref(&mut self, index: usize, request: &rmpv::Value) {
+        let me = self.slots[index].id;
+        let target = match field(request, "id") {
+            None => me,
+            Some(_) => match field_id(request, "id") {
+                Some(target) => target,
+                None => {
+                    self.emit(me, "denied", 0, Some("no usable id in the ref request"));
+                    return;
+                }
+            },
+        };
+        if target != me {
+            let Some(target_index) = self.find(InstanceId(target)) else {
+                self.emit(me, "status", target, Some("gone"));
+                return;
+            };
+            if !self.is_ancestor(me, target_index) {
+                self.emit(me, "denied", target, Some("not a descendant"));
+                return;
+            }
+        }
+        let reference = self.reference(target);
+        self.emit_extra(me, "ref", target, None, &[("ref", reference)]);
+    }
+
+    /// The endpoint reference that names instance `id`'s inbox, stamped
+    /// with this swarm's identity so a snapshot woken somewhere else does
+    /// not bind it to whatever has the same number there.
+    fn reference(&self, id: u32) -> rmpv::Value {
+        EndpointRef::local(format!("{id}/{INBOX}"), self.host_identity.clone()).to_value()
+    }
+}
+
+// depth: routing what instances push at each other
+
+impl<H: SwarmHost> Swarm<H> {
+    /// Move every message waiting in a bound endpoint to its far end's
+    /// inbox. Held messages go first and keep their endpoint closed to new
+    /// ones until they land; a far end that is gone closes the endpoint, so
+    /// the sender's next push answers "gone".
+    fn route_endpoints(&mut self) {
+        for i in 0..self.slots.len() {
+            self.route_slot(i);
+        }
+    }
+
+    /// One instance's share of [`Swarm::route_endpoints`]. Also called on
+    /// an instance that has just finished, before its slot is released:
+    /// "push, then return" is the ordinary last act of a worker, and the
+    /// pushes would otherwise go down with the queue they sit in.
+    fn route_slot(&mut self, i: usize) {
+        {
+            if self.slots[i].id == 0 || !self.slots[i].alive {
+                return;
+            }
+            if !self.slots[i].held.is_empty() {
+                let from = Sender::runtime(self.slots[i].path.clone());
+                let held = std::mem::take(&mut self.slots[i].held);
+                for (target, msg) in held {
+                    self.enable_endpoints(target);
+                    if let Err(SwarmError::Limit(_) | SwarmError::UnknownQueue) =
+                        self.push(InstanceId(target), INBOX, &from, &msg)
+                    {
+                        self.slots[i].held.push((target, msg));
+                    }
+                    // Gone: dropped here, and the endpoint closes the next
+                    // time it has something to send.
+                }
+            }
+            let count = match self.slots[i].inst.as_deref() {
+                Some(inst) => inst.endpoint_count(),
+                None => return,
+            };
+            if count == 0 {
+                return;
+            }
+            let from = Sender::runtime(self.slots[i].path.clone());
+            for token in 1..=count {
+                self.route_one(i, token, &from);
+            }
+        }
+    }
+
+    fn route_one(&mut self, index: usize, token: u32, from: &Sender) {
+        let Some(inst) = self.slots[index].inst.as_deref_mut() else {
+            return;
+        };
+        let Some(queue) = inst.endpoint_queue(token) else {
+            return; // destroyed by the program
+        };
+        // Cheap before it is resolved: most endpoints are empty most steps.
+        if !matches!(inst.queue_info(queue), Ok(info) if info.len > 0) {
+            return;
+        }
+        let Some(target) = inst
+            .endpoint_ref(token)
+            .and_then(|bytes| self.resolve_reference(&bytes))
+        else {
+            self.close_endpoint(index, queue);
+            return;
+        };
+        // A message already waiting on this far end goes first; until it
+        // lands, nothing more leaves the endpoint.
+        if self.slots[index].held.iter().any(|(t, _)| *t == target) {
+            return;
+        }
+        self.enable_endpoints(target);
+        loop {
+            let inst = self.slots[index].inst.as_deref_mut().expect("resident");
+            let msg = match inst.pop(queue) {
+                Ok(Some(msg)) => msg,
+                _ => return,
+            };
+            match self.push(InstanceId(target), INBOX, from, &msg) {
+                Ok(()) => {}
+                Err(SwarmError::Limit(_) | SwarmError::UnknownQueue) => {
+                    self.slots[index].held.push((target, msg));
+                    return;
+                }
+                Err(_) => {
+                    self.close_endpoint(index, queue);
+                    return;
+                }
+            }
+        }
+    }
+
+    /// The instance a reference names, if it is one this swarm minted:
+    /// scheme `local`, this swarm's identity, `<id>/inbox`.
+    fn resolve_reference(&self, payload: &[u8]) -> Option<u32> {
+        let value = rmpv::Value::Ext(crate::refs::ENDPOINT_EXT_TYPE, payload.to_vec());
+        let reference = EndpointRef::from_value(&value).ok()?;
+        if reference.scheme != crate::refs::SCHEME_LOCAL || reference.identity != self.host_identity
+        {
+            return None;
+        }
+        let (id, queue) = reference.address.split_once('/')?;
+        if queue != INBOX {
+            return None;
+        }
+        id.parse::<u32>().ok().filter(|id| *id != 0)
+    }
+
+    /// Mark instance `id` as one that binds references, and switch it on
+    /// now if it is resident (a wake switches on the rest).
+    fn enable_endpoints(&mut self, id: u32) {
+        let Some(index) = self.find(InstanceId(id)) else {
+            return;
+        };
+        self.slots[index].endpoints = true;
+        if let Some(inst) = self.slots[index].inst.as_deref_mut() {
+            inst.enable_endpoints();
+        }
+    }
+
+    fn close_endpoint(&mut self, index: usize, queue: QueueHandle) {
+        if let Some(inst) = self.slots[index].inst.as_deref_mut() {
+            let _ = inst.endpoint_close(queue);
+        }
     }
 }
 

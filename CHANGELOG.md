@@ -55,6 +55,18 @@ Underneath it the embedded core moves from 0.15.1 to
   It takes the kernel's `backings` (`{ fs }` included). xterm.js and
   its stylesheet are bundled, which takes drt.js from 2.9 MB to
   3.3 MB (2.08 MB to 2.16 MB gzipped).
+- **Instances in a swarm reach each other.** A `spawned` event now
+  carries `ref`, an endpoint reference to the child, and the
+  lifecycle op `{op = "ref", id?}` answers one for the requester or
+  a descendant. A program binds a reference with `endpoint.bind(ref,
+  name)` and pushes to the handle it gets; each step the swarm moves
+  those messages into the far end's `inbox` with `from` attached. A
+  full inbox holds the message and stops that endpoint until it
+  lands, so the sender sees `full` rather than losing anything; a
+  far end that is gone, or a reference minted under another swarm
+  identity, answers `gone`. Siblings meet when something holding
+  both references introduces them; there is no lookup by name. Before
+  this, only the host could push at an instance.
 - **An fs scope can be an aloelite volume.** `{"volume_file":
   "app.fs", "volume": "notes", "mount_point": "/", "access":
   "readwrite"}` grants a volume inside one SQLite file where a
