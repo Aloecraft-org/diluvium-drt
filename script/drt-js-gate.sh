@@ -4,6 +4,7 @@
 # importing drt.js from another and calling a parked peer, SSH to a stock
 # sshd over it, a stream, the kv store and the browser build. CI and the
 # release both run this, so the file that ships is the one that passed.
+# Then get-drt.test.mjs, get-drt.js's check, over the drt.min.js built here.
 #
 #   script/drt-js-gate.sh [--version V] [--package DIR]
 #
@@ -35,6 +36,9 @@ if [ -z "${DRT:-}" ]; then
     DRT=$PWD/target/debug/drt
 fi
 (cd crates/drt-web/cdn && DRT=$DRT node e2e.mjs)
+# get-drt.js, the release asset that loads a published drt.js into a page:
+# against a fake mirror and Pages site, then with the drt.min.js just built.
+(cd crates/drt-web/cdn && node get-drt.test.mjs)
 
 if [ -n "$OUT" ]; then
     mkdir -p "$OUT"

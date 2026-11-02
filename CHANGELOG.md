@@ -47,6 +47,18 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Added
 
+- **`get-drt.js`: a release's drt.js in a page, picked the way
+  `get-drt.sh` picks a release.** A release asset a page imports:
+  `await getDrt()` loads the release that shipped that copy, and
+  `getDrt('latest')`, `getDrt('dev')`, `getDrt('0.8.0')` or a tag
+  pick another; `list()`, `listAll()`, `resolve()` and `version`
+  answer what `list`, `list-all` and `--version` do. The bytes are
+  checked against the release's `SHA256SUMS.txt` and run as fetched.
+  GitHub release downloads send no CORS header, so a page cannot
+  fetch them: get-drt.js reads the release mirror, then a GitHub
+  Pages site that every publish now redeploys with each release's
+  drt.js. Nothing in this repository loads drt that way; examples
+  use the drt.js the checkout builds.
 - **`terminal(id)` in drt.js: the drt CLI live in an element.**
   `await terminal('cli')` renders an xterm.js terminal in that
   element with a `$ ` prompt whose command is the real `drt`, the
