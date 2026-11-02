@@ -104,6 +104,7 @@ RootConfig {
     residency: None,
     relay: None,
     stun: None,
+    bridge: None,
     turn: None,
     wireguard: None,
     tunnel: None,

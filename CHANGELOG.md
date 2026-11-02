@@ -47,6 +47,18 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Added
 
+- **The `bridge` block: websockify's job under `drt start`.**
+  `{"bridge": {"bind": "127.0.0.1:6080", "to": "10.0.0.5:3389"}}`
+  accepts WebSockets on `bind`, on any path, answers the `binary`
+  subprotocol, and splices each connection to the one `to` target, so
+  a page whose sockets are WebSockets (FreeRDP's wasm build) can point
+  at drt directly. The target is the block's, never the client's.
+  `stdlib:bridge` prints an `opened` and a `closed` per connection,
+  the close carrying `sent` and `received` byte counts; a program of
+  its own reads them on `bridge_in`. New `bridge` feature, in `full`.
+  Plain `ws://` only: TLS on `bind` and an Origin allow-list are not
+  built. `drt tunnel --listen` is the same accept loop, and its
+  notice now points here instead of at the `relay` block.
 - **`net` natively: two `drt start` processes link by address.**
   The `net` connector a page wires over its own transport is now in
   `full` with one built in (`connector-net`, issue #108): WebSocket

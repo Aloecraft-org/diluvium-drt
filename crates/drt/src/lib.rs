@@ -4,6 +4,9 @@
 /// Everything before a deployment's first step: find the root, resolve, gate
 /// on consent, wire. The one place drt-config, drt_root and the gate meet.
 pub mod boot;
+// The `bridge` block: websockify's job, WebSockets in, one TCP target out.
+#[cfg(feature = "bridge")]
+pub mod bridge;
 /// The command surface, parsed and assembled once for every host.
 pub mod cli;
 pub mod config;

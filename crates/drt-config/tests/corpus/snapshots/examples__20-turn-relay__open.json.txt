@@ -25,6 +25,7 @@ RootConfig {
     residency: None,
     relay: None,
     stun: None,
+    bridge: None,
     turn: Some(
         TurnConfig {
             bind: "127.0.0.1:18493",

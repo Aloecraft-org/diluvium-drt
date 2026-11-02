@@ -184,7 +184,7 @@ async fn the_listen_half_answers_the_binary_subprotocol_like_websockify() {
             .headers()
             .get("Sec-WebSocket-Protocol")
             .map(|v| v.to_str().unwrap()),
-        Some(drt::tunnel::SUBPROTOCOL)
+        Some(drt::bridge::SUBPROTOCOL)
     );
     ws.send(Message::Binary(b"\x03\x00\x00\x13rdp".to_vec()))
         .await

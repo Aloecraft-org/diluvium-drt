@@ -149,6 +149,7 @@ drt --config p2p.json p2p            # any role, with the token in a 0600 file
 drt start --config session.json      # stdlib:session: LDAP sign-in, TOTP or webhook, forward auth (doc/Session.md)
 drt --config nc.json netcheck        # what can this network do, with the evidence
 drt --config st.json start           # a STUN server: what address did that come from
+drt --config br.json start           # a websockify-style bridge: a page's WebSocket in, one TCP target out
 drt --config tn.json start           # a TURN relay, for what cannot be punched
 drt --config wg.json start           # a WireGuard peer, in the process or in userspace
 drt wg keygen                        # a key pair, so wireguard-tools is not needed
@@ -156,9 +157,9 @@ drt wg check --config wg.json        # what is wrong with that block, binding no
 ```
 
 **A server is a config block plus a program, and `start` runs both.** The
-four blocks that serve — `relay`, `stun`, `turn`, `wireguard` — each used to
-have a verb of its own, because a block with no program had no other way to
-run. Each has one now: `stdlib:<name>` is a reader that prints what its
+five blocks that serve — `relay`, `stun`, `bridge`, `turn`, `wireguard` —
+each used to have a verb of its own, because a block with no program had no
+other way to run. Each has one now: `stdlib:<name>` is a reader that prints what its
 block reports, carried inside the binary, so `"entry": "stdlib:relay"` is
 the whole difference between a config and a deployment. A deployment that
 does more than report — a relay that is *asked* before it admits a leg —

@@ -65,8 +65,9 @@
 //!   [`ws_to_tcp`] and [`park`], which `run` dispatches to and a test
 //!   drives directly. [`serve_local`] and [`serve_ws_bridge`] are the
 //!   accept loops behind two of them, over a listener the caller bound.
-//! - Configurable: [`CHUNK`], how much is moved per read; and
-//!   [`SUBPROTOCOL`], the one subprotocol the listen half answers to.
+//! - Configurable: nothing of its own. How much is moved per read, and
+//!   the subprotocol the listen half answers, are `crate::bridge`'s, whose
+//!   splice every mode here uses.
 //! - Fan-out: [`Mode`], the four things a tunnel can be, and the one
 //!   match on it in [`run`]. [`Flags`] is the command line as typed and
 //!   `drt_config::TunnelConfig` is the file; `resolve` is the only place
@@ -78,7 +79,6 @@ use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_rustls::rustls::pki_types::CertificateDer;
-use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 
 /// The WebSocket this module speaks, on both halves.
@@ -95,18 +95,6 @@ pub type Ws<S> = WebSocketStream<S>;
 /// A WSS connection as the caller half makes one.
 pub type WsClient = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
-/// How much is moved per read. A throughput knob and nothing more.
-const CHUNK: usize = 64 * 1024;
-
-/// The subprotocol the listen half answers to when a client offers it:
-/// raw bytes in binary frames, websockify's `binary`. Emscripten's socket
-/// layer offers it on every connection (FreeRDP's browser build is one
-/// such client), and Chromium fails a handshake that offered a
-/// subprotocol and got none back. A client that offers nothing gets no
-/// header, as before. websockify's older `base64` is not spoken: its
-/// frames are text, and this bridge moves binary frames only.
-pub const SUBPROTOCOL: &str = "binary";
-
 /// The four things a tunnel can be. Which one is told by which keys are
 /// present -- in the file, on the command line, or merged from both --
 /// and never by a mode flag of its own.
@@ -119,7 +107,7 @@ pub enum Mode {
     Local { claim: String, bind: String },
     /// `drt tunnel --listen <addr> --to <target>`: WebSockets in, TCP out,
     /// in front of any sshd, or any TCP service a browser client reaches
-    /// the websockify way (see [`SUBPROTOCOL`]).
+    /// the websockify way (see `crate::bridge::SUBPROTOCOL`).
     Listen { listen: String, to: String },
     /// `drt tunnel --park <url> --to <target>`: the device side of the
     /// relay, dialing `to` lazily when a caller claims the leg.
@@ -471,60 +459,14 @@ pub async fn connect(
     Ok(ws)
 }
 
-/// Pump bytes both ways between a byte stream and a WebSocket until either
-/// side closes.
-///
-/// Split, not a `select!` over a `&mut self` transport. The previous
-/// version could not split — ego-transport's `Transport` takes `&mut self`
-/// for both directions, so a two-task split needed a lock, and a lock held
-/// across a parked `recv().await` deadlocked the send direction on the
-/// first exchange (SSH's handshake is exactly such an exchange). Its own
-/// comment named the fix: "tungstenite underneath splits fine, the trait
-/// hides it." This is that fix.
-///
-/// It also answers pings, which the caller half did not. A gate that
-/// pings an idle `ProxyCommand` session — an hour into an ssh session
-/// with nothing typed — was previously answered with silence.
+/// Pump bytes both ways until either side closes: `bridge::pump`, whose
+/// byte counts no tunnel mode reports.
 pub(crate) async fn pump<S, T>(stream: S, ws: Ws<T>) -> Result<(), String>
 where
     S: AsyncRead + AsyncWrite + Send + 'static,
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    use futures_util::{SinkExt, StreamExt};
-
-    let (mut read_half, mut write_half) = tokio::io::split(stream);
-    let (mut ws_out, mut ws_in) = ws.split();
-    let mut buf = vec![0u8; CHUNK];
-    loop {
-        tokio::select! {
-            read = read_half.read(&mut buf) => {
-                match read {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        if ws_out.send(Message::Binary(buf[..n].to_vec())).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-            msg = ws_in.next() => {
-                match msg {
-                    Some(Ok(Message::Binary(b))) => {
-                        if write_half.write_all(&b).await.is_err() {
-                            break;
-                        }
-                        let _ = write_half.flush().await;
-                    }
-                    Some(Ok(Message::Ping(p))) => {
-                        let _ = ws_out.send(Message::Pong(p)).await;
-                    }
-                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
-                    Some(Ok(_)) => {}
-                }
-            }
-        }
-    }
-    let _ = write_half.shutdown().await;
+    crate::bridge::pump(stream, ws).await;
     Ok(())
 }
 
@@ -571,88 +513,13 @@ pub async fn ws_to_tcp(listen: &str, target: &str) -> Result<(), String> {
 }
 
 /// The accept loop behind [`ws_to_tcp`], over a listener the caller bound —
-/// which is also how a test gets the port back.
+/// which is also how a test gets the port back. `bridge::serve`, the same
+/// loop the `bridge` block runs, with nobody listening for its events.
 pub async fn serve_ws_bridge(
     listener: tokio::net::TcpListener,
     target: &str,
 ) -> Result<(), String> {
-    loop {
-        let Ok((conn, peer)) = listener.accept().await else {
-            continue;
-        };
-        // Issue #33: interactive on both of this hop's sockets; see `connect`.
-        if let Err(e) = conn.set_nodelay(true) {
-            eprintln!("drt tunnel: {peer}: cannot set TCP_NODELAY: {e}");
-            continue;
-        }
-        let target = target.to_string();
-        tokio::spawn(async move {
-            // Each way a connection ends is said, by peer. A bridge in
-            // front of an sshd that dropped a caller for a reason it kept
-            // to itself was indistinguishable from one that was broken.
-            let ws = match tokio_tungstenite::accept_hdr_async(conn, answer_subprotocol).await {
-                Ok(ws) => ws,
-                Err(e) => {
-                    eprintln!("drt tunnel: {peer}: not a websocket handshake: {e}");
-                    return;
-                }
-            };
-            let tcp = match tokio::net::TcpStream::connect(&target).await {
-                Ok(tcp) => tcp,
-                Err(e) => {
-                    eprintln!("drt tunnel: {peer}: cannot reach {target}: {e}");
-                    return;
-                }
-            };
-            if let Err(e) = tcp.set_nodelay(true) {
-                eprintln!("drt tunnel: {peer}: cannot reach {target}: TCP_NODELAY: {e}");
-                return;
-            }
-            eprintln!("drt tunnel: {peer}: bridged to {target}");
-            if let Err(e) = pump(tcp, ws).await {
-                eprintln!("drt tunnel: {peer}: {e}");
-            }
-            eprintln!("drt tunnel: {peer}: session ended");
-        });
-    }
-}
-
-/// The handshake callback behind [`serve_ws_bridge`]: answer
-/// [`SUBPROTOCOL`] when the client's `Sec-WebSocket-Protocol` offers it,
-/// and leave the response alone otherwise. Nothing is refused here: a
-/// client offering only other subprotocols gets no header, which a
-/// browser then refuses on its own side, and the log line says so.
-#[allow(clippy::result_large_err)]
-fn answer_subprotocol(
-    request: &tokio_tungstenite::tungstenite::handshake::server::Request,
-    mut response: tokio_tungstenite::tungstenite::handshake::server::Response,
-) -> Result<
-    tokio_tungstenite::tungstenite::handshake::server::Response,
-    tokio_tungstenite::tungstenite::handshake::server::ErrorResponse,
-> {
-    use tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
-    use tokio_tungstenite::tungstenite::http::HeaderValue;
-    let offered: Vec<&str> = request
-        .headers()
-        .get_all(SEC_WEBSOCKET_PROTOCOL)
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|v| v.split(','))
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .collect();
-    if offered.contains(&SUBPROTOCOL) {
-        response.headers_mut().insert(
-            SEC_WEBSOCKET_PROTOCOL,
-            HeaderValue::from_static(SUBPROTOCOL),
-        );
-    } else if !offered.is_empty() {
-        eprintln!(
-            "drt tunnel: a client offered subprotocols {offered:?}; only `{SUBPROTOCOL}` is \
-             spoken, so none is answered"
-        );
-    }
-    Ok(response)
+    crate::bridge::serve(listener, target.to_string(), None).await
 }
 
 /// The program-shaped caller half (issue #13): a local TCP listener where

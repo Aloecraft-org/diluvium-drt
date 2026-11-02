@@ -426,7 +426,7 @@ fn every_profile_name_is_a_feature_the_binary_probes() {
 #[test]
 fn profile_matches_its_manifest() {
     const PROFILES: [&str; 4] = ["full", "slim", "wasi", "web"];
-    const LEAVES: [&str; 31] = [
+    const LEAVES: [&str; 32] = [
         "aloelite",
         "cli",
         "connector-aloecrypt",
@@ -458,6 +458,7 @@ fn profile_matches_its_manifest() {
         "runtime",
         "sshd",
         "stun",
+        "bridge",
         "tunnel",
         "turn",
         "webrtc",
@@ -559,6 +560,7 @@ fn profile_matches_its_manifest() {
     feature!("runtime");
     feature!("sshd");
     feature!("stun");
+    feature!("bridge");
     feature!("tunnel");
     feature!("turn");
     // `wireguard` names it, so a full build has it and PROFILE_FULL lists

@@ -645,6 +645,29 @@ pub fn serve_with_observer<B: Acceptor>(
         None => None,
     };
 
+    // The websockify-style bridge, same arrangement: its own runtime, an
+    // `opened` and a `closed` per connection on the same queue bridge. It
+    // only carries and reports; nothing is asked of the program.
+    #[cfg(feature = "bridge")]
+    let mut bridge = match &config.bridge {
+        Some(cfg) => {
+            let bridge = crate::bridge::WsBridge::start(cfg)?;
+            eprintln!("drt bridge: ws on {} bridging to {}", bridge.addr(), cfg.to);
+            Some(bridge)
+        }
+        None => None,
+    };
+    // A build without the block refuses one by name rather than starting a
+    // deployment that silently serves nothing on the address it names.
+    #[cfg(not(feature = "bridge"))]
+    if config.bridge.is_some() {
+        return Err(
+            "the config names a `bridge` block and this build has no `bridge` feature \
+                    (it is in `full`)"
+                .into(),
+        );
+    }
+
     // The TURN relay, same arrangement again. Unlike STUN it has things
     // to say per event -- an allocation closing is a byte count a meter
     // must not miss -- so its bridge carries those as they happen and
@@ -768,6 +791,12 @@ pub fn serve_with_observer<B: Acceptor>(
             // the next report carries the running totals anyway — the
             // counters are cumulative, not deltas, so nothing is lost.
             stun.report(&mut |queue, msg| sw.push(root, queue, &runtime_sender(), msg).is_ok());
+        }
+        #[cfg(feature = "bridge")]
+        if let Some(bridge) = bridge.as_mut() {
+            // Per connection, as they happen: a `closed` carries the byte
+            // counts, and a meter has no later report to recover them from.
+            bridge.report(&mut |queue, msg| sw.push(root, queue, &runtime_sender(), msg).is_ok());
         }
         #[cfg(feature = "turn")]
         if let Some(turn) = turn.as_mut() {
