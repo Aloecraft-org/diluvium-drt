@@ -20,6 +20,8 @@
 //! - Fan-out: [`State`], the four states a connection is in; the
 //!   connection task's `select!` in [`pump`], which is every way a
 //!   connection moves between them.
+//! - Beside it, behind the `net` feature: [`net`], the `net` connector's
+//!   native transport, which dials with this file's client.
 //!
 //! **`wss://`, and plain `ws://` only to loopback.** The upgrade carries
 //! whatever authenticates the connection -- an advertise token in
@@ -88,6 +90,11 @@ use tokio_tungstenite::WebSocketStream;
 use drt_caps::{Scope, ScopeType};
 use drt_connector::{Asker, CallError, CallResult, Caller, Connector, HandleId, Handles, Notice};
 use drt_connector_rest::{AllowEntry, RestScope, Url};
+
+/// `net`'s native transport over this crate's client and a server beside
+/// it (issue #108).
+#[cfg(feature = "net")]
+pub mod net;
 
 /// The largest message either way: 1 MiB, `socket`'s write cap. A larger
 /// inbound message fails the connection (tungstenite's own limit); a larger

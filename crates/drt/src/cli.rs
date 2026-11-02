@@ -75,6 +75,7 @@ const PROFILE_FULL: &[&str] = &[
     "connector-fs",
     "connector-kv",
     "connector-ldap",
+    "connector-net",
     "connector-rest",
     "connector-socket",
     "connector-sql",
@@ -585,6 +586,7 @@ pub enum Command {
         feature = "connector-exec",
         feature = "connector-socket",
         feature = "connector-ws",
+        feature = "connector-net",
         feature = "connector-kv",
         feature = "connector-data",
         feature = "netcheck"
@@ -641,6 +643,9 @@ pub fn buildinfo(json: bool) -> String {
     }
     if cfg!(feature = "connector-ws") {
         connectors.push("ws");
+    }
+    if cfg!(feature = "connector-net") {
+        connectors.push("net");
     }
     if cfg!(feature = "connector-kv") {
         connectors.push("kv");
@@ -792,6 +797,7 @@ fn enabled_features() -> Vec<&'static str> {
     feature!("connector-fs");
     feature!("connector-kv");
     feature!("connector-ldap");
+    feature!("connector-net");
     feature!("connector-rest");
     feature!("connector-sql");
     feature!("connector-ssh");
@@ -861,6 +867,12 @@ pub type Supplied =
 /// A supplied family may not be one this build carries itself. The builtin
 /// would win, silently, and a page that handed in a backing for `fs` would
 /// never learn that its backing was not the one answering.
+///
+/// `net` is the exception, because its transport is the host's by design
+/// (`connectors/net`): the native WebSocket transport is what answers when
+/// no host hands one in, and a host that hands one in is answered by its
+/// own. Nothing is silent about it: the backing handed in is the one that
+/// answers.
 pub fn wire_connectors_with(config: &RootConfig, supplied: &Supplied) -> Result<Registry, String> {
     if let Some(family) = supplied.keys().find(|f| carries_builtin(f)) {
         return Err(format!(
@@ -1040,6 +1052,23 @@ pub fn wire_connectors_with(config: &RootConfig, supplied: &Supplied) -> Result<
                     wiring.scope.clone(),
                 )
                 .map_err(|e| e.to_string())?,
+            // A connection to an address a node holds by handle, over
+            // WebSocket both ways (connectors/ws/src/net.rs, issue #108).
+            // The transport enforces the scope, so it is built from it:
+            // `listen` what may be bound, `open` the origins it may reach.
+            // A handed-in transport is the host's choice and is used
+            // instead (see this function's note), by the arm below.
+            #[cfg(feature = "connector-net")]
+            "net" if !supplied.contains_key("net") => registry
+                .wire(
+                    "net",
+                    std::sync::Arc::new(
+                        drt_connector_ws::net::NetWsConnector::new(wiring.scope.as_ref())
+                            .map_err(|e| format!("connector 'net': {e}"))?,
+                    ),
+                    wiring.scope.clone(),
+                )
+                .map_err(|e| e.to_string())?,
             // One topic of a signalling server's kv store: the scope names
             // the topic URL and carries the token, so a program names keys
             // and never the server, another topic, or the credential.
@@ -1078,8 +1107,10 @@ pub fn wire_connectors_with(config: &RootConfig, supplied: &Supplied) -> Result<
     Ok(registry)
 }
 
-/// Whether this build answers `family` itself. One line per arm of the
-/// match in [`wire_connectors_with`]; `a_supplied_backing_may_not_shadow_a_builtin`
+/// Whether this build answers `family` itself, so that a backing handed
+/// in for it is refused. One line per arm of the match in
+/// [`wire_connectors_with`] except `net`, whose builtin yields to a
+/// handed-in transport; `a_supplied_backing_may_not_shadow_a_builtin`
 /// checks the two agree.
 fn carries_builtin(family: &str) -> bool {
     let carried: [(&str, bool); 13] = [
@@ -1111,7 +1142,7 @@ fn carries_builtin(family: &str) -> bool {
 #[cfg(feature = "plugins")]
 const BUILTIN_FAMILIES: &[&str] = &[
     "time", "fs", "sql", "crypto", "data", "ssh", "rest", "ssmtp", "ldap", "exec", "socket", "ws",
-    "kv",
+    "net", "kv",
 ];
 
 /// Every plugin family's name, judged before anything is wired.

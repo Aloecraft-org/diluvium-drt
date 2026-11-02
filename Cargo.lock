@@ -1676,6 +1676,7 @@ dependencies = [
  "async-trait",
  "drt-caps",
  "drt-connector",
+ "drt-connector-net",
  "drt-connector-rest",
  "futures-util",
  "rmpv",

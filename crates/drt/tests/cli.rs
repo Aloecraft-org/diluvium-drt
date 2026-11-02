@@ -426,7 +426,7 @@ fn every_profile_name_is_a_feature_the_binary_probes() {
 #[test]
 fn profile_matches_its_manifest() {
     const PROFILES: [&str; 4] = ["full", "slim", "wasi", "web"];
-    const LEAVES: [&str; 30] = [
+    const LEAVES: [&str; 31] = [
         "aloelite",
         "cli",
         "connector-aloecrypt",
@@ -436,6 +436,7 @@ fn profile_matches_its_manifest() {
         "connector-fs",
         "connector-kv",
         "connector-ldap",
+        "connector-net",
         "connector-rest",
         "connector-socket",
         "connector-sql",
@@ -541,6 +542,7 @@ fn profile_matches_its_manifest() {
     feature!("connector-fs");
     feature!("connector-kv");
     feature!("connector-ldap");
+    feature!("connector-net");
     feature!("connector-rest");
     feature!("connector-socket");
     feature!("connector-sql");

@@ -16,8 +16,9 @@ use drt::cli::{wire_connectors, wire_connectors_with, Supplied};
 use drt_config::RootConfig;
 use drt_connector::mock::MockConnector;
 
-/// Every builtin family, whether or not this build carries it. The list
-/// `wire_connectors_with`'s match answers to.
+/// Every builtin family, whether or not this build carries it, that a
+/// backing may not shadow. The list `wire_connectors_with`'s match answers
+/// to, less `net`, whose transport is the host's (the last test).
 const BUILTINS: &[&str] = &[
     "time", "fs", "sql", "crypto", "data", "ssh", "rest", "ssmtp", "ldap", "exec", "socket", "ws",
     "kv",
@@ -45,12 +46,14 @@ fn supplying(families: &[&str]) -> Supplied {
 
 /// A supplied family the config names is wired; one it does not name is
 /// not, because handing a backing in makes it available, not granted.
+/// `bus` stands for a family no build carries: `net` was the example
+/// until `full` carried it (issue #108).
 #[test]
 fn a_supplied_family_is_wired_only_when_the_config_names_it() {
-    let supplied = supplying(&["net", "other"]);
-    let registry = wire_connectors_with(&naming(&["net"]), &supplied).expect("net is wired");
+    let supplied = supplying(&["bus", "other"]);
+    let registry = wire_connectors_with(&naming(&["bus"]), &supplied).expect("bus is wired");
     let wired = menu(drt_connector::Dispatcher::new(registry));
-    assert!(wired.contains(&"net".to_string()), "{wired:?}");
+    assert!(wired.contains(&"bus".to_string()), "{wired:?}");
     assert!(!wired.contains(&"other".to_string()), "{wired:?}");
 }
 
@@ -83,18 +86,18 @@ fn menu(d: drt_connector::Dispatcher) -> Vec<String> {
 /// handed in, so a page that misspelled a key can see it.
 #[test]
 fn a_named_family_nobody_answers_says_what_was_handed_in() {
-    let err = wire_connectors_with(&naming(&["nett"]), &supplying(&["net"]))
+    let err = wire_connectors_with(&naming(&["buss"]), &supplying(&["bus"]))
         .err()
         .expect("refused");
     assert_eq!(
         err,
-        "config wires connector 'nett', which this build does not carry and no backing \
-         was handed in for (handed in: net)"
+        "config wires connector 'buss', which this build does not carry and no backing \
+         was handed in for (handed in: bus)"
     );
-    let err = wire_connectors(&naming(&["nett"])).err().expect("refused");
+    let err = wire_connectors(&naming(&["buss"])).err().expect("refused");
     assert_eq!(
         err,
-        "config wires connector 'nett', which this build does not carry"
+        "config wires connector 'buss', which this build does not carry"
     );
 }
 
@@ -122,5 +125,30 @@ fn a_supplied_backing_may_not_shadow_a_builtin() {
             (true, Ok(_)) => panic!("'{family}' is carried and a backing shadowed it"),
             (false, Err(e)) => panic!("'{family}' is not carried and was refused: {e}"),
         }
+    }
+}
+
+/// `net`'s transport is the host's: a backing handed in for it is wired
+/// and answers, whether or not this build carries a native transport, and
+/// without one handed in a build that carries one answers with its own.
+#[test]
+fn a_handed_in_net_transport_is_the_one_that_answers() {
+    let registry = wire_connectors_with(&naming(&["net"]), &supplying(&["net"]))
+        .expect("a handed-in net is wired");
+    let wired = menu(drt_connector::Dispatcher::new(registry));
+    assert!(wired.contains(&"net".to_string()), "{wired:?}");
+
+    let native = wire_connectors(&naming(&["net"])).err().unwrap_or_default();
+    if cfg!(feature = "connector-net") {
+        // Its own transport, which refuses a wiring with no scope by name.
+        assert!(
+            native.contains("the net connector takes a scope"),
+            "{native}"
+        );
+    } else {
+        assert_eq!(
+            native,
+            "config wires connector 'net', which this build does not carry"
+        );
     }
 }

@@ -552,10 +552,19 @@ fn a_handed_in_family_is_gated_and_a_missing_one_is_named() {
     bare.fs().set_cwd("/app");
     let mut session = bare.exec(&argv(&["drt", "run", "--config", "deploy.json"]));
     assert_eq!(run_to_exit(&mut session), 1);
-    assert_eq!(
-        text(&seen, Fd::Stderr),
+    // A page never carries a native transport; a native build of this
+    // test with `drt/connector-net` (`--all-features`) does, and it is
+    // what answers when nothing is handed in.
+    let native_net = drt::cli::buildinfo(false)
+        .lines()
+        .any(|l| l.starts_with("connectors:") && l.split([' ', ',']).any(|c| c == "net"));
+    let expected = if native_net {
+        "drt: connector 'net': the net connector takes a scope naming what it may do, \
+         e.g. {\"listen\": [\"127.0.0.1:9400\"]} and/or {\"open\": \"wss://hub.example.com\"}\n"
+    } else {
         "drt: config wires connector 'net', which this build does not carry\n"
-    );
+    };
+    assert_eq!(text(&seen, Fd::Stderr), expected);
     uninstall_sink();
 }
 

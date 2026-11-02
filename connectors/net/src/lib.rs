@@ -48,7 +48,9 @@
 //! the connection is closed and `recv` says why.
 //!
 //! **The transport is the host's.** In a page it is a JavaScript object
-//! (`crates/drt-web`'s `js` module); in a test it is [`bus::Bus`]. Its four
+//! (`crates/drt-web`'s `js` module); in the native CLI it is WebSocket
+//! both ways (`connectors/ws`'s `net` module, which says what an address
+//! is there); in a test it is [`bus::Bus`]. Its four
 //! methods are below, and the [`Link`] and [`Acceptor`] it is handed are
 //! how it reports what arrives.
 
