@@ -55,9 +55,11 @@ config with `residency.max_resident` parks the least recently active of the
 children spawned with `wake_on_message`. A stranger cannot: parentage is the
 only relation the swarm knows.
 
-**Waking is a delivery, and a child has no letterbox yet.**
-`wake_on_message = true` means a message pushed at the parked instance restores
-it and lands in its queue ahead of anything live. But the messages that arrive
-from outside a deployment — a request on a listener — reach the root program,
-so a parked *root* wakes on the next one and a parked *child* has nothing that
-can address it. A handle is not a channel: there is no `child.push`.
+**Waking is a delivery.** `wake_on_message = true` means a message pushed
+at the parked instance restores it and lands in its queue ahead of anything
+live. Messages from outside a deployment reach the root program. A child is
+reached through its endpoint reference: the `spawned` event carries it as
+`ref`, and `{op = 'ref', id = child.id}` on `system/lifecycle` asks again.
+`endpoint.bind(ref, name)` turns it into a queue to push to, and the push
+lands in the child's `inbox`. The handle `host.spawn` returns does not carry
+the reference yet, so there is no `child.push`.
