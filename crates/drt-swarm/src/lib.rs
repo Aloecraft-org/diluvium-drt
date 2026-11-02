@@ -9,7 +9,8 @@
 //! 3. The capability set per instance, for enforcement.
 //! 4. Draining `system/lifecycle` and calling back into the runtime.
 //! 5. Enforcing per-instance budgets — the numbers, never the policy.
-//! 6. The snapshot cache and `wake_on_message` delivery.
+//! 6. The snapshot cache and `wake_on_message` delivery, including what
+//!    one instance pushes at another through a bound endpoint reference.
 //!
 //! There is still no supervisor type: restart, backoff, and topology for
 //! guest agents are programs holding the lifecycle capability, and
@@ -43,3 +44,10 @@ pub struct InstanceId(pub u32);
 /// The request-size cap `dvs.c` enforces (32KB), kept as a named constant so
 /// the differential tests can assert against one number.
 pub const REQUEST_CAP_BYTES: usize = 32 * 1024;
+
+/// Distinct endpoint references one residency may bind. Past it
+/// `endpoint.bind` raises "the host refused this reference". Each bound
+/// reference is a queue the swarm visits every step, so the bound is on
+/// that work, not on memory, which the instance's own budget already
+/// covers.
+pub const MAX_ENDPOINTS: usize = 256;

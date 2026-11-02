@@ -23,7 +23,15 @@ decides, and anything else is refused with "not a descendant". That is
 worth stating plainly because it is the thing a capability-shaped design
 would get wrong: there is no `supervise:*` to hold, and holding
 `lifecycle` lets a node manage *its own subtree* and nothing else. A
-sibling is not reachable at any grant level.
+sibling cannot be supervised at any grant level.
+
+Messaging is separate from supervision. A `spawned` event carries `ref`,
+an endpoint reference to the child, and `{op = "ref", id?}` answers one
+for the requester or a descendant, under the same ancestry check. A
+program binds a reference with `endpoint.bind` and pushes to it, and the
+swarm routes those pushes into the far end's `inbox`
+(`crates/drt-swarm/src/swarm.rs`, `route_endpoints`). Siblings can message
+each other only after something that holds both references passes one on.
 
 Spawning is rate-limited rather than filtered: a spawn over the per-step
 limit is held and retried next step, in order, with one `throttled` event
