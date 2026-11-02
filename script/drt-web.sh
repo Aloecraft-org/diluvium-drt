@@ -7,7 +7,8 @@
 #
 # usage: script/drt-web.sh [out-dir]
 # env:   WASI_SDK_PATH   a wasi-sdk (>= 24; 27 verified): the C core and
-#                        wasi-libc are compiled and linked from it
+#                        wasi-libc are compiled and linked from it. Unset,
+#                        script/wasi-sdk.sh fetches the pinned one.
 #        WASM_BINDGEN    the wasm-bindgen CLI (default: on PATH). Its
 #                        version must equal the crate's pin in
 #                        crates/drt-web/Cargo.toml; the check is below.
@@ -25,7 +26,10 @@ PROFILE=${DRT_WEB_PROFILE:-release}
 WASM_BINDGEN=${WASM_BINDGEN:-wasm-bindgen}
 TARGET_DIR=${CARGO_TARGET_DIR:-$HERE/target}
 
-: "${WASI_SDK_PATH:?set WASI_SDK_PATH to a wasi-sdk; the browser module links the C core and wasi-libc from it (doc/Wasm.md §8)}"
+# The C core and wasi-libc are compiled and linked from a wasi-sdk;
+# diluvium-sys and crates/drt-web/build.rs both read the variable.
+WASI_SDK_PATH=$("$HERE/script/wasi-sdk.sh")
+export WASI_SDK_PATH
 
 # The glue's format is the crate's: a CLI of another version refuses the
 # module, or worse, accepts it and generates glue that does not match.

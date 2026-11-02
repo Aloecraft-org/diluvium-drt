@@ -104,7 +104,7 @@ at the in-page shell, the same `expected.txt`, by the runner in
 [`crates/drt-web/browser-test`](../crates/drt-web/browser-test):
 
 ```
-script/drt-web.sh                                   # needs WASI_SDK_PATH and the pinned wasm-bindgen
+script/drt-web.sh                                   # fetches a wasi-sdk; needs the pinned wasm-bindgen
 cd crates/drt-web/browser-test && npm ci && npx playwright install chromium && npm test
 ```
 
