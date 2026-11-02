@@ -129,6 +129,13 @@ releases:
         drt.js. Nothing in this repository loads drt that way; examples
         use the drt.js the checkout builds.
       - |
+        **`script/wasi-sdk.sh` fetches the wasi-sdk the browser build
+        compiles the C core with.** `script/drt-web.sh` no longer needs
+        `WASI_SDK_PATH` set: unset, it fetches the pinned wasi-sdk 27 into
+        `~/.cache/drt/` once and uses it from there. Set, the variable
+        still wins. The native build never needed one, which is why
+        there was nothing for the browser build to borrow.
+      - |
         **`terminal(id)` in drt.js: the drt CLI live in an element.**
         `await terminal('cli')` renders an xterm.js terminal in that
         element with a `$ ` prompt whose command is the real `drt`, the
