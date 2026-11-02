@@ -639,6 +639,15 @@ impl Session {
         }
     }
 
+    /// What the REPL session has defined, as JSON (`Repl::variables`):
+    /// `[]` for anything but a repl session.
+    pub fn variables(&self) -> String {
+        match &self.kind {
+            Kind::Repl(repl) => repl.variables().to_string(),
+            _ => "[]".into(),
+        }
+    }
+
     /// Throw away an unfinished line, the way Ctrl+C does natively.
     pub fn abandon(&mut self) {
         let _entered = self.context.enter();

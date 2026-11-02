@@ -264,6 +264,13 @@ impl DrtSession {
         self.inner.names()
     }
 
+    /// What a `drt repl` session has defined, as of the last accepted
+    /// line: a JSON array of `{name, type, value?, params?, vararg?}`.
+    /// `[]` for any other command.
+    pub fn variables(&self) -> String {
+        self.inner.variables()
+    }
+
     /// Throw away an unfinished line, as Ctrl+C does natively.
     pub fn abandon(&mut self) {
         self.inner.abandon();

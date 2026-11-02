@@ -47,6 +47,15 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Added
 
+- **A REPL says what it defined, and example 35 shows it and its
+  files.** `repl.dlua`'s names snapshot now carries each of the
+  session's own names with its type and a short value, or a
+  function's arity; `DrtSession.variables()` hands it to a page as
+  JSON. `terminal()` exposes `session` and `onCommand`. Example 35
+  has a Variables panel over it and a Files panel: aloelite's own
+  explorer over the kernel's volume, built from an aloelite checkout
+  beside drt.min.js, so a file made there is one `drt run` sees and
+  a file a program writes appears there.
 - **`terminal(id)` in drt.js: the drt CLI live in an element.**
   `await terminal('cli')` renders an xterm.js terminal in that
   element with a `$ ` prompt whose command is the real `drt`, the

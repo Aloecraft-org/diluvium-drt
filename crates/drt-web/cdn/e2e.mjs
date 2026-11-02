@@ -40,6 +40,18 @@ const PORTS = { sshd: 18322, match: 18330, cdn: 18331, page: 18332, example: 183
 const TOKENS = { host: 'cdn-host-token', caller: 'cdn-caller-token', kv: 'cdn-kv-token', reader: 'cdn-kv-reader' };
 const WAIT_MS = 20000;
 const USER = os.userInfo().username;
+// aloelite-wasm's package and its explorer, for example 35's Files panel:
+// optional, because building them takes an aloelite checkout (its README).
+const ALOELITE_PKG = process.env.ALOELITE_PKG ? path.resolve(process.env.ALOELITE_PKG) : null;
+const ALOELITE_EXPLORER = process.env.ALOELITE_EXPLORER
+  ? path.resolve(process.env.ALOELITE_EXPLORER)
+  : ALOELITE_PKG && path.resolve(ALOELITE_PKG, '../aloelite-wasm/explorer/aloelite-explorer.js');
+const ALOELITE = {
+  'aloelite_wasm.js': ALOELITE_PKG && path.join(ALOELITE_PKG, 'aloelite_wasm.js'),
+  'aloelite_wasm_bg.wasm': ALOELITE_PKG && path.join(ALOELITE_PKG, 'aloelite_wasm_bg.wasm'),
+  'aloelite-explorer.js': ALOELITE_EXPLORER,
+};
+const withAloelite = Object.values(ALOELITE).every((f) => f && fs.existsSync(f));
 const EXAMPLE_CDN = {
   'https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/module.esm.js': 'node_modules/alpinejs/dist/module.esm.js',
 };
@@ -360,13 +372,14 @@ await check('kernel() with a bus() as its net transport runs a program that talk
   await p.close();
 });
 
-await check('examples/35-drt-js: bare drt prints its usage, drt repl completes and colours its lines, and the panel says nothing is running', async () => {
-  // Served from the example's directory with dist/drt.min.js in place of the copy its README makes.
+await check(`examples/35-drt-js: bare drt prints its usage, drt repl completes and colours its lines, the panels show its variables${withAloelite ? ' and files' : ''}, and nothing is running`, async () => {
+  // Served from the example's directory with dist/drt.min.js (and aloelite, when built) in place of the copies its README makes.
   const dir = path.resolve(here, '../../../examples/35-drt-js');
-  const types = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css' };
+  const types = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.wasm': 'application/wasm' };
+  const copied = { 'drt.min.js': path.join(here, 'dist/drt.min.js'), ...(withAloelite ? ALOELITE : {}) };
   http.createServer((req, res) => {
     const name = req.url === '/' ? 'index.html' : req.url.slice(1);
-    const file = name === 'drt.min.js' ? path.join(here, 'dist/drt.min.js') : path.join(dir, name);
+    const file = copied[name] ?? path.join(dir, name);
     if (name.includes('..') || !fs.existsSync(file)) return res.writeHead(404).end();
     res.writeHead(200, { 'content-type': types[path.extname(file)] ?? 'text/plain' }).end(fs.readFileSync(file));
   }).listen(PORTS.example, '127.0.0.1');
@@ -378,7 +391,8 @@ await check('examples/35-drt-js: bare drt prints its usage, drt repl completes a
   }
   await p.goto(`http://127.0.0.1:${PORTS.example}/`);
   const screen = () => p.evaluate(() => document.querySelector('.xterm-rows')?.innerText ?? '');
-  const panel = () => p.evaluate(() => [...document.querySelectorAll('aside tr')].slice(1).map((tr) => tr.innerText.replace(/\s+/g, ' ').trim()));
+  // The aside's second table and heading are Instances; the first are Variables.
+  const panel = () => p.evaluate(() => [...document.querySelectorAll('aside table')[1].querySelectorAll('tr')].slice(1).map((tr) => tr.innerText.replace(/\s+/g, ' ').trim()));
   // xterm's DOM renderer gives a coloured cell a `xterm-fg-N` class; the usage text and a shell line have none.
   const coloured = () => p.evaluate(() => document.querySelectorAll('.xterm-rows [class*="xterm-fg-"]').length);
   await until('bare drt: its usage, then the prompt', async () => { const t = await screen(); return t.includes('Print version') && t.trimEnd().endsWith('$'); });
@@ -393,10 +407,15 @@ await check('examples/35-drt-js: bare drt prints its usage, drt repl completes a
   await p.keyboard.type('drt repl\r');
   await until('the REPL prompt', async () => (await screen()).trimEnd().endsWith('dv>'));
   // Only `drt start` drives a swarm, and it needs a config and a program file this page has none of.
-  await until('the panel says nothing is running', async () => (await p.innerText('aside h2')).includes('nothing running') && (await panel()).length === 0);
+  await until('the panel says nothing is running', async () => (await p.innerText('aside h2:nth-of-type(2)')).includes('nothing running') && (await panel()).length === 0);
   await p.keyboard.type('x = 41');   // the number is coloured; `local` would not outlive its own line
   await until('a coloured REPL line', async () => (await coloured()) > 0);
   await p.keyboard.type('\r');
+  // The Variables panel: what the REPL defined, with a value or an arity.
+  const vars = () => p.evaluate(() => [...document.querySelectorAll('aside table')[0].querySelectorAll('tr')].map((tr) => tr.innerText.replace(/\s+/g, ' ').trim()));
+  await until('x in the Variables panel', async () => (await vars()).includes('x number 41'));
+  await p.keyboard.type('function add(a, b) return a + b end\r');
+  await until('add in the Variables panel', async () => (await vars()).includes('add function (2)'));
   await p.keyboard.type('pri');
   await p.keyboard.press('Tab');
   await until('Tab completes print', async () => (await screen()).trimEnd().endsWith('dv> print'));
@@ -404,6 +423,28 @@ await check('examples/35-drt-js: bare drt prints its usage, drt repl completes a
   await until('the REPL evaluates', async () => /^42$/m.test(await screen()));
   await p.keyboard.press('Control+D');
   await until('the prompt after the REPL', async () => (await screen()).trimEnd().endsWith('$'));
+  if (withAloelite) {
+    // The Files panel is the kernel's volume, both ways: a config and a
+    // program made in aloelite's explorer are what `drt run` runs, and the
+    // file that program writes is listed once the command ends.
+    if (!(await p.evaluate(() => document.querySelector('#files.alx') !== null))) throw new Error(`no explorer in #files: ${await p.innerText('#files')}`);
+    const newFile = async (name, text) => {
+      p.once('dialog', (d) => d.accept(name));
+      await p.click('#files button:has-text("New file")');
+      await p.click(`#files button.alx-name:has-text("${name}")`);
+      await p.click('#files button:text-is("Edit")');
+      await p.fill('#files textarea', text);
+      await p.click('#files button:text-is("Save")');
+      await p.click('#files button:text-is("Close")');
+    };
+    await newFile('app.json', JSON.stringify({ caps: [{ capability: 'host:fs/*' }], connectors: { fs: { scope: { scope: '.', access: 'readwrite' } } }, program: { path: 'app.dlua' } }));
+    await newFile('app.dlua', "host.fs.write('from-run.txt', 'hi') print('wrote')");
+    await p.click('#terminal');   // the explorer had the focus
+    await p.keyboard.type('drt run --config app.json\r');
+    await until('the program ran against the volume', async () => { const t = await screen(); return /^wrote$/m.test(t) && t.trimEnd().endsWith('$'); })
+      .catch(async (e) => { throw new Error(`${e.message}; the screen says:\n${await screen()}\nand Files holds:\n${await p.innerText('#files')}`); });
+    await until('from-run.txt in the Files panel', async () => (await p.innerText('#files')).includes('from-run.txt'));
+  }
   await p.close();
 });
 
