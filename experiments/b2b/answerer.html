@@ -1,0 +1,153 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>b2b answerer</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 16px; max-width: 760px; }
+  pre { background: #f4f4f4; padding: 8px; white-space: pre-wrap; word-break: break-all; min-height: 8em; }
+  input { font: inherit; }
+</style>
+<h1>b2b: answerer</h1>
+<p>Parks a name on a <code>drt p2p --match</code> server and answers every
+call to it with a direct WebRTC data channel. Open
+<a id="callerLink" href="#">caller.html</a> in another browser to call it.</p>
+<p>Server <code id="server"></code>, name <code id="name"></code></p>
+<p><input id="text" size="40" placeholder="message" disabled> <button id="send" disabled>Send</button></p>
+<pre id="log"></pre>
+<script>
+// surface
+// - Entry point: this page. Query: ?server=<base> ?name=<name> ?stun=<url>|none
+// - Configurable: SERVER, STUN, POLL_MS (presence lapses after 30 s
+//   without a poll, so anything well under that), GATHER_MS, RECORD_MAX.
+// - Fan-out: none. One poll loop; each call gets its own RTCPeerConnection.
+// The wire is doc/doc_old/DRT-Signalling.md (bare names, claimed on first
+// poll by this page's random answerer token) and the record is
+// doc/doc_old/BrowserAccess.md §2, built as §10.4 says a page answers.
+const q = new URLSearchParams(location.search);
+const SERVER = (q.get('server') || 'https://match1.aloecraft.org').replace(/\/$/, '');
+const STUN = q.get('stun') === 'none' ? [] : [{ urls: q.get('stun') || 'stun:stun.cloudflare.com:3478' }];
+const NAME = q.get('name') || 'b2b-' + Math.random().toString(36).slice(2, 8);
+const POLL_MS = 1000;
+const GATHER_MS = 2000;
+const RECORD_MAX = 512;
+const TOKEN = 'b2b-' + crypto.randomUUID();
+const BASE = `${SERVER}/v1/${NAME}`;
+
+const channels = new Set();
+const $ = (id) => document.getElementById(id);
+const log = (s) => { $('log').textContent += `${new Date().toISOString().slice(11, 23)} ${s}\n`; };
+$('server').textContent = SERVER;
+$('name').textContent = NAME;
+$('callerLink').href = `caller.html?server=${encodeURIComponent(SERVER)}&name=${NAME}`;
+$('send').onclick = () => {
+  for (const ch of channels) ch.send($('text').value);
+  log(`me: ${$('text').value}`);
+  $('text').value = '';
+};
+
+poll();
+
+async function poll() {
+  let cursor = '';
+  for (;;) {
+    try {
+      const r = await fetch(`${BASE}/calls${cursor ? `?since=${cursor}` : ''}`,
+        { headers: { authorization: `Bearer ${TOKEN}` } });
+      const body = await r.json();
+      if (!r.ok) throw new Error(`${r.status} ${body.error || ''}`);
+      if (!cursor) log(`parked as ${NAME}, waiting for a call`);
+      cursor = body.cursor;
+      for (const call of body.calls) answer(call).catch((e) => log(`call ${call.id}: ${e.message}`));
+    } catch (e) {
+      log(`poll: ${e.message}`);
+    }
+    await new Promise((r) => setTimeout(r, POLL_MS));
+  }
+}
+
+async function answer(call) {
+  log(`call ${call.id}: ${call.record}`);
+  const pc = new RTCPeerConnection({ iceServers: STUN });
+  watch(pc, call.id);
+  wire(pc.createDataChannel('b2b', { negotiated: true, id: 0 }), pc);
+  // The caller is the DTLS client, so its record arrives as an offer that
+  // says setup:active and this page's answer makes it the server.
+  await pc.setRemoteDescription({ type: 'offer', sdp: sdpFromRecord(JSON.parse(call.record), 'active') });
+  await pc.setLocalDescription(await pc.createAnswer());
+  await gathered(pc);
+  const record = JSON.stringify(recordFromSdp(pc.localDescription.sdp));
+  const r = await fetch(`${BASE}/calls/${call.id}/answer`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'text/plain;charset=utf-8' },
+    body: record,
+  });
+  if (!r.ok) throw new Error(`answer: ${r.status} ${await r.text()}`);
+  log(`call ${call.id}: answered with ${record}`);
+}
+
+function wire(ch, pc) {
+  ch.onopen = async () => {
+    channels.add(ch);
+    $('text').disabled = $('send').disabled = false;
+    log(`channel open, path: ${await path(pc)}`);
+    ch.send(`hello from the answerer (${NAME})`);
+  };
+  ch.onmessage = (e) => log(`peer: ${e.data}`);
+  ch.onclose = () => { channels.delete(ch); log('channel closed'); };
+}
+
+// depth: record <-> SDP, shared word for word with caller.html
+
+function gathered(pc) {
+  return new Promise((done) => {
+    if (pc.iceGatheringState === 'complete') return done();
+    pc.addEventListener('icegatheringstatechange', () => pc.iceGatheringState === 'complete' && done());
+    setTimeout(done, GATHER_MS);
+  });
+}
+
+// BrowserAccess §2, with one difference: .local (mDNS) host candidates
+// are kept, last, because the other side is a browser and can resolve
+// them. Public (srflx) lines go first so a full record keeps them.
+function recordFromSdp(sdp) {
+  const get = (k) => sdp.match(new RegExp(`^a=${k}:(.*)$`, 'm'))[1].trim();
+  const hex = get('fingerprint').split(/\s+/)[1];
+  const f = btoa(String.fromCharCode(...hex.split(':').map((h) => parseInt(h, 16))));
+  const rank = (c) => (/ typ srflx/.test(c) ? 0 : /\.local /.test(c) ? 2 : 1);
+  const lines = [...sdp.matchAll(/^a=(candidate:.*)$/gm)]
+    .map((m) => m[1].match(/^candidate:\S+ \d+ udp \d+ \S+ \d+ typ (?:host|srflx|prflx)(?: raddr \S+ rport \d+)?/i))
+    .filter(Boolean).map((m) => m[0])
+    .sort((a, b) => rank(a) - rank(b));
+  const record = { v: 1, u: get('ice-ufrag'), p: get('ice-pwd'), f, c: [] };
+  for (const c of lines) {
+    if (JSON.stringify({ ...record, c: [...record.c, c] }).length > RECORD_MAX) break;
+    record.c.push(c);
+  }
+  return record;
+}
+
+function sdpFromRecord(r, setup) {
+  const fp = [...atob(r.f)].map((ch) => ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')).join(':');
+  return ['v=0', 'o=- 0 2 IN IP4 127.0.0.1', 's=-', 't=0 0', 'a=group:BUNDLE 0',
+    'm=application 9 UDP/DTLS/SCTP webrtc-datachannel', 'c=IN IP4 0.0.0.0', 'a=mid:0',
+    `a=ice-ufrag:${r.u}`, `a=ice-pwd:${r.p}`, `a=fingerprint:sha-256 ${fp}`, `a=setup:${setup}`,
+    'a=sctp-port:5000', 'a=max-message-size:262144', ...r.c.map((c) => `a=${c}`),
+    'a=end-of-candidates', ''].join('\r\n');
+}
+
+function watch(pc, label) {
+  pc.oniceconnectionstatechange = () => log(`${label}: ice ${pc.iceConnectionState}`);
+}
+
+// The selected candidate pair: proof the traffic is direct. No TURN server
+// is configured, so a relay candidate cannot appear.
+async function path(pc) {
+  const stats = await pc.getStats();
+  for (const s of stats.values()) {
+    if (s.type !== 'candidate-pair' || s.state !== 'succeeded' || !s.nominated) continue;
+    const l = stats.get(s.localCandidateId), r = stats.get(s.remoteCandidateId);
+    return `${l.candidateType} ${l.address}:${l.port} <-> ${r.candidateType} ${r.address}:${r.port} (${l.protocol})`;
+  }
+  return 'unknown';
+}
+</script>
