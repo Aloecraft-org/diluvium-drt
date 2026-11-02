@@ -25,8 +25,9 @@
 //
 // surface block:
 //   attach(DrtTerm, terminal, { prompt, banner, DrtEditor, ssh })
-//       -> { term, run(line), reset(), whenIdle(), dispose() }
+//       -> { term, session, run(line), reset(), whenIdle(), dispose() }
 //     term      the DrtTerm, to seed files into
+//     session   the running drt command's DrtSession, or null
 //     run       submit a line as though it were typed -- through the
 //               terminal's own `input`, so it really is typed and the
 //               editor treats it identically. Resolves with its exit
@@ -40,6 +41,10 @@
 //               about now, not about a keystroke the terminal has not
 //               delivered yet, so a host sequencing commands should await
 //               `run` instead.
+//   backings (optional) -- DrtTerm's second argument: connectors by
+//               family, `fs` the kernel's filesystem (src/js.rs).
+//   commands (optional) -- what Tab completes from at the shell prompt.
+//               The REPL's prompts take the guest's names instead.
 //   ssh: { Ssh, access?, store? } (optional) -- drt-ssh-web's `Ssh`, the
 //               browser access client for `--via rtc:`, and where host keys
 //               and the page's key are kept. Without it `drt ssh` and
@@ -57,11 +62,16 @@ const INTERRUPT = '\x03';
 /// deadline as long as a session may be -- the native REPL's line exactly.
 const SSH_SHELL_LINE = "return host.call('ssh/shell', nil, 2147483647)";
 
-export function attach(DrtTerm, terminal, { prompt = '$ ', banner = '', DrtEditor, ssh } = {}) {
+export function attach(
+  DrtTerm,
+  terminal,
+  { prompt = '$ ', banner = '', DrtEditor, ssh, backings, commands } = {},
+) {
   const decoders = [null, new TextDecoder(), new TextDecoder()];
   const write = (fd, text) => terminal.write(text.replace(/\r?\n/g, '\r\n'));
-  const term = new DrtTerm((fd, bytes) =>
-    write(fd, decoders[fd].decode(bytes, { stream: true })),
+  const term = new DrtTerm(
+    (fd, bytes) => write(fd, decoders[fd].decode(bytes, { stream: true })),
+    backings,
   );
   const shell = makeShell({ term, write });
 
@@ -142,6 +152,7 @@ export function attach(DrtTerm, terminal, { prompt = '$ ', banner = '', DrtEdito
   let waiters = [];
   let disposed = false;
   let pending = null; // resolve(status) for the `run` in flight
+  let current = null; // the drt command's session while one runs
 
   const idle = () => !running;
   const settle = () => {
@@ -179,6 +190,9 @@ export function attach(DrtTerm, terminal, { prompt = '$ ', banner = '', DrtEdito
     },
     ssh: runSsh,
     stop: () => interrupted,
+    running: (s) => {
+      current = s;
+    },
   };
   /// A read that ended without a line: ^C abandons the unfinished one and
   /// asks again; ^D is end of input.
@@ -193,7 +207,11 @@ export function attach(DrtTerm, terminal, { prompt = '$ ', banner = '', DrtEdito
   async function loop() {
     while (!disposed) {
       settle();
-      const outcome = await editor.readLine(prompt);
+      if (commands) editor.setCandidates(commands);
+      // false: a shell line is not Lua, so the editor does not colour it
+      // (`--config` would read as a comment). Ignored by an editor without
+      // highlighting.
+      const outcome = await editor.readLine(prompt, false);
       if (disposed) return;
       if (outcome.eof || outcome.interrupted) continue;
       const text = outcome.line;
@@ -227,6 +245,12 @@ export function attach(DrtTerm, terminal, { prompt = '$ ', banner = '', DrtEdito
 
   return {
     term,
+    /// The running drt command's DrtSession, or null: what a panel asks
+    /// about the swarm (`hasSwarm`, `ids`, ...). Freed when the command
+    /// ends, so read it each time rather than keeping it.
+    get session() {
+      return current;
+    },
     /// Type `line` and submit it: literally typed, through the terminal's
     /// own `input`, so the editor echoes and edits it exactly as it would
     /// a person's keystrokes and there is one input path rather than two.

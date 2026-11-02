@@ -21,6 +21,8 @@
 //            between lines (doc/Wasm.md §5). stop() polled
 //            between ticks: true ends the command with status 130 (^C).
 //            ssh(argv) -> Promise<status>, optional: what `drt ssh` runs.
+//            running(session | null), optional: told when a drt command's
+//            session starts and before it is freed.
 //   ECHO, DRT: the two commands; everything else is not found.
 
 const ECHO = 'echo';
@@ -68,6 +70,7 @@ export function makeShell({ term, write, sleep = wait }) {
   // a sleep is a timer, a line is whatever io provides.
   async function drt(args, io) {
     const session = term.exec([DRT, ...args]);
+    if (io.running) io.running(session);
     try {
       for (;;) {
         if (io.stop && io.stop()) return 130;
@@ -89,6 +92,7 @@ export function makeShell({ term, write, sleep = wait }) {
         return next.status;
       }
     } finally {
+      if (io.running) io.running(null);
       // A module a trap terminated refuses even `free`; the error that
       // terminated it is the one worth seeing, so this one is not.
       try {

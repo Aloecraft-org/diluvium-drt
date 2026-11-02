@@ -15,7 +15,8 @@ cd examples/35-drt-js && python3 -m http.server 8000    # a page's modules need 
 ```
 
 Open `http://localhost:8000`. The page runs `drt` once, which prints its
-usage, then gives you a `$` prompt. Only `drt` is on its path. `drt repl`
+usage, then gives you a `$` prompt at the bottom. Only `drt` is on its
+path, and Tab completes its subcommands. `drt repl`
 opens a Diluvium REPL with the native one's editor: history, Tab over the
 guest's names, and the line coloured as you type. Ctrl+D leaves it.
 
@@ -25,10 +26,10 @@ no files, so the panel says nothing is running.
 
 | File | What it is |
 |---|---|
-| `main.js` | Imports the copied `drt.min.js`, starts the terminal, and gives the panel to Alpine. |
-| `terminal.js` | xterm.js with drt's line editor: each `drt ...` line runs in the page until it ends or Ctrl+C; REPL lines get completion and colour. |
+| `main.js` | Imports the copied `drt.min.js`, puts `terminal()` in `#terminal`, and gives the panel to Alpine. |
 | `inspector.js` | The panel's state: the running command's instances, twice a second. |
 | `index.html`, `style.css` | The layout, and the panel's table as Alpine markup. |
 
-xterm.js and Alpine come from jsdelivr. `crates/drt-web/cdn/e2e.mjs` runs
-this page in Chromium on every release.
+The terminal (xterm.js with drt's line editor) is part of that
+`drt.min.js`. Only Alpine, for the panel, comes from jsdelivr.
+`crates/drt-web/cdn/e2e.mjs` runs this page in Chromium on every release.

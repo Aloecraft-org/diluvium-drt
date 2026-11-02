@@ -34,6 +34,10 @@
 //     options)` -> a kernel's filesystem on an aloelite volume, handed in
 //     as `{ fs }` (fs.mjs). One attach handed to several kernels is one
 //     filesystem they share. The page loads aloelite-wasm itself.
+//   - `terminal(elementOrId, options)` -> the drt CLI live in that
+//     element: an xterm.js terminal (bundled) over a kernel, with the
+//     native REPL's line editor (terminal.mjs). Options: `backings`,
+//     `prompt`, `banner`, `ssh`, `xterm`, `fit`.
 //   - `kv(server, topic, options)` -> { get, put, delete, list, watch }:
 //     the key-value store of doc/DRT-Signalling.md §10. Options: `token`,
 //     `headers`.
@@ -61,6 +65,7 @@ import { WEB_WASM_GZ_B64, SSH_WASM_GZ_B64, VERSION } from 'drt:wasm';
 export * from '../../drt-rtc/client/drt_browser_access.js';
 export { bus } from './bus.mjs';
 export * as aloelite from './fs.mjs';
+export { terminal } from './terminal.mjs';
 export { VERSION };
 
 export const HOLD_MARGIN_MS = 5000;

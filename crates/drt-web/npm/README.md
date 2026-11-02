@@ -40,11 +40,32 @@ const { token: jwt } = await session().token();          // stdlib:session, same
 - A page with a Content-Security-Policy needs `'wasm-unsafe-eval'` in
   `script-src` for either module.
 - `session()` is for a page behind `stdlib:session`; see below.
+- `terminal(id)` puts the drt CLI in an element; see below.
 - `aloelite.open` and `aloelite.attach` give a kernel an aloelite volume
   as its filesystem; see below.
 
 `crates/drt-web/cdn/drt.mjs` lists every export; `e2e.mjs` beside it is
 the check every release passes.
+
+## terminal(): the drt CLI in an element
+
+```js
+import { terminal } from './drt.js';
+
+const cli = await terminal('cli');               // <div id="cli"></div>
+```
+
+- A `$ ` prompt whose command is `drt`, the binary's own CLI in the page;
+  `drt repl` gives the native REPL's `dv> ` and `>> `.
+- The line editor is the native REPL's: history, word motions, undo, and
+  Tab over `drt`'s subcommands at `$ ` and the guest's names at `dv> `.
+- xterm.js and its stylesheet are inside drt.js. The terminal fills the
+  element and follows its size.
+- Options: `backings` (the kernel's connectors, `{ fs }` included),
+  `prompt`, `banner`, `ssh` (false leaves `drt ssh` out), `xterm`
+  (xterm.js options), `fit`.
+- `cli.term` is the kernel; `cli.run(line)` types a line; `cli.dispose()`
+  removes the terminal.
 
 ## A kernel's filesystem on an aloelite volume
 
