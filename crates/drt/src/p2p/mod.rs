@@ -152,6 +152,12 @@ pub struct Args {
     /// Repeatable.
     #[arg(long = "H", value_name = "NAME=VALUE")]
     pub header: Vec<String>,
+    /// With --park: the token for the signalling server, as Authorization:
+    /// Bearer, read from this file before every request. Replace the file
+    /// (a renewed JWT) and the next poll carries the new token; the name
+    /// and open sessions stay. Not beside -H auth= or Authorization.
+    #[arg(long = "token-file", value_name = "FILE")]
+    pub token_file: Option<PathBuf>,
     /// With --match: names held at once.
     #[arg(long, value_name = "NAMES")]
     pub capacity: Option<usize>,
@@ -223,6 +229,8 @@ pub struct ParkRole {
     /// Whom the server may tell this side to call; `None` declines all.
     pub pair: Option<park::PairRule>,
     pub headers: Vec<(String, String)>,
+    /// `--token-file`: the token, read again before every request.
+    pub token_file: Option<PathBuf>,
     pub stun: Vec<String>,
     pub settings: ServeSettings,
 }
@@ -243,7 +251,8 @@ pub struct MatchRole {
     pub port: u16,
     pub host: HostSpec,
     pub capacity: usize,
-    /// The `--topics` file, read when the server starts.
+    /// The `--topics` file, read when the server starts and again whenever
+    /// it changes.
     pub topics: Option<PathBuf>,
     /// `--kv`: the directory the kv database lives in; none, no kv.
     pub kv: Option<PathBuf>,
@@ -391,6 +400,7 @@ pub fn resolve_with(
     let capacity = pick(flags.capacity.as_ref(), f.capacity.as_ref());
     let topics = pick(flags.topics.as_ref(), f.topics.as_ref());
     let kv = pick(flags.kv.as_ref(), f.kv.as_ref());
+    let token_file = pick(flags.token_file.as_ref(), f.token_file.as_ref());
     // A flag names a file; the block's key is a Secret. Read only for a
     // match, so another role's refusal never reads it.
     let status_token = match (&flags.status_token_file, &f.status_token) {
@@ -446,6 +456,7 @@ pub fn resolve_with(
         None => Ok(()),
     };
     let from = |o: &Option<(String, From)>| o.as_ref().map(|(_, s)| *s);
+    let from_path = |o: &Option<(PathBuf, From)>| o.as_ref().map(|(_, s)| *s);
     let settings = |stun: &Vec<String>, headers: &Vec<(String, String)>| ServeSettings {
         authorized_keys: authorized_keys.as_ref().map(|(p, _)| p.clone()),
         identity_file: f.identity_file.clone(),
@@ -530,6 +541,7 @@ pub fn resolve_with(
                 "a park or a listen",
                 authorized_keys.as_ref().map(|(_, s)| *s),
             )?;
+            belongs("token_file", "a park", from_path(&token_file))?;
             let destination = peer.clone();
             let peer = Peer::parse(&peer)?;
             let maps = ports
@@ -576,6 +588,7 @@ pub fn resolve_with(
             // A wss:// relay's label names the destination (§9): a call with
             // no positional.
             belongs("fallback", "a call to a peer", from(&fallback))?;
+            belongs("token_file", "a park", from_path(&token_file))?;
             let (relay, _) = relay.expect("checked");
             let relay = Peer::parse(&relay).map_err(|e| format!("--relay {e}"))?;
             if !matches!(relay.how, peer::How::Ws(_)) {
@@ -620,6 +633,18 @@ pub fn resolve_with(
                 return Err("--relay beside --park (\"answer for me\") is not built yet; a park that cannot use UDP holds a wss:// leg instead (--park wss://…)".into());
             }
             let signalling = Peer::parse(&park).map_err(|e| format!("--park {e}"))?;
+            // One token, one place: the file's, or a header's.
+            if let Some((_, from)) = &token_file {
+                if headers
+                    .iter()
+                    .any(|(n, _)| n.eq_ignore_ascii_case("authorization"))
+                {
+                    return Err(format!(
+                        "{} and an auth or Authorization header both name the token; keep one",
+                        spelled("token_file", *from)
+                    ));
+                }
+            }
             let forward = ForwardSpec::parse(
                 forward.as_ref().map(|(f, _)| f.as_slice()),
                 forward_ports.as_ref().map(|(p, _)| p.as_str()),
@@ -643,6 +668,7 @@ pub fn resolve_with(
                 pair,
                 settings: settings(&stun, &headers),
                 headers,
+                token_file: token_file.map(|(p, _)| p),
                 stun,
             })
         }
@@ -659,6 +685,7 @@ pub fn resolve_with(
                 status_token.as_ref().map(|(_, s)| *s),
             )?;
             belongs("relay", "a call or a park", from(&relay))?;
+            belongs("token_file", "a park", from_path(&token_file))?;
             if let Some(from) = headers_from {
                 return Err(format!("{} belongs with a call, a park or a match's callers; a listen sends no request", spelled("headers", from)));
             }
@@ -690,6 +717,7 @@ pub fn resolve_with(
                 "a park or a listen",
                 authorized_keys.as_ref().map(|(_, s)| *s),
             )?;
+            belongs("token_file", "a park", from_path(&token_file))?;
             // §2.4: a signalling server carries no session bytes.
             for (key, present) in [
                 ("forward", forward.as_ref().map(|(_, s)| *s)),

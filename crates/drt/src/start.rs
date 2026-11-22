@@ -59,7 +59,7 @@ use drt_swarm::swarm::{Driven, Swarm, SwarmHost};
 /// here on the no-root path too, where there is no id to name. A root that
 /// has one is not distinguished yet: nothing reads the field, and inventing
 /// the distinction before the wire exists is how it ends up wrong.
-fn runtime_sender() -> drt_config::peer::Sender {
+pub(crate) fn runtime_sender() -> drt_config::peer::Sender {
     drt_config::peer::Sender::runtime(drt_config::project::NodePath::root())
 }
 use drt_swarm::InstanceId;
@@ -528,6 +528,18 @@ fn no_listeners_here(count: usize) -> String {
 /// instance exited — which for a server-shaped root program is never, and
 /// foreground-forever is the contract.
 pub fn start(config: &RootConfig, dispatcher: Dispatcher) -> Result<(), String> {
+    start_observed(config, dispatcher, |_, _| {})
+}
+
+/// [`start`], with [`serve_with_observer`]'s hook: run once per pass on
+/// the drive thread. A verb that assembles its own deployment (`drt p2p
+/// --match`) watches its inputs here and hands the root what changed.
+/// A build without `listen` drives no listener and never calls it.
+pub fn start_observed(
+    config: &RootConfig,
+    dispatcher: Dispatcher,
+    observe: impl FnMut(&mut Deployment, InstanceId),
+) -> Result<(), String> {
     #[cfg(feature = "listen")]
     {
         // `ssh` listeners are the REPL over SSH, served beside the swarm on
@@ -566,7 +578,7 @@ pub fn start(config: &RootConfig, dispatcher: Dispatcher) -> Result<(), String> 
         for (listener, addr) in http.iter().zip(bound.addrs()) {
             eprintln!("drt start: {} listening on {addr}", listener.scheme);
         }
-        let outcome = serve(config, dispatcher, bound);
+        let outcome = serve_with_observer(config, dispatcher, bound, observe);
         if let Some(path) = endpoint_file {
             let _ = std::fs::remove_file(path);
         }
@@ -574,6 +586,7 @@ pub fn start(config: &RootConfig, dispatcher: Dispatcher) -> Result<(), String> 
     }
     #[cfg(not(feature = "listen"))]
     {
+        let _ = observe;
         serve_swarm_only(config, dispatcher)
     }
 }
