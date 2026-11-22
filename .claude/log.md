@@ -450,3 +450,29 @@ through `DrtTerm(sink, backings)` and `DrtSwarm(..., backings)`; drt.js
 as files in the page's filesystem so examples/07-sql runs unchanged in
 the browser. #81 route 2 (bundled SQLite for wasm32-unknown-unknown)
 stays parked. #82 is PR #83's; backings are per kernel so they fit it.
+
+## 2026-11-22 run: refactor analysis of the workspace
+
+Plan: the owner asked for a list of refactor opportunities ("DRT has
+turned into a monolith"). Read-only: size the crates, then four
+read-only agents over drt core, drt network modules, the foundation
+crates, and connectors/web/tests; spot-check their bug claims; write
+one ranked list. No code changes. Branch ccr-fc1b4c27-loxm22 (assigned
+by the session).
+
+Done:
+- .claude/refactor-2026-11-22.md: 11 bugs found along the way (B1-B4,
+  B5's declaration, B8 and B11 checked against the code), then refactors
+  in five groups: de-monolith drt (registration tables, wiring/verb/
+  start splits, one runtime module, crate extractions), shared plumbing
+  (drt-egress, one HTTP client, drt_connector helpers, one Secret),
+  drt-config split, one test kit, file splits and hygiene. Suggested
+  order and a not-worth-doing list.
+
+Found: the roadmap is still at I0 Seed and goal.md is empty, so none of
+this has an iteration to run under yet. 522 code and CI references
+point at doc/*.md files moved to doc/doc_old/ in 46aa534, and
+.claude/CLAUDE.md:7 still points at doc/Handoff.md.
+
+Next: the owner picks which steps to run; each needs a roadmap
+iteration (or ledger entries) before it is worked.
