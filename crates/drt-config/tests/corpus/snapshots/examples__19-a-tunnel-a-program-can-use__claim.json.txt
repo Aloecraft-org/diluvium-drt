@@ -29,6 +29,7 @@ RootConfig {
                 fallback: None,
                 park: None,
                 listen: None,
+                listen_ws: None,
                 match_port: None,
                 host: None,
                 accept: [],

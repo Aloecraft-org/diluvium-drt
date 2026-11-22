@@ -621,8 +621,10 @@ pub struct BridgeConfig {
     /// page on the same machine, a public address behind a TLS-terminating
     /// proxy for one that is not. Plain `ws://`; TLS here is not built.
     pub bind: String,
-    /// The one `host:port` every accepted connection is spliced to:
-    /// `10.0.0.5:3389` in front of an RDP host.
+    /// The one target every accepted connection is spliced to: a
+    /// `host:port` (`10.0.0.5:3389` in front of an RDP host), or a
+    /// `drt://…` peer, called over p2p as `drt p2p --listen-ws` calls it
+    /// (needs the `p2p` feature).
     pub to: String,
     /// Where `opened` and `closed`, one each per connection, land on the
     /// root program, as ordinary queue messages on the same bridge the
@@ -1107,6 +1109,10 @@ pub struct P2pConfig {
     /// `--listen`: the UDP port to serve on, with a fixed record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listen: Option<u16>,
+    /// `--listen-ws`: the TCP port to accept plain WebSockets on, each
+    /// spliced to the one `forward` (`host:port` or `drt://…`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listen_ws: Option<u16>,
     /// `--match`: the TCP port to be a signalling server on.
     #[serde(default, rename = "match", skip_serializing_if = "Option::is_none")]
     pub match_port: Option<u16>,

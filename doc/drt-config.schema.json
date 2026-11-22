@@ -230,7 +230,7 @@
           "default": "bridge_in"
         },
         "to": {
-          "description": "The one `host:port` every accepted connection is spliced to:\n`10.0.0.5:3389` in front of an RDP host.",
+          "description": "The one target every accepted connection is spliced to: a\n`host:port` (`10.0.0.5:3389` in front of an RDP host), or a\n`drt://…` peer, called over p2p as `drt p2p --listen-ws` calls it\n(needs the `p2p` feature).",
           "type": "string"
         }
       },
@@ -692,6 +692,16 @@
         },
         "listen": {
           "description": "`--listen`: the UDP port to serve on, with a fixed record.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "listen_ws": {
+          "description": "`--listen-ws`: the TCP port to accept plain WebSockets on, each\nspliced to the one `forward` (`host:port` or `drt://…`).",
           "type": [
             "integer",
             "null"

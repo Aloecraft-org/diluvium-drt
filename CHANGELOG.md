@@ -47,6 +47,17 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Added
 
+- **`drt p2p --listen-ws <port> --forward <target>`: WebSockets in, one
+  target out.** A fifth p2p role. Each plain WebSocket accepted on the
+  port, on any path, is answered with the `binary` subprotocol and
+  spliced to the one forward: a `host:port`, as websockify does, or a
+  `drt://` peer, called over p2p, so a page reaches a machine behind
+  NAT with one command. The target is this side's; a bare `--forward`,
+  which lets the caller name one, is refused. `--host` says who may
+  connect, `commands.p2p.listen_ws` is the config key, and the
+  `bridge` block's `to` takes a `drt://` peer too. `drt tunnel
+  --listen` runs as this role. Plain ws only: localhost, or behind a
+  TLS terminator.
 - **A match server takes topic and capacity changes without a
   restart, and a parked side renews its token without letting its
   name go.** `drt p2p --match --topics <file>` reads the file again
@@ -71,8 +82,7 @@ Underneath it the embedded core moves from 0.15.1 to
   the close carrying `sent` and `received` byte counts; a program of
   its own reads them on `bridge_in`. New `bridge` feature, in `full`.
   Plain `ws://` only: TLS on `bind` and an Origin allow-list are not
-  built. `drt tunnel --listen` is the same accept loop, and its
-  notice now points here instead of at the `relay` block.
+  built. The block is `drt p2p --listen-ws` (above) under `drt start`.
 - **`net` natively: two `drt start` processes link by address.**
   The `net` connector a page wires over its own transport is now in
   `full` with one built in (`connector-net`, issue #108): WebSocket
