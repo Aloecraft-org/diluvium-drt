@@ -47,6 +47,20 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Added
 
+- **A match server takes topic and capacity changes without a
+  restart, and a parked side renews its token without letting its
+  name go.** `drt p2p --match --topics <file>` reads the file again
+  when it changes: its tokens, groups, `jwt` block and a new
+  `capacity` key (in place of `--capacity`) are in force from the
+  next request, and a name held by a token that no longer parks is
+  let go. A file that does not check leaves the settings in force.
+  `drt p2p --park --token-file <file>` reads its bearer token before
+  every request, so a renewed JWT written to the file is carried on
+  the next poll and the name stays; refused, the park waits for a
+  new file instead of exiting. The server now lets a name go when
+  the JWT it was last parked with expires, and the status shows
+  `reloads` and each holder's `expires_in_s`. Whatever renews the
+  file is outside drt; a device credential is not built.
 - **The `bridge` block: websockify's job under `drt start`.**
   `{"bridge": {"bind": "127.0.0.1:6080", "to": "10.0.0.5:3389"}}`
   accepts WebSockets on `bind`, on any path, answers the `binary`

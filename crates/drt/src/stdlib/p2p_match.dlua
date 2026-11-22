@@ -16,7 +16,10 @@
 --   for none;
 --   `args.kv` the database `drt p2p --match --kv <dir>` names, or nil for
 --   no kv; `args.status_token` the --status-token-file token, or '' for no
---   status; `args.version` drt's, for the status.
+--   status; `args.version` drt's, for the status. The verb hands the
+--   whole table again on the same queue whenever the --topics file
+--   changes, with the file's `capacity` in `args.capacity` when it names
+--   one; `reload` puts it in force.
 -- - Configurable: HOLD_MS (§3), PRESENT_MS (§4.2), WAITING_CAP (§6),
 --   RECORD_MAX (§1), KEEPALIVE_MS (§5), the CORS headers; RESERVED, the
 --   second path segments that are not a name inside a topic; kv's
@@ -32,7 +35,8 @@
 --   groups the file maps); `kv_route`, the kv requests
 --   (doc/DRT-Signalling.md §10), and `kv_access`, the one place a kv
 --   request is admitted; `revoked_written`, what a put under
---   REVOKED_PREFIX does to the names its subject holds; `status`,
+--   REVOKED_PREFIX does to the names its subject holds; `reload`, what a
+--   changed topics file does to the names held; `status`,
 --   GET /v1/status (§11), which takes the status token and nothing else.
 --
 -- Topics (doc/P2P.md §2.4): /v1/<topic>/<name>/… is a name inside a topic
@@ -49,7 +53,9 @@
 -- issuer's JWKS (the file's own, or a key in this server's kv), then for
 -- `iss`, `aud` and `sub`. Its roles in a topic are the union of the roles
 -- the topic maps to each name in its groups claim. A JWT holds a name by
--- its `sub`, so a renewed token keeps the name.
+-- its `sub`, so a renewed token keeps the name. A parked side sends its
+-- latest token on every request; when the `exp` of the last one it sent
+-- passes, the name is dropped as a revocation drops it.
 --
 -- Revocation (doc/P2P.md §2.4): a kv key `revoked/<sub>` in the jwt
 -- block's revoked topic holds a time in Unix seconds. While it is there,
@@ -99,37 +105,42 @@ local CORS = {
 
 local requests = queue.declare('http_in', {capacity = 64})
 local replies  = queue.declare('http_out', {capacity = 128, exported = true})
-local _, args  = queue.wait({queue.declare('args', {capacity = 1})})
-local CAPACITY = tonumber(args.capacity) or 256
--- topic -> token -> {role = true}; nil when the server has no --topics.
-local TOPICS = nil
-if type(args.topics) == 'string' and args.topics ~= '' then
-  TOPICS = {}
-  for topic, tokens in pairs(json.decode(args.topics)) do
-    TOPICS[topic] = {}
-    for token, roles in pairs(tokens) do
+-- The arguments arrive here at start, and again whenever the verb finds
+-- the --topics file changed (`reload`, below): the same table, read by
+-- `settings` both times.
+local args_in  = queue.declare('args', {capacity = 1})
+local _, args  = queue.wait({args_in})
+-- What a reload may change: the cap on names held at once; topic -> token
+-- -> {role = true}, nil when the server has no --topics; topic -> group
+-- -> {role = true}, what a JWT's groups hold in each topic; the jwt block
+-- as the verb checked it, or nil: {issuer, audience?, groups_claim, jwks =
+-- JSON text} or {..., jwks_kv = {topic, key}}, and revoked_topic.
+local CAPACITY, TOPICS, GROUPS, JWT
+
+-- JSON text, topic -> key -> roles, as topic -> key -> {role = true}.
+local function role_sets(text)
+  local out = {}
+  for topic, entries in pairs(json.decode(text)) do
+    out[topic] = {}
+    for key, roles in pairs(entries) do
       local set = {}
       for _, role in ipairs(roles) do set[role] = true end
-      TOPICS[topic][token] = set
+      out[topic][key] = set
     end
   end
+  return out
 end
--- topic -> group -> {role = true}: what a JWT's groups hold in each topic.
-local GROUPS = {}
-if type(args.groups) == 'string' and args.groups ~= '' then
-  for topic, groups in pairs(json.decode(args.groups)) do
-    GROUPS[topic] = {}
-    for group, roles in pairs(groups) do
-      local set = {}
-      for _, role in ipairs(roles) do set[role] = true end
-      GROUPS[topic][group] = set
-    end
-  end
+
+local function settings(a)
+  CAPACITY = tonumber(a.capacity) or 256
+  TOPICS = nil
+  if type(a.topics) == 'string' and a.topics ~= '' then TOPICS = role_sets(a.topics) end
+  GROUPS = {}
+  if type(a.groups) == 'string' and a.groups ~= '' then GROUPS = role_sets(a.groups) end
+  JWT = nil
+  if type(a.jwt) == 'string' and a.jwt ~= '' then JWT = json.decode(a.jwt) end
 end
--- The jwt block as the verb checked it, or nil: {issuer, audience?,
--- groups_claim, jwks = JSON text} or {..., jwks_kv = {topic, key}}.
-local JWT = nil
-if type(args.jwt) == 'string' and args.jwt ~= '' then JWT = json.decode(args.jwt) end
+settings(args)
 local KV_DB    = args.kv   -- a database name inside the sql scope, or nil: no kv
 -- The status token, or nil: no status.
 local STATUS_TOKEN = nil
@@ -139,7 +150,7 @@ local STARTED_MS, STARTED_AT = host.monotonic(), host.time()
 -- Counts since start, for the status: requests routed, replies by status,
 -- and what calls and pairings came to.
 local stats = {requests = 0, replies = {}, calls = 0, answered = 0, withdrawn = 0,
-               unanswered = 0, pairs = 0, pair_outcomes = {}}
+               unanswered = 0, pairs = 0, pair_outcomes = {}, reloads = 0}
 
 -- depth: replies
 
@@ -340,7 +351,8 @@ local function principal(topic, token)
       for role in pairs(type(g) == 'string' and map[g] or {}) do held[role] = true end
     end
   end
-  return {id = 'jwt:' .. claims.sub, roles = held, iat = claims.iat}
+  return {id = 'jwt:' .. claims.sub, roles = held, iat = claims.iat,
+          exp = type(claims.exp) == 'number' and claims.exp or nil}
 end
 
 -- Whether `token` holds `role` in `topic`.
@@ -387,9 +399,11 @@ end
 -- DRT-Caller-Token. `holder` is who the answerer is: its token for a bare
 -- name, its principal's id inside a topic (a JWT's `sub`, so a renewed
 -- token keeps the name). `r.token` is the holder's latest token, which a
--- pairing checks and hands on; `iat` is that token's, when it is a JWT, so
--- a revocation knows whether it covers the holder.
-local function claim(m, name, token, now, topic, holder, iat)
+-- pairing checks and hands on, and a reload judges again; `iat` is that
+-- token's, when it is a JWT, so a revocation knows whether it covers the
+-- holder, and `exp` its expiry (Unix seconds), past which the name is
+-- dropped unless a renewed token has come in on a request since.
+local function claim(m, name, token, now, topic, holder, iat, exp)
   holder = holder or token
   local r = names[name]
   if r and not present(r, now) then names[name] = nil; r = nil end
@@ -403,6 +417,7 @@ local function claim(m, name, token, now, topic, holder, iat)
   end
   r.token = token
   r.iat = iat
+  r.exp = exp
   local h = m.headers or {}
   if h['drt-caller-token'] and not topic then r.caller = h['drt-caller-token'] end
   if h['drt-accept'] then r.accept = h['drt-accept'] end
@@ -410,6 +425,17 @@ local function claim(m, name, token, now, topic, holder, iat)
 end
 
 -- depth: the room, one per name
+
+-- A held name let go, for a reason the caller prints: its waiting callers
+-- are told no answerer is present and its event streams end, so the parked
+-- side's next request is judged again.
+local function drop(name, r)
+  for _, c in pairs(r.calls) do
+    if not c.answered then fail(c.conn, 503, 'no answerer is present') end
+  end
+  for conn in pairs(r.streams) do queue.push(replies, {conn = conn, done = true}) end
+  names[name] = nil
+end
 
 local function waiting(r)
   local count = 0
@@ -588,11 +614,7 @@ local function revoked_written(sub_key, at)
   for name, r in pairs(names) do
     local sub = type(r.holder) == 'string' and r.holder:match('^jwt:(.+)$')
     if sub and revoked_key(sub) == sub_key and not (type(r.iat) == 'number' and r.iat > at) then
-      for _, c in pairs(r.calls) do
-        if not c.answered then fail(c.conn, 503, 'no answerer is present') end
-      end
-      for conn in pairs(r.streams) do queue.push(replies, {conn = conn, done = true}) end
-      names[name] = nil
+      drop(name, r)
       print('p2p match: ' .. sub .. ' was revoked; ' .. name .. ' is free')
     end
   end
@@ -1009,6 +1031,7 @@ local function status(m, now)
       caller_token = r.caller ~= nil,
       accept = r.accept,
       cursor = r.last,
+      expires_in_s = r.exp and math.floor(r.exp - host.time() / 1000) or nil,
     }
     if r.topic and here then per_topic[r.topic] = (per_topic[r.topic] or 0) + 1 end
   end
@@ -1033,6 +1056,7 @@ local function status(m, now)
     version = VERSION, started_at_ms = STARTED_AT, now_ms = host.time(),
     uptime_s = math.floor((now - STARTED_MS) / 1000),
     capacity = CAPACITY, held = held_count(), topics = TOPICS ~= nil, kv = kv.db ~= nil,
+    reloads = stats.reloads,
     jwt_issuer = JWT and JWT.issuer or nil,
     revoked_in_kv = JWT and JWT.revoked_topic ~= nil or false,
     limits = {hold_ms = HOLD_MS, present_ms = PRESENT_MS, waiting_cap = WAITING_CAP,
@@ -1072,7 +1096,7 @@ local function name_route(m, key, topic, rest, params, now)
     local id = pattern:find('(', 1, true) and matched or nil
     if m.method == method and matched then
       local token = token_of(m, params)
-      local holder, iat = nil, nil
+      local holder, iat, exp = nil, nil, nil
       if topic then
         -- Inside a topic: a caller's token holds call, an answerer's park;
         -- DELETE is either, so a call token withdraws its own call only.
@@ -1082,7 +1106,7 @@ local function name_route(m, key, topic, rest, params, now)
         end
         local p = topic_access(m, topic, role)
         if not p then return end
-        holder, iat = p.id, p.iat
+        holder, iat, exp = p.id, p.iat, p.exp
         if role == 'call' then
           if i == 1 then return call(m, key, token, now, holder) end
           local r, c = names[key], nil
@@ -1097,7 +1121,7 @@ local function name_route(m, key, topic, rest, params, now)
         local r = names[key]
         if who == 'either' and r and r.caller == token then return withdraw(m, r, id) end
       end
-      local r = claim(m, key, token, now, topic, holder, iat)
+      local r = claim(m, key, token, now, topic, holder, iat, exp)
       if not r then return end
       if i == 2 then return list(m, r, params, now) end
       if i == 3 then return answer(m, r, id, '/v1/' .. key .. '/calls/') end
@@ -1150,24 +1174,60 @@ local function closed(conn)
 end
 
 local function housekeep(now)
+  local wall = host.time()
   for name, r in pairs(names) do
-    for n, c in pairs(r.calls) do
-      if now >= c.ends then
-        if not c.answered then
-          stats.unanswered = stats.unanswered + 1
-          fail(c.conn, 504, 'no answer within the hold time')
+    if r.exp and wall >= r.exp * 1000 then
+      drop(name, r)
+      print('p2p match: ' .. name .. ' is free: the token it was parked with expired, '
+        .. 'and no renewed one came in')
+    else
+      for n, c in pairs(r.calls) do
+        if now >= c.ends then
+          if not c.answered then
+            stats.unanswered = stats.unanswered + 1
+            fail(c.conn, 504, 'no answer within the hold time')
+          end
+          r.calls[n] = nil
         end
-        r.calls[n] = nil
+      end
+      for n, p in pairs(r.pairs) do
+        if now >= p.ends then r.pairs[n] = nil end
+      end
+      for conn, at in pairs(r.streams) do
+        if now - at >= KEEPALIVE_MS then queue.push(replies, {conn = conn, chunk = ': keepalive\n\n'}); r.streams[conn] = now end
+      end
+      if not present(r, now) and next(r.calls) == nil and next(r.pairs) == nil then names[name] = nil end
+    end
+  end
+end
+
+-- The --topics file changed and the verb checked it again: `a` is the
+-- whole argument table, as at start. The new topics, groups, jwt block
+-- and cap are in force from the next request. A name held inside a topic
+-- is judged again with its holder's latest token, and dropped when that
+-- token no longer parks there (a token the file took out, a group no
+-- longer mapped, a jwt block changed). A lower cap frees nothing: names
+-- past it are refused until enough are let go.
+local function reload(a)
+  settings(a)
+  jwks_seen = {revision = -1, text = nil, expires = 0}
+  stats.reloads = stats.reloads + 1
+  local dropped = 0
+  for name, r in pairs(names) do
+    if r.topic and r.token then
+      local p = principal(r.topic, r.token)
+      if not p or not p.roles.park or p.id ~= r.holder then
+        drop(name, r)
+        dropped = dropped + 1
+        print('p2p match: ' .. name .. ' is free: its token no longer parks in ' .. r.topic)
       end
     end
-    for n, p in pairs(r.pairs) do
-      if now >= p.ends then r.pairs[n] = nil end
-    end
-    for conn, at in pairs(r.streams) do
-      if now - at >= KEEPALIVE_MS then queue.push(replies, {conn = conn, chunk = ': keepalive\n\n'}); r.streams[conn] = now end
-    end
-    if not present(r, now) and next(r.calls) == nil and next(r.pairs) == nil then names[name] = nil end
   end
+  local n = 0
+  for _ in pairs(TOPICS or {}) do n = n + 1 end
+  print('p2p match: reloaded the topics file: ' .. n .. ' topic(s), ' .. CAPACITY
+    .. ' name(s) at most, ' .. held_count() .. ' held'
+    .. (dropped > 0 and (', ' .. dropped .. ' let go') or ''))
 end
 
 local topic_count = 0
@@ -1192,9 +1252,10 @@ if JWT then
         or '; nothing revokes them before exp'))
 end
 while true do
-  local _, m = queue.wait({requests}, 1000)
+  local from, m = queue.wait({requests, args_in}, 1000)
   local now = host.monotonic()
-  if m and m.event == 'closed' then closed(m.conn)
+  if m and from == args_in then reload(m)
+  elseif m and m.event == 'closed' then closed(m.conn)
   elseif m then route(m, now) end
   housekeep(now)
   local ok, err = pcall(kv_housekeep, now)

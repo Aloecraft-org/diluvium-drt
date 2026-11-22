@@ -10,10 +10,18 @@
 //! gives, and [`follow_pair`] makes the call, serving on it, and reports
 //! the outcome.
 //!
+//! Renewal: with `--token-file` the token this side presents is read from
+//! the file before every request ([`Auth`]), so whatever replaces the file
+//! (a renewed JWT) is on the next poll, inside [`POLL`]. The server keeps
+//! the name across the swap (a JWT holds it by `sub`), and the sessions
+//! already open never touch the signalling server, so nothing drops. A
+//! refusal (401, 403) is waited out for a new file rather than ending the
+//! park.
+//!
 //! ## surface block
 //!
 //! - Entry points: [`run`], the role carried out; [`follow_pair`], one
-//!   `pair` entry carried out.
+//!   `pair` entry carried out; [`Auth::new`], the headers a park presents.
 //! - Configurable: [`POLL`], [`BACKOFF_MAX`], [`ACCEPT_HEADER`],
 //!   [`PAIR_CONNECT`], [`PAIR_MARGIN`].
 //! - Fan-out: the match on [`How`] in `run`; what the WebSocket park can
@@ -159,6 +167,11 @@ pub async fn run(
     roots: &[CertificateDer<'static>],
 ) -> Result<(), String> {
     match &role.signalling.how {
+        How::Ws(_) if role.token_file.is_some() => Err(
+            "--token-file is read before each request, and a wss:// park makes one, holding \
+             its leg; give the token as -H auth=<token>, or park at a drt:// server"
+                .into(),
+        ),
         How::Ws(url) => park_ws(url, role, config, roots).await,
         How::Signal { name: None, .. } => Err(format!(
             "--park {} names no answerer: drt://host[:port]/v1/<name>, or /v1/<topic>/<name> inside a topic",
@@ -194,6 +207,7 @@ async fn park_signal(
         let ranges: Vec<String> = role.accept.iter().map(|c| c.to_string()).collect();
         headers.push((ACCEPT_HEADER.to_string(), ranges.join(", ")));
     }
+    let auth = std::sync::Arc::new(Auth::new(headers, role.token_file.clone())?);
     let calls_url = role.signalling.url("/calls");
     let events_url = role.signalling.url("/events");
     eprintln!(
@@ -204,7 +218,7 @@ async fn park_signal(
     let serving = std::sync::Arc::new(serving);
     let pairing = std::sync::Arc::new(Pairing {
         signalling: role.signalling.clone(),
-        headers: headers.clone(),
+        auth: auth.clone(),
         rule: role.pair.clone(),
     });
 
@@ -212,10 +226,13 @@ async fn park_signal(
     // wakes the poll below. A stream that will not open is polling alone.
     let (wake_tx, mut wake) = tokio::sync::mpsc::unbounded_channel::<()>();
     {
-        let (url, headers, roots) = (events_url.clone(), headers.clone(), roots.to_vec());
+        let (url, auth, roots) = (events_url.clone(), auth.clone(), roots.to_vec());
         tokio::spawn(async move {
             let mut backoff = Duration::from_secs(1);
             loop {
+                // Each open with the token in force: a stream outlives the
+                // token it opened with, and is judged again only on reopen.
+                let headers = auth.headers();
                 match http::stream("GET", &url, &headers, None, &roots).await {
                     Ok((head, mut body)) if head.status == 200 => {
                         backoff = Duration::from_secs(1);
@@ -253,6 +270,7 @@ async fn park_signal(
             Some(c) => format!("{calls_url}?since={c}"),
             None => calls_url.clone(),
         };
+        let headers = auth.headers();
         match http::request("GET", &url, &headers, None, roots).await {
             Ok(reply) if reply.status == 200 => {
                 backoff = Duration::from_secs(1);
@@ -302,7 +320,19 @@ async fn park_signal(
                     .refusal(&url)
                     .unwrap_or_else(|| format!("answered {}", reply.status));
                 if reply.status == 401 || reply.status == 403 {
-                    return Err(why);
+                    let Some(file) = &role.token_file else {
+                        return Err(why);
+                    };
+                    // The name is let go; a renewed token in the file takes
+                    // it again, so the refusal is waited out.
+                    eprintln!(
+                        "drt p2p: {why}; waiting for a new token in {}, retrying in {backoff:?}",
+                        file.display()
+                    );
+                    said = false;
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(BACKOFF_MAX);
+                    continue;
                 }
                 eprintln!("drt p2p: {why}; retrying in {backoff:?}");
                 said = false;
@@ -325,6 +355,81 @@ async fn park_signal(
     }
 }
 
+// depth: the token a park presents
+
+/// The headers a parked side sends the signalling server: the fixed ones,
+/// and with `--token-file` `Authorization: Bearer` with the file's token,
+/// read again for every request. A file that will not read, or reads
+/// empty, keeps the last token it held and is said once; a changed token
+/// is said once.
+#[derive(Debug)]
+pub struct Auth {
+    fixed: Vec<(String, String)>,
+    file: Option<std::path::PathBuf>,
+    /// The token last read, and the last failure said.
+    held: std::sync::Mutex<(String, Option<String>)>,
+}
+
+impl Auth {
+    /// The file is read here first, so a park that cannot read its token
+    /// fails before it parks.
+    pub fn new(
+        fixed: Vec<(String, String)>,
+        file: Option<std::path::PathBuf>,
+    ) -> Result<Auth, String> {
+        let token = match &file {
+            Some(path) => read_token(path)?,
+            None => String::new(),
+        };
+        Ok(Auth {
+            fixed,
+            file,
+            held: std::sync::Mutex::new((token, None)),
+        })
+    }
+
+    pub fn headers(&self) -> Vec<(String, String)> {
+        let mut headers = self.fixed.clone();
+        let Some(path) = &self.file else {
+            return headers;
+        };
+        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        match read_token(path) {
+            Ok(token) => {
+                if token != held.0 {
+                    eprintln!(
+                        "drt p2p: {} holds a new token; the next request carries it",
+                        path.display()
+                    );
+                    held.0 = token;
+                }
+                held.1 = None;
+            }
+            Err(why) => {
+                if held.1.as_deref() != Some(why.as_str()) {
+                    eprintln!("drt p2p: {why}; the last token read is used");
+                    held.1 = Some(why);
+                }
+            }
+        }
+        headers.push(("Authorization".to_string(), format!("Bearer {}", held.0)));
+        headers
+    }
+}
+
+/// The token in `path`: its text, trimmed, one token's characters.
+fn read_token(path: &std::path::Path) -> Result<String, String> {
+    let shown = path.display();
+    let text = std::fs::read_to_string(path).map_err(|e| format!("--token-file {shown}: {e}"))?;
+    let token = text.trim();
+    if token.is_empty() || token.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(format!(
+            "--token-file {shown}: one token, with no spaces or line breaks inside it"
+        ));
+    }
+    Ok(token.to_string())
+}
+
 // depth: pairing (doc/DRT-Signalling.md §6.2)
 
 /// What following a `pair` entry needs of the park: where it is parked,
@@ -332,7 +437,7 @@ async fn park_signal(
 #[derive(Debug, Clone)]
 pub struct Pairing {
     pub signalling: Peer,
-    pub headers: Vec<(String, String)>,
+    pub auth: std::sync::Arc<Auth>,
     pub rule: Option<PairRule>,
 }
 
@@ -362,7 +467,7 @@ pub async fn follow_pair(
     let deadline = tokio::time::Instant::now() + budget;
     let report = |outcome: Outcome, why: String| {
         let (headers, roots, result_url) =
-            (park.headers.clone(), roots.to_vec(), result_url.clone());
+            (park.auth.headers(), roots.to_vec(), result_url.clone());
         async move {
             eprintln!("drt p2p: pair {id}: {}{}", outcome.name(), why_shown(&why));
             let body = serde_json::json!({"outcome": outcome.name(), "why": why}).to_string();

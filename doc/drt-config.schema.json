@@ -615,7 +615,7 @@
           ]
         },
         "capacity": {
-          "description": "`--capacity`: names a `match` server holds at once.",
+          "description": "`--capacity`: names a `match` server holds at once; a topics file\nnaming `capacity` replaces it, and changes it while the server runs.",
           "type": [
             "integer",
             "null"
@@ -772,6 +772,13 @@
           "items": {
             "type": "string"
           }
+        },
+        "token_file": {
+          "description": "`--token-file`: a `park`'s token for the signalling server, read\nagain before every request, so a replaced file (a renewed JWT)\ntakes over without letting the name go.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "topics": {
           "description": "`--topics`: a `match` server's topics file, each topic with its\ntokens and their roles (`doc/P2P.md` §2.4).",
