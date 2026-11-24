@@ -22,6 +22,7 @@ per-profile `connectors` and `features` sets — the same facts
 fact travels with the bytes.
 
 ```sh
+script/changelog.py fold          # release prep: changelog.d/ into the entry
 script/changelog.py validate      # schema and consistency
 script/changelog.py generate      # write CHANGELOG.md and changelog.json
 script/changelog.py check         # fail if they drifted (CI)

@@ -38,6 +38,9 @@ Usage:
                                             entry says (--newest and
                                             --allow-unknown for a dev build,
                                             whose skipped legs say unknown)
+  script/changelog.py fold                  move changelog.d/*.yaml into
+                                            the newest entry; for the
+                                            release-prep commit
   script/changelog.py generate              write CHANGELOG.md and
                                             changelog.json from the YAML
   script/changelog.py check                 fail unless the generated
@@ -48,6 +51,10 @@ Usage:
                                             fail unless TAG is releasable;
                                             prints prerelease= and version=
                                             for GITHUB_OUTPUT
+
+A pull request does not edit CHANGELOG.yaml: it adds one file,
+changelog.d/<name>.yaml, of section keys and bullets (see "changelog
+fragments" below for why). `render --newest` includes them.
 
 Why the generated files are committed: the release mirror runs on a host
 with a stdlib-only Python and no build step, so it reads changelog.json
@@ -70,6 +77,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SOURCE = os.path.join(ROOT, "CHANGELOG.yaml")
 MD = os.path.join(ROOT, "CHANGELOG.md")
 JSON = os.path.join(ROOT, "changelog.json")
+FRAGMENTS = os.path.join(ROOT, "changelog.d")
 
 # Where the rendered install command points. The mirror rather than GitHub
 # Releases: it is the front door (`doc/Release.md`), and its per-version
@@ -143,6 +151,130 @@ def load():
             return yaml.load(f, Loader=OneOfEachKey)
         except yaml.YAMLError as e:
             sys.exit("CHANGELOG.yaml: %s" % e)
+
+
+# depth: changelog fragments
+#
+# A pull request records its change as one new file, changelog.d/<name>.yaml,
+# holding section keys and their bullets:
+#
+#     fixed:
+#       - "The thing that was wrong is right."
+#
+# and leaves CHANGELOG.yaml, CHANGELOG.md and changelog.json alone. Every PR
+# used to add its bullet to the same list in CHANGELOG.yaml, and
+# changelog.json keeps each entry's rendered Markdown on one line, so any two
+# open PRs conflicted there and every merge broke the rest. A new file per PR
+# conflicts with nothing. The fragments belong to the newest entry, which
+# must be unreleased while any exist; `fold` moves them into CHANGELOG.yaml
+# in the release-prep commit, and `release-check --publish` refuses to
+# publish while any are left. `render ... --newest` (a dev build's notes)
+# shows them; `generate` and `check` do not, so the committed files only
+# change when CHANGELOG.yaml does.
+
+def fragment_paths():
+    try:
+        names = sorted(os.listdir(FRAGMENTS))
+    except OSError:
+        return []
+    return [os.path.join(FRAGMENTS, n) for n in names if n.endswith(".yaml")]
+
+
+def load_fragments():
+    """-> [(path, {section: [bullets]})], or exits on a malformed file."""
+    out = []
+    for path in fragment_paths():
+        name = os.path.relpath(path, ROOT)
+        with open(path) as f:
+            try:
+                frag = yaml.load(f, Loader=OneOfEachKey)
+            except yaml.YAMLError as e:
+                sys.exit("%s: %s" % (name, e))
+        if not isinstance(frag, dict) or not frag:
+            sys.exit("%s: expected section keys (%s), each a list of bullets"
+                     % (name, ", ".join(k for k, _ in SECTIONS)))
+        for key, items in frag.items():
+            if key not in dict(SECTIONS):
+                sys.exit("%s: %r is not a section (%s)"
+                         % (name, key, ", ".join(k for k, _ in SECTIONS)))
+            if (not isinstance(items, list) or not items
+                    or not all(isinstance(i, str) and i.strip() for i in items)):
+                sys.exit("%s: %s must be a list of non-empty strings"
+                         % (name, key))
+        out.append((path, frag))
+    return out
+
+
+def with_fragments(doc, frags):
+    """A copy of doc whose newest entry carries the fragments' bullets after
+    its own, in file-name order."""
+    if not frags:
+        return doc
+    newest = dict(doc["releases"][0])
+    if newest.get("status") != "unreleased":
+        sys.exit("changelog.d/ has fragments but the newest entry (%s) is %s; "
+                 "open the next unreleased entry for them"
+                 % (newest.get("version"), newest.get("status")))
+    for _, frag in frags:
+        for key, items in frag.items():
+            newest[key] = list(newest.get(key) or []) + items
+    return dict(doc, releases=[newest] + doc["releases"][1:])
+
+
+def yaml_bullet(item):
+    """One bullet as CHANGELOG.yaml spells it: a quoted string, or a `|`
+    block when it spans lines."""
+    if "\n" not in item.rstrip("\n"):
+        return ["      - " + json.dumps(item)]
+    return ["      - |"] + [("        " + line).rstrip()
+                            for line in item.rstrip("\n").split("\n")]
+
+
+def fold(doc, frags):
+    """Write the fragments' bullets into the newest entry of CHANGELOG.yaml,
+    textually so its comments survive, check the result loads to the same
+    entry, then delete the fragments."""
+    if not frags:
+        print("changelog.d/ has no fragments; nothing to fold")
+        return 0
+    want = with_fragments(doc, frags)["releases"][0]
+    lines = read("CHANGELOG.yaml").split("\n")
+    first = next(i for i, l in enumerate(lines) if l.startswith("  - version:"))
+    end = next((i for i in range(first + 1, len(lines))
+                if lines[i].startswith("  - version:")), len(lines))
+    while end > first and not lines[end - 1].strip():
+        end -= 1
+    for key, _ in SECTIONS:
+        add = [b for _, frag in frags for b in frag.get(key, [])]
+        if not add:
+            continue
+        new = [l for b in add for l in yaml_bullet(b)]
+        head = next((i for i in range(first, end)
+                     if lines[i] == "    %s:" % key), None)
+        if head is None:
+            lines[end:end] = ["    %s:" % key] + new
+            end += 1 + len(new)
+            continue
+        # The end of this section's list: the next line at entry-key depth.
+        stop = next((i for i in range(head + 1, end)
+                     if lines[i].startswith("    ") and lines[i][4:5] not in (" ", "")
+                     and not lines[i].startswith("    -")), end)
+        while stop > head + 1 and not lines[stop - 1].strip():
+            stop -= 1
+        lines[stop:stop] = new
+        end += len(new)
+    text = "\n".join(lines)
+    got = yaml.load(text, Loader=OneOfEachKey)["releases"][0]
+    if got != want:
+        sys.exit("changelog.py: folding would not reproduce the fragments; "
+                 "CHANGELOG.yaml left as it was")
+    with open(SOURCE, "w") as f:
+        f.write(text)
+    for path, _ in frags:
+        os.remove(path)
+        print("folded %s" % os.path.relpath(path, ROOT))
+    print("now run 'script/changelog.py generate'")
+    return 0
 
 
 # The version grammar (doc/ALIGNMENT.md §1): `X.Y.Z`, or `X.Y.Z-<kind>.<n>`
@@ -608,7 +740,7 @@ def main():
     ap.add_argument("command", choices=["validate", "render", "mirror-tags",
                                         "latest", "generate", "check",
                                         "consistency", "release-check",
-                                        "buildinfo-check"])
+                                        "buildinfo-check", "fold"])
     ap.add_argument("format", nargs="?", choices=["md", "json"])
     ap.add_argument("--file", help="buildinfo-check: the BUILDINFO.txt to read")
     ap.add_argument("--allow-unknown", action="store_true",
@@ -630,13 +762,19 @@ def main():
         for p in problems:
             print("CHANGELOG.yaml: " + p, file=sys.stderr)
         return 1
+    frags = load_fragments()
 
     if args.command == "validate":
-        print("OK: %d releases, latest=%s, %d mirrored"
+        with_fragments(doc, frags)
+        print("OK: %d releases, latest=%s, %d mirrored, %d fragment(s)"
               % (len(doc["releases"]),
                  next(r["tag"] for r in doc["releases"] if r.get("latest")),
-                 sum(1 for r in doc["releases"] if r.get("mirror"))))
+                 sum(1 for r in doc["releases"] if r.get("mirror")),
+                 len(frags)))
+    elif args.command == "fold":
+        return fold(doc, frags)
     elif args.command == "render":
+        doc = with_fragments(doc, frags)
         if args.format == "json":
             sys.stdout.write(render_json(doc))
         else:
@@ -674,6 +812,10 @@ def main():
         if not args.tag:
             sys.exit("changelog.py: release-check needs --tag")
         problems, out = release_check(doc, args.tag, args.publish)
+        if args.publish and frags:
+            problems.append("changelog.d/ still has %d fragment(s); run "
+                            "'script/changelog.py fold' and generate in the "
+                            "release-prep commit" % len(frags))
         if problems:
             for p in problems:
                 print("release-check: " + p, file=sys.stderr)
