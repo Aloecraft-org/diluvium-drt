@@ -1,0 +1,8 @@
+changed:
+  - |
+    **A pull request records its change in `changelog.d/`, not in
+    `CHANGELOG.yaml`.** Each PR adds one `changelog.d/<name>.yaml` of
+    section keys and bullets. `render md --newest`, which a dev build's
+    notes use, includes them; `fold` moves them into the newest entry in
+    the release-prep commit, and `release-check --publish` refuses while
+    any are left. Two open PRs no longer conflict in `changelog.json`.

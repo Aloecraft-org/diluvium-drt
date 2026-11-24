@@ -5,6 +5,10 @@
 # derived. `script/changelog.py generate` writes CHANGELOG.md and
 # changelog.json, and CI fails if they drift.
 #
+# A pull request does not edit this file. It adds changelog.d/<name>.yaml,
+# section keys and bullets for the newest entry, and the release-prep commit
+# runs `script/changelog.py fold` (see that script for why).
+#
 # Ported from diluvium's CHANGELOG.yaml on purpose -- same shape, same tool,
 # same CLI -- so the two repositories' release machinery reads the same and a
 # fix to one carries to the other. What differs is only which compatibility
