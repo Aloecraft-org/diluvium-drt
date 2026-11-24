@@ -37,7 +37,7 @@ on:
         required: false
         default: false
       full:
-        description: 'Build every target. A dev build is the Linux leg alone otherwise; a release always builds every target.'
+        description: 'Build every target. A dev build is the Linux legs alone otherwise; a release always builds every target.'
         type: boolean
         required: false
         default: false
@@ -61,7 +61,7 @@ jobs:
       # platform, needs no changelog entry, and is always a prerelease.
       dev: ${{ steps.check.outputs.dev }}
       # Which legs run: every one for a release, or for a dev build
-      # dispatched with `full`; the Linux leg alone for any other dev
+      # dispatched with `full`; the Linux legs alone for any other dev
       # build. The three cross-target jobs, the matrix, the publish
       # condition and the BUILDINFO check all read this one answer.
       all_legs: ${{ steps.check.outputs.all_legs }}
@@ -71,7 +71,7 @@ jobs:
       # Derived from the changelog's `stable`, which is the truth; GitHub's
       # flag is downstream of it. A dev build has no entry and is always one.
       prerelease: ${{ steps.changelog.outputs.prerelease || steps.dev.outputs.prerelease }}
-      # Which platforms `build` runs: every one, or the Linux leg alone for
+      # Which platforms `build` runs: every one, or the Linux legs alone for
       # a dev build. Declared in one place so the two lists cannot drift.
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
@@ -225,9 +225,11 @@ jobs:
           # below -- `full` and `slim`, the same two every leg here
           # ships -- and then run on a real Windows runner by
           # `smoke-windows`, which is the smoke step these legs do inline.
-          # A dev build is the x86_64 leg alone, unless dispatched with
-          # `full`.
-          include = [linux, arm64] + darwin if os.environ["ALL_LEGS"] == "true" else [linux]
+          # A dev build is the two Linux legs, unless dispatched with
+          # `full`. arm64 is in it because it is native on its runner and
+          # costs no cross toolchain, and a Pi or an arm64 server is where
+          # a dev build is most often tried.
+          include = [linux, arm64] + darwin if os.environ["ALL_LEGS"] == "true" else [linux, arm64]
           print("matrix=" + json.dumps({"include": include}))
           EOF
       # The changelog is a release gate, not a formality: CHANGELOG.yaml is
@@ -305,7 +307,7 @@ jobs:
     strategy:
       fail-fast: false
       # Declared in preflight (its `matrix` step), so a dev build is the
-      # Linux leg alone; the platform list and its reasons live there.
+      # Linux legs alone; the platform list and its reasons live there.
       matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
     env:
       DRT_RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
@@ -823,7 +825,7 @@ jobs:
     # legs (wasip2 and the two Windows jobs), and a job whose `needs` were
     # skipped is skipped itself unless it says otherwise. So this says
     # otherwise, and checks by hand what the default would have: nothing
-    # was cancelled, the suite, the Linux leg, the web leg, the client and
+    # was cancelled, the suite, the Linux legs, the web leg, the client and
     # the SSH page passed, and either those legs were skipped or every one
     # of them passed too.
     if: >-
@@ -897,7 +899,7 @@ jobs:
               if [ "$ALL_LEGS" = true ]; then
                 legs="every target a release builds"
               else
-                legs="the Linux build"
+                legs="the Linux builds (x86_64 and arm64)"
               fi
               echo "Commit \`$SHA\` on \`$BRANCH\`: the suite, $legs, the web build (\`drt_web.tar.gz\`), the browser access client (\`drt_browser_access.js\`), the SSH page (\`ssh.html\`) \`drt.js\` with \`drt.min.js\`, and \`get-drt.js\`, which loads it into a page. Not a release: \`BUILDINFO.txt\` says what is inside, the ten newest dev builds are kept, and the newest changelog entry below describes the tree this is cut from, not this build."
               echo

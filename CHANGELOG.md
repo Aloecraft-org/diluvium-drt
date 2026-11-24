@@ -938,6 +938,12 @@ Underneath it the embedded core moves from 0.15.1 to
 
 ### Changed
 
+- **A dev build ships Linux arm64 beside x86_64.** The dev fast path
+  built `drt_linux_x86_64_musl` alone; it now also builds
+  `drt_linux_arm64_musl` and its `_slim`, natively on the arm64
+  runner as a release does, so `install.sh -r dev` installs on a
+  Raspberry Pi or an arm64 server. macOS, Windows and wasip2 stay
+  behind `full`.
 - **The SSH page has a setup form, connection states, and a hidden
   caller secret.** The form picks a peer, a host record or a relay,
   and names the user, the target on the peer (`to`), a STUN server

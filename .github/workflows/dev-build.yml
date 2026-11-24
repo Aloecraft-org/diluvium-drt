@@ -27,7 +27,7 @@ on:
   workflow_dispatch:
     inputs:
       full:
-        description: 'Build every target, not the Linux leg alone, and cut even if HEAD already has a dev build.'
+        description: 'Build every target, not the Linux legs alone, and cut even if HEAD already has a dev build.'
         type: boolean
         required: false
         default: false

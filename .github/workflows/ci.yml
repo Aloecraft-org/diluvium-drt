@@ -717,6 +717,10 @@ jobs:
           export CC="$RUNNER_TEMP/msys64/mingw64/bin/gcc.exe"
           export AR="$RUNNER_TEMP/msys64/mingw64/bin/ar.exe"
           export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="$CC"
+          # MSYS2's ld.exe sits in mingw64/x86_64-w64-mingw32/bin but loads
+          # its DLLs from mingw64/bin, which Git Bash's PATH lacks: since
+          # 2026-11-22 every link here failed with "ld returned 53".
+          export PATH="$RUNNER_TEMP/msys64/mingw64/bin:$PATH"
           "$CC" --version | head -1
           cargo test -p drt --no-default-features --features "slim,p2p" --lib p2p --test p2p
       # `drt completions` on Windows, with the binary the step above built:
